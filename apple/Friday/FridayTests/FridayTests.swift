@@ -88,4 +88,73 @@ struct FridayTests {
         #expect(ordered == [1, 2, 3])
         #expect(conversation.nextSequenceNumber == 4)
     }
+
+    @Test("Persists note blocks and attachments for rich note content")
+    func notePersistenceGraph() throws {
+        let container = try ModelContainer(
+            for: Note.self,
+            NoteBlock.self,
+            NoteAttachment.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+
+        let note = Note(title: "Prototype")
+        context.insert(note)
+
+        let textBlock = NoteBlock(
+            kind: .text,
+            orderIndex: note.nextOrderIndex,
+            textContent: "Investigate architecture options.",
+            note: note
+        )
+        note.blocks.append(textBlock)
+        context.insert(textBlock)
+
+        let tableBlock = NoteBlock(
+            kind: .table,
+            orderIndex: note.nextOrderIndex,
+            payloadJSON: "{\"rows\":[[{\"text\":\"Owner\"},{\"text\":\"Status\"}],[{\"text\":\"Alex\"},{\"text\":\"In Progress\"}]]}",
+            note: note
+        )
+        note.blocks.append(tableBlock)
+        context.insert(tableBlock)
+
+        let imageAttachment = NoteAttachment(
+            kind: .image,
+            fileName: "architecture.jpg",
+            mimeType: "image/jpeg",
+            localPath: "/tmp/architecture.jpg",
+            byteCount: 22_500,
+            block: tableBlock
+        )
+        tableBlock.attachments.append(imageAttachment)
+        context.insert(imageAttachment)
+
+        note.refreshPreview()
+        try context.save()
+
+        let fetched = try context.fetch(FetchDescriptor<Note>())
+        #expect(fetched.count == 1)
+        #expect(fetched[0].orderedBlocks.count == 2)
+        #expect(fetched[0].orderedBlocks[0].kind == .text)
+        #expect(fetched[0].orderedBlocks[1].kind == .table)
+        #expect(fetched[0].orderedBlocks[1].attachments.count == 1)
+        #expect(fetched[0].previewText == "Investigate architecture options.")
+    }
+
+    @Test("Orders note blocks by block order index")
+    func orderedBlocksUsesOrderIndex() {
+        let note = Note(title: "Ordering")
+
+        let third = NoteBlock(kind: .text, orderIndex: 3, textContent: "Third", note: note)
+        let first = NoteBlock(kind: .heading, orderIndex: 1, textContent: "First", note: note)
+        let second = NoteBlock(kind: .checklist, orderIndex: 2, textContent: "- [ ] Second", note: note)
+
+        note.blocks = [third, first, second]
+
+        let ordered = note.orderedBlocks.map(\.orderIndex)
+        #expect(ordered == [1, 2, 3])
+        #expect(note.nextOrderIndex == 4)
+    }
 }

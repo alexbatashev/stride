@@ -18,6 +18,17 @@ final class FridayUITests: XCTestCase {
     }
 
     @MainActor
+    func testNotesShellRendersCoreControls() throws {
+        let app = XCUIApplication()
+        app.launchArguments.append("-ui-testing-open-notes")
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["notesList"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.descendants(matching: .any)["noteTitleField"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.descendants(matching: .any)["addTextBlockButton"].waitForExistence(timeout: 2))
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         measure(metrics: [XCTApplicationLaunchMetric()]) {
             XCUIApplication().launch()

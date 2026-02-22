@@ -9,6 +9,9 @@ struct FridayApp: App {
             ConversationTurn.self,
             TurnAttachment.self,
             ToolInvocation.self,
+            Note.self,
+            NoteBlock.self,
+            NoteAttachment.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
