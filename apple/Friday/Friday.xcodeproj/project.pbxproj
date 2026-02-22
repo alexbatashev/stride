@@ -23,6 +23,10 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXBuildFile section */
+		F0A11C4A2A1B3C4000A10001 /* LLMKit in Frameworks */ = {isa = PBXBuildFile; productRef = F0A11C492A1B3C4000A10001 /* LLMKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		FAE849562F4A1FA00005E215 /* Friday.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Friday.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FAE849652F4A1FA10005E215 /* FridayTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FridayTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F0A11C4A2A1B3C4000A10001 /* LLMKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = Friday;
 			packageProductDependencies = (
+				F0A11C492A1B3C4000A10001 /* LLMKit */,
 			);
 			productName = Friday;
 			productReference = FAE849562F4A1FA00005E215 /* Friday.app */;
@@ -195,6 +201,9 @@
 			);
 			mainGroup = FAE8494D2F4A1FA00005E215;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				F0A11C482A1B3C4000A10001 /* XCLocalSwiftPackageReference "../../libs/LLMKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FAE849572F4A1FA00005E215 /* Products */;
 			projectDirPath = "";
@@ -267,6 +276,21 @@
 			targetProxy = FAE849702F4A1FA10005E215 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		F0A11C482A1B3C4000A10001 /* XCLocalSwiftPackageReference "../../libs/LLMKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../libs/LLMKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F0A11C492A1B3C4000A10001 /* LLMKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F0A11C482A1B3C4000A10001 /* XCLocalSwiftPackageReference "../../libs/LLMKit" */;
+			productName = LLMKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		FAE849772F4A1FA10005E215 /* Debug */ = {
