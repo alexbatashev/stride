@@ -1,22 +1,18 @@
+import CoreFriday
 import SwiftUI
-import SwiftData
 
 struct ChatView: View {
     @Bindable var modelData: ModelData
     let conversationID: UUID?
-
-    @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\Conversation.updatedAt, order: .reverse)])
-    private var conversations: [Conversation]
 
     @State private var draftText: String = ""
     @State private var isSending = false
 
     private var selectedConversation: Conversation? {
         if let conversationID {
-            return conversations.first(where: { $0.id == conversationID })
+            return modelData.conversations.first(where: { $0.id == conversationID })
         }
-        return conversations.first
+        return modelData.sortedConversations.first
     }
 
     var body: some View {
@@ -186,11 +182,9 @@ struct ChatView: View {
         let userTurn = ConversationTurn(
             role: .user,
             text: trimmed,
-            sequenceNumber: userSequence,
-            conversation: conversation
+            sequenceNumber: userSequence
         )
         conversation.turns.append(userTurn)
-        modelContext.insert(userTurn)
         conversation.refreshPreview(using: trimmed)
 
         let turnsForRequest = conversation.orderedTurns
@@ -199,20 +193,13 @@ struct ChatView: View {
             role: .assistant,
             text: "",
             sequenceNumber: userSequence + 1,
-            modelIdentifier: modelData.chatSettings.activeModel,
-            conversation: conversation
+            modelIdentifier: modelData.chatSettings.activeModel
         )
         conversation.turns.append(assistantTurn)
-        modelContext.insert(assistantTurn)
 
-        do {
-            try modelContext.save()
-            draftText = ""
-            isSending = true
-        } catch {
-            assertionFailure("Failed to save chat turn: \(error)")
-            return
-        }
+        modelData.persistAll()
+        draftText = ""
+        isSending = true
 
         Task {
             defer {
@@ -234,8 +221,7 @@ struct ChatView: View {
                     if assistantTurn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         assistantTurn.text = "(No text returned)"
                     }
-
-                    try modelContext.save()
+                    modelData.persistAll()
                 }
             } catch {
                 await MainActor.run {
@@ -247,11 +233,7 @@ struct ChatView: View {
                         assistantTurn.text += "\n\nRequest failed: \(error.localizedDescription)"
                     }
 
-                    do {
-                        try modelContext.save()
-                    } catch {
-                        assertionFailure("Failed to save errored chat turn: \(error)")
-                    }
+                    modelData.persistAll()
                 }
             }
         }

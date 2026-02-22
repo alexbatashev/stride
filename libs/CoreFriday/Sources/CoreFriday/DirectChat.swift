@@ -29,19 +29,23 @@ struct LLMKitTransport: OpenAILikeTransport {
     }
 }
 
-struct DirectChat: Sendable {
+public struct DirectChat: Sendable {
     private let transport: any OpenAILikeTransport
 
-    init(transport: any OpenAILikeTransport = LLMKitTransport()) {
+    public init() {
+        self.transport = LLMKitTransport()
+    }
+
+    init(transport: any OpenAILikeTransport) {
         self.transport = transport
     }
 
-    func listModelIDs(provider: ChatProviderConfiguration) async throws -> [String] {
+    public func listModelIDs(provider: ChatProviderConfiguration) async throws -> [String] {
         let models = try await transport.listModels(provider: provider)
         return models.map(\.id).sorted()
     }
 
-    func streamReply(
+    public func streamReply(
         provider: ChatProviderConfiguration,
         model: String,
         turns: [ConversationTurn]

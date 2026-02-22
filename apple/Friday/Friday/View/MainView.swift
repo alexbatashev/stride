@@ -29,7 +29,7 @@ struct MainView: View {
             case .chat:
                 ChatView(modelData: modelData, conversationID: modelData.selectedConversationID)
             case .notes:
-                NoteDetailView(noteID: modelData.selectedNoteID)
+                NoteDetailView(modelData: modelData, noteID: modelData.selectedNoteID)
             }
         }
         .navigationSplitViewStyle(.balanced)

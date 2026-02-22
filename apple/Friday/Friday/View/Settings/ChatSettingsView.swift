@@ -1,3 +1,4 @@
+import CoreFriday
 import SwiftUI
 
 struct ChatSettingsView: View {

@@ -1,18 +1,15 @@
+import CoreFriday
 import SwiftUI
-import SwiftData
 
 struct NoteDetailView: View {
+    @Bindable var modelData: ModelData
     let noteID: UUID?
-
-    @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\Note.updatedAt, order: .reverse)])
-    private var notes: [Note]
 
     private var selectedNote: Note? {
         if let noteID {
-            return notes.first(where: { $0.id == noteID })
+            return modelData.notes.first(where: { $0.id == noteID })
         }
-        return notes.first
+        return modelData.sortedNotes.first
     }
 
     var body: some View {
@@ -46,18 +43,18 @@ struct NoteDetailView: View {
         HStack {
             TextField("Title", text: Binding(
                 get: { note.title },
-                set: { note.title = $0 }
+                set: {
+                    note.title = $0
+                    persist(note: note)
+                }
             ))
             .textFieldStyle(.plain)
             .font(.title2.weight(.semibold))
             .accessibilityIdentifier("noteTitleField")
-            .onChange(of: note.title) { _, _ in
-                persist(note: note)
-            }
 
             Spacer()
 
-            Text("SwiftData")
+            Text("Fluent + SQLite")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -140,11 +137,9 @@ struct NoteDetailView: View {
         let block = NoteBlock(
             kind: kind,
             orderIndex: note.nextOrderIndex,
-            textContent: seedText,
-            note: note
+            textContent: seedText
         )
         note.blocks.append(block)
-        modelContext.insert(block)
 
         persist(note: note)
     }
@@ -154,22 +149,18 @@ struct NoteDetailView: View {
             kind: .drawing,
             orderIndex: note.nextOrderIndex,
             textContent: "",
-            payloadJSON: "{\"canvas\":\"v1\"}",
-            note: note
+            payloadJSON: "{\"canvas\":\"v1\"}"
         )
         note.blocks.append(block)
-        modelContext.insert(block)
 
         let attachment = NoteAttachment(
             kind: .drawing,
             fileName: "Sketch-\(Int(Date.now.timeIntervalSince1970)).drawing",
             mimeType: "application/vnd.apple.notes.drawing",
             localPath: "/local/stub/sketch.drawing",
-            byteCount: 2_048,
-            block: block
+            byteCount: 2_048
         )
         block.attachments.append(attachment)
-        modelContext.insert(attachment)
 
         persist(note: note)
     }
@@ -179,34 +170,25 @@ struct NoteDetailView: View {
             kind: .image,
             orderIndex: note.nextOrderIndex,
             textContent: "",
-            payloadJSON: "{\"layout\":\"inline\"}",
-            note: note
+            payloadJSON: "{\"layout\":\"inline\"}"
         )
         note.blocks.append(block)
-        modelContext.insert(block)
 
         let attachment = NoteAttachment(
             kind: .image,
             fileName: "Image-\(Int(Date.now.timeIntervalSince1970)).jpg",
             mimeType: "image/jpeg",
             localPath: "/local/stub/image.jpg",
-            byteCount: 85_000,
-            block: block
+            byteCount: 85_000
         )
         block.attachments.append(attachment)
-        modelContext.insert(attachment)
 
         persist(note: note)
     }
 
     private func persist(note: Note) {
         note.refreshPreview()
-
-        do {
-            try modelContext.save()
-        } catch {
-            assertionFailure("Failed to save note: \(error)")
-        }
+        modelData.persistAll()
     }
 }
 
