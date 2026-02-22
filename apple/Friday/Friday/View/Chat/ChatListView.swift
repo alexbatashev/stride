@@ -6,15 +6,19 @@ struct ChatListView: View {
 
     var body: some View {
         @Bindable var modelData = modelData
-        
+
         let conversations = modelData.sortedConversations
 
-        List(selection: $modelData.selectedConversationID) {
+        List(selection: $modelData.selectedConversation) {
             ForEach(conversations) { conversation in
-                ConversationRow(conversation: conversation)
-                    .tag(Optional(conversation.id))
+                NavigationLink(value: conversation) {
+                    ConversationRow(conversation: conversation)
+                }
             }
             .onDelete(perform: modelData.deleteConversations)
+        }
+        .navigationDestination(for: Conversation.self) { conversation in
+            ChatDetailView(conversation: conversation)
         }
         .accessibilityIdentifier("conversationList")
         .navigationTitle("Chats")

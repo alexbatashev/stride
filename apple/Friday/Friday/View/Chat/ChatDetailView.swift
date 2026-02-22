@@ -2,44 +2,27 @@ import CoreFriday
 import SwiftUI
 
 struct ChatDetailView: View {
-    @Bindable var modelData: ModelData
-    let conversationID: UUID?
+    @Environment(ModelData.self) private var modelData
+    let conversation: Conversation
 
     @State private var draftText: String = ""
     @State private var isSending = false
 
-    private var selectedConversation: Conversation? {
-        if let conversationID {
-            return modelData.conversations.first(where: { $0.id == conversationID })
-        }
-        return modelData.sortedConversations.first
-    }
-
     var body: some View {
-        Group {
-            if let conversation = selectedConversation {
-                VStack(spacing: 0) {
-                    header(conversation: conversation)
-                    Divider()
-                    transcript(conversation: conversation)
-                    Divider()
-                    composer(conversation: conversation)
-                }
-                .background(
-                    LinearGradient(
-                        colors: [Color.accentColor.opacity(0.08), Color.clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-            } else {
-                ContentUnavailableView(
-                    "Select a Chat",
-                    systemImage: "bubble.left.and.text.bubble.right",
-                    description: Text("Choose or create a conversation from the middle column.")
-                )
-            }
+        VStack(spacing: 0) {
+            header(conversation: conversation)
+            Divider()
+            transcript(conversation: conversation)
+            Divider()
+            composer(conversation: conversation)
         }
+        .background(
+            LinearGradient(
+                colors: [Color.accentColor.opacity(0.08), Color.clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
         .task {
             if modelData.chatSettings.availableModels.isEmpty {
                 await modelData.refreshModels()
@@ -217,7 +200,7 @@ struct ChatDetailView: View {
                     await Task.yield()
                 }
 
-                try await MainActor.run {
+                await MainActor.run {
                     if assistantTurn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         assistantTurn.text = "(No text returned)"
                     }

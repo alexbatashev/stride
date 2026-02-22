@@ -7,8 +7,8 @@ import Observation
 @MainActor
 final class ModelData {
     var selectedNavigation: NavigationOptions?
-    var selectedConversationID: UUID?
-    var selectedNoteID: UUID?
+    var selectedConversation: Conversation?
+    var selectedNote: Note?
 
     var conversations: [Conversation] = []
     var notes: [Note] = []
@@ -17,8 +17,6 @@ final class ModelData {
     private let directChat: DirectChat
     private let storage: CoreFridayStorage
 
-    var path: NavigationPath = NavigationPath()
-        
     init() {
         self.directChat = DirectChat()
 
@@ -66,24 +64,10 @@ final class ModelData {
         notes.sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    var selectedConversation: Conversation? {
-        if let selectedConversationID {
-            return conversations.first { $0.id == selectedConversationID }
-        }
-        return sortedConversations.first
-    }
-
-    var selectedNote: Note? {
-        if let selectedNoteID {
-            return notes.first { $0.id == selectedNoteID }
-        }
-        return sortedNotes.first
-    }
-
     func ensureInitialConversation() {
         guard conversations.isEmpty else {
-            if selectedConversationID == nil {
-                selectedConversationID = sortedConversations.first?.id
+            if selectedConversation == nil {
+                selectedConversation = sortedConversations.first
             }
             return
         }
@@ -101,14 +85,14 @@ final class ModelData {
         conversation.refreshPreview(using: turn.text)
 
         conversations.append(conversation)
-        selectedConversationID = conversation.id
+        selectedConversation = conversation
         persistAll()
     }
 
     func createConversation() {
         let conversation = Conversation()
         conversations.append(conversation)
-        selectedConversationID = conversation.id
+        selectedConversation = conversation
         persistAll()
     }
 
@@ -116,15 +100,15 @@ final class ModelData {
         let sorted = sortedConversations
         for offset in offsets {
             guard sorted.indices.contains(offset) else { continue }
-            let id = sorted[offset].id
-            conversations.removeAll { $0.id == id }
-            if selectedConversationID == id {
-                selectedConversationID = nil
+            let conversation = sorted[offset]
+            conversations.removeAll { $0.id == conversation.id }
+            if selectedConversation?.id == conversation.id {
+                selectedConversation = nil
             }
         }
 
-        if selectedConversationID == nil {
-            selectedConversationID = sortedConversations.first?.id
+        if selectedConversation == nil {
+            selectedConversation = sortedConversations.first
         }
 
         persistAll()
@@ -132,8 +116,8 @@ final class ModelData {
 
     func ensureInitialNote() {
         guard notes.isEmpty else {
-            if selectedNoteID == nil {
-                selectedNoteID = sortedNotes.first?.id
+            if selectedNote == nil {
+                selectedNote = sortedNotes.first
             }
             return
         }
@@ -149,7 +133,7 @@ final class ModelData {
         note.refreshPreview()
 
         notes.append(note)
-        selectedNoteID = note.id
+        selectedNote = note
         persistAll()
     }
 
@@ -165,7 +149,7 @@ final class ModelData {
         note.refreshPreview()
 
         notes.append(note)
-        selectedNoteID = note.id
+        selectedNote = note
         persistAll()
     }
 
@@ -173,15 +157,15 @@ final class ModelData {
         let sorted = sortedNotes
         for offset in offsets {
             guard sorted.indices.contains(offset) else { continue }
-            let id = sorted[offset].id
-            notes.removeAll { $0.id == id }
-            if selectedNoteID == id {
-                selectedNoteID = nil
+            let note = sorted[offset]
+            notes.removeAll { $0.id == note.id }
+            if selectedNote?.id == note.id {
+                selectedNote = nil
             }
         }
 
-        if selectedNoteID == nil {
-            selectedNoteID = sortedNotes.first?.id
+        if selectedNote == nil {
+            selectedNote = sortedNotes.first
         }
 
         persistAll()

@@ -2,7 +2,7 @@ import CoreFriday
 import SwiftUI
 
 struct ChatSettingsView: View {
-    @Bindable var modelData: ModelData
+    @Environment(ModelData.self) private var modelData
     @Environment(\.dismiss) private var dismiss
 
     @State private var providerID: UUID?

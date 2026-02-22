@@ -1,33 +1,25 @@
 import SwiftUI
 
 struct MainView: View {
-    @State private var modelData = ModelData()
+    @Environment(ModelData.self) private var modelData
     @State private var isPresentingChatSettings = false
 
     var body: some View {
+        @Bindable var modelData = modelData
+
         NavigationSplitView {
-            List {
+            List(selection: $modelData.selectedNavigation) {
                 Section {
                     ForEach(NavigationOptions.mainPages) { page in
                         NavigationLink(value: page) {
                             Label(page.name, systemImage: page.symbolName)
+                                .accessibilityIdentifier(sidebarIdentifier(for: page))
                         }
                     }
                 }
             }
-            .navigationDestination(for: NavigationOptions.self) { page in
-                NavigationStack(path: $modelData.path) {
-                    page.contentViewForPage()
-                }
-//                .navigationDestination(for: Landmark.self) { landmark in
-//                    LandmarkDetailView(landmark: landmark)
-//                }
-//                .navigationDestination(for: LandmarkCollection.self) { collection in
-//                    CollectionDetailView(collection: collection)
-//                }
-//                .showsBadges()
-            }
-            .frame(minWidth: 150)
+            .navigationTitle("Friday")
+            .listStyle(.sidebar)
         } content: {
             switch modelData.selectedNavigation ?? .chat {
             case .chat:
@@ -38,9 +30,25 @@ struct MainView: View {
         } detail: {
             switch modelData.selectedNavigation ?? .chat {
             case .chat:
-                ChatDetailView(modelData: modelData, conversationID: modelData.selectedConversationID)
+                if let conversation = modelData.selectedConversation {
+                    ChatDetailView(conversation: conversation)
+                } else {
+                    ContentUnavailableView(
+                        "Select a Chat",
+                        systemImage: "bubble.left.and.text.bubble.right",
+                        description: Text("Choose or create a conversation from the middle column.")
+                    )
+                }
             case .notes:
-                NoteDetailView(modelData: modelData, noteID: modelData.selectedNoteID)
+                if let note = modelData.selectedNote {
+                    NoteDetailView(note: note)
+                } else {
+                    ContentUnavailableView(
+                        "Select a Note",
+                        systemImage: "note.text",
+                        description: Text("Choose or create a note from the middle column.")
+                    )
+                }
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -54,7 +62,7 @@ struct MainView: View {
             }
         }
         .sheet(isPresented: $isPresentingChatSettings) {
-            ChatSettingsView(modelData: modelData)
+            ChatSettingsView()
         }
     }
 
