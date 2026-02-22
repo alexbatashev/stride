@@ -2,9 +2,11 @@ import CoreFriday
 import SwiftUI
 
 struct NotesListView: View {
-    @Bindable var modelData: ModelData
+    @Environment(ModelData.self) private var modelData
 
     var body: some View {
+        @Bindable var modelData = modelData
+
         let notes = modelData.sortedNotes
 
         List(selection: $modelData.selectedNoteID) {

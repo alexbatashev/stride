@@ -1,10 +1,12 @@
 import CoreFriday
 import SwiftUI
 
-struct ConversationListView: View {
-    @Bindable var modelData: ModelData
+struct ChatListView: View {
+    @Environment(ModelData.self) private var modelData
 
     var body: some View {
+        @Bindable var modelData = modelData
+        
         let conversations = modelData.sortedConversations
 
         List(selection: $modelData.selectedConversationID) {

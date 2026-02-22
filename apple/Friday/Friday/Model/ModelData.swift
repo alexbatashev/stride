@@ -1,4 +1,5 @@
 import CoreFriday
+import SwiftUI
 import Foundation
 import Observation
 
@@ -16,6 +17,8 @@ final class ModelData {
     private let directChat: DirectChat
     private let storage: CoreFridayStorage
 
+    var path: NavigationPath = NavigationPath()
+        
     init() {
         self.directChat = DirectChat()
 

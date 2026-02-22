@@ -27,4 +27,18 @@ enum NavigationOptions: Equatable, Hashable, Identifiable {
         case .notes: return "note.text"
         }
     }
+    
+    @MainActor @ViewBuilder func contentViewForPage() -> some View {
+        switch self {
+        case .chat: ChatListView()
+        case .notes: NotesListView()
+        }
+    }
+    
+    @MainActor @ViewBuilder func detailViewForPage() -> some View {
+        switch self {
+        case .chat: ChatListView()
+        case .notes: NotesListView()
+        }
+    }
 }

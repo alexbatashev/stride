@@ -6,28 +6,39 @@ struct MainView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(NavigationOptions.mainPages, selection: $modelData.selectedNavigation) { option in
-                Label(option.name, systemImage: option.symbolName)
-                    .accessibilityIdentifier(sidebarIdentifier(for: option))
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        modelData.selectedNavigation = option
+            List {
+                Section {
+                    ForEach(NavigationOptions.mainPages) { page in
+                        NavigationLink(value: page) {
+                            Label(page.name, systemImage: page.symbolName)
+                        }
                     }
-                    .tag(Optional(option))
+                }
             }
-            .navigationTitle("Friday")
-            .listStyle(.sidebar)
+            .navigationDestination(for: NavigationOptions.self) { page in
+                NavigationStack(path: $modelData.path) {
+                    page.contentViewForPage()
+                }
+//                .navigationDestination(for: Landmark.self) { landmark in
+//                    LandmarkDetailView(landmark: landmark)
+//                }
+//                .navigationDestination(for: LandmarkCollection.self) { collection in
+//                    CollectionDetailView(collection: collection)
+//                }
+//                .showsBadges()
+            }
+            .frame(minWidth: 150)
         } content: {
             switch modelData.selectedNavigation ?? .chat {
             case .chat:
-                ConversationListView(modelData: modelData)
+                ChatListView()
             case .notes:
-                NotesListView(modelData: modelData)
+                NotesListView()
             }
         } detail: {
             switch modelData.selectedNavigation ?? .chat {
             case .chat:
-                ChatView(modelData: modelData, conversationID: modelData.selectedConversationID)
+                ChatDetailView(modelData: modelData, conversationID: modelData.selectedConversationID)
             case .notes:
                 NoteDetailView(modelData: modelData, noteID: modelData.selectedNoteID)
             }

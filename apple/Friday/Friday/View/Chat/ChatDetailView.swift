@@ -1,7 +1,7 @@
 import CoreFriday
 import SwiftUI
 
-struct ChatView: View {
+struct ChatDetailView: View {
     @Bindable var modelData: ModelData
     let conversationID: UUID?
 
