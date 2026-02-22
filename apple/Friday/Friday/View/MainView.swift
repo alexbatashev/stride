@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainView: View {
     @State private var modelData = ModelData()
+    @State private var isPresentingChatSettings = false
 
     var body: some View {
         NavigationSplitView {
@@ -26,12 +27,24 @@ struct MainView: View {
         } detail: {
             switch modelData.selectedNavigation ?? .chat {
             case .chat:
-                ChatView(conversationID: modelData.selectedConversationID)
+                ChatView(modelData: modelData, conversationID: modelData.selectedConversationID)
             case .notes:
                 NoteDetailView(noteID: modelData.selectedNoteID)
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    isPresentingChatSettings = true
+                } label: {
+                    Label("Chat Settings", systemImage: "slider.horizontal.3")
+                }
+            }
+        }
+        .sheet(isPresented: $isPresentingChatSettings) {
+            ChatSettingsView(modelData: modelData)
+        }
     }
 
     private func sidebarIdentifier(for option: NavigationOptions) -> String {

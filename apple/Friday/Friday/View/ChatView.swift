@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct ChatView: View {
+    @Bindable var modelData: ModelData
     let conversationID: UUID?
 
     @Environment(\.modelContext) private var modelContext
@@ -9,8 +10,7 @@ struct ChatView: View {
     private var conversations: [Conversation]
 
     @State private var draftText: String = ""
-    @State private var includeDemoAttachment = false
-    @State private var includeDemoToolCall = false
+    @State private var isSending = false
 
     private var selectedConversation: Conversation? {
         if let conversationID {
@@ -44,6 +44,11 @@ struct ChatView: View {
                 )
             }
         }
+        .task {
+            if modelData.chatSettings.availableModels.isEmpty {
+                await modelData.refreshModels()
+            }
+        }
     }
 
     private func header(conversation: Conversation) -> some View {
@@ -52,17 +57,74 @@ struct ChatView: View {
                 Text(conversation.title)
                     .font(.title3.weight(.semibold))
                     .accessibilityIdentifier("chatHeaderTitle")
-                Text("Local prototype · SwiftData")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 12) {
+                    Picker("Provider", selection: providerSelection) {
+                        ForEach(modelData.chatSettings.providers) { provider in
+                            Text(provider.name).tag(Optional(provider.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+
+                    Picker("Model", selection: modelSelection) {
+                        if modelData.chatSettings.availableModels.isEmpty {
+                            if modelData.chatSettings.activeModel.isEmpty {
+                                Text("No model selected").tag("")
+                            } else {
+                                Text(modelData.chatSettings.activeModel).tag(modelData.chatSettings.activeModel)
+                            }
+                        } else {
+                            ForEach(modelData.chatSettings.availableModels, id: \.self) { model in
+                                Text(model).tag(model)
+                            }
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+
+                    Button {
+                        Task { await modelData.refreshModels() }
+                    } label: {
+                        if modelData.chatSettings.isRefreshingModels {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(modelData.chatSettings.isRefreshingModels)
+                    .help("Refresh models")
+                }
+                .font(.caption)
             }
+
             Spacer()
+
             Image(systemName: "apple.intelligence")
                 .font(.title3)
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
+    }
+
+    private var providerSelection: Binding<UUID?> {
+        Binding {
+            modelData.chatSettings.selectedProviderID
+        } set: { newProviderID in
+            modelData.chatSettings.selectProvider(newProviderID)
+            Task { await modelData.refreshModels() }
+        }
+    }
+
+    private var modelSelection: Binding<String> {
+        Binding {
+            modelData.chatSettings.activeModel
+        } set: { newModel in
+            modelData.chatSettings.setSelectedModel(newModel)
+        }
     }
 
     private func transcript(conversation: Conversation) -> some View {
@@ -77,8 +139,7 @@ struct ChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 18)
             }
-            .onChange(of: conversation.orderedTurns.count) {
-                _, _ in
+            .onChange(of: conversation.orderedTurns.count) { _, _ in
                 guard let lastID = conversation.orderedTurns.last?.id else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(lastID, anchor: .bottom)
@@ -89,20 +150,11 @@ struct ChatView: View {
 
     private func composer(conversation: Conversation) -> some View {
         VStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Toggle(isOn: $includeDemoAttachment) {
-                    Label("Attachment", systemImage: "paperclip")
-                }
-                .toggleStyle(.button)
-                .buttonStyle(.bordered)
-
-                Toggle(isOn: $includeDemoToolCall) {
-                    Label("Tool", systemImage: "wrench.and.screwdriver")
-                }
-                .toggleStyle(.button)
-                .buttonStyle(.bordered)
-
-                Spacer()
+            if let errorMessage = modelData.chatSettings.refreshErrorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             HStack(alignment: .bottom, spacing: 10) {
@@ -110,13 +162,14 @@ struct ChatView: View {
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...6)
                     .accessibilityIdentifier("chatInputField")
+                    .disabled(isSending)
 
                 Button(action: { sendMessage(in: conversation) }) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 30))
                 }
                 .buttonStyle(.plain)
-                .disabled(draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(isSending || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityIdentifier("sendMessageButton")
             }
         }
@@ -127,8 +180,8 @@ struct ChatView: View {
     private func sendMessage(in conversation: Conversation) {
         let trimmed = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
         let userSequence = conversation.nextSequenceNumber
-        let assistantSequence = userSequence + 1
 
         let userTurn = ConversationTurn(
             role: .user,
@@ -138,56 +191,69 @@ struct ChatView: View {
         )
         conversation.turns.append(userTurn)
         modelContext.insert(userTurn)
+        conversation.refreshPreview(using: trimmed)
 
-        if includeDemoAttachment {
-            let attachment = TurnAttachment(
-                kind: .file,
-                fileName: "requirements.txt",
-                mimeType: "text/plain",
-                localPath: "/local/stub/requirements.txt",
-                byteCount: 1_024,
-                turn: userTurn
-            )
-            userTurn.attachments.append(attachment)
-            modelContext.insert(attachment)
-        }
-
-        let assistantText = includeDemoToolCall
-            ? "Stub response prepared. I also simulated a local tool call for this turn."
-            : "Stub response: this is where streamed model output will appear once inference is connected."
+        let turnsForRequest = conversation.orderedTurns
 
         let assistantTurn = ConversationTurn(
             role: .assistant,
-            text: assistantText,
-            sequenceNumber: assistantSequence,
-            modelIdentifier: "local.stub.v1",
+            text: "",
+            sequenceNumber: userSequence + 1,
+            modelIdentifier: modelData.chatSettings.activeModel,
             conversation: conversation
         )
         conversation.turns.append(assistantTurn)
         modelContext.insert(assistantTurn)
 
-        if includeDemoToolCall {
-            let tool = ToolInvocation(
-                name: "fetch_context",
-                argumentsJSON: "{\"query\":\"\(trimmed.replacingOccurrences(of: "\"", with: "\\\\\""))\"}",
-                resultJSON: "{\"status\":\"ok\",\"source\":\"local-stub\"}",
-                status: .completed,
-                endedAt: .now,
-                turn: assistantTurn
-            )
-            assistantTurn.toolInvocations.append(tool)
-            modelContext.insert(tool)
-        }
-
-        conversation.refreshPreview(using: trimmed)
-
         do {
             try modelContext.save()
             draftText = ""
-            includeDemoAttachment = false
-            includeDemoToolCall = false
+            isSending = true
         } catch {
             assertionFailure("Failed to save chat turn: \(error)")
+            return
+        }
+
+        Task {
+            defer {
+                Task { @MainActor in
+                    isSending = false
+                }
+            }
+
+            do {
+                for try await token in modelData.streamAssistantReply(turns: turnsForRequest) {
+                    await MainActor.run {
+                        assistantTurn.text += token
+                        conversation.refreshPreview(using: assistantTurn.text)
+                    }
+                    await Task.yield()
+                }
+
+                try await MainActor.run {
+                    if assistantTurn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        assistantTurn.text = "(No text returned)"
+                    }
+
+                    try modelContext.save()
+                }
+            } catch {
+                await MainActor.run {
+                    assistantTurn.isError = true
+                    let base = assistantTurn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if base.isEmpty {
+                        assistantTurn.text = "Request failed: \(error.localizedDescription)"
+                    } else {
+                        assistantTurn.text += "\n\nRequest failed: \(error.localizedDescription)"
+                    }
+
+                    do {
+                        try modelContext.save()
+                    } catch {
+                        assertionFailure("Failed to save errored chat turn: \(error)")
+                    }
+                }
+            }
         }
     }
 }
@@ -227,6 +293,10 @@ private struct TurnBubble: View {
     }
 
     private var bubbleBackground: some ShapeStyle {
+        if turn.isError {
+            return AnyShapeStyle(Color.red.opacity(0.15))
+        }
+
         if isUser {
             return AnyShapeStyle(
                 LinearGradient(
