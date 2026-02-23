@@ -20,8 +20,7 @@ struct ChatListView: View {
         .navigationDestination(for: Conversation.self) { conversation in
             ChatDetailView(conversation: conversation)
         }
-        .accessibilityIdentifier("conversationList")
-        .navigationTitle("Chats")
+        .accessibilityIdentifier("chatList")
         .overlay {
             if conversations.isEmpty {
                 ContentUnavailableView(

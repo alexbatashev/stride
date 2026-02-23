@@ -21,7 +21,6 @@ struct NotesListView: View {
             NoteDetailView(note: note)
         }
         .accessibilityIdentifier("notesList")
-        .navigationTitle("Notes")
         .overlay {
             if notes.isEmpty {
                 ContentUnavailableView(

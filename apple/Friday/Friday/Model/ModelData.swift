@@ -9,6 +9,8 @@ final class ModelData {
     var selectedNavigation: NavigationOptions?
     var selectedConversation: Conversation?
     var selectedNote: Note?
+    
+    var searchString: String = ""
 
     var conversations: [Conversation] = []
     var notes: [Note] = []

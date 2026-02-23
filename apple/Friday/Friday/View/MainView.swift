@@ -18,7 +18,6 @@ struct MainView: View {
                     }
                 }
             }
-            .navigationTitle("Friday")
             .listStyle(.sidebar)
         } content: {
             switch modelData.selectedNavigation ?? .chat {
@@ -51,6 +50,7 @@ struct MainView: View {
                 }
             }
         }
+        .searchable(text: $modelData.searchString, prompt: "Search")
         .navigationSplitViewStyle(.balanced)
         .toolbar {
             ToolbarItem(placement: .automatic) {
