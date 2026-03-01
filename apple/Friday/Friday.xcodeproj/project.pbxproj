@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		F0A11C4A2A1B3C4000A10001 /* LLMKit in Frameworks */ = {isa = PBXBuildFile; productRef = F0A11C492A1B3C4000A10001 /* LLMKit */; };
 		F0A22D5B3B2C4D5000B20002 /* CoreFriday in Frameworks */ = {isa = PBXBuildFile; productRef = F0A22D5A3B2C4D5000B20002 /* CoreFriday */; };
+		F0B33E6E4C3D5E6000C30003 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = F0B33E6D4C3D5E6000C30003 /* Markdown */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 			files = (
 				F0A22D5B3B2C4D5000B20002 /* CoreFriday in Frameworks */,
 				F0A11C4A2A1B3C4000A10001 /* LLMKit in Frameworks */,
+				F0B33E6E4C3D5E6000C30003 /* Markdown in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,6 +123,7 @@
 			packageProductDependencies = (
 				F0A22D5A3B2C4D5000B20002 /* CoreFriday */,
 				F0A11C492A1B3C4000A10001 /* LLMKit */,
+				F0B33E6D4C3D5E6000C30003 /* Markdown */,
 			);
 			productName = Friday;
 			productReference = FAE849562F4A1FA00005E215 /* Friday.app */;
@@ -207,6 +210,7 @@
 			packageReferences = (
 				F0A22D593B2C4D5000B20002 /* XCLocalSwiftPackageReference "../../libs/CoreFriday" */,
 				F0A11C482A1B3C4000A10001 /* XCLocalSwiftPackageReference "../../libs/LLMKit" */,
+				F0B33E6C4C3D5E6000C30003 /* XCRemoteSwiftPackageReference "swift-markdown" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FAE849572F4A1FA00005E215 /* Products */;
@@ -642,6 +646,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		F0B33E6C4C3D5E6000C30003 /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swiftlang/swift-markdown";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.7.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		F0A11C492A1B3C4000A10001 /* LLMKit */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -652,6 +667,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F0A22D593B2C4D5000B20002 /* XCLocalSwiftPackageReference "../../libs/CoreFriday" */;
 			productName = CoreFriday;
+		};
+		F0B33E6D4C3D5E6000C30003 /* Markdown */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F0B33E6C4C3D5E6000C30003 /* XCRemoteSwiftPackageReference "swift-markdown" */;
+			productName = Markdown;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

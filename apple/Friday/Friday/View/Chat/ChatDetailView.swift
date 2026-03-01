@@ -1,5 +1,11 @@
 import CoreFriday
+import Markdown
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 struct ChatDetailView: View {
     @Environment(ModelData.self) private var modelData
@@ -414,8 +420,16 @@ private struct TurnBubble: View {
             if isUser { Spacer(minLength: 44) }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(turn.text)
-                    .textSelection(.enabled)
+                if isUser {
+                    Text(turn.text)
+                        .textSelection(.enabled)
+                } else {
+                    AssistantMarkdownView(
+                        markdown: turn.text,
+                        onCopyMarkdown: { copyPlainTextToPasteboard(turn.text) },
+                        onCopyRichText: { copyRichTextToPasteboard(markdown: turn.text) }
+                    )
+                }
 
                 if !turn.attachments.isEmpty {
                     attachments
@@ -433,6 +447,17 @@ private struct TurnBubble: View {
             .padding(.vertical, 12)
             .background(bubbleBackground)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contextMenu {
+                if !isUser {
+                    Button("Copy Reply as Markdown") {
+                        copyPlainTextToPasteboard(turn.text)
+                    }
+
+                    Button("Copy Reply as Rich Text") {
+                        copyRichTextToPasteboard(markdown: turn.text)
+                    }
+                }
+            }
 
             if !isUser { Spacer(minLength: 44) }
         }
@@ -493,4 +518,405 @@ private struct TurnBubble: View {
         case .video: return "film"
         }
     }
+
+    private func copyPlainTextToPasteboard(_ text: String) {
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        #elseif canImport(UIKit)
+        UIPasteboard.general.string = text
+        #endif
+    }
+
+    private func copyRichTextToPasteboard(markdown: String) {
+        let attributed = attributedMarkdownForWholeReply(markdown)
+        let nsAttributed = NSAttributedString(attributed)
+
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        if let rtf = try? nsAttributed.data(
+            from: NSRange(location: 0, length: nsAttributed.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        ) {
+            pasteboard.setData(rtf, forType: .rtf)
+        }
+        pasteboard.setString(nsAttributed.string, forType: .string)
+        #elseif canImport(UIKit)
+        if let rtf = try? nsAttributed.data(
+            from: NSRange(location: 0, length: nsAttributed.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        ) {
+            UIPasteboard.general.setData(rtf, forPasteboardType: "public.rtf")
+        }
+        UIPasteboard.general.string = nsAttributed.string
+        #endif
+    }
+}
+
+private struct AssistantMarkdownView: View {
+    let markdown: String
+    let onCopyMarkdown: () -> Void
+    let onCopyRichText: () -> Void
+
+    private var document: Document {
+        Document(parsing: markdown)
+    }
+
+    private enum Chunk {
+        case richText(AttributedString)
+        case table(Markdown.Table)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+                switch chunk {
+                case .table(let table):
+                    MarkdownTableView(
+                        table: table,
+                        onCopyMarkdown: onCopyMarkdown,
+                        onCopyRichText: onCopyRichText
+                    )
+                case .richText(let attributed):
+                    richTextView(for: attributed)
+                }
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func richTextView(for attributed: AttributedString) -> some View {
+        #if os(macOS)
+        ReplySelectableTextView(
+            displayedText: NSAttributedString(attributed),
+            fullReplyMarkdown: markdown,
+            fullReplyRichText: NSAttributedString(attributedMarkdownForWholeReply(markdown))
+        )
+        #else
+        Text(attributed)
+            .contextMenu {
+                Button("Copy Reply as Markdown") {
+                    onCopyMarkdown()
+                }
+
+                Button("Copy Reply as Rich Text") {
+                    onCopyRichText()
+                }
+            }
+        #endif
+    }
+
+    private var chunks: [Chunk] {
+        var result: [Chunk] = []
+        var pendingTextBlocks: [Markup] = []
+
+        func flushPendingTextBlocks() {
+            guard !pendingTextBlocks.isEmpty else { return }
+            result.append(.richText(attributedMarkdown(for: pendingTextBlocks)))
+            pendingTextBlocks.removeAll()
+        }
+
+        for block in document.children {
+            if let table = block as? Markdown.Table {
+                flushPendingTextBlocks()
+                result.append(.table(table))
+            } else {
+                pendingTextBlocks.append(block)
+            }
+        }
+
+        flushPendingTextBlocks()
+        return result
+    }
+
+    private func attributedMarkdown(for markups: [Markup]) -> AttributedString {
+        var combined = AttributedString()
+
+        for (index, markup) in markups.enumerated() {
+            if index > 0 {
+                combined += AttributedString("\n\n")
+            }
+            combined += attributedMarkdown(for: markup)
+        }
+
+        return combined
+    }
+
+    private func attributedMarkdown(for markup: Markup) -> AttributedString {
+        var rewriter = SoftBreakToHardBreakRewriter()
+        let rewritten = rewriter.visit(markup) ?? markup
+        let markdownSource = rewritten.format()
+        return attributedFromMarkdownSource(markdownSource)
+    }
+
+    private func attributedFromMarkdownSource(_ markdownSource: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+
+        if let attributed = try? AttributedString(markdown: markdownSource, options: options) {
+            return attributed
+        }
+
+        return AttributedString(markdownSource)
+    }
+}
+
+private struct MarkdownTableView: View {
+    let table: Markdown.Table
+    let onCopyMarkdown: () -> Void
+    let onCopyRichText: () -> Void
+
+    private var headerCells: [Markdown.Table.Cell] {
+        Array(table.head.cells)
+    }
+
+    private var rows: [Markdown.Table.Row] {
+        Array(table.body.rows)
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                    GridRow {
+                        ForEach(Array(headerCells.enumerated()), id: \.offset) { index, cell in
+                            cellView(cell, isHeader: true, column: index)
+                        }
+                    }
+
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        GridRow {
+                            ForEach(Array(row.cells.enumerated()), id: \.offset) { index, cell in
+                                cellView(cell, isHeader: false, column: index)
+                            }
+                        }
+                    }
+                }
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cellView(_ cell: Markdown.Table.Cell, isHeader: Bool, column: Int) -> some View {
+        let text = cellAttributedMarkdown(cell)
+
+        Text(text)
+            .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
+            .frame(minWidth: 84, maxWidth: .infinity, alignment: alignment(for: column))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isHeader ? Color.primary.opacity(0.08) : Color.clear)
+            .overlay(alignment: .topLeading) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.14))
+                    .frame(height: 0.5)
+            }
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.14))
+                    .frame(width: 0.5)
+            }
+            .contextMenu {
+                Button("Copy Reply as Markdown") {
+                    onCopyMarkdown()
+                }
+
+                Button("Copy Reply as Rich Text") {
+                    onCopyRichText()
+                }
+            }
+    }
+
+    private func cellAttributedMarkdown(_ cell: Markdown.Table.Cell) -> AttributedString {
+        let markdownSource = cellMarkdownSource(cell)
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+
+        if let attributed = try? AttributedString(markdown: markdownSource, options: options) {
+            return attributed
+        }
+
+        return AttributedString(markdownSource)
+    }
+
+    private func cellMarkdownSource(_ cell: Markdown.Table.Cell) -> String {
+        cell.inlineChildren.map { inline in
+            var rewriter = SoftBreakToHardBreakRewriter()
+            let rewritten = rewriter.visit(inline) ?? inline
+            return rewritten.format()
+        }
+        .joined()
+    }
+
+    private func alignment(for column: Int) -> Alignment {
+        guard column < table.columnAlignments.count else {
+            return .leading
+        }
+
+        switch table.columnAlignments[column] {
+        case .left:
+            return .leading
+        case .center:
+            return .center
+        case .right:
+            return .trailing
+        case .none:
+            return .leading
+        }
+    }
+}
+
+private struct SoftBreakToHardBreakRewriter: MarkupRewriter {
+    mutating func visitSoftBreak(_ softBreak: SoftBreak) -> Markup? {
+        LineBreak()
+    }
+}
+
+#if os(macOS)
+private struct ReplySelectableTextView: NSViewRepresentable {
+    let displayedText: NSAttributedString
+    let fullReplyMarkdown: String
+    let fullReplyRichText: NSAttributedString
+
+    func makeNSView(context: Context) -> ReplyTextView {
+        let view = ReplyTextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        view.isRichText = true
+        view.importsGraphics = false
+        view.textContainerInset = NSSize(width: 0, height: 0)
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.isHorizontallyResizable = false
+        view.isVerticallyResizable = true
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        view.setContentCompressionResistancePriority(.required, for: .vertical)
+        view.setContentHuggingPriority(.required, for: .vertical)
+        view.updateContextMenu()
+        return view
+    }
+
+    func updateNSView(_ view: ReplyTextView, context: Context) {
+        view.fullReplyMarkdown = fullReplyMarkdown
+        view.fullReplyRichText = fullReplyRichText
+        view.updateContextMenu()
+
+        let display = displayedText.withDefaultTextColor(.labelColor)
+
+        if view.textStorage?.string != display.string {
+            view.textStorage?.setAttributedString(display)
+            view.invalidateIntrinsicContentSize()
+        } else if let storage = view.textStorage, storage.length != display.length {
+            storage.setAttributedString(display)
+            view.invalidateIntrinsicContentSize()
+        }
+    }
+}
+
+private final class ReplyTextView: NSTextView {
+    var fullReplyMarkdown: String = ""
+    var fullReplyRichText: NSAttributedString = NSAttributedString()
+
+    override var intrinsicContentSize: NSSize {
+        guard let layoutManager, let textContainer else {
+            return super.intrinsicContentSize
+        }
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        let height = ceil(usedRect.height + textContainerInset.height * 2)
+        return NSSize(width: NSView.noIntrinsicMetric, height: max(1, height))
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        invalidateIntrinsicContentSize()
+    }
+
+    func updateContextMenu() {
+        let menu = NSMenu()
+        let copyMarkdownItem = NSMenuItem(
+            title: "Copy Reply as Markdown",
+            action: #selector(copyReplyAsMarkdown),
+            keyEquivalent: ""
+        )
+        copyMarkdownItem.target = self
+
+        let copyRichItem = NSMenuItem(
+            title: "Copy Reply as Rich Text",
+            action: #selector(copyReplyAsRichText),
+            keyEquivalent: ""
+        )
+        copyRichItem.target = self
+
+        menu.addItem(copyMarkdownItem)
+        menu.addItem(copyRichItem)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+        self.menu = menu
+    }
+
+    @objc private func copyReplyAsMarkdown() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(fullReplyMarkdown, forType: .string)
+    }
+
+    @objc private func copyReplyAsRichText() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+
+        if let rtf = try? fullReplyRichText.data(
+            from: NSRange(location: 0, length: fullReplyRichText.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        ) {
+            pasteboard.setData(rtf, forType: .rtf)
+        }
+
+        pasteboard.setString(fullReplyRichText.string, forType: .string)
+    }
+}
+
+private extension NSAttributedString {
+    func withDefaultTextColor(_ color: NSColor) -> NSAttributedString {
+        guard length > 0 else { return self }
+
+        let mutable = NSMutableAttributedString(attributedString: self)
+        let fullRange = NSRange(location: 0, length: mutable.length)
+        mutable.enumerateAttribute(.foregroundColor, in: fullRange, options: []) { value, range, _ in
+            if value == nil {
+                mutable.addAttribute(.foregroundColor, value: color, range: range)
+            }
+        }
+        return mutable
+    }
+}
+#endif
+
+private func attributedMarkdownForWholeReply(_ markdown: String) -> AttributedString {
+    let document = Document(parsing: markdown)
+    var rewriter = SoftBreakToHardBreakRewriter()
+    let rewritten = rewriter.visit(document) ?? document
+    let markdownSource = rewritten.format()
+
+    let options = AttributedString.MarkdownParsingOptions(
+        interpretedSyntax: .full,
+        failurePolicy: .returnPartiallyParsedIfPossible
+    )
+
+    if let attributed = try? AttributedString(markdown: markdownSource, options: options) {
+        return attributed
+    }
+
+    return AttributedString(markdownSource)
 }
