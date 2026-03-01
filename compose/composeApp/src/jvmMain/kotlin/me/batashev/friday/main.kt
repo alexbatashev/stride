@@ -1,0 +1,13 @@
+package me.batashev.friday
+
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.application
+
+fun main() = application {
+    Window(
+        onCloseRequest = ::exitApplication,
+        title = "friday",
+    ) {
+        App()
+    }
+}
