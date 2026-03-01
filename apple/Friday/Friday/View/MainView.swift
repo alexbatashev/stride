@@ -1,49 +1,68 @@
 import SwiftUI
 
 struct MainView: View {
-    @State private var modelData = ModelData()
+    @Environment(ModelData.self) private var modelData
     @State private var isPresentingChatSettings = false
 
     var body: some View {
+        @Bindable var modelData = modelData
+
         NavigationSplitView {
-            List(NavigationOptions.mainPages, selection: $modelData.selectedNavigation) { option in
-                Label(option.name, systemImage: option.symbolName)
-                    .accessibilityIdentifier(sidebarIdentifier(for: option))
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        modelData.selectedNavigation = option
+            List(selection: $modelData.selectedNavigation) {
+                Section {
+                    ForEach(NavigationOptions.mainPages) { page in
+                        NavigationLink(value: page) {
+                            Label(page.name, systemImage: page.symbolName)
+                                .accessibilityIdentifier(sidebarIdentifier(for: page))
+                        }
                     }
-                    .tag(Optional(option))
+                }
             }
-            .navigationTitle("Friday")
             .listStyle(.sidebar)
         } content: {
             switch modelData.selectedNavigation ?? .chat {
             case .chat:
-                ConversationListView(modelData: modelData)
+                ChatListView()
             case .notes:
-                NotesListView(modelData: modelData)
+                NotesListView()
             }
         } detail: {
             switch modelData.selectedNavigation ?? .chat {
             case .chat:
-                ChatView(modelData: modelData, conversationID: modelData.selectedConversationID)
+                if let conversation = modelData.selectedConversation {
+                    ChatDetailView(conversation: conversation)
+                } else {
+                    ContentUnavailableView(
+                        "Select a Chat",
+                        systemImage: "bubble.left.and.text.bubble.right",
+                        description: Text("Choose or create a conversation from the middle column.")
+                    )
+                }
             case .notes:
-                NoteDetailView(modelData: modelData, noteID: modelData.selectedNoteID)
-            }
-        }
-        .navigationSplitViewStyle(.balanced)
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    isPresentingChatSettings = true
-                } label: {
-                    Label("Chat Settings", systemImage: "slider.horizontal.3")
+                if let note = modelData.selectedNote {
+                    NoteDetailView(note: note)
+                } else {
+                    ContentUnavailableView(
+                        "Select a Note",
+                        systemImage: "note.text",
+                        description: Text("Choose or create a note from the middle column.")
+                    )
                 }
             }
         }
+        .searchable(text: $modelData.searchString, prompt: "Search")
+        .navigationSplitViewStyle(.balanced)
+//        .toolbar {
+//            ToolbarItem(placement: .automatic) {
+//                Button {
+//                    isPresentingChatSettings = true
+//                } label: {
+//                    Label("Chat Settings", systemImage: "slider.horizontal.3")
+//                }
+//            }
+//        }
         .sheet(isPresented: $isPresentingChatSettings) {
-            ChatSettingsView(modelData: modelData)
+            ChatSettingsView()
         }
     }
 

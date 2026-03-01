@@ -2,20 +2,25 @@ import CoreFriday
 import SwiftUI
 
 struct NotesListView: View {
-    @Bindable var modelData: ModelData
+    @Environment(ModelData.self) private var modelData
 
     var body: some View {
+        @Bindable var modelData = modelData
+
         let notes = modelData.sortedNotes
 
-        List(selection: $modelData.selectedNoteID) {
+        List(selection: $modelData.selectedNote) {
             ForEach(notes) { note in
-                NoteRow(note: note)
-                    .tag(Optional(note.id))
+                NavigationLink(value: note) {
+                    NoteRow(note: note)
+                }
             }
             .onDelete(perform: modelData.deleteNotes)
         }
+        .navigationDestination(for: Note.self) { note in
+            NoteDetailView(note: note)
+        }
         .accessibilityIdentifier("notesList")
-        .navigationTitle("Notes")
         .overlay {
             if notes.isEmpty {
                 ContentUnavailableView(

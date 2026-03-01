@@ -2,41 +2,24 @@ import CoreFriday
 import SwiftUI
 
 struct NoteDetailView: View {
-    @Bindable var modelData: ModelData
-    let noteID: UUID?
-
-    private var selectedNote: Note? {
-        if let noteID {
-            return modelData.notes.first(where: { $0.id == noteID })
-        }
-        return modelData.sortedNotes.first
-    }
+    @Environment(ModelData.self) private var modelData
+    let note: Note
 
     var body: some View {
-        Group {
-            if let note = selectedNote {
-                VStack(spacing: 0) {
-                    header(note: note)
-                    Divider()
-                    content(note: note)
-                    Divider()
-                    editorToolbar(note: note)
-                }
-                .background(
-                    LinearGradient(
-                        colors: [Color.accentColor.opacity(0.08), Color.clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-            } else {
-                ContentUnavailableView(
-                    "Select a Note",
-                    systemImage: "note.text",
-                    description: Text("Choose or create a note from the middle column.")
-                )
-            }
+        VStack(spacing: 0) {
+            header(note: note)
+            Divider()
+            content(note: note)
+            Divider()
+            editorToolbar(note: note)
         }
+        .background(
+            LinearGradient(
+                colors: [Color.accentColor.opacity(0.08), Color.clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     private func header(note: Note) -> some View {
@@ -291,62 +274,39 @@ private struct NoteBlockCard: View {
 
     private var blockTitle: String {
         switch block.kind {
-        case .text:
-            return "Text"
-        case .heading:
-            return "Heading"
-        case .checklist:
-            return "Checklist"
-        case .table:
-            return "Table"
-        case .image:
-            return "Image"
-        case .drawing:
-            return "Drawing"
-        case .attachment:
-            return "Attachment"
-        case .code:
-            return "Code"
-        case .quote:
-            return "Quote"
+        case .text: return "Text"
+        case .heading: return "Heading"
+        case .checklist: return "Checklist"
+        case .table: return "Table"
+        case .image: return "Image"
+        case .drawing: return "Drawing"
+        case .attachment: return "Attachment"
+        case .code: return "Code"
+        case .quote: return "Quote"
         }
     }
 
     private var blockIcon: String {
         switch block.kind {
-        case .text:
-            return "text.alignleft"
-        case .heading:
-            return "textformat.size.larger"
-        case .checklist:
-            return "checklist"
-        case .table:
-            return "tablecells"
-        case .image:
-            return "photo"
-        case .drawing:
-            return "pencil.tip"
-        case .attachment:
-            return "paperclip"
-        case .code:
-            return "chevron.left.forwardslash.chevron.right"
-        case .quote:
-            return "quote.bubble"
+        case .text: return "text.alignleft"
+        case .heading: return "textformat.size.larger"
+        case .checklist: return "checklist"
+        case .table: return "tablecells"
+        case .image: return "photo"
+        case .drawing: return "pencil.tip"
+        case .attachment: return "paperclip"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        case .quote: return "quote.bubble"
         }
     }
 
     private func attachmentIcon(for kind: NoteAttachmentKind) -> String {
         switch kind {
-        case .image:
-            return "photo"
-        case .drawing:
-            return "pencil.tip"
-        case .file:
-            return "doc"
-        case .audio:
-            return "waveform"
-        case .video:
-            return "film"
+        case .image: return "photo"
+        case .drawing: return "pencil.tip"
+        case .file: return "doc"
+        case .audio: return "waveform"
+        case .video: return "film"
         }
     }
 }

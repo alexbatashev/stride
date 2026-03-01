@@ -114,7 +114,7 @@ public final class ConversationTurn: Identifiable, @unchecked Sendable {
 }
 
 @Observable
-public final class Conversation: Identifiable, @unchecked Sendable {
+public final class Conversation: Identifiable, Hashable, @unchecked Sendable {
     public var id: UUID
     public var title: String
     public var createdAt: Date
@@ -153,6 +153,9 @@ public final class Conversation: Identifiable, @unchecked Sendable {
     public var nextSequenceNumber: Int {
         (turns.map(\.sequenceNumber).max() ?? -1) + 1
     }
+
+    public static func == (lhs: Conversation, rhs: Conversation) -> Bool { lhs.id == rhs.id }
+    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
 
     public func refreshPreview(using message: String) {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -271,7 +274,7 @@ public final class NoteBlock: Identifiable, @unchecked Sendable {
 }
 
 @Observable
-public final class Note: Identifiable, @unchecked Sendable {
+public final class Note: Identifiable, Hashable, @unchecked Sendable {
     public var id: UUID
     public var title: String
     public var createdAt: Date
@@ -297,6 +300,9 @@ public final class Note: Identifiable, @unchecked Sendable {
         self.isPinned = isPinned
         self.blocks = blocks
     }
+
+    public static func == (lhs: Note, rhs: Note) -> Bool { lhs.id == rhs.id }
+    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
 
     public var orderedBlocks: [NoteBlock] {
         blocks.sorted {

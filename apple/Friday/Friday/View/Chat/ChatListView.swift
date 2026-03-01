@@ -1,21 +1,27 @@
 import CoreFriday
 import SwiftUI
 
-struct ConversationListView: View {
-    @Bindable var modelData: ModelData
+struct ChatListView: View {
+    @Environment(ModelData.self) private var modelData
 
     var body: some View {
+        @Bindable var modelData = modelData
+
         let conversations = modelData.sortedConversations
 
-        List(selection: $modelData.selectedConversationID) {
+        List(selection: $modelData.selectedConversation) {
             ForEach(conversations) { conversation in
-                ConversationRow(conversation: conversation)
-                    .tag(Optional(conversation.id))
+                NavigationLink(value: conversation) {
+                    ConversationRow(conversation: conversation)
+                }
             }
             .onDelete(perform: modelData.deleteConversations)
         }
-        .accessibilityIdentifier("conversationList")
-        .navigationTitle("Chats")
+        .frame(idealWidth: 250)
+        .navigationDestination(for: Conversation.self) { conversation in
+            ChatDetailView(conversation: conversation)
+        }
+        .accessibilityIdentifier("chatList")
         .overlay {
             if conversations.isEmpty {
                 ContentUnavailableView(
