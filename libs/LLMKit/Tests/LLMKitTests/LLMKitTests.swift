@@ -128,3 +128,84 @@ import Testing
         _ = try await api.getEmbeddings(token: "", input: "x", model: "x")
     }
 }
+
+@Test func responseRequestEncoding() throws {
+    let request = ResponseRequest(
+        model: "test-model",
+        input: [Message(role: .user, content: "Hello")]
+    )
+    .maxOutputTokens(64)
+    .temperature(0.5)
+    .toolChoice(.auto)
+
+    let data = try JSONEncoder().encode(request)
+    let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+    #expect(object["model"] as? String == "test-model")
+    #expect(object["max_output_tokens"] as? Int == 64)
+    #expect(object["temperature"] as? Double == 0.5)
+    #expect(object["tool_choice"] as? String == "auto")
+
+    let input = try #require(object["input"] as? [[String: Any]])
+    #expect(input.first?["content"] as? String == "Hello")
+}
+
+@Test func responseOutputTextConcatenatesContent() {
+    let response = Response(
+        id: "resp_123",
+        model: "test",
+        output: [
+            ResponseOutput(
+                type: "message",
+                role: .assistant,
+                content: [
+                    ResponseContent(type: "output_text", text: "Hello"),
+                    ResponseContent(type: "output_text", text: " world")
+                ]
+            )
+        ],
+        usage: nil
+    )
+
+    #expect(response.outputText == "Hello world")
+}
+
+@Test func apiRejectsNonStreamingResponseRequestWhenStreamTrue() async throws {
+    let api = Mock.api()
+    let request = ResponseRequest(model: "x", input: []).stream()
+
+    await #expect(throws: LLMError.self) {
+        _ = try await api.getResponse(token: "", request: request)
+    }
+}
+
+@Test func mockProviderResponseReturnsAssistantContent() async throws {
+    let api = Mock.api()
+    let response = try await api.getResponse(
+        token: "",
+        request: ResponseRequest(model: "test-model", input: [Message(role: .user, content: "hello")])
+    )
+
+    #expect(response.model == "test-model")
+    #expect(response.output.count == 1)
+    #expect(response.output[0].role == .assistant)
+    #expect(response.outputText == "This is a mock response.")
+}
+
+@Test func mockProviderStreamResponseYieldsDeltaAndCompleted() async throws {
+    let api = Mock.api()
+    let stream = api.streamResponse(
+        token: "",
+        request: ResponseRequest(model: "test-model", input: [Message(role: .user, content: "hello")])
+    )
+
+    var events: [ResponseStreamEvent] = []
+    for try await event in stream {
+        events.append(event)
+    }
+
+    #expect(events.count == 2)
+    #expect(events.first?.type == "response.output_text.delta")
+    #expect(events.first?.delta == "Partial mock response stream.")
+    #expect(events.last?.type == "response.completed")
+}

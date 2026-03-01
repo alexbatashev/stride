@@ -262,6 +262,131 @@ public struct Ollama: Sendable {
         }
     }
 
+    public func getResponse(token _: String, request: ResponseRequest) async throws -> Response {
+        struct ChatRequest: Encodable {
+            let model: String
+            let stream: Bool
+            let messages: [Message]
+        }
+
+        struct MessageResponse: Decodable {
+            let model: String
+            let message: Message
+            let promptEvalCount: UInt32?
+            let evalCount: UInt32?
+
+            enum CodingKeys: String, CodingKey {
+                case model
+                case message
+                case promptEvalCount = "prompt_eval_count"
+                case evalCount = "eval_count"
+            }
+        }
+
+        let body = try JSONEncoder().encode(
+            ChatRequest(model: request.model, stream: false, messages: request.input)
+        )
+
+        let (response, data) = try await HTTPClient.request(
+            method: "POST",
+            url: try endpoint("/api/chat"),
+            headers: ["Content-Type": "application/json"],
+            body: body
+        )
+
+        guard (200..<300).contains(response.statusCode) else {
+            throw LLMError.serverError(response.statusCode)
+        }
+
+        do {
+            let message = try JSONDecoder().decode(MessageResponse.self, from: data)
+            let promptTokens = message.promptEvalCount ?? 0
+            let completionTokens = message.evalCount ?? 0
+
+            return Response(
+                id: UUID().uuidString.lowercased(),
+                model: message.model,
+                output: [
+                    ResponseOutput(
+                        type: "message",
+                        role: message.message.role,
+                        content: [ResponseContent(type: "output_text", text: message.message.content)]
+                    )
+                ],
+                usage: Usage(
+                    promptTokens: promptTokens,
+                    completionTokens: completionTokens,
+                    totalTokens: promptTokens + completionTokens
+                )
+            )
+        } catch {
+            throw LLMError.parsingError("Failed to parse upstream response: \(error)")
+        }
+    }
+
+    public func streamResponse(token _: String, request: ResponseRequest) -> AsyncThrowingStream<ResponseStreamEvent, Error> {
+        struct ChatRequest: Encodable {
+            let model: String
+            let stream: Bool
+            let messages: [Message]
+        }
+
+        struct MessageResponse: Decodable {
+            let done: Bool
+            let message: Message
+        }
+
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let body = try JSONEncoder().encode(
+                        ChatRequest(model: request.model, stream: true, messages: request.input)
+                    )
+
+                    let lineStream = HTTPClient.streamLines(
+                        method: "POST",
+                        url: try endpoint("/api/chat"),
+                        headers: ["Content-Type": "application/json"],
+                        body: body
+                    )
+
+                    for try await line in lineStream {
+                        guard !line.isEmpty else { continue }
+                        guard let json = line.data(using: .utf8) else { continue }
+
+                        let data = try JSONDecoder().decode(MessageResponse.self, from: json)
+                        continuation.yield(
+                            ResponseStreamEvent(
+                                type: "response.output_text.delta",
+                                responseID: nil,
+                                outputIndex: 0,
+                                delta: data.message.content,
+                                text: nil
+                            )
+                        )
+
+                        if data.done {
+                            continuation.yield(
+                                ResponseStreamEvent(
+                                    type: "response.completed",
+                                    responseID: nil,
+                                    outputIndex: nil,
+                                    delta: nil,
+                                    text: nil
+                                )
+                            )
+                            continuation.finish()
+                            return
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     private func endpoint(_ path: String) throws -> URL {
         guard let url = URL(string: "\(baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))\(path)") else {
             throw LLMError.invalidRequest("invalid URL")

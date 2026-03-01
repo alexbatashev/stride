@@ -144,6 +144,74 @@ public struct OpenAI: Sendable {
         }
     }
 
+    public func getResponse(token: String, request: ResponseRequest) async throws -> Response {
+        let url = try endpoint("/v1/responses")
+        let body = try jsonEncoder.encode(request)
+
+        let (response, data) = try await HTTPClient.request(
+            method: "POST",
+            url: url,
+            headers: [
+                "Content-Type": "application/json",
+                "Authorization": "Bearer \(token)"
+            ],
+            body: body
+        )
+        guard (200..<300).contains(response.statusCode) else {
+            throw LLMError.serverError(response.statusCode)
+        }
+
+        do {
+            return try jsonDecoder.decode(Response.self, from: data)
+        } catch {
+            throw LLMError.parsingError(String(describing: error))
+        }
+    }
+
+    public func streamResponse(token: String, request: ResponseRequest) -> AsyncThrowingStream<ResponseStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    let url = try endpoint("/v1/responses")
+                    let body = try jsonEncoder.encode(request)
+
+                    let lineStream = HTTPClient.streamLines(
+                        method: "POST",
+                        url: url,
+                        headers: [
+                            "Content-Type": "application/json",
+                            "Authorization": "Bearer \(token)"
+                        ],
+                        body: body
+                    )
+
+                    for try await line in lineStream {
+                        guard line.hasPrefix("data: ") else { continue }
+                        let data = String(line.dropFirst(6))
+                        if data == "[DONE]" {
+                            continuation.finish()
+                            return
+                        }
+
+                        do {
+                            let event = try jsonDecoder.decode(ResponseStreamEvent.self, from: Data(data.utf8))
+                            continuation.yield(event)
+                            if event.type == "response.completed" {
+                                continuation.finish()
+                                return
+                            }
+                        } catch {
+                            throw LLMError.parsingError(String(describing: error))
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     private func endpoint(_ path: String) throws -> URL {
         guard let url = URL(string: "\(baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))\(path)") else {
             throw LLMError.invalidRequest("invalid URL")
