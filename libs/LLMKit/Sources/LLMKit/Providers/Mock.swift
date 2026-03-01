@@ -59,4 +59,44 @@ public struct Mock: Sendable {
             continuation.finish()
         }
     }
+
+    public func getResponse(token _: String, request: ResponseRequest) async throws -> Response {
+        Response(
+            id: "mock-response-id",
+            model: request.model,
+            output: [
+                ResponseOutput(
+                    type: "message",
+                    role: .assistant,
+                    content: [ResponseContent(type: "output_text", text: "This is a mock response.")]
+                )
+            ],
+            usage: Usage(promptTokens: 0, completionTokens: 0, totalTokens: 0)
+        )
+    }
+
+    public func streamResponse(token _: String, request _: ResponseRequest) -> AsyncThrowingStream<ResponseStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(
+                ResponseStreamEvent(
+                    type: "response.output_text.delta",
+                    responseID: "mock-response-id",
+                    outputIndex: 0,
+                    delta: "Partial mock response stream.",
+                    text: nil
+                )
+            )
+            continuation.yield(
+                ResponseStreamEvent(
+                    type: "response.completed",
+                    responseID: "mock-response-id",
+                    outputIndex: nil,
+                    delta: nil,
+                    text: nil
+                )
+            )
+            continuation.finish()
+        }
+    }
+
 }

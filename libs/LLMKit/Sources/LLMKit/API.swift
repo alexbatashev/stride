@@ -74,4 +74,38 @@ public enum API: Sendable {
             return api.streamCompletion(token: token, request: streamingRequest)
         }
     }
+
+
+    public func getResponse(token: String, request: ResponseRequest) async throws -> Response {
+        if request.isStream == true {
+            throw LLMError.invalidRequest("expected stream == false")
+        }
+
+        switch self {
+        case .openAI(let api):
+            return try await api.getResponse(token: token, request: request)
+        case .anthropic(let api):
+            return try await api.getResponse(token: token, request: request)
+        case .ollama(let api):
+            return try await api.getResponse(token: token, request: request)
+        case .mock(let api):
+            return try await api.getResponse(token: token, request: request)
+        }
+    }
+
+    public func streamResponse(token: String, request: ResponseRequest) -> AsyncThrowingStream<ResponseStreamEvent, Error> {
+        let streamingRequest = request.stream()
+
+        switch self {
+        case .openAI(let api):
+            return api.streamResponse(token: token, request: streamingRequest)
+        case .anthropic(let api):
+            return api.streamResponse(token: token, request: streamingRequest)
+        case .ollama(let api):
+            return api.streamResponse(token: token, request: streamingRequest)
+        case .mock(let api):
+            return api.streamResponse(token: token, request: streamingRequest)
+        }
+    }
+
 }
