@@ -52,15 +52,15 @@ struct MainView: View {
         }
         .searchable(text: $modelData.searchString, prompt: "Search")
         .navigationSplitViewStyle(.balanced)
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    isPresentingChatSettings = true
-                } label: {
-                    Label("Chat Settings", systemImage: "slider.horizontal.3")
-                }
-            }
-        }
+//        .toolbar {
+//            ToolbarItem(placement: .automatic) {
+//                Button {
+//                    isPresentingChatSettings = true
+//                } label: {
+//                    Label("Chat Settings", systemImage: "slider.horizontal.3")
+//                }
+//            }
+//        }
         .sheet(isPresented: $isPresentingChatSettings) {
             ChatSettingsView()
         }

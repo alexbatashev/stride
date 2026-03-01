@@ -7,103 +7,183 @@ struct ChatDetailView: View {
 
     @State private var draftText: String = ""
     @State private var isSending = false
+    
+    @State private var showingModelPopover = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            header(conversation: conversation)
-            Divider()
+        ZStack(alignment: .bottom) {
+            // Transcript scrolls behind the composer
             transcript(conversation: conversation)
-            Divider()
+            
+            // Composer floats on top with blur background
             composer(conversation: conversation)
         }
-        .background(
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.08), Color.clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
         .task {
             if modelData.chatSettings.availableModels.isEmpty {
                 await modelData.refreshModels()
             }
         }
-    }
-
-    private func header(conversation: Conversation) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(conversation.title)
-                    .font(.title3.weight(.semibold))
-                    .accessibilityIdentifier("chatHeaderTitle")
-
-                HStack(spacing: 12) {
-                    Picker("Provider", selection: providerSelection) {
-                        ForEach(modelData.chatSettings.providers) { provider in
-                            Text(provider.name).tag(Optional(provider.id))
-                        }
+        .toolbar(id: "chat-detail-toolbar") {
+            ToolbarItem(id: "model-selector", placement: .automatic) {
+                Button {
+                    showingModelPopover = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(currentModelDisplayName)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.caption)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-
-                    Picker("Model", selection: modelSelection) {
-                        if modelData.chatSettings.availableModels.isEmpty {
-                            if modelData.chatSettings.activeModel.isEmpty {
-                                Text("No model selected").tag("")
-                            } else {
-                                Text(modelData.chatSettings.activeModel).tag(modelData.chatSettings.activeModel)
-                            }
-                        } else {
-                            ForEach(modelData.chatSettings.availableModels, id: \.self) { model in
-                                Text(model).tag(model)
-                            }
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-
-                    Button {
-                        Task { await modelData.refreshModels() }
-                    } label: {
-                        if modelData.chatSettings.isRefreshingModels {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(modelData.chatSettings.isRefreshingModels)
-                    .help("Refresh models")
                 }
-                .font(.caption)
+                .popover(isPresented: $showingModelPopover) {
+                    modelSelectionPopover
+                }
             }
-
-            Spacer()
-
-            Image(systemName: "apple.intelligence")
-                .font(.title3)
-                .foregroundStyle(.secondary)
+            
+            ToolbarItem(id: "spacer", placement: .automatic) {
+                Spacer()
+            }
+            
+            ToolbarItem(id: "share", placement: .automatic) {
+                Button {} label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+            }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .toolbarRole(.editor)
     }
-
-    private var providerSelection: Binding<UUID?> {
-        Binding {
-            modelData.chatSettings.selectedProviderID
-        } set: { newProviderID in
-            modelData.chatSettings.selectProvider(newProviderID)
-            Task { await modelData.refreshModels() }
+    
+    private var currentModelDisplayName: String {
+        if let provider = modelData.chatSettings.activeProvider,
+           !modelData.chatSettings.activeModel.isEmpty {
+            return "\(provider.name) / \(modelData.chatSettings.activeModel)"
+        }
+        return "Select Model"
+    }
+    
+    private var availableModels: [LangModel] {
+        guard let provider = modelData.chatSettings.activeProvider else {
+            return []
+        }
+        
+        return modelData.chatSettings.availableModels.map { modelID in
+            LangModel(
+                provider: provider.id.uuidString,
+                model: modelID,
+                providerName: provider.name,
+                modelName: modelID
+            )
         }
     }
-
-    private var modelSelection: Binding<String> {
-        Binding {
-            modelData.chatSettings.activeModel
-        } set: { newModel in
-            modelData.chatSettings.setSelectedModel(newModel)
+    
+    private var modelSelectionPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if modelData.chatSettings.isRefreshingModels {
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading models...")
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+            } else if availableModels.isEmpty {
+                VStack(spacing: 12) {
+                    Text("No models available")
+                        .foregroundStyle(.secondary)
+                    
+                    Button("Refresh Models") {
+                        Task { await modelData.refreshModels() }
+                    }
+                }
+                .padding()
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(availableModels.prefix(3).enumerated()), id: \.element.model) { index, langModel in
+                        Button {
+                            selectModel(langModel)
+                            showingModelPopover = false
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(langModel.readableName())
+                                        .font(.body)
+                                    Text(langModel.model)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if langModel.model == modelData.chatSettings.activeModel {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(
+                            langModel.model == modelData.chatSettings.activeModel 
+                                ? Color.accentColor.opacity(0.1) 
+                                : Color.clear
+                        )
+                        
+                        if index < min(2, availableModels.count - 1) {
+                            Divider()
+                                .padding(.leading, 16)
+                        }
+                    }
+                    
+                    if availableModels.count > 3 {
+                        Divider()
+                            .padding(.leading, 16)
+                        
+                        Button {
+                            // TODO: Show full model list
+                            showingModelPopover = false
+                        } label: {
+                            HStack {
+                                Text("More...")
+                                    .font(.body)
+                                Spacer()
+                                Image(systemName: "ellipsis")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+            
+            Divider()
+            
+            HStack {
+                Button {
+                    Task { await modelData.refreshModels() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Refresh")
+                    }
+                    .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .disabled(modelData.chatSettings.isRefreshingModels)
+                
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
         }
+        .frame(width: 320)
+    }
+    
+    private func selectModel(_ langModel: LangModel) {
+        modelData.chatSettings.setSelectedModel(langModel.model)
     }
 
     private func transcript(conversation: Conversation) -> some View {
@@ -116,7 +196,8 @@ struct ChatDetailView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 18)
+                .padding(.top, 18)
+                .padding(.bottom, 120) // Extra padding so content can scroll behind the composer
             }
             .onChange(of: conversation.orderedTurns.count) { _, _ in
                 guard let lastID = conversation.orderedTurns.last?.id else { return }
@@ -128,32 +209,88 @@ struct ChatDetailView: View {
     }
 
     private func composer(conversation: Conversation) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 0) {
             if let errorMessage = modelData.chatSettings.refreshErrorMessage {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
             }
 
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("Message Friday...", text: $draftText, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...6)
-                    .accessibilityIdentifier("chatInputField")
+            GlassEffectContainer(spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
+                    Button {
+                        // TODO: Implement attachment action
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                            .glassEffect(.regular.interactive(), in: .circle)
+                    }
+                    .buttonStyle(.plain)
                     .disabled(isSending)
+                    .help("Add attachments")
 
-                Button(action: { sendMessage(in: conversation) }) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 30))
+                    HStack(alignment: .center, spacing: 8) {
+                        TextField("Message", text: $draftText, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .lineLimit(1...10)
+                            .font(.system(size: 14))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("chatInputField")
+                            .disabled(isSending)
+
+                        Button {
+                            // TODO: Implement voice dictation
+                        } label: {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 15, weight: .medium))
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSending)
+                        .help("Voice input")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20, style: .continuous))
+
+                    Group {
+                        if draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Button {
+                                // TODO: Show emoji picker
+                            } label: {
+                                Image(systemName: "face.smiling")
+                                    .font(.system(size: 17, weight: .medium))
+                                    .frame(width: 30, height: 30)
+                                    .glassEffect(.regular.interactive(), in: .circle)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Emoji")
+                            .transition(.opacity.combined(with: .scale))
+                        } else {
+                            Button(action: { sendMessage(in: conversation) }) {
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .frame(width: 30, height: 30)
+                                    .glassEffect(.regular.tint(.accentColor).interactive(), in: .circle)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSending)
+                            .accessibilityIdentifier("sendMessageButton")
+                            .help("Send message")
+                            .transition(.opacity.combined(with: .scale))
+                        }
+                    }
+                    .animation(.spring(duration: 0.2), value: draftText.isEmpty)
                 }
-                .buttonStyle(.plain)
-                .disabled(isSending || draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("sendMessageButton")
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
         }
-        .padding(16)
-        .background(.thinMaterial)
+        .padding(.bottom, 8)
     }
 
     private func sendMessage(in conversation: Conversation) {

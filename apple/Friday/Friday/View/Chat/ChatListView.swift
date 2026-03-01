@@ -17,6 +17,7 @@ struct ChatListView: View {
             }
             .onDelete(perform: modelData.deleteConversations)
         }
+        .frame(idealWidth: 250)
         .navigationDestination(for: Conversation.self) { conversation in
             ChatDetailView(conversation: conversation)
         }
