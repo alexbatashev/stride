@@ -1,4 +1,5 @@
 import CoreFriday
+import Markdown
 import SwiftUI
 
 struct ChatDetailView: View {
@@ -414,8 +415,12 @@ private struct TurnBubble: View {
             if isUser { Spacer(minLength: 44) }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(turn.text)
-                    .textSelection(.enabled)
+                if isUser {
+                    Text(turn.text)
+                        .textSelection(.enabled)
+                } else {
+                    AssistantMarkdownView(markdown: turn.text)
+                }
 
                 if !turn.attachments.isEmpty {
                     attachments
@@ -492,5 +497,148 @@ private struct TurnBubble: View {
         case .audio: return "waveform"
         case .video: return "film"
         }
+    }
+}
+
+private struct AssistantMarkdownView: View {
+    let markdown: String
+
+    private var document: Document {
+        Document(parsing: markdown)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(document.children.enumerated()), id: \.offset) { _, block in
+                if let table = block as? Markdown.Table {
+                    MarkdownTableView(table: table)
+                } else {
+                    Text(attributedMarkdown(for: block))
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    private func attributedMarkdown(for markup: Markup) -> AttributedString {
+        var rewriter = SoftBreakToHardBreakRewriter()
+        let rewritten = rewriter.visit(markup) ?? markup
+        let markdownSource = rewritten.format()
+
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+
+        if let attributed = try? AttributedString(markdown: markdownSource, options: options) {
+            return attributed
+        }
+
+        return AttributedString(markdownSource)
+    }
+}
+
+private struct MarkdownTableView: View {
+    let table: Markdown.Table
+
+    private var headerCells: [Markdown.Table.Cell] {
+        Array(table.head.cells)
+    }
+
+    private var rows: [Markdown.Table.Row] {
+        Array(table.body.rows)
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                    GridRow {
+                        ForEach(Array(headerCells.enumerated()), id: \.offset) { index, cell in
+                            cellView(cell, isHeader: true, column: index)
+                        }
+                    }
+
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        GridRow {
+                            ForEach(Array(row.cells.enumerated()), id: \.offset) { index, cell in
+                                cellView(cell, isHeader: false, column: index)
+                            }
+                        }
+                    }
+                }
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cellView(_ cell: Markdown.Table.Cell, isHeader: Bool, column: Int) -> some View {
+        let text = cellAttributedMarkdown(cell)
+
+        Text(text)
+            .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
+            .textSelection(.enabled)
+            .frame(minWidth: 84, maxWidth: .infinity, alignment: alignment(for: column))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(isHeader ? Color.primary.opacity(0.08) : Color.clear)
+            .overlay(alignment: .topLeading) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.14))
+                    .frame(height: 0.5)
+            }
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.14))
+                    .frame(width: 0.5)
+            }
+    }
+
+    private func cellAttributedMarkdown(_ cell: Markdown.Table.Cell) -> AttributedString {
+        let markdownSource = cellMarkdownSource(cell)
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+
+        if let attributed = try? AttributedString(markdown: markdownSource, options: options) {
+            return attributed
+        }
+
+        return AttributedString(markdownSource)
+    }
+
+    private func cellMarkdownSource(_ cell: Markdown.Table.Cell) -> String {
+        cell.inlineChildren.map { inline in
+            var rewriter = SoftBreakToHardBreakRewriter()
+            let rewritten = rewriter.visit(inline) ?? inline
+            return rewritten.format()
+        }
+        .joined()
+    }
+
+    private func alignment(for column: Int) -> Alignment {
+        guard column < table.columnAlignments.count else {
+            return .leading
+        }
+
+        switch table.columnAlignments[column] {
+        case .left:
+            return .leading
+        case .center:
+            return .center
+        case .right:
+            return .trailing
+        case .none:
+            return .leading
+        }
+    }
+}
+
+private struct SoftBreakToHardBreakRewriter: MarkupRewriter {
+    mutating func visitSoftBreak(_ softBreak: SoftBreak) -> Markup? {
+        LineBreak()
     }
 }
