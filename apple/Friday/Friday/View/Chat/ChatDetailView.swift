@@ -7,6 +7,7 @@ struct ChatDetailView: View {
 
     @State private var draftText: String = ""
     @State private var isSending = false
+    @State private var currentStreamTask: Task<Void, Never>?
     
     @State private var showingModelPopover = false
 
@@ -185,7 +186,15 @@ struct ChatDetailView: View {
     private func selectModel(_ langModel: LangModel) {
         modelData.chatSettings.setSelectedModel(langModel.model)
     }
+    
+    private func cancelCurrentRequest() {
+        currentStreamTask?.cancel()
+        currentStreamTask = nil
+        isSending = false
+    }
 
+    @State private var scrollProxy: ScrollViewProxy?
+    
     private func transcript(conversation: Conversation) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -194,15 +203,24 @@ struct ChatDetailView: View {
                         TurnBubble(turn: turn)
                             .id(turn.id)
                     }
+                    
+                    // Invisible anchor at the bottom
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom")
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 18)
                 .padding(.bottom, 120) // Extra padding so content can scroll behind the composer
             }
+            .onAppear {
+                scrollProxy = proxy
+                // Scroll to the bottom when the view appears
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
             .onChange(of: conversation.orderedTurns.count) { _, _ in
-                guard let lastID = conversation.orderedTurns.last?.id else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(lastID, anchor: .bottom)
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
         }
@@ -241,34 +259,39 @@ struct ChatDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .accessibilityIdentifier("chatInputField")
                             .disabled(isSending)
-
-                        Button {
-                            // TODO: Implement voice dictation
-                        } label: {
-                            Image(systemName: "waveform")
-                                .font(.system(size: 15, weight: .medium))
-                                .frame(width: 28, height: 28)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isSending)
-                        .help("Voice input")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20, style: .continuous))
 
                     Group {
-                        if draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if isSending {
                             Button {
-                                // TODO: Show emoji picker
+                                cancelCurrentRequest()
                             } label: {
-                                Image(systemName: "face.smiling")
+                                ZStack {
+                                    Image(systemName: "stop.fill")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(.white)
+                                }
+                                .frame(width: 30, height: 30)
+                                .glassEffect(.regular.tint(.red).interactive(), in: .circle)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("stopMessageButton")
+                            .help("Stop generation")
+                            .transition(.opacity.combined(with: .scale))
+                        } else if draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Button {
+                                // TODO: Implement voice dictation
+                            } label: {
+                                Image(systemName: "waveform")
                                     .font(.system(size: 17, weight: .medium))
                                     .frame(width: 30, height: 30)
                                     .glassEffect(.regular.interactive(), in: .circle)
                             }
                             .buttonStyle(.plain)
-                            .help("Emoji")
+                            .help("Voice input")
                             .transition(.opacity.combined(with: .scale))
                         } else {
                             Button(action: { sendMessage(in: conversation) }) {
@@ -278,19 +301,18 @@ struct ChatDetailView: View {
                                     .glassEffect(.regular.tint(.accentColor).interactive(), in: .circle)
                             }
                             .buttonStyle(.plain)
-                            .disabled(isSending)
                             .accessibilityIdentifier("sendMessageButton")
                             .help("Send message")
                             .transition(.opacity.combined(with: .scale))
                         }
                     }
                     .animation(.spring(duration: 0.2), value: draftText.isEmpty)
+                    .animation(.spring(duration: 0.2), value: isSending)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
         }
-        .padding(.bottom, 8)
     }
 
     private func sendMessage(in conversation: Conversation) {
@@ -320,16 +342,38 @@ struct ChatDetailView: View {
         modelData.persistAll()
         draftText = ""
         isSending = true
+        
+        // Scroll to the bottom to show both user and assistant messages
+        if let scrollProxy = scrollProxy {
+            withAnimation(.easeOut(duration: 0.3)) {
+                scrollProxy.scrollTo("bottom", anchor: .bottom)
+            }
+        }
 
-        Task {
+        currentStreamTask = Task {
             defer {
                 Task { @MainActor in
                     isSending = false
+                    currentStreamTask = nil
                 }
             }
 
             do {
                 for try await token in modelData.streamAssistantReply(turns: turnsForRequest) {
+                    // Check for cancellation
+                    if Task.isCancelled {
+                        await MainActor.run {
+                            if assistantTurn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                assistantTurn.text = "(Generation cancelled)"
+                            } else {
+                                assistantTurn.text += "\n\n(Generation cancelled)"
+                            }
+                            assistantTurn.isError = true
+                            modelData.persistAll()
+                        }
+                        return
+                    }
+                    
                     await MainActor.run {
                         assistantTurn.text += token
                         conversation.refreshPreview(using: assistantTurn.text)
