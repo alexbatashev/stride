@@ -3,7 +3,7 @@ import LLMKit
 
 protocol OpenAILikeTransport: Sendable {
     func listModels(provider: ChatProviderConfiguration) async throws -> [ModelDesc]
-    func streamCompletion(provider: ChatProviderConfiguration, request: CompletionRequest) -> AsyncThrowingStream<StreamResponseChunk, Error>
+    func streamResponse(provider: ChatProviderConfiguration, request: ResponseRequest) -> AsyncThrowingStream<ResponseStreamEvent, Error>
 }
 
 struct LLMKitTransport: OpenAILikeTransport {
@@ -11,8 +11,8 @@ struct LLMKitTransport: OpenAILikeTransport {
         try await api(for: provider).listModels(token: provider.token)
     }
 
-    func streamCompletion(provider: ChatProviderConfiguration, request: CompletionRequest) -> AsyncThrowingStream<StreamResponseChunk, Error> {
-        api(for: provider).streamCompletion(token: provider.token, request: request)
+    func streamResponse(provider: ChatProviderConfiguration, request: ResponseRequest) -> AsyncThrowingStream<ResponseStreamEvent, Error> {
+        api(for: provider).streamResponse(token: provider.token, request: request)
     }
 
     private func api(for provider: ChatProviderConfiguration) -> API {
@@ -54,19 +54,15 @@ public struct DirectChat: Sendable {
             .sorted { $0.sequenceNumber < $1.sequenceNumber }
             .map { Message(role: mapRole($0.role), content: $0.text) }
 
-        let request = CompletionRequest(model: model, messages: messages).stream()
+        let request = ResponseRequest(model: model, input: messages).stream()
 
-        let upstream = transport.streamCompletion(provider: provider, request: request)
+        let upstream = transport.streamResponse(provider: provider, request: request)
 
         return AsyncThrowingStream { continuation in
             Task {
                 do {
                     for try await chunk in upstream {
-                        let token = chunk.choices
-                            .compactMap { choice in
-                                choice.delta?.content ?? choice.message?.content ?? choice.text
-                            }
-                            .joined()
+                        let token = chunk.delta ?? chunk.text ?? ""
 
                         guard !token.isEmpty else { continue }
                         continuation.yield(token)
