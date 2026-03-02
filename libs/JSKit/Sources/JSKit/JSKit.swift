@@ -5,6 +5,7 @@ public enum JSError: Error, Sendable {
     case contextCreationFailed
     case evaluationFailed(String)
     case stringConversionFailed
+    case timeoutConfigurationFailed
 }
 
 public final class JavaScriptRuntime {
@@ -48,6 +49,27 @@ public final class JavaScriptContext {
         fileName: String = "<eval>",
         flags: Int32 = 0
     ) throws -> JavaScriptValue {
+        try evaluate(source, fileName: fileName, flags: flags, timeoutSeconds: nil)
+    }
+
+    @discardableResult
+    public func evaluate(
+        _ source: String,
+        fileName: String = "<eval>",
+        flags: Int32 = 0,
+        timeoutSeconds: Int?
+    ) throws -> JavaScriptValue {
+        if let timeoutSeconds {
+            guard qjs_context_set_timeout(rawContext, Int32(timeoutSeconds)) == 0 else {
+                throw JSError.timeoutConfigurationFailed
+            }
+        } else {
+            _ = qjs_context_set_timeout(rawContext, 0)
+        }
+        defer {
+            _ = qjs_context_set_timeout(rawContext, 0)
+        }
+
         let result = source.withCString { sourceCString in
             fileName.withCString { fileNameCString in
                 qjs_context_eval(rawContext, sourceCString, fileNameCString, flags)
@@ -63,6 +85,14 @@ public final class JavaScriptContext {
         }
 
         return JavaScriptValue(context: self, rawValue: result)
+    }
+
+    public func consumeConsoleOutput() -> String {
+        guard let cString = qjs_context_consume_console_output(rawContext) else {
+            return ""
+        }
+        defer { qjs_cstring_free(cString) }
+        return String(cString: cString)
     }
 
     fileprivate func consumeExceptionMessage() -> String {

@@ -96,11 +96,33 @@ public struct ResponseOutput: Codable, Equatable, Sendable {
     public var type: String
     public var role: Role?
     public var content: [ResponseContent]
+    public var name: String?
+    public var arguments: String?
+    public var callID: String?
 
-    public init(type: String, role: Role?, content: [ResponseContent]) {
+    enum CodingKeys: String, CodingKey {
+        case type
+        case role
+        case content
+        case name
+        case arguments
+        case callID = "call_id"
+    }
+
+    public init(
+        type: String,
+        role: Role? = nil,
+        content: [ResponseContent] = [],
+        name: String? = nil,
+        arguments: String? = nil,
+        callID: String? = nil
+    ) {
         self.type = type
         self.role = role
         self.content = content
+        self.name = name
+        self.arguments = arguments
+        self.callID = callID
     }
 }
 

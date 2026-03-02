@@ -263,15 +263,48 @@ public struct Ollama: Sendable {
     }
 
     public func getResponse(token _: String, request: ResponseRequest) async throws -> Response {
+        struct OllamaToolFunction: Encodable {
+            let name: String
+            let description: String
+            let parameters: FunctionParameters?
+        }
+
+        struct OllamaTool: Encodable {
+            let type: String
+            let function: OllamaToolFunction
+        }
+
         struct ChatRequest: Encodable {
             let model: String
             let stream: Bool
             let messages: [Message]
+            let tools: [OllamaTool]?
+        }
+
+        struct ToolFunctionCall: Decodable {
+            let function: ToolFunction
+        }
+
+        struct ToolFunction: Decodable {
+            let name: String
+            let arguments: [String: JSONValue]
+        }
+
+        struct MessageWithToolCalls: Decodable {
+            let role: Role
+            let content: String
+            let toolCalls: [ToolFunctionCall]?
+
+            enum CodingKeys: String, CodingKey {
+                case role
+                case content
+                case toolCalls = "tool_calls"
+            }
         }
 
         struct MessageResponse: Decodable {
             let model: String
-            let message: Message
+            let message: MessageWithToolCalls
             let promptEvalCount: UInt32?
             let evalCount: UInt32?
 
@@ -284,7 +317,21 @@ public struct Ollama: Sendable {
         }
 
         let body = try JSONEncoder().encode(
-            ChatRequest(model: request.model, stream: false, messages: request.input)
+            ChatRequest(
+                model: request.model,
+                stream: false,
+                messages: request.input,
+                tools: request.tools?.map {
+                    OllamaTool(
+                        type: $0.type.rawValue,
+                        function: OllamaToolFunction(
+                            name: $0.function.name,
+                            description: $0.function.description,
+                            parameters: $0.function.parameters?.first
+                        )
+                    )
+                }
+            )
         )
 
         let (response, data) = try await HTTPClient.request(
@@ -302,17 +349,34 @@ public struct Ollama: Sendable {
             let message = try JSONDecoder().decode(MessageResponse.self, from: data)
             let promptTokens = message.promptEvalCount ?? 0
             let completionTokens = message.evalCount ?? 0
+            var output: [ResponseOutput] = []
 
-            return Response(
-                id: UUID().uuidString.lowercased(),
-                model: message.model,
-                output: [
+            if !message.message.content.isEmpty {
+                output.append(
                     ResponseOutput(
                         type: "message",
                         role: message.message.role,
                         content: [ResponseContent(type: "output_text", text: message.message.content)]
                     )
-                ],
+                )
+            }
+
+            if let toolCalls = message.message.toolCalls {
+                for call in toolCalls {
+                    output.append(
+                        ResponseOutput(
+                            type: "function_call",
+                            name: call.function.name,
+                            arguments: stringifyJSON(call.function.arguments) ?? "{}"
+                        )
+                    )
+                }
+            }
+
+            return Response(
+                id: UUID().uuidString.lowercased(),
+                model: message.model,
+                output: output,
                 usage: Usage(
                     promptTokens: promptTokens,
                     completionTokens: completionTokens,
@@ -325,10 +389,22 @@ public struct Ollama: Sendable {
     }
 
     public func streamResponse(token _: String, request: ResponseRequest) -> AsyncThrowingStream<ResponseStreamEvent, Error> {
+        struct OllamaToolFunction: Encodable {
+            let name: String
+            let description: String
+            let parameters: FunctionParameters?
+        }
+
+        struct OllamaTool: Encodable {
+            let type: String
+            let function: OllamaToolFunction
+        }
+
         struct ChatRequest: Encodable {
             let model: String
             let stream: Bool
             let messages: [Message]
+            let tools: [OllamaTool]?
         }
 
         struct MessageResponse: Decodable {
@@ -340,7 +416,21 @@ public struct Ollama: Sendable {
             Task {
                 do {
                     let body = try JSONEncoder().encode(
-                        ChatRequest(model: request.model, stream: true, messages: request.input)
+                        ChatRequest(
+                            model: request.model,
+                            stream: true,
+                            messages: request.input,
+                            tools: request.tools?.map {
+                                OllamaTool(
+                                    type: $0.type.rawValue,
+                                    function: OllamaToolFunction(
+                                        name: $0.function.name,
+                                        description: $0.function.description,
+                                        parameters: $0.function.parameters?.first
+                                    )
+                                )
+                            }
+                        )
                     )
 
                     let lineStream = HTTPClient.streamLines(
@@ -393,4 +483,58 @@ public struct Ollama: Sendable {
         }
         return url
     }
+}
+
+private enum JSONValue: Codable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            throw DecodingError.typeMismatch(
+                JSONValue.self,
+                DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Invalid JSON")
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+}
+
+private func stringifyJSON<T: Encodable>(_ value: T) -> String? {
+    guard let data = try? JSONEncoder().encode(value) else { return nil }
+    return String(data: data, encoding: .utf8)
 }

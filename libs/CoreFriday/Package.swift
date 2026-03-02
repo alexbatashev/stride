@@ -7,17 +7,18 @@ let package = Package(
     name: "CoreFriday",
     platforms: [
         .macOS(.v14),
-        .iOS(.v17)
+        .iOS(.v17),
     ],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
             name: "CoreFriday",
             targets: ["CoreFriday"]
-        ),
+        )
     ],
     dependencies: [
         .package(path: "../LLMKit"),
+        .package(path: "../JSKit"),
         .package(url: "https://github.com/vapor/fluent.git", from: "4.0.0"),
         .package(url: "https://github.com/vapor/fluent-sqlite-driver.git", from: "4.0.0"),
     ],
@@ -28,6 +29,7 @@ let package = Package(
             name: "CoreFriday",
             dependencies: [
                 "LLMKit",
+                "JSKit",
                 .product(name: "Fluent", package: "fluent"),
                 .product(name: "FluentSQLiteDriver", package: "fluent-sqlite-driver"),
             ]
