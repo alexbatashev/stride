@@ -7,7 +7,6 @@ struct CreateConversationTurn: AsyncMigration {
             .field("conversation_id", .uuid, .required, .references("conversations", "id", onDelete: .cascade))
             .field("role", .string, .required)
             .field("text", .string, .required)
-            .field("sequence_number", .int, .required)
             .field("model_identifier", .string)
             .field("is_error", .bool, .required)
             .field("attachments_json", .string, .required)

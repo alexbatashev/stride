@@ -9,7 +9,7 @@ final class ModelData {
     var selectedNavigation: NavigationOptions?
     var selectedConversation: Conversation?
     var selectedNote: Note?
-    
+
     var searchString: String = ""
 
     var conversations: [Conversation] = []
@@ -79,7 +79,6 @@ final class ModelData {
         let turn = ConversationTurn(
             role: .assistant,
             text: "Welcome to Friday. Send a message to start a local, Fluent + SQLite-backed chat.",
-            sequenceNumber: 0,
             modelIdentifier: "local.stub.v1"
         )
 

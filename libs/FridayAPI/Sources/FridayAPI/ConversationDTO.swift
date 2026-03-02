@@ -5,7 +5,6 @@ public struct ConversationTurnDTO: Codable, Sendable {
     public var role: TurnRole
     public var text: String
     public var createdAt: Date
-    public var sequenceNumber: Int
     public var modelIdentifier: String?
     public var isError: Bool
     public var attachments: [TurnAttachment]
@@ -16,7 +15,6 @@ public struct ConversationTurnDTO: Codable, Sendable {
         role: TurnRole,
         text: String,
         createdAt: Date,
-        sequenceNumber: Int,
         modelIdentifier: String?,
         isError: Bool,
         attachments: [TurnAttachment],
@@ -26,7 +24,6 @@ public struct ConversationTurnDTO: Codable, Sendable {
         self.role = role
         self.text = text
         self.createdAt = createdAt
-        self.sequenceNumber = sequenceNumber
         self.modelIdentifier = modelIdentifier
         self.isError = isError
         self.attachments = attachments

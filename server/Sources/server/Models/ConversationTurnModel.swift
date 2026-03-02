@@ -17,9 +17,6 @@ final class ConversationTurnModel: Model, @unchecked Sendable {
     @Field(key: "text")
     var text: String
 
-    @Field(key: "sequence_number")
-    var sequenceNumber: Int
-
     @OptionalField(key: "model_identifier")
     var modelIdentifier: String?
 
@@ -42,7 +39,6 @@ final class ConversationTurnModel: Model, @unchecked Sendable {
         conversationID: UUID,
         role: String,
         text: String,
-        sequenceNumber: Int,
         modelIdentifier: String? = nil,
         isError: Bool = false,
         attachmentsJSON: String = "[]",
@@ -52,7 +48,6 @@ final class ConversationTurnModel: Model, @unchecked Sendable {
         self.$conversation.id = conversationID
         self.role = role
         self.text = text
-        self.sequenceNumber = sequenceNumber
         self.modelIdentifier = modelIdentifier
         self.isError = isError
         self.attachmentsJSON = attachmentsJSON
@@ -71,7 +66,6 @@ final class ConversationTurnModel: Model, @unchecked Sendable {
             role: TurnRole(rawValue: role) ?? .user,
             text: text,
             createdAt: createdAt ?? Date(),
-            sequenceNumber: sequenceNumber,
             modelIdentifier: modelIdentifier,
             isError: isError,
             attachments: attachments,

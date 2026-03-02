@@ -49,7 +49,7 @@ public final class CoreFridayStorage: @unchecked Sendable {
 
     deinit {
         do {
-            try databases.shutdown()
+            databases.shutdown()
             try threadPool.syncShutdownGracefully()
             try eventLoopGroup.syncShutdownGracefully()
         } catch {
@@ -107,7 +107,8 @@ public final class CoreFridayStorage: @unchecked Sendable {
 
         let chatSettings: ChatSettingsPersistedState?
         if let settings {
-            chatSettings = try JSONDecoder().decode(ChatSettingsPersistedState.self, from: Data(settings.payloadUTF8.utf8))
+            chatSettings = try JSONDecoder().decode(
+                ChatSettingsPersistedState.self, from: Data(settings.payloadUTF8.utf8))
         } else {
             chatSettings = nil
         }
@@ -155,7 +156,6 @@ public final class CoreFridayStorage: @unchecked Sendable {
                     role: turn.role.rawValue,
                     text: turn.text,
                     createdAt: turn.createdAt,
-                    sequenceNumber: turn.sequenceNumber,
                     modelIdentifier: turn.modelIdentifier,
                     isError: turn.isError,
                     attachmentsJSON: String(decoding: attachmentsData, as: UTF8.self),
@@ -197,7 +197,8 @@ public final class CoreFridayStorage: @unchecked Sendable {
         }
 
         let chatData = try JSONEncoder().encode(chatSettings)
-        let storedSettings = StoredChatSettings(payloadUTF8: String(decoding: chatData, as: UTF8.self))
+        let storedSettings = StoredChatSettings(
+            payloadUTF8: String(decoding: chatData, as: UTF8.self))
         try storedSettings.create(on: db).wait()
     }
 
@@ -209,16 +210,19 @@ public final class CoreFridayStorage: @unchecked Sendable {
         try CreateStoredChatSettings().prepare(on: database).wait()
     }
 
-    private static func mapConversationTurn(_ stored: StoredConversationTurn) throws -> ConversationTurn {
-        let attachments = try JSONDecoder().decode([TurnAttachment].self, from: Data(stored.attachmentsJSON.utf8))
-        let tools = try JSONDecoder().decode([ToolInvocation].self, from: Data(stored.toolInvocationsJSON.utf8))
+    private static func mapConversationTurn(_ stored: StoredConversationTurn) throws
+        -> ConversationTurn
+    {
+        let attachments = try JSONDecoder().decode(
+            [TurnAttachment].self, from: Data(stored.attachmentsJSON.utf8))
+        let tools = try JSONDecoder().decode(
+            [ToolInvocation].self, from: Data(stored.toolInvocationsJSON.utf8))
 
         return ConversationTurn(
             id: UUID(uuidString: stored.domainID) ?? UUID(),
             role: TurnRole(rawValue: stored.role) ?? .assistant,
             text: stored.text,
             createdAt: stored.createdAt,
-            sequenceNumber: stored.sequenceNumber,
             modelIdentifier: stored.modelIdentifier,
             isError: stored.isError,
             attachments: attachments,
@@ -227,7 +231,8 @@ public final class CoreFridayStorage: @unchecked Sendable {
     }
 
     private static func mapNoteBlock(_ stored: StoredNoteBlock) throws -> NoteBlock {
-        let attachments = try JSONDecoder().decode([NoteAttachment].self, from: Data(stored.attachmentsJSON.utf8))
+        let attachments = try JSONDecoder().decode(
+            [NoteAttachment].self, from: Data(stored.attachmentsJSON.utf8))
 
         return NoteBlock(
             id: UUID(uuidString: stored.domainID) ?? UUID(),
@@ -326,9 +331,6 @@ private final class StoredConversationTurn: Model, @unchecked Sendable {
     @Field(key: "created_at")
     var createdAt: Date
 
-    @Field(key: "sequence_number")
-    var sequenceNumber: Int
-
     @OptionalField(key: "model_identifier")
     var modelIdentifier: String?
 
@@ -349,7 +351,6 @@ private final class StoredConversationTurn: Model, @unchecked Sendable {
         role: String,
         text: String,
         createdAt: Date,
-        sequenceNumber: Int,
         modelIdentifier: String?,
         isError: Bool,
         attachmentsJSON: String,
@@ -360,7 +361,6 @@ private final class StoredConversationTurn: Model, @unchecked Sendable {
         self.role = role
         self.text = text
         self.createdAt = createdAt
-        self.sequenceNumber = sequenceNumber
         self.modelIdentifier = modelIdentifier
         self.isError = isError
         self.attachmentsJSON = attachmentsJSON
@@ -377,7 +377,6 @@ private struct CreateStoredConversationTurn: Migration {
             .field("role", .string, .required)
             .field("text", .string, .required)
             .field("created_at", .datetime, .required)
-            .field("sequence_number", .int, .required)
             .field("model_identifier", .string)
             .field("is_error", .bool, .required)
             .field("attachments_json", .string, .required)

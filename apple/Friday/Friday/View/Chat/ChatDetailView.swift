@@ -14,14 +14,14 @@ struct ChatDetailView: View {
     @State private var draftText: String = ""
     @State private var isSending = false
     @State private var currentStreamTask: Task<Void, Never>?
-    
+
     @State private var showingModelPopover = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
             // Transcript scrolls behind the composer
             transcript(conversation: conversation)
-            
+
             // Composer floats on top with blur background
             composer(conversation: conversation)
         }
@@ -46,11 +46,11 @@ struct ChatDetailView: View {
                     modelSelectionPopover
                 }
             }
-            
+
             ToolbarItem(id: "spacer", placement: .automatic) {
                 Spacer()
             }
-            
+
             ToolbarItem(id: "share", placement: .automatic) {
                 Button {} label: {
                     Label("Share", systemImage: "square.and.arrow.up")
@@ -59,7 +59,7 @@ struct ChatDetailView: View {
         }
         .toolbarRole(.editor)
     }
-    
+
     private var currentModelDisplayName: String {
         if let provider = modelData.chatSettings.activeProvider,
            !modelData.chatSettings.activeModel.isEmpty {
@@ -67,12 +67,12 @@ struct ChatDetailView: View {
         }
         return "Select Model"
     }
-    
+
     private var availableModels: [LangModel] {
         guard let provider = modelData.chatSettings.activeProvider else {
             return []
         }
-        
+
         return modelData.chatSettings.availableModels.map { modelID in
             LangModel(
                 provider: provider.id.uuidString,
@@ -82,7 +82,7 @@ struct ChatDetailView: View {
             )
         }
     }
-    
+
     private var modelSelectionPopover: some View {
         VStack(alignment: .leading, spacing: 0) {
             if modelData.chatSettings.isRefreshingModels {
@@ -97,7 +97,7 @@ struct ChatDetailView: View {
                 VStack(spacing: 12) {
                     Text("No models available")
                         .foregroundStyle(.secondary)
-                    
+
                     Button("Refresh Models") {
                         Task { await modelData.refreshModels() }
                     }
@@ -130,21 +130,21 @@ struct ChatDetailView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .background(
-                            langModel.model == modelData.chatSettings.activeModel 
-                                ? Color.accentColor.opacity(0.1) 
+                            langModel.model == modelData.chatSettings.activeModel
+                                ? Color.accentColor.opacity(0.1)
                                 : Color.clear
                         )
-                        
+
                         if index < min(2, availableModels.count - 1) {
                             Divider()
                                 .padding(.leading, 16)
                         }
                     }
-                    
+
                     if availableModels.count > 3 {
                         Divider()
                             .padding(.leading, 16)
-                        
+
                         Button {
                             // TODO: Show full model list
                             showingModelPopover = false
@@ -165,9 +165,9 @@ struct ChatDetailView: View {
                 }
                 .padding(.vertical, 8)
             }
-            
+
             Divider()
-            
+
             HStack {
                 Button {
                     Task { await modelData.refreshModels() }
@@ -180,7 +180,7 @@ struct ChatDetailView: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(modelData.chatSettings.isRefreshingModels)
-                
+
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -188,11 +188,11 @@ struct ChatDetailView: View {
         }
         .frame(width: 320)
     }
-    
+
     private func selectModel(_ langModel: LangModel) {
         modelData.chatSettings.setSelectedModel(langModel.model)
     }
-    
+
     private func cancelCurrentRequest() {
         currentStreamTask?.cancel()
         currentStreamTask = nil
@@ -200,7 +200,7 @@ struct ChatDetailView: View {
     }
 
     @State private var scrollProxy: ScrollViewProxy?
-    
+
     private func transcript(conversation: Conversation) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -209,7 +209,7 @@ struct ChatDetailView: View {
                         TurnBubble(turn: turn)
                             .id(turn.id)
                     }
-                    
+
                     // Invisible anchor at the bottom
                     Color.clear
                         .frame(height: 1)
@@ -325,12 +325,9 @@ struct ChatDetailView: View {
         let trimmed = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let userSequence = conversation.nextSequenceNumber
-
         let userTurn = ConversationTurn(
             role: .user,
-            text: trimmed,
-            sequenceNumber: userSequence
+            text: trimmed
         )
         conversation.turns.append(userTurn)
         conversation.refreshPreview(using: trimmed)
@@ -340,7 +337,6 @@ struct ChatDetailView: View {
         let assistantTurn = ConversationTurn(
             role: .assistant,
             text: "",
-            sequenceNumber: userSequence + 1,
             modelIdentifier: modelData.chatSettings.activeModel
         )
         conversation.turns.append(assistantTurn)
@@ -348,7 +344,7 @@ struct ChatDetailView: View {
         modelData.persistAll()
         draftText = ""
         isSending = true
-        
+
         // Scroll to the bottom to show both user and assistant messages
         if let scrollProxy = scrollProxy {
             withAnimation(.easeOut(duration: 0.3)) {
@@ -379,7 +375,7 @@ struct ChatDetailView: View {
                         }
                         return
                     }
-                    
+
                     await MainActor.run {
                         assistantTurn.text += token
                         conversation.refreshPreview(using: assistantTurn.text)

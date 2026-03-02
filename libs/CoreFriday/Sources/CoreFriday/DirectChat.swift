@@ -51,7 +51,7 @@ public struct DirectChat: Sendable {
         turns: [ConversationTurn]
     ) -> AsyncThrowingStream<String, Error> {
         let messages = turns
-            .sorted { $0.sequenceNumber < $1.sequenceNumber }
+            .sorted { $0.createdAt < $1.createdAt }
             .map { Message(role: mapRole($0.role), content: $0.text) }
 
         let request = ResponseRequest(model: model, input: messages).stream()

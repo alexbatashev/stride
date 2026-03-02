@@ -84,7 +84,6 @@ public final class ConversationTurn: Identifiable, @unchecked Sendable {
     public var role: TurnRole
     public var text: String
     public var createdAt: Date
-    public var sequenceNumber: Int
     public var modelIdentifier: String?
     public var isError: Bool
     public var attachments: [TurnAttachment]
@@ -95,7 +94,6 @@ public final class ConversationTurn: Identifiable, @unchecked Sendable {
         role: TurnRole,
         text: String,
         createdAt: Date = .now,
-        sequenceNumber: Int,
         modelIdentifier: String? = nil,
         isError: Bool = false,
         attachments: [TurnAttachment] = [],
@@ -105,7 +103,6 @@ public final class ConversationTurn: Identifiable, @unchecked Sendable {
         self.role = role
         self.text = text
         self.createdAt = createdAt
-        self.sequenceNumber = sequenceNumber
         self.modelIdentifier = modelIdentifier
         self.isError = isError
         self.attachments = attachments
@@ -142,16 +139,7 @@ public final class Conversation: Identifiable, Hashable, @unchecked Sendable {
     }
 
     public var orderedTurns: [ConversationTurn] {
-        turns.sorted {
-            if $0.sequenceNumber == $1.sequenceNumber {
-                return $0.createdAt < $1.createdAt
-            }
-            return $0.sequenceNumber < $1.sequenceNumber
-        }
-    }
-
-    public var nextSequenceNumber: Int {
-        (turns.map(\.sequenceNumber).max() ?? -1) + 1
+        turns.sorted { $0.createdAt < $1.createdAt }
     }
 
     public static func == (lhs: Conversation, rhs: Conversation) -> Bool { lhs.id == rhs.id }

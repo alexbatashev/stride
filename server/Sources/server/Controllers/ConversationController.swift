@@ -59,7 +59,7 @@ struct ConversationController: RouteCollection {
         }
 
         let turnDTOs = try conversation.turns
-            .sorted { $0.sequenceNumber < $1.sequenceNumber }
+            .sorted { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }
             .map { try $0.toDTO() }
 
         return conversation.toDTO(with: turnDTOs)
