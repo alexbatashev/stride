@@ -1,24 +1,85 @@
 #include "quickjs_shim.h"
 
 #include <quickjs.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct WrappedRuntime {
     JSRuntime *raw;
+    uint64_t deadline_ms;
 } WrappedRuntime;
 
 typedef struct WrappedContext {
     JSContext *raw;
+    WrappedRuntime *runtime;
+    char *console_buffer;
+    size_t console_len;
+    size_t console_cap;
 } WrappedContext;
 
 typedef struct WrappedValue {
     JSValue raw;
 } WrappedValue;
 
+static uint64_t qjs_now_ms(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0;
+    }
+    return ((uint64_t)now.tv_sec * 1000) + ((uint64_t)now.tv_nsec / 1000000);
+}
+
+static int qjs_interrupt_handler(JSRuntime *runtime, void *opaque) {
+    (void)runtime;
+
+    WrappedRuntime *wrapped = (WrappedRuntime *)opaque;
+    if (wrapped == NULL || wrapped->deadline_ms == 0) {
+        return 0;
+    }
+
+    uint64_t now_ms = qjs_now_ms();
+    if (now_ms == 0) {
+        return 0;
+    }
+
+    return now_ms >= wrapped->deadline_ms ? 1 : 0;
+}
+
+static int qjs_console_append(WrappedContext *context, const char *text, size_t text_len) {
+    if (context == NULL || text == NULL || text_len == 0) {
+        return 0;
+    }
+
+    size_t needed = context->console_len + text_len + 1;
+    if (needed > context->console_cap) {
+        size_t new_cap = context->console_cap == 0 ? 128 : context->console_cap;
+        while (new_cap < needed) {
+            new_cap *= 2;
+        }
+        char *new_buffer = (char *)realloc(context->console_buffer, new_cap);
+        if (new_buffer == NULL) {
+            return -1;
+        }
+        context->console_buffer = new_buffer;
+        context->console_cap = new_cap;
+    }
+
+    memcpy(context->console_buffer + context->console_len, text, text_len);
+    context->console_len += text_len;
+    context->console_buffer[context->console_len] = '\0';
+    return 0;
+}
+
 static JSValue qjs_console_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
+
+    WrappedContext *context = (WrappedContext *)JS_GetContextOpaque(ctx);
+    if (context == NULL) {
+        return JS_EXCEPTION;
+    }
 
     for (int i = 0; i < argc; i++) {
         const char *text = JS_ToCString(ctx, argv[i]);
@@ -26,15 +87,24 @@ static JSValue qjs_console_log(JSContext *ctx, JSValueConst this_val, int argc, 
             return JS_EXCEPTION;
         }
 
-        if (i > 0) {
-            fputs(" ", stdout);
+        if (i > 0 && qjs_console_append(context, " ", 1) != 0) {
+            JS_FreeCString(ctx, text);
+            return JS_EXCEPTION;
         }
-        fputs(text, stdout);
+
+        size_t text_len = strlen(text);
+        if (qjs_console_append(context, text, text_len) != 0) {
+            JS_FreeCString(ctx, text);
+            return JS_EXCEPTION;
+        }
+
         JS_FreeCString(ctx, text);
     }
 
-    fputc('\n', stdout);
-    fflush(stdout);
+    if (qjs_console_append(context, "\n", 1) != 0) {
+        return JS_EXCEPTION;
+    }
+
     return JS_UNDEFINED;
 }
 
@@ -70,6 +140,8 @@ QJSRuntimeRef qjs_runtime_new(void) {
     }
 
     wrapped->raw = runtime;
+    wrapped->deadline_ms = 0;
+    JS_SetInterruptHandler(runtime, qjs_interrupt_handler, wrapped);
     return (QJSRuntimeRef)wrapped;
 }
 
@@ -107,6 +179,11 @@ QJSContextRef qjs_context_new(QJSRuntimeRef runtime_ref) {
     }
 
     wrapped->raw = context;
+    wrapped->runtime = runtime;
+    wrapped->console_buffer = NULL;
+    wrapped->console_len = 0;
+    wrapped->console_cap = 0;
+    JS_SetContextOpaque(context, wrapped);
     return (QJSContextRef)wrapped;
 }
 
@@ -116,6 +193,7 @@ void qjs_context_free(QJSContextRef context_ref) {
         return;
     }
 
+    free(context->console_buffer);
     JS_FreeContext(context->raw);
     free(context);
 }
@@ -157,6 +235,26 @@ void qjs_value_free(QJSContextRef context_ref, QJSValueRef value_ref) {
     free(value);
 }
 
+int32_t qjs_context_set_timeout(QJSContextRef context_ref, int32_t timeout_seconds) {
+    WrappedContext *context = (WrappedContext *)context_ref;
+    if (context == NULL || context->runtime == NULL) {
+        return -1;
+    }
+
+    if (timeout_seconds <= 0) {
+        context->runtime->deadline_ms = 0;
+        return 0;
+    }
+
+    uint64_t now_ms = qjs_now_ms();
+    if (now_ms == 0) {
+        return -1;
+    }
+
+    context->runtime->deadline_ms = now_ms + ((uint64_t)timeout_seconds * 1000);
+    return 0;
+}
+
 char *qjs_context_exception_to_string(QJSContextRef context_ref) {
     WrappedContext *context = (WrappedContext *)context_ref;
     if (context == NULL) {
@@ -190,6 +288,24 @@ char *qjs_value_to_string(QJSContextRef context_ref, QJSValueRef value_ref) {
 
     char *copy = strdup(raw);
     JS_FreeCString(context->raw, raw);
+    return copy;
+}
+
+char *qjs_context_consume_console_output(QJSContextRef context_ref) {
+    WrappedContext *context = (WrappedContext *)context_ref;
+    if (context == NULL) {
+        return NULL;
+    }
+
+    if (context->console_len == 0 || context->console_buffer == NULL) {
+        return strdup("");
+    }
+
+    char *copy = strdup(context->console_buffer);
+    context->console_len = 0;
+    if (context->console_buffer != NULL) {
+        context->console_buffer[0] = '\0';
+    }
     return copy;
 }
 

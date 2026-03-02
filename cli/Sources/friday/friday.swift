@@ -8,6 +8,7 @@ struct friday {
         let providerId = provider.id.uuidString
 
         let transport = DirectChatTransport(provider: provider)
+        let jsTool = JSTool()
         let chat = ChatStream(transports: [transport])
 
         let model: String
@@ -53,7 +54,7 @@ struct friday {
             writeStdout("friday> ")
 
             do {
-                let stream = await chat.addMessage(tools: [], next: userTurn)
+                let stream = await chat.addMessage(tools: [jsTool], next: userTurn)
                 for try await partial in stream {
                     let fullText = partial.text
                     let suffix = String(fullText.dropFirst(printedCount))

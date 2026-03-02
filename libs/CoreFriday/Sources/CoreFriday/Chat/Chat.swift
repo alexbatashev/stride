@@ -4,9 +4,15 @@ import LLMKit
 public protocol ChatTransport: Sendable {
     var providerId: String { get }
     func listModels() async -> [LangModel]
+    func getResponse(
+        modelId: String,
+        messages: [ConversationTurn],
+        tools: [any Tool]
+    ) async throws -> Response
     func streamResponse(
         modelId: String,
-        messages: [ConversationTurn]
+        messages: [ConversationTurn],
+        tools: [any Tool]
     ) -> AsyncThrowingStream<ConversationTurn, Error>
 }
 
@@ -58,14 +64,18 @@ public struct DirectChatTransport: ChatTransport {
 
     public func streamResponse(
         modelId: String,
-        messages: [ConversationTurn]
+        messages: [ConversationTurn],
+        tools: [any Tool]
     ) -> AsyncThrowingStream<ConversationTurn, Error> {
         let sortedMessages = messages.sorted { $0.createdAt < $1.createdAt }
 
-        let request = ResponseRequest(
+        var request = ResponseRequest(
             model: modelId,
             input: sortedMessages.map { Message(role: mapRole($0.role), content: $0.text) }
         ).stream()
+        if !tools.isEmpty {
+            request = request.tools(tools.map { $0.asLLM() }).toolChoice(.auto)
+        }
 
         let upstream = api.streamResponse(token: token, request: request)
 
@@ -95,6 +105,22 @@ public struct DirectChatTransport: ChatTransport {
         }
     }
 
+    public func getResponse(
+        modelId: String,
+        messages: [ConversationTurn],
+        tools: [any Tool]
+    ) async throws -> Response {
+        let sortedMessages = messages.sorted { $0.createdAt < $1.createdAt }
+        var request = ResponseRequest(
+            model: modelId,
+            input: sortedMessages.map { Message(role: mapRole($0.role), content: $0.text) }
+        )
+        if !tools.isEmpty {
+            request = request.tools(tools.map { $0.asLLM() }).toolChoice(.auto)
+        }
+        return try await api.getResponse(token: token, request: request)
+    }
+
     private func mapRole(_ role: TurnRole) -> Role {
         switch role {
         case .system:
@@ -117,6 +143,7 @@ public enum ChatStreamError: Error {
     case providerNotSelected
     case modelNotSelected
     case unknownProvider(String)
+    case maxToolIterationsExceeded
 }
 
 public actor ChatStream {
@@ -157,7 +184,7 @@ public actor ChatStream {
         self.modelId = modelId
     }
 
-    public func addMessage(tools: [Tool], next: ConversationTurn) -> AsyncThrowingStream<
+    public func addMessage(tools: [any Tool], next: ConversationTurn) -> AsyncThrowingStream<
         ConversationTurn, Error
     > {
         messages.append(next)
@@ -172,17 +199,18 @@ public actor ChatStream {
             return Self.failedStream(ChatStreamError.unknownProvider(providerId))
         }
 
-        let upstream = transport.streamResponse(modelId: modelId, messages: messages)
+        if tools.isEmpty {
+            let upstream = transport.streamResponse(modelId: modelId, messages: messages, tools: tools)
 
-        return AsyncThrowingStream { continuation in
-            Task {
-                var latest: ConversationTurn?
+            return AsyncThrowingStream { continuation in
+                Task {
+                    var latest: ConversationTurn?
 
-                do {
-                    for try await partial in upstream {
-                        latest = partial
-                        continuation.yield(partial)
-                    }
+                    do {
+                        for try await partial in upstream {
+                            latest = partial
+                            continuation.yield(partial)
+                        }
 
                     if let latest {
                         self.appendMessage(latest)
@@ -192,6 +220,80 @@ public actor ChatStream {
                     if let latest {
                         self.appendMessage(latest)
                     }
+                    continuation.finish(throwing: error)
+                }
+            }
+            }
+        }
+
+        return AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    var workingMessages = messages
+                    let assistant = ConversationTurn(
+                        role: .assistant,
+                        text: "",
+                        createdAt: .now,
+                        modelIdentifier: modelId
+                    )
+                    var invocations: [ToolInvocation] = []
+
+                    for _ in 0..<8 {
+                        let response = try await transport.getResponse(
+                            modelId: modelId,
+                            messages: workingMessages,
+                            tools: tools
+                        )
+
+                        let outputText = response.outputText
+                        if !outputText.isEmpty {
+                            assistant.text += outputText
+                        }
+
+                        let calls = Self.extractFunctionCalls(from: response)
+                        if calls.isEmpty {
+                            assistant.toolInvocations = invocations
+                            self.appendMessage(assistant)
+                            continuation.yield(assistant)
+                            continuation.finish()
+                            return
+                        }
+
+                        for call in calls {
+                            let startedAt = Date.now
+                            var invocation = ToolInvocation(
+                                name: call.name,
+                                argumentsJSON: call.arguments,
+                                status: .running,
+                                startedAt: startedAt
+                            )
+
+                            let result: String
+                            if let tool = tools.first(where: { $0.id() == call.name }) {
+                                let parsedArgs = Self.parseToolArgs(argumentsJSON: call.arguments)
+                                result = await tool.execute(args: parsedArgs)
+                            } else {
+                                result = "Error: Unknown tool '\(call.name)'."
+                            }
+
+                            invocation.status = result.hasPrefix("Error:") ? .failed : .completed
+                            invocation.resultJSON = result
+                            invocation.endedAt = .now
+                            invocations.append(invocation)
+
+                            let toolMessage = ConversationTurn(
+                                role: .tool,
+                                text: result,
+                                createdAt: .now,
+                                modelIdentifier: modelId
+                            )
+                            self.appendMessage(toolMessage)
+                            workingMessages.append(toolMessage)
+                        }
+                    }
+
+                    continuation.finish(throwing: ChatStreamError.maxToolIterationsExceeded)
+                } catch {
                     continuation.finish(throwing: error)
                 }
             }
@@ -208,4 +310,52 @@ public actor ChatStream {
     private func appendMessage(_ message: ConversationTurn) {
         messages.append(message)
     }
+
+    private static func extractFunctionCalls(from response: Response) -> [ModelFunctionCall] {
+        response.output.compactMap { output in
+            guard output.type == "function_call", let name = output.name else {
+                return nil
+            }
+            return ModelFunctionCall(
+                name: name,
+                arguments: output.arguments ?? "{}",
+                callID: output.callID
+            )
+        }
+    }
+
+    private static func parseToolArgs(argumentsJSON: String) -> [ToolArg] {
+        guard let data = argumentsJSON.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return []
+        }
+
+        return object.map { key, value in
+            let valueString: String
+            if let stringValue = value as? String {
+                valueString = stringValue
+            } else {
+                switch value {
+                case is NSNumber, is NSNull:
+                    valueString = String(describing: value)
+                default:
+                    if let jsonData = try? JSONSerialization.data(withJSONObject: value),
+                        let jsonString = String(data: jsonData, encoding: .utf8)
+                    {
+                        valueString = jsonString
+                    } else {
+                        valueString = String(describing: value)
+                    }
+                }
+            }
+            return ToolArg(name: key, value: valueString)
+        }
+    }
+}
+
+private struct ModelFunctionCall {
+    let name: String
+    let arguments: String
+    let callID: String?
 }
