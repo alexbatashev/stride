@@ -53,7 +53,7 @@ struct friday {
             writeStdout("friday> ")
 
             do {
-                let stream = await chat.addMessage(next: userTurn)
+                let stream = await chat.addMessage(tools: [], next: userTurn)
                 for try await partial in stream {
                     let fullText = partial.text
                     let suffix = String(fullText.dropFirst(printedCount))

@@ -157,7 +157,9 @@ public actor ChatStream {
         self.modelId = modelId
     }
 
-    public func addMessage(next: ConversationTurn) -> AsyncThrowingStream<ConversationTurn, Error> {
+    public func addMessage(tools: [Tool], next: ConversationTurn) -> AsyncThrowingStream<
+        ConversationTurn, Error
+    > {
         messages.append(next)
 
         guard let providerId else {
