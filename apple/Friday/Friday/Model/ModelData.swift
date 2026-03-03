@@ -7,21 +7,18 @@ import Observation
 @MainActor
 final class ModelData {
     var selectedNavigation: NavigationOptions?
-    var selectedConversation: Conversation?
+    var selectedThread: ChatThread?
     var selectedNote: Note?
 
     var searchString: String = ""
 
-    var conversations: [Conversation] = []
+    var threads: [ChatThread] = []
     var notes: [Note] = []
     var chatSettings: ChatProviderSettingsStore
 
-    private let directChat: DirectChat
     private let storage: CoreFridayStorage
 
     init() {
-        self.directChat = DirectChat()
-
         let storagePath = Self.defaultDatabasePath()
         try? FileManager.default.createDirectory(
             at: URL(fileURLWithPath: storagePath).deletingLastPathComponent(),
@@ -40,7 +37,7 @@ final class ModelData {
             chatSettings: nil
         )
 
-        conversations = snapshot.conversations
+        threads = (try? storage.listThreads()) ?? []
         notes = snapshot.notes
         chatSettings = ChatProviderSettingsStore(persisted: snapshot.chatSettings)
 
@@ -48,7 +45,7 @@ final class ModelData {
             self?.persistAll()
         }
 
-        ensureInitialConversation()
+        ensureInitialThread()
         ensureInitialNote()
 
         if ProcessInfo.processInfo.arguments.contains("-ui-testing-open-notes") {
@@ -58,61 +55,64 @@ final class ModelData {
         }
     }
 
-    var sortedConversations: [Conversation] {
-        conversations.sorted { $0.updatedAt > $1.updatedAt }
+    var sortedThreads: [ChatThread] {
+        threads.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     var sortedNotes: [Note] {
         notes.sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    func ensureInitialConversation() {
-        guard conversations.isEmpty else {
-            if selectedConversation == nil {
-                selectedConversation = sortedConversations.first
+    func ensureInitialThread() {
+        guard threads.isEmpty else {
+            if selectedThread == nil {
+                selectedThread = sortedThreads.first
             }
             return
         }
 
-        let conversation = Conversation(title: "Welcome")
-
-        let turn = ConversationTurn(
-            role: .assistant,
-            text: "Welcome to Friday. Send a message to start a local, Fluent + SQLite-backed chat.",
-            modelIdentifier: "local.stub.v1"
+        let thread = ChatThread(
+            userId: nil,
+            title: "Welcome",
+            createdAt: .now,
+            updatedAt: .now,
+            previewText: "Send a message to start chatting.",
+            isPinned: false
         )
-
-        conversation.turns.append(turn)
-        conversation.refreshPreview(using: turn.text)
-
-        conversations.append(conversation)
-        selectedConversation = conversation
-        persistAll()
+        threads.append(thread)
+        selectedThread = thread
+        try? storage.upsertThread(thread)
     }
 
-    func createConversation() {
-        let conversation = Conversation()
-        conversations.append(conversation)
-        selectedConversation = conversation
-        persistAll()
+    func createThread() {
+        let thread = ChatThread(
+            userId: nil,
+            title: "",
+            createdAt: .now,
+            updatedAt: .now,
+            previewText: "",
+            isPinned: false
+        )
+        threads.append(thread)
+        selectedThread = thread
+        try? storage.upsertThread(thread)
     }
 
-    func deleteConversations(at offsets: IndexSet) {
-        let sorted = sortedConversations
+    func deleteThreads(at offsets: IndexSet) {
+        let sorted = sortedThreads
         for offset in offsets {
             guard sorted.indices.contains(offset) else { continue }
-            let conversation = sorted[offset]
-            conversations.removeAll { $0.id == conversation.id }
-            if selectedConversation?.id == conversation.id {
-                selectedConversation = nil
+            let thread = sorted[offset]
+            threads.removeAll { $0.id == thread.id }
+            if selectedThread?.id == thread.id {
+                selectedThread = nil
             }
+            try? storage.deleteThread(id: thread.id)
         }
 
-        if selectedConversation == nil {
-            selectedConversation = sortedConversations.first
+        if selectedThread == nil {
+            selectedThread = sortedThreads.first
         }
-
-        persistAll()
     }
 
     func ensureInitialNote() {
@@ -175,13 +175,17 @@ final class ModelData {
     func persistAll() {
         do {
             try storage.replaceSnapshot(
-                conversations: conversations,
+                conversations: [],
                 notes: notes,
                 chatSettings: chatSettings.persistedState
             )
         } catch {
             assertionFailure("Failed to persist snapshot: \(error)")
         }
+    }
+
+    func getMessages(for thread: ChatThread) async -> [ChatMessage] {
+        await storage.makeChatStorage(threadId: thread.id).listMessages()
     }
 
     func refreshModels() async {
@@ -191,15 +195,16 @@ final class ModelData {
         chatSettings.setRefreshError(nil)
         defer { chatSettings.isRefreshingModels = false }
 
-        do {
-            let modelIDs = try await directChat.listModelIDs(provider: provider)
-            chatSettings.setAvailableModels(modelIDs)
-        } catch {
-            chatSettings.setRefreshError(error.localizedDescription)
+        let transport = DirectChatTransport(provider: provider)
+        let models = await transport.listModels()
+        if models.isEmpty {
+            chatSettings.setRefreshError("No models returned. Check your provider configuration.")
+        } else {
+            chatSettings.setAvailableModels(models.map(\.model))
         }
     }
 
-    func streamAssistantReply(turns: [ConversationTurn]) -> AsyncThrowingStream<String, Error> {
+    func addMessage(text: String, in thread: ChatThread) async -> AsyncThrowingStream<ChatMessage, Error> {
         guard let provider = chatSettings.activeProvider else {
             return AsyncThrowingStream { continuation in
                 continuation.finish(throwing: NSError(domain: "Friday.Chat", code: 1, userInfo: [NSLocalizedDescriptionKey: "No provider selected."]))
@@ -213,7 +218,22 @@ final class ModelData {
             }
         }
 
-        return directChat.streamReply(provider: provider, model: model, turns: turns)
+        let providerId = provider.id.uuidString
+        let transport = DirectChatTransport(provider: provider)
+        let chatStorage = storage.makeChatStorage(threadId: thread.id)
+        let service = ChatService(transports: [transport], storage: chatStorage)
+        await service.setModel(providerId: providerId, modelId: model)
+
+        let userMessage = ChatMessage(
+            threadId: thread.id,
+            providerId: providerId,
+            modelId: model,
+            modelName: model,
+            role: .user,
+            content: text
+        )
+
+        return await service.addMessage(tools: [], next: userMessage)
     }
 
     private static func defaultDatabasePath() -> String {

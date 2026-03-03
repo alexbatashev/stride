@@ -9,8 +9,10 @@ import UIKit
 
 struct ChatDetailView: View {
     @Environment(ModelData.self) private var modelData
-    let conversation: Conversation
+    let thread: ChatThread
 
+    @State private var messages: [ChatMessage] = []
+    @State private var errorMessageIDs: Set<UUID> = []
     @State private var draftText: String = ""
     @State private var isSending = false
     @State private var currentStreamTask: Task<Void, Never>?
@@ -20,12 +22,13 @@ struct ChatDetailView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             // Transcript scrolls behind the composer
-            transcript(conversation: conversation)
+            transcript
 
             // Composer floats on top with blur background
-            composer(conversation: conversation)
+            composer
         }
-        .task {
+        .task(id: thread.id) {
+            messages = await modelData.getMessages(for: thread)
             if modelData.chatSettings.availableModels.isEmpty {
                 await modelData.refreshModels()
             }
@@ -201,13 +204,16 @@ struct ChatDetailView: View {
 
     @State private var scrollProxy: ScrollViewProxy?
 
-    private func transcript(conversation: Conversation) -> some View {
+    private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    ForEach(conversation.orderedTurns) { turn in
-                        TurnBubble(turn: turn)
-                            .id(turn.id)
+                    ForEach(messages) { message in
+                        TurnBubble(
+                            message: message,
+                            isError: errorMessageIDs.contains(message.id)
+                        )
+                        .id(message.id)
                     }
 
                     // Invisible anchor at the bottom
@@ -221,10 +227,9 @@ struct ChatDetailView: View {
             }
             .onAppear {
                 scrollProxy = proxy
-                // Scroll to the bottom when the view appears
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
-            .onChange(of: conversation.orderedTurns.count) { _, _ in
+            .onChange(of: messages.count) { _, _ in
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
@@ -232,7 +237,7 @@ struct ChatDetailView: View {
         }
     }
 
-    private func composer(conversation: Conversation) -> some View {
+    private var composer: some View {
         VStack(spacing: 0) {
             if let errorMessage = modelData.chatSettings.refreshErrorMessage {
                 Text(errorMessage)
@@ -300,7 +305,7 @@ struct ChatDetailView: View {
                             .help("Voice input")
                             .transition(.opacity.combined(with: .scale))
                         } else {
-                            Button(action: { sendMessage(in: conversation) }) {
+                            Button(action: sendMessage) {
                                 Image(systemName: "arrow.up")
                                     .font(.system(size: 16, weight: .bold))
                                     .frame(width: 30, height: 30)
@@ -321,32 +326,28 @@ struct ChatDetailView: View {
         }
     }
 
-    private func sendMessage(in conversation: Conversation) {
+    private func sendMessage() {
         let trimmed = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let userTurn = ConversationTurn(
+        let userMessage = ChatMessage(
+            threadId: thread.id,
             role: .user,
-            text: trimmed
+            content: trimmed
         )
-        conversation.turns.append(userTurn)
-        conversation.refreshPreview(using: trimmed)
+        messages.append(userMessage)
 
-        let turnsForRequest = conversation.orderedTurns
-
-        let assistantTurn = ConversationTurn(
+        let assistantMessage = ChatMessage(
+            threadId: thread.id,
             role: .assistant,
-            text: "",
-            modelIdentifier: modelData.chatSettings.activeModel
+            content: ""
         )
-        conversation.turns.append(assistantTurn)
+        messages.append(assistantMessage)
 
-        modelData.persistAll()
         draftText = ""
         isSending = true
 
-        // Scroll to the bottom to show both user and assistant messages
-        if let scrollProxy = scrollProxy {
+        if let scrollProxy {
             withAnimation(.easeOut(duration: 0.3)) {
                 scrollProxy.scrollTo("bottom", anchor: .bottom)
             }
@@ -361,45 +362,47 @@ struct ChatDetailView: View {
             }
 
             do {
-                for try await token in modelData.streamAssistantReply(turns: turnsForRequest) {
-                    // Check for cancellation
+                for try await partial in await modelData.addMessage(text: trimmed, in: thread) {
                     if Task.isCancelled {
                         await MainActor.run {
-                            if assistantTurn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                assistantTurn.text = "(Generation cancelled)"
+                            let current = assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if current.isEmpty {
+                                assistantMessage.content = "(Generation cancelled)"
                             } else {
-                                assistantTurn.text += "\n\n(Generation cancelled)"
+                                assistantMessage.content += "\n\n(Generation cancelled)"
                             }
-                            assistantTurn.isError = true
-                            modelData.persistAll()
+                            thread.previewText = assistantMessage.content
+                            thread.updatedAt = .now
+                            errorMessageIDs.insert(assistantMessage.id)
                         }
                         return
                     }
 
                     await MainActor.run {
-                        assistantTurn.text += token
-                        conversation.refreshPreview(using: assistantTurn.text)
+                        assistantMessage.content = partial.content
+                        thread.previewText = partial.content
+                        thread.updatedAt = .now
                     }
-                    await Task.yield()
                 }
 
                 await MainActor.run {
-                    if assistantTurn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        assistantTurn.text = "(No text returned)"
+                    if assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        assistantMessage.content = "(No text returned)"
                     }
-                    modelData.persistAll()
+                    thread.previewText = assistantMessage.content
+                    thread.updatedAt = .now
                 }
             } catch {
                 await MainActor.run {
-                    assistantTurn.isError = true
-                    let base = assistantTurn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let base = assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
                     if base.isEmpty {
-                        assistantTurn.text = "Request failed: \(error.localizedDescription)"
+                        assistantMessage.content = "Request failed: \(error.localizedDescription)"
                     } else {
-                        assistantTurn.text += "\n\nRequest failed: \(error.localizedDescription)"
+                        assistantMessage.content += "\n\nRequest failed: \(error.localizedDescription)"
                     }
-
-                    modelData.persistAll()
+                    thread.previewText = assistantMessage.content
+                    thread.updatedAt = .now
+                    errorMessageIDs.insert(assistantMessage.id)
                 }
             }
         }
@@ -407,9 +410,10 @@ struct ChatDetailView: View {
 }
 
 private struct TurnBubble: View {
-    let turn: ConversationTurn
+    let message: ChatMessage
+    let isError: Bool
 
-    private var isUser: Bool { turn.role == .user }
+    private var isUser: Bool { message.role == .user }
 
     var body: some View {
         HStack(alignment: .bottom) {
@@ -417,25 +421,17 @@ private struct TurnBubble: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 if isUser {
-                    Text(turn.text)
+                    Text(message.content)
                         .textSelection(.enabled)
                 } else {
                     AssistantMarkdownView(
-                        markdown: turn.text,
-                        onCopyMarkdown: { copyPlainTextToPasteboard(turn.text) },
-                        onCopyRichText: { copyRichTextToPasteboard(markdown: turn.text) }
+                        markdown: message.content,
+                        onCopyMarkdown: { copyPlainTextToPasteboard(message.content) },
+                        onCopyRichText: { copyRichTextToPasteboard(markdown: message.content) }
                     )
                 }
 
-                if !turn.attachments.isEmpty {
-                    attachments
-                }
-
-                if !turn.toolInvocations.isEmpty {
-                    tools
-                }
-
-                Text(turn.createdAt, style: .time)
+                Text(message.createdAt, style: .time)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -446,11 +442,11 @@ private struct TurnBubble: View {
             .contextMenu {
                 if !isUser {
                     Button("Copy Reply as Markdown") {
-                        copyPlainTextToPasteboard(turn.text)
+                        copyPlainTextToPasteboard(message.content)
                     }
 
                     Button("Copy Reply as Rich Text") {
-                        copyRichTextToPasteboard(markdown: turn.text)
+                        copyRichTextToPasteboard(markdown: message.content)
                     }
                 }
             }
@@ -460,7 +456,7 @@ private struct TurnBubble: View {
     }
 
     private var bubbleBackground: some ShapeStyle {
-        if turn.isError {
+        if isError {
             return AnyShapeStyle(Color.red.opacity(0.15))
         }
 
@@ -475,44 +471,6 @@ private struct TurnBubble: View {
         }
 
         return AnyShapeStyle(.ultraThinMaterial)
-    }
-
-    private var attachments: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(turn.attachments) { attachment in
-                Label("\(attachment.fileName) · \(attachment.byteCount) B", systemImage: icon(for: attachment.kind))
-                    .font(.caption)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.regularMaterial, in: Capsule())
-            }
-        }
-    }
-
-    private var tools: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(turn.toolInvocations) { tool in
-                VStack(alignment: .leading, spacing: 4) {
-                    Label(tool.name, systemImage: "hammer.fill")
-                        .font(.caption.weight(.semibold))
-                    Text(tool.argumentsJSON)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                .padding(10)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-        }
-    }
-
-    private func icon(for kind: AttachmentKind) -> String {
-        switch kind {
-        case .image: return "photo"
-        case .file: return "doc"
-        case .audio: return "waveform"
-        case .video: return "film"
-        }
     }
 
     private func copyPlainTextToPasteboard(_ text: String) {

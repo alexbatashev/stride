@@ -142,6 +142,9 @@ public struct ResponseStreamEvent: Codable, Equatable, Sendable {
     public var outputIndex: UInt32?
     public var delta: String?
     public var text: String?
+    public var name: String?
+    public var arguments: String?
+    public var callID: String?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -149,13 +152,28 @@ public struct ResponseStreamEvent: Codable, Equatable, Sendable {
         case outputIndex = "output_index"
         case delta
         case text
+        case name
+        case arguments
+        case callID = "call_id"
     }
 
-    public init(type: String, responseID: String?, outputIndex: UInt32?, delta: String?, text: String?) {
+    public init(
+        type: String,
+        responseID: String?,
+        outputIndex: UInt32?,
+        delta: String?,
+        text: String?,
+        name: String? = nil,
+        arguments: String? = nil,
+        callID: String? = nil
+    ) {
         self.type = type
         self.responseID = responseID
         self.outputIndex = outputIndex
         self.delta = delta
         self.text = text
+        self.name = name
+        self.arguments = arguments
+        self.callID = callID
     }
 }

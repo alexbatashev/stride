@@ -29,8 +29,8 @@ struct MainView: View {
         } detail: {
             switch modelData.selectedNavigation ?? .chat {
             case .chat:
-                if let conversation = modelData.selectedConversation {
-                    ChatDetailView(conversation: conversation)
+                if let thread = modelData.selectedThread {
+                    ChatDetailView(thread: thread)
                 } else {
                     ContentUnavailableView(
                         "Select a Chat",
