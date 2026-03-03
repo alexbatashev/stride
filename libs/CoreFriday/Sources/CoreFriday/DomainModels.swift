@@ -1,13 +1,6 @@
 import Foundation
 import Observation
 
-public enum TurnRole: String, Codable, CaseIterable, Sendable {
-    case user
-    case assistant
-    case tool
-    case system
-}
-
 public enum AttachmentKind: String, Codable, CaseIterable, Sendable {
     case image
     case file
@@ -306,7 +299,8 @@ public final class Note: Identifiable, Hashable, @unchecked Sendable {
     }
 
     public func refreshPreview() {
-        let firstPreview = orderedBlocks
+        let firstPreview =
+            orderedBlocks
             .lazy
             .compactMap(\.plainTextPreview)
             .first(where: { !$0.isEmpty }) ?? ""
@@ -418,7 +412,7 @@ public final class ChatProviderSettingsStore {
 
     private let fallbackProviders: [ChatProviderConfiguration] = [
         .starterOllama(),
-        .starterOpenAI()
+        .starterOpenAI(),
     ]
 
     public init(persisted: ChatSettingsPersistedState? = nil) {

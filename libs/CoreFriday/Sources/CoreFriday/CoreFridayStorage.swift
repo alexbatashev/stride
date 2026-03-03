@@ -202,12 +202,18 @@ public final class CoreFridayStorage: @unchecked Sendable {
         try storedSettings.create(on: db).wait()
     }
 
+    public func makeChatStorage(threadId: UUID) -> LocalChatStorage {
+        LocalChatStorage(id: threadId, database: database)
+    }
+
     private func runMigrationsIfNeeded() throws {
         try CreateStoredConversation().prepare(on: database).wait()
         try CreateStoredConversationTurn().prepare(on: database).wait()
         try CreateStoredNote().prepare(on: database).wait()
         try CreateStoredNoteBlock().prepare(on: database).wait()
         try CreateStoredChatSettings().prepare(on: database).wait()
+        try CreateStoredChatThread().prepare(on: database).wait()
+        try CreateStoredChatMessage().prepare(on: database).wait()
     }
 
     private static func mapConversationTurn(_ stored: StoredConversationTurn) throws

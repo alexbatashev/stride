@@ -10,6 +10,7 @@ struct friday {
         let transport = DirectChatTransport(provider: provider)
         let jsTool = JSTool()
         let chat = ChatStream(transports: [transport])
+        var toolsEnabled = false
 
         let model: String
         let models = await chat.listModels()
@@ -27,6 +28,8 @@ struct friday {
         print("Provider: \(provider.name) (\(provider.baseURL))")
         print("Model: \(model)")
         print("Type your prompt and press Enter. Type `exit` to quit.")
+        print("Type `/tools on` or `/tools off` to toggle tool execution (default: off).")
+        let threadId = UUID()
 
         while true {
             writeStdout("> ")
@@ -44,27 +47,82 @@ struct friday {
             if prompt.lowercased() == "exit" {
                 break
             }
+            if prompt.lowercased() == "/tools on" {
+                toolsEnabled = true
+                print("Tools enabled.")
+                continue
+            }
+            if prompt.lowercased() == "/tools off" {
+                toolsEnabled = false
+                print("Tools disabled.")
+                continue
+            }
 
-            let userTurn = ConversationTurn(
+            let userTurn = ChatMessage(
+                id: UUID(),
+                threadId: threadId,
+                userId: nil,
+                parentId: nil,
+                providerId: providerId,
+                modelId: model,
+                modelName: model,
                 role: .user,
-                text: prompt,
-                createdAt: .now
+                thinking: nil,
+                content: prompt
             )
             var printedCount = 0
+            var printedThinkingCount = 0
+            var thinkingStarted = false
+            var thinkingLineOpen = false
+            var activeMessageID: UUID?
             writeStdout("friday> ")
 
             do {
-                let stream = await chat.addMessage(tools: [jsTool], next: userTurn)
+                let tools: [any Tool] = toolsEnabled ? [jsTool] : []
+                let stream = await chat.addMessage(tools: tools, next: userTurn)
                 for try await partial in stream {
-                    let fullText = partial.text
+                    if activeMessageID != partial.id {
+                        activeMessageID = partial.id
+                        printedCount = 0
+                        printedThinkingCount = 0
+                        if thinkingLineOpen {
+                            writeStderr("\n")
+                            thinkingLineOpen = false
+                        }
+                        thinkingStarted = false
+                    }
+
+                    let fullThinking = partial.thinking ?? ""
+                    let thinkingSuffix = String(fullThinking.dropFirst(printedThinkingCount))
+                    if !thinkingSuffix.isEmpty {
+                        if !thinkingStarted {
+                            writeStderr("thinking> ")
+                            thinkingStarted = true
+                            thinkingLineOpen = true
+                        }
+                        writeStderr(thinkingSuffix)
+                        printedThinkingCount = fullThinking.count
+                    }
+
+                    let fullText = partial.content
                     let suffix = String(fullText.dropFirst(printedCount))
                     if !suffix.isEmpty {
+                        if thinkingLineOpen {
+                            writeStderr("\n")
+                            thinkingLineOpen = false
+                        }
                         writeStdout(suffix)
                         printedCount = fullText.count
                     }
                 }
+                if thinkingLineOpen {
+                    writeStderr("\n")
+                }
                 print("")
             } catch {
+                if thinkingLineOpen {
+                    writeStderr("\n")
+                }
                 print("")
                 let message = "Request failed: \(error)"
                 writeStderr("\(message)\n")

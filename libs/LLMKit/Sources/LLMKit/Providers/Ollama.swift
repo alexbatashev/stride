@@ -279,6 +279,7 @@ public struct Ollama: Sendable {
             let stream: Bool
             let messages: [Message]
             let tools: [OllamaTool]?
+            let think: Bool?
         }
 
         struct ToolFunctionCall: Decodable {
@@ -293,11 +294,13 @@ public struct Ollama: Sendable {
         struct MessageWithToolCalls: Decodable {
             let role: Role
             let content: String
+            let thinking: String?
             let toolCalls: [ToolFunctionCall]?
 
             enum CodingKeys: String, CodingKey {
                 case role
                 case content
+                case thinking
                 case toolCalls = "tool_calls"
             }
         }
@@ -330,7 +333,8 @@ public struct Ollama: Sendable {
                             parameters: $0.function.parameters?.first
                         )
                     )
-                }
+                },
+                think: true
             )
         )
 
@@ -357,6 +361,15 @@ public struct Ollama: Sendable {
                         type: "message",
                         role: message.message.role,
                         content: [ResponseContent(type: "output_text", text: message.message.content)]
+                    )
+                )
+            }
+            if let thinking = message.message.thinking, !thinking.isEmpty {
+                output.append(
+                    ResponseOutput(
+                        type: "reasoning",
+                        role: message.message.role,
+                        content: [ResponseContent(type: "reasoning", text: thinking)]
                     )
                 )
             }
@@ -405,11 +418,35 @@ public struct Ollama: Sendable {
             let stream: Bool
             let messages: [Message]
             let tools: [OllamaTool]?
+            let think: Bool?
         }
 
         struct MessageResponse: Decodable {
             let done: Bool
-            let message: Message
+            let message: MessageWithToolCalls
+        }
+
+        struct ToolFunctionCall: Decodable {
+            let function: ToolFunction
+        }
+
+        struct ToolFunction: Decodable {
+            let name: String
+            let arguments: [String: JSONValue]
+        }
+
+        struct MessageWithToolCalls: Decodable {
+            let role: Role
+            let content: String
+            let thinking: String?
+            let toolCalls: [ToolFunctionCall]?
+
+            enum CodingKeys: String, CodingKey {
+                case role
+                case content
+                case thinking
+                case toolCalls = "tool_calls"
+            }
         }
 
         return AsyncThrowingStream { continuation in
@@ -429,7 +466,8 @@ public struct Ollama: Sendable {
                                         parameters: $0.function.parameters?.first
                                     )
                                 )
-                            }
+                            },
+                            think: true
                         )
                     )
 
@@ -445,15 +483,46 @@ public struct Ollama: Sendable {
                         guard let json = line.data(using: .utf8) else { continue }
 
                         let data = try JSONDecoder().decode(MessageResponse.self, from: json)
-                        continuation.yield(
-                            ResponseStreamEvent(
-                                type: "response.output_text.delta",
-                                responseID: nil,
-                                outputIndex: 0,
-                                delta: data.message.content,
-                                text: nil
+                        if let thinking = data.message.thinking, !thinking.isEmpty {
+                            continuation.yield(
+                                ResponseStreamEvent(
+                                    type: "response.reasoning.delta",
+                                    responseID: nil,
+                                    outputIndex: 0,
+                                    delta: thinking,
+                                    text: nil
+                                )
                             )
-                        )
+                        }
+
+                        if !data.message.content.isEmpty {
+                            continuation.yield(
+                                ResponseStreamEvent(
+                                    type: "response.output_text.delta",
+                                    responseID: nil,
+                                    outputIndex: 0,
+                                    delta: data.message.content,
+                                    text: nil
+                                )
+                            )
+                        }
+
+                        if let toolCalls = data.message.toolCalls {
+                            for call in toolCalls {
+                                continuation.yield(
+                                    ResponseStreamEvent(
+                                        type: "response.function_call",
+                                        responseID: nil,
+                                        outputIndex: 0,
+                                        delta: nil,
+                                        text: nil,
+                                        name: call.function.name,
+                                        arguments: stringifyJSON(call.function.arguments) ?? "{}",
+                                        callID: nil
+                                    )
+                                )
+                            }
+                        }
 
                         if data.done {
                             continuation.yield(

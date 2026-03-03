@@ -3,10 +3,12 @@ import Foundation
 public struct Message: Codable, Equatable, Sendable {
     public var role: Role
     public var content: String
+    public var thinking: String?
 
-    public init(role: Role, content: String) {
+    public init(role: Role, content: String, thinking: String? = nil) {
         self.role = role
         self.content = content
+        self.thinking = thinking
     }
 }
 
