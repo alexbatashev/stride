@@ -2,3 +2,31 @@ module(name = "friday")
 
 bazel_dep(name = "rules_swift", version = "3.4.2", repo_name = "build_bazel_rules_swift")
 bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "apple_support", version = "1.24.2", repo_name = "build_bazel_apple_support")
+
+apple_cc_configure = use_extension(
+    "@build_bazel_apple_support//crosstool:setup.bzl",
+    "apple_cc_configure_extension",
+)
+use_repo(apple_cc_configure, "local_config_apple_cc_toolchains")
+
+register_toolchains("@local_config_apple_cc_toolchains//:all")
+
+bazel_dep(name = "rules_swift_package_manager", version = "1.13.0")
+
+swift_deps = use_extension(
+    "@rules_swift_package_manager//:extensions.bzl",
+    "swift_deps",
+)
+swift_deps.from_package(
+    swift = "//:Package.swift",
+    resolved = "//:Package.resolved",
+    declare_swift_package = False,
+)
+use_repo(
+    swift_deps,
+    "swiftpkg_fluent",
+    "swiftpkg_fluent_sqlite_driver",
+    "swiftpkg_swift_syntax",
+    "swiftpkg_yams",
+)
