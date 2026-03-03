@@ -1,6 +1,7 @@
-import Testing
-@testable import CoreFriday
 import LLMKit
+import Testing
+
+@testable import CoreFriday
 
 @Test func jsToolReturnsConcatenatedConsoleLogs() async throws {
     let tool = JSTool()
@@ -40,7 +41,7 @@ import LLMKit
 
 @Test func chatStreamExecutesModelFunctionCalls() async throws {
     let transport = ScriptedToolTransport()
-    let chat = ChatStream(transports: [transport])
+    let chat = ChatService(transports: [transport])
     await chat.setModel(providerId: "test-provider", modelId: "test-model")
 
     let stream = await chat.addMessage(
@@ -95,7 +96,9 @@ private final class ScriptedToolTransport: ChatTransport, @unchecked Sendable {
                 ResponseOutput(
                     type: "message",
                     role: .assistant,
-                    content: [ResponseContent(type: "output_text", text: "Tool output: \(toolMessage)")]
+                    content: [
+                        ResponseContent(type: "output_text", text: "Tool output: \(toolMessage)")
+                    ]
                 )
             ],
             usage: nil

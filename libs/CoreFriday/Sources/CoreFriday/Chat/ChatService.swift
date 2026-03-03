@@ -184,7 +184,7 @@ public enum ChatStreamError: Error {
     case maxToolIterationsExceeded
 }
 
-public actor ChatStream {
+public actor ChatService {
     private let transports: [any ChatTransport]
     private let storage: any ChatStorage
 

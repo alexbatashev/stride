@@ -206,6 +206,48 @@ public final class CoreFridayStorage: @unchecked Sendable {
         LocalChatStorage(id: threadId, database: database)
     }
 
+    public func listThreads() throws -> [ChatThread] {
+        let stored = try StoredChatThread.query(on: database)
+            .sort(\.$updatedAt, .descending)
+            .all()
+            .wait()
+        return stored.map { t in
+            ChatThread(
+                id: t.id ?? UUID(),
+                userId: t.userId,
+                title: t.title,
+                createdAt: t.createdAt,
+                updatedAt: t.updatedAt,
+                previewText: t.previewText,
+                isPinned: t.isPinned
+            )
+        }
+    }
+
+    public func upsertThread(_ thread: ChatThread) throws {
+        if let existing = try StoredChatThread.find(thread.id, on: database).wait() {
+            existing.title = thread.title
+            existing.updatedAt = thread.updatedAt
+            existing.previewText = thread.previewText
+            existing.isPinned = thread.isPinned
+            try existing.update(on: database).wait()
+        } else {
+            let stored = StoredChatThread()
+            stored.id = thread.id
+            stored.userId = thread.userId
+            stored.title = thread.title
+            stored.createdAt = thread.createdAt
+            stored.updatedAt = thread.updatedAt
+            stored.previewText = thread.previewText
+            stored.isPinned = thread.isPinned
+            try stored.create(on: database).wait()
+        }
+    }
+
+    public func deleteThread(id: UUID) throws {
+        try StoredChatThread.find(id, on: database).wait()?.delete(on: database).wait()
+    }
+
     private func runMigrationsIfNeeded() throws {
         try CreateStoredConversation().prepare(on: database).wait()
         try CreateStoredConversationTurn().prepare(on: database).wait()

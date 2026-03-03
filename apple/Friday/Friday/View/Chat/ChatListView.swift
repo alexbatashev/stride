@@ -7,23 +7,23 @@ struct ChatListView: View {
     var body: some View {
         @Bindable var modelData = modelData
 
-        let conversations = modelData.sortedConversations
+        let threads = modelData.sortedThreads
 
-        List(selection: $modelData.selectedConversation) {
-            ForEach(conversations) { conversation in
-                NavigationLink(value: conversation) {
-                    ConversationRow(conversation: conversation)
+        List(selection: $modelData.selectedThread) {
+            ForEach(threads) { thread in
+                NavigationLink(value: thread) {
+                    ThreadRow(thread: thread)
                 }
             }
-            .onDelete(perform: modelData.deleteConversations)
+            .onDelete(perform: modelData.deleteThreads)
         }
         .frame(idealWidth: 250)
-        .navigationDestination(for: Conversation.self) { conversation in
-            ChatDetailView(conversation: conversation)
+        .navigationDestination(for: ChatThread.self) { thread in
+            ChatDetailView(thread: thread)
         }
         .accessibilityIdentifier("chatList")
         .overlay {
-            if conversations.isEmpty {
+            if threads.isEmpty {
                 ContentUnavailableView(
                     "No Chats",
                     systemImage: "bubble.left.and.text.bubble.right",
@@ -33,34 +33,34 @@ struct ChatListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button(action: modelData.createConversation) {
+                Button(action: modelData.createThread) {
                     Label("New Chat", systemImage: "square.and.pencil")
                 }
                 .help("New Chat")
                 .accessibilityIdentifier("newChatButton")
             }
         }
-        .onAppear(perform: modelData.ensureInitialConversation)
+        .onAppear(perform: modelData.ensureInitialThread)
     }
 }
 
-private struct ConversationRow: View {
-    let conversation: Conversation
+private struct ThreadRow: View {
+    let thread: ChatThread
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(conversation.title)
+            Text(thread.title.isEmpty ? "New Chat" : thread.title)
                 .font(.headline)
                 .lineLimit(1)
 
-            if !conversation.previewText.isEmpty {
-                Text(conversation.previewText)
+            if !thread.previewText.isEmpty {
+                Text(thread.previewText)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
-            Text(conversation.updatedAt, style: .relative)
+            Text(thread.updatedAt, style: .relative)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

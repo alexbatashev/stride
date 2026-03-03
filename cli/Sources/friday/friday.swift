@@ -9,7 +9,7 @@ struct friday {
 
         let transport = DirectChatTransport(provider: provider)
         let jsTool = JSTool()
-        let chat = ChatStream(transports: [transport])
+        let chat = ChatService(transports: [transport])
         var toolsEnabled = false
 
         let model: String

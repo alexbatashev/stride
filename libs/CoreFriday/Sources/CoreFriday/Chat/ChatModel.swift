@@ -12,7 +12,7 @@ public enum TurnRole: String, Codable, CaseIterable, Sendable {
 
 @GenerateStoredModel(schema: "chat_threads")
 @Observable
-public final class ChatThread: Identifiable, @unchecked Sendable {
+public final class ChatThread: Identifiable, Hashable, @unchecked Sendable {
     public var id: UUID
     // Owner user ID. Locally, it's ok for this value to be nil, but
     // the same model is used on the server, where this field is mandatory.
@@ -34,6 +34,14 @@ public final class ChatThread: Identifiable, @unchecked Sendable {
         self.updatedAt = updatedAt
         self.previewText = previewText
         self.isPinned = isPinned
+    }
+
+    public static func == (lhs: ChatThread, rhs: ChatThread) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 }
 
