@@ -9,22 +9,22 @@ struct FridayTests {
     func bootstrapState() {
         let modelData = ModelData()
 
-        #expect(!modelData.conversations.isEmpty)
+        #expect(!modelData.threads.isEmpty)
         #expect(!modelData.notes.isEmpty)
-        #expect(modelData.selectedConversationID != nil)
-        #expect(modelData.selectedNoteID != nil)
+        #expect(modelData.selectedThread != nil)
+        #expect(modelData.selectedNote != nil)
     }
 
-    @Test("Can create and delete conversations")
-    func conversationLifecycle() {
+    @Test("Can create and delete threads")
+    func threadLifecycle() {
         let modelData = ModelData()
-        let initialCount = modelData.conversations.count
+        let initialCount = modelData.threads.count
 
-        modelData.createConversation()
-        #expect(modelData.conversations.count == initialCount + 1)
+        modelData.createThread()
+        #expect(modelData.threads.count == initialCount + 1)
 
-        modelData.deleteConversations(at: IndexSet(integer: 0))
-        #expect(modelData.conversations.count >= 1)
+        modelData.deleteThreads(at: IndexSet(integer: 0))
+        #expect(modelData.threads.count >= 1)
     }
 
     @Test("Can create and delete notes")

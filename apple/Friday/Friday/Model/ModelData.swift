@@ -5,7 +5,7 @@ import Observation
 
 @Observable
 @MainActor
-final class ModelData {
+public final class ModelData {
     var selectedNavigation: NavigationOptions?
     var selectedThread: ChatThread?
     var selectedNote: Note?
@@ -18,7 +18,7 @@ final class ModelData {
 
     private let storage: CoreFridayStorage
 
-    init() {
+    public init() {
         let storagePath = Self.defaultDatabasePath()
         try? FileManager.default.createDirectory(
             at: URL(fileURLWithPath: storagePath).deletingLastPathComponent(),

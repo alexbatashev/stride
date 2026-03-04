@@ -12,6 +12,7 @@ let package = Package(
         .package(url: "https://github.com/vapor/fluent-sqlite-driver.git", exact: "4.8.1"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", exact: "602.0.0"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.4.0"),
+        .package(url: "https://github.com/swiftlang/swift-markdown", from: "0.7.3"),
     ],
     targets: []
 )
