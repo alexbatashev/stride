@@ -1,0 +1,15 @@
+{
+  "backgroundIndexing": true,
+  "backgroundPreparationMode": "build",
+  "defaultWorkspaceType": "buildServer",
+  "index": {
+    "indexPrefixMap": {
+      "./bazel-out": "/private/var/tmp/_bazel_alex/b5960fe6a28be044358e3e6e6e95d349-sourcekit-bazel-bsp/execroot/_main/bazel-out",
+      "./external": "/private/var/tmp/_bazel_alex/b5960fe6a28be044358e3e6e6e95d349-sourcekit-bazel-bsp/execroot/_main/external"
+    }
+  },
+  "preparationBatchingStrategy": {
+    "batchSize": 10,
+    "strategy": "fixedTargetBatchSize"
+  }
+}

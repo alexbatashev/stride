@@ -1,10 +1,12 @@
 import SwiftUI
 
-struct MainView: View {
+public struct MainView: View {
     @Environment(ModelData.self) private var modelData
     @State private var isPresentingChatSettings = false
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         @Bindable var modelData = modelData
 
         NavigationSplitView {

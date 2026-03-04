@@ -1,0 +1,2 @@
+repo(default_visibility=["//visibility:public"])
+ignore_directories(["**/.build"])
