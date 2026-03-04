@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::tools::{Tool, ToolArg};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 pub enum TurnRole {
     User,
     Assistant,
@@ -63,7 +63,7 @@ pub struct ChatThread {
     pub is_pinned: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ChatMessage {
     pub id: Uuid,
     pub thread_id: Uuid,
@@ -107,7 +107,7 @@ impl ChatMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct LangModel {
     pub provider: String,
     pub model: String,
@@ -115,7 +115,7 @@ pub struct LangModel {
     pub model_name: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 pub enum ChatProviderKind {
     OpenAICompatible,
     Ollama,
@@ -123,7 +123,7 @@ pub enum ChatProviderKind {
     Mock,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ChatProviderConfiguration {
     pub id: Uuid,
     pub name: String,
@@ -535,7 +535,7 @@ impl ChatStorage for LocalChatStorage {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, uniffi::Object)]
 pub struct ChatService {
     transports: Vec<Arc<dyn ChatTransport>>,
     storage: Arc<dyn ChatStorage>,
@@ -771,6 +771,83 @@ impl ChatService {
     async fn append_message(&self, message: ChatMessage) {
         self.state.lock().await.messages.push(message.clone());
         self.storage.append_message(message).await;
+    }
+}
+
+#[derive(Debug, Error, uniffi::Error)]
+pub enum ChatFFIError {
+    #[error("chat stream failed: {0}")]
+    Stream(String),
+    #[error("no response produced")]
+    EmptyResponse,
+}
+
+#[uniffi::export]
+impl ChatService {
+    #[uniffi::constructor]
+    pub fn new_with_providers(providers: Vec<ChatProviderConfiguration>) -> Arc<Self> {
+        let transports: Vec<Arc<dyn ChatTransport>> = providers
+            .into_iter()
+            .map(DirectChatTransport::from_provider)
+            .map(|transport| Arc::new(transport) as Arc<dyn ChatTransport>)
+            .collect();
+        let storage: Arc<dyn ChatStorage> = Arc::new(NullChatStorage);
+        Arc::new(Self::new(transports, storage))
+    }
+
+    #[uniffi::constructor]
+    pub fn new_ollama(base_url: String, token: String) -> Arc<Self> {
+        Self::new_with_providers(vec![ChatProviderConfiguration {
+            id: Uuid::new_v4(),
+            name: "Local Ollama".to_owned(),
+            kind: ChatProviderKind::Ollama,
+            base_url,
+            token,
+            default_model: String::new(),
+        }])
+    }
+
+    pub async fn ffi_list_models(&self) -> Vec<LangModel> {
+        self.list_models().await
+    }
+
+    pub async fn ffi_get_messages(&self) -> Vec<ChatMessage> {
+        self.get_messages().await
+    }
+
+    pub async fn ffi_set_model(&self, provider_id: String, model_id: String) {
+        self.set_model(provider_id, model_id).await;
+    }
+
+    pub async fn add_message_collect(
+        &self,
+        tools_enabled: bool,
+        next: ChatMessage,
+    ) -> Result<Vec<ChatMessage>, ChatFFIError> {
+        let tools: Vec<Arc<dyn Tool>> = if tools_enabled {
+            vec![Arc::new(crate::tools::JSTool::new()) as Arc<dyn Tool>]
+        } else {
+            vec![]
+        };
+
+        let mut stream = self.add_message(tools, next).await;
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(message) => chunks.push(message),
+                Err(error) => return Err(ChatFFIError::Stream(error.to_string())),
+            }
+        }
+        Ok(chunks)
+    }
+
+    pub async fn add_message_final(
+        &self,
+        tools_enabled: bool,
+        next: ChatMessage,
+    ) -> Result<ChatMessage, ChatFFIError> {
+        let mut chunks = self.add_message_collect(tools_enabled, next).await?;
+        chunks.pop().ok_or(ChatFFIError::EmptyResponse)
     }
 }
 

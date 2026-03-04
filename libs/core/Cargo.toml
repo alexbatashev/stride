@@ -1,8 +1,8 @@
 [package]
-name = "friday-uniffi"
+name = "friday"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "friday_uniffi"
+name = "friday"
 crate-type = ["cdylib", "rlib"]

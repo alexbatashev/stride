@@ -28,12 +28,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let language = language.ok_or("missing --language")?;
     let library = library.ok_or("missing --library")?;
     let out_dir = out_dir.ok_or("missing --out-dir")?;
-
     let config_supplier = uniffi_bindgen::EmptyCrateConfigSupplier;
 
     match language.as_str() {
         "swift" => {
-            let components = library_mode::generate_bindings(
+            library_mode::generate_bindings(
                 &library,
                 None,
                 &SwiftBindingGenerator,
@@ -42,12 +41,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &out_dir,
                 false,
             )?;
-            if components.is_empty() {
-                return Err("no UniFFI components discovered in library".into());
-            }
         }
         "kotlin" => {
-            let components = library_mode::generate_bindings(
+            library_mode::generate_bindings(
                 &library,
                 None,
                 &KotlinBindingGenerator,
@@ -56,9 +52,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &out_dir,
                 false,
             )?;
-            if components.is_empty() {
-                return Err("no UniFFI components discovered in library".into());
-            }
         }
         _ => return Err(format!("unsupported language: {language}").into()),
     }
