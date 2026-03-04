@@ -19,6 +19,7 @@ swift_library(
     ),
     module_name = "Friday",
     deps = _DEPS,
+    tags = ["manual", "apple"],
 )
 
 # App entry point — separate module so its @main doesn't conflict with tests.
@@ -27,6 +28,7 @@ swift_library(
     name = "FridayAppEntry",
     srcs = ["Friday/FridayApp.swift"],
     module_name = "FridayAppEntry",
+    tags = ["manual", "apple"],
     deps = [":FridayLib"],
 )
 
@@ -41,6 +43,8 @@ macos_application(
         exclude = ["Friday/Assets.xcassets/AppIcon.appiconset/**"],
     ),
     deps = [":FridayAppEntry"],
+    tags = ["manual", "apple"],
+    target_compatible_with = ["@platforms//os:osx"],
 )
 
 # Provisioning profile for iOS device builds — resolved from locally installed
@@ -48,6 +52,8 @@ macos_application(
 local_provisioning_profile(
     name = "ios_provisioning_profile",
     profile_name = "iOS Team Provisioning Profile: me.batashev.Friday",
+    tags = ["manual", "apple"],
+    target_compatible_with = ["@platforms//os:ios"],
 )
 
 # iOS bundle
@@ -66,6 +72,8 @@ ios_application(
         exclude = ["Friday/Assets.xcassets/AppIcon.appiconset/**"],
     ),
     deps = [":FridayAppEntry"],
+    tags = ["manual", "apple"],
+    target_compatible_with = ["@platforms//os:ios"],
 )
 
 # Unit tests (swift_test, no app host needed)

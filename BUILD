@@ -21,12 +21,14 @@ setup_sourcekit_bsp(
         "//libs/...",
         "//apple/Friday/...",
     ],
+    tags = ["manual"],
 )
 
 xcodeproj(
     name = "xcodeproj",
     project_name = "Friday",
-    tags = ["manual"],
+    tags = ["manual", "apple"],
+    target_compatible_with = ["@platforms//os:osx"],
     top_level_targets = [
         top_level_target("//apple/Friday:FridayiOS", target_environments = ["device", "simulator"]),
         top_level_target("//apple/Friday:FridaymacOS", target_environments = ["device"]),

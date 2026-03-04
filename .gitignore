@@ -83,4 +83,6 @@ apple/Friday/Frameworks/
 
 bazel-*
 .bsp
+.sourcekit-lsp
 *.xcodeproj
+.bazelrc.local

@@ -1,0 +1,17 @@
+# rules_swift on Linux requires an LLVM C/C++ toolchain.
+# Keep repository defaults generic and machine-agnostic.
+common --repo_env=CC=clang
+common --repo_env=CXX=clang++
+common --repo_env=BAZEL_COMPILER=clang
+build --action_env=CC=clang
+build --action_env=CXX=clang++
+build --compiler=clang
+
+# Suppress warnings from selected external SwiftPM modules.
+# Format: <target-label>=<comma-delimited-swiftcopts>
+build --@build_bazel_rules_swift//swift:per_module_swiftcopt=@swiftpkg_swift_system//:SystemPackage.rspm=-suppress-warnings
+
+# Per-machine overrides (ignored by git).
+# Use this when local PATH has wrappers (for example, swiftly shims) and you
+# need to point Bazel repo autoconfiguration at real compiler binaries.
+try-import %workspace%/.bazelrc.local
