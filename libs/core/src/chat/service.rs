@@ -1,4 +1,5 @@
 use super::ChatMessage;
+use super::ChatThread;
 use super::LangModel;
 use super::ToolInvocation;
 use super::ToolInvocationStatus;
@@ -9,14 +10,13 @@ use super::storage::*;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_stream::stream;
 use futures::{Stream, StreamExt, future::BoxFuture};
 use llm::{
     API, Completion, CompletionChoice, CompletionRequest, Message, OpenAI, Role, UnnamedToolChoice,
 };
-use minisql::{ConnectionPool, Migration, migrations};
+use minisql::ConnectionPool;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{Mutex, OnceCell};
@@ -189,8 +189,8 @@ impl ChatTransport for DirectChatTransport {
                 content: String::new(),
                 tool_call: None,
                 tool_result: None,
-                created_at: now,
-                updated_at: now,
+                created_at_ms: now,
+                updated_at_ms: now,
                 is_done: false,
                 usage: None,
             };
@@ -201,7 +201,7 @@ impl ChatTransport for DirectChatTransport {
                     Ok(chunk) => chunk,
                     Err(error) => {
                         response.is_done = true;
-                        response.updated_at = now_millis();
+                        response.updated_at_ms = now_millis();
                         yield Ok(response.clone());
                         yield Err(error);
                         return;
@@ -212,7 +212,7 @@ impl ChatTransport for DirectChatTransport {
                     merge_tool_calls(&mut tool_calls, &choice);
                     if !tool_calls.is_empty() {
                         response.tool_call = json_string(&tool_calls);
-                        response.updated_at = now_millis();
+                        response.updated_at_ms = now_millis();
                         yield Ok(response.clone());
                     }
 
@@ -229,7 +229,7 @@ impl ChatTransport for DirectChatTransport {
                         .unwrap_or_default();
                     if !token.is_empty() {
                         response.content.push_str(&token);
-                        response.updated_at = now_millis();
+                        response.updated_at_ms = now_millis();
                         yield Ok(response.clone());
                     }
 
@@ -244,14 +244,14 @@ impl ChatTransport for DirectChatTransport {
                             Some(thinking) => thinking.push_str(&reasoning),
                             None => response.thinking = Some(reasoning),
                         }
-                        response.updated_at = now_millis();
+                        response.updated_at_ms = now_millis();
                         yield Ok(response.clone());
                     }
                 }
             }
 
             response.is_done = true;
-            response.updated_at = now_millis();
+            response.updated_at_ms = now_millis();
             yield Ok(response);
         })
     }
@@ -295,25 +295,6 @@ impl ChatService {
             storage,
             state: Arc::new(Mutex::new(ChatServiceState::default())),
         }
-    }
-
-    pub async fn list_models(&self) -> Vec<LangModel> {
-        let mut merged = Vec::new();
-        for transport in &self.transports {
-            merged.extend(transport.list_models().await);
-        }
-        merged
-    }
-
-    pub async fn get_messages(&self) -> Vec<ChatMessage> {
-        self.ensure_messages_loaded().await;
-        self.state.lock().await.messages.clone()
-    }
-
-    pub async fn set_model(&self, provider_id: String, model_id: String) {
-        let mut state = self.state.lock().await;
-        state.provider_id = Some(provider_id);
-        state.model_id = Some(model_id);
     }
 
     pub async fn add_message(
@@ -403,7 +384,7 @@ impl ChatService {
                         Err(error) => {
                             if let Some(mut latest) = latest {
                                 latest.is_done = true;
-                                latest.updated_at = now_millis();
+                                latest.updated_at_ms = now_millis();
                                 this.append_message(latest).await;
                             }
                             yield Err(ChatStreamError::Transport(error.to_string()));
@@ -416,7 +397,7 @@ impl ChatService {
                     return;
                 };
                 assistant.is_done = true;
-                assistant.updated_at = now_millis();
+                assistant.updated_at_ms = now_millis();
                 this.append_message(assistant.clone()).await;
                 working_messages.push(assistant.clone());
 
@@ -467,8 +448,8 @@ impl ChatService {
                         content: result,
                         tool_call: None,
                         tool_result: assistant.tool_result.clone(),
-                        created_at: now_millis(),
-                        updated_at: now_millis(),
+                        created_at_ms: now_millis(),
+                        updated_at_ms: now_millis(),
                         is_done: true,
                         usage: None,
                     };
@@ -477,7 +458,7 @@ impl ChatService {
                 }
 
                 assistant.tool_result = json_string(&tool_result_entries);
-                assistant.updated_at = now_millis();
+                assistant.updated_at_ms = now_millis();
             }
 
             yield Err(ChatStreamError::MaxToolIterationsExceeded);
@@ -500,7 +481,7 @@ impl ChatService {
         }
 
         let mut loaded = self.storage.list_messages().await;
-        loaded.sort_by_key(|message| message.created_at);
+        loaded.sort_by_key(|message| message.created_at_ms);
         self.state.lock().await.messages = loaded;
     }
 
@@ -543,16 +524,23 @@ impl ChatService {
         }])
     }
 
-    pub async fn ffi_list_models(&self) -> Vec<LangModel> {
-        self.list_models().await
+    pub async fn list_models(&self) -> Vec<LangModel> {
+        let mut merged = Vec::new();
+        for transport in &self.transports {
+            merged.extend(transport.list_models().await);
+        }
+        merged
     }
 
-    pub async fn ffi_get_messages(&self) -> Vec<ChatMessage> {
-        self.get_messages().await
+    pub async fn get_messages(&self) -> Vec<ChatMessage> {
+        self.ensure_messages_loaded().await;
+        self.state.lock().await.messages.clone()
     }
 
-    pub async fn ffi_set_model(&self, provider_id: String, model_id: String) {
-        self.set_model(provider_id, model_id).await;
+    pub async fn set_model(&self, provider_id: String, model_id: String) {
+        let mut state = self.state.lock().await;
+        state.provider_id = Some(provider_id);
+        state.model_id = Some(model_id);
     }
 
     pub async fn add_message_collect(
@@ -681,4 +669,185 @@ fn parse_tool_args(arguments_json: &str) -> Vec<ToolArg> {
             ToolArg { name, value }
         })
         .collect()
+}
+
+// ─── ChatDatabase ────────────────────────────────────────────────────────────
+
+#[derive(uniffi::Object)]
+pub struct ChatDatabase {
+    url: String,
+    pool: OnceCell<Arc<ConnectionPool>>,
+    migrations_ready: OnceCell<()>,
+}
+
+impl ChatDatabase {
+    async fn get_pool(&self) -> Arc<ConnectionPool> {
+        self.pool
+            .get_or_init(|| async {
+                Arc::new(ConnectionPool::new(&self.url).expect("open database"))
+            })
+            .await
+            .clone()
+    }
+
+    async fn ensure_ready(&self) {
+        let pool = self.get_pool().await;
+        let _ = self
+            .migrations_ready
+            .get_or_init(|| async {
+                let _ = pool.initialize_database(crate::data::get_migrations()).await;
+            })
+            .await;
+    }
+}
+
+#[uniffi::export]
+impl ChatDatabase {
+    #[uniffi::constructor]
+    pub fn open(path: String) -> Arc<Self> {
+        let url = format!("sqlite:{}", path);
+        Arc::new(Self {
+            url,
+            pool: OnceCell::new(),
+            migrations_ready: OnceCell::new(),
+        })
+    }
+
+    pub async fn list_threads(&self) -> Vec<ChatThread> {
+        self.ensure_ready().await;
+        let pool = self.get_pool().await;
+        let result = crate::data::chat_threads::select()
+            .order_by_desc(crate::data::chat_threads::updated_at)
+            .all(&*pool)
+            .await;
+        match result {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|row| ChatThread {
+                    id: row.id,
+                    user_id: row.user_id,
+                    title: row.title,
+                    created_at_ms: row.created_at,
+                    updated_at_ms: row.updated_at,
+                    preview_text: row.preview_text,
+                    is_pinned: row.is_pinned,
+                })
+                .collect(),
+            Err(_) => vec![],
+        }
+    }
+
+    pub async fn list_messages(&self, thread_id: Uuid) -> Vec<ChatMessage> {
+        self.ensure_ready().await;
+        let pool = self.get_pool().await;
+        let result = crate::data::chat_messages::select()
+            .where_(crate::data::chat_messages::thread_id.eq(thread_id))
+            .order_by_asc(crate::data::chat_messages::created_at)
+            .all(&*pool)
+            .await;
+        match result {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|row| {
+                    let role = match row.role.as_str() {
+                        "User" => TurnRole::User,
+                        "Assistant" => TurnRole::Assistant,
+                        "Tool" => TurnRole::Tool,
+                        "System" => TurnRole::System,
+                        _ => return None,
+                    };
+                    Some(ChatMessage {
+                        id: row.id,
+                        thread_id: row.thread_id,
+                        user_id: row.user_id,
+                        parent_id: row.parent_id,
+                        provider_id: row.provider_id,
+                        model_id: row.model_id,
+                        model_name: row.model_name,
+                        role,
+                        thinking: row.thinking,
+                        content: row.content,
+                        tool_call: row.tool_call,
+                        tool_result: row.tool_result,
+                        created_at_ms: row.created_at,
+                        updated_at_ms: row.updated_at,
+                        is_done: row.is_done,
+                        usage: row.usage,
+                    })
+                })
+                .collect(),
+            Err(_) => vec![],
+        }
+    }
+
+    pub async fn upsert_thread(&self, thread: ChatThread) {
+        self.ensure_ready().await;
+        let pool = self.get_pool().await;
+        let exists = crate::data::chat_threads::select()
+            .where_(crate::data::chat_threads::id.eq(thread.id))
+            .limit(1)
+            .all(&*pool)
+            .await
+            .map(|rows| !rows.is_empty())
+            .unwrap_or(false);
+
+        if exists {
+            let _ = pool
+                .query_with_params(
+                    "UPDATE chat_threads SET title = ?, updated_at = ?, preview_text = ?, is_pinned = ? WHERE id = ?",
+                    vec![
+                        minisql::Value::Text(thread.title),
+                        minisql::Value::Integer(thread.updated_at_ms),
+                        minisql::Value::Text(thread.preview_text),
+                        minisql::Value::Integer(if thread.is_pinned { 1i64 } else { 0i64 }),
+                        minisql::Value::Uuid(thread.id),
+                    ],
+                )
+                .await;
+        } else {
+            let _ = crate::data::chat_threads::insert()
+                .id(thread.id)
+                .user_id(thread.user_id)
+                .title(thread.title)
+                .created_at(thread.created_at_ms)
+                .updated_at(thread.updated_at_ms)
+                .preview_text(thread.preview_text)
+                .is_pinned(thread.is_pinned)
+                .execute(&*pool)
+                .await;
+        }
+    }
+
+    pub async fn delete_thread(&self, thread_id: Uuid) {
+        self.ensure_ready().await;
+        let pool = self.get_pool().await;
+        let _ = pool
+            .query_with_params(
+                "DELETE FROM chat_messages WHERE thread_id = ?",
+                vec![minisql::Value::Uuid(thread_id)],
+            )
+            .await;
+        let _ = pool
+            .query_with_params(
+                "DELETE FROM chat_threads WHERE id = ?",
+                vec![minisql::Value::Uuid(thread_id)],
+            )
+            .await;
+    }
+
+    pub async fn make_service(
+        &self,
+        thread_id: Uuid,
+        providers: Vec<ChatProviderConfiguration>,
+    ) -> Arc<ChatService> {
+        let pool = self.get_pool().await;
+        let transports: Vec<Arc<dyn ChatTransport>> = providers
+            .into_iter()
+            .map(DirectChatTransport::from_provider)
+            .map(|t| Arc::new(t) as Arc<dyn ChatTransport>)
+            .collect();
+        let storage: Arc<dyn ChatStorage> =
+            Arc::new(LocalChatStorage::new(thread_id, pool));
+        Arc::new(ChatService::new(transports, storage))
+    }
 }

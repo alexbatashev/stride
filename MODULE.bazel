@@ -64,7 +64,7 @@ crate.spec(package = "axum", version = "0.8.4")
 crate.spec(
     package = "uniffi",
     version = "0.29.4",
-    features = ["cli"],
+    features = ["cli", "tokio"],
 )
 crate.spec(package = "uniffi_bindgen", version = "0.29.4")
 crate.spec(package = "camino", version = "1.2.2")

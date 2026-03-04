@@ -22,47 +22,20 @@ public struct MainView: View {
             }
             .listStyle(.sidebar)
         } content: {
-            switch modelData.selectedNavigation ?? .chat {
-            case .chat:
-                ChatListView()
-            case .notes:
-                NotesListView()
-            }
+            ChatListView()
         } detail: {
-            switch modelData.selectedNavigation ?? .chat {
-            case .chat:
-                if let thread = modelData.selectedThread {
-                    ChatDetailView(thread: thread)
-                } else {
-                    ContentUnavailableView(
-                        "Select a Chat",
-                        systemImage: "bubble.left.and.text.bubble.right",
-                        description: Text("Choose or create a conversation from the middle column.")
-                    )
-                }
-            case .notes:
-                if let note = modelData.selectedNote {
-                    NoteDetailView(note: note)
-                } else {
-                    ContentUnavailableView(
-                        "Select a Note",
-                        systemImage: "note.text",
-                        description: Text("Choose or create a note from the middle column.")
-                    )
-                }
+            if let thread = modelData.selectedThread {
+                ChatDetailView(thread: thread)
+            } else {
+                ContentUnavailableView(
+                    "Select a Chat",
+                    systemImage: "bubble.left.and.text.bubble.right",
+                    description: Text("Choose or create a conversation from the middle column.")
+                )
             }
         }
         .searchable(text: $modelData.searchString, prompt: "Search")
         .navigationSplitViewStyle(.balanced)
-//        .toolbar {
-//            ToolbarItem(placement: .automatic) {
-//                Button {
-//                    isPresentingChatSettings = true
-//                } label: {
-//                    Label("Chat Settings", systemImage: "slider.horizontal.3")
-//                }
-//            }
-//        }
         .sheet(isPresented: $isPresentingChatSettings) {
             ChatSettingsView()
         }
@@ -72,8 +45,6 @@ public struct MainView: View {
         switch option {
         case .chat:
             return "navigationChatTab"
-        case .notes:
-            return "navigationNotesTab"
         }
     }
 }

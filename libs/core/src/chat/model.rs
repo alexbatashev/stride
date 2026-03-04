@@ -56,13 +56,13 @@ pub struct ToolInvocation {
     pub ended_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ChatThread {
     pub id: Uuid,
     pub user_id: Option<Uuid>,
     pub title: String,
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
     pub preview_text: String,
     pub is_pinned: bool,
 }
@@ -81,8 +81,8 @@ pub struct ChatMessage {
     pub content: String,
     pub tool_call: Option<String>,
     pub tool_result: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
     pub is_done: bool,
     pub usage: Option<String>,
 }
@@ -103,8 +103,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call: None,
             tool_result: None,
-            created_at: now,
-            updated_at: now,
+            created_at_ms: now,
+            updated_at_ms: now,
             is_done: false,
             usage: None,
         }

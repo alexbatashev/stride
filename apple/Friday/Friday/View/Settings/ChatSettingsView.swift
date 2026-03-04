@@ -5,9 +5,9 @@ struct ChatSettingsView: View {
     @Environment(ModelData.self) private var modelData
     @Environment(\.dismiss) private var dismiss
 
-    @State private var providerID: UUID?
+    @State private var providerID: String?
     @State private var name: String = ""
-    @State private var kind: ChatProviderKind = .openAICompatible
+    @State private var kind: ChatProviderKind = .openAiCompatible
     @State private var baseURL: String = ""
     @State private var token: String = ""
     @State private var defaultModel: String = ""
@@ -66,7 +66,10 @@ struct ChatSettingsView: View {
 
                 Section("Models") {
                     HStack {
-                        Button(modelData.chatSettings.isRefreshingModels ? "Refreshing..." : "Refresh Models") {
+                        Button(
+                            modelData.chatSettings.isRefreshingModels
+                                ? "Refreshing..." : "Refresh Models"
+                        ) {
                             saveEditsToStore()
                             Task { await modelData.refreshModels() }
                         }
@@ -134,12 +137,13 @@ struct ChatSettingsView: View {
         }
 
         let trimmedModel = defaultModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let updated = ChatProviderConfiguration(
             id: providerID,
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Provider" : name.trimmingCharacters(in: .whitespacesAndNewlines),
+            name: trimmedName.isEmpty ? "Provider" : trimmedName,
             kind: kind,
-            baseURL: sanitizedBaseURL,
+            baseUrl: sanitizedBaseURL,
             token: token.trimmingCharacters(in: .whitespacesAndNewlines),
             defaultModel: trimmedModel
         )

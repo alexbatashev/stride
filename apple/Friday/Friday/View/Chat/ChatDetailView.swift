@@ -1,10 +1,11 @@
 import CoreFriday
 import Markdown
 import SwiftUI
+
 #if os(macOS)
-import AppKit
+    import AppKit
 #elseif canImport(UIKit)
-import UIKit
+    import UIKit
 #endif
 
 struct ChatDetailView: View {
@@ -12,7 +13,7 @@ struct ChatDetailView: View {
     let thread: ChatThread
 
     @State private var messages: [ChatMessage] = []
-    @State private var errorMessageIDs: Set<UUID> = []
+    @State private var errorMessageIDs: Set<String> = []
     @State private var draftText: String = ""
     @State private var isSending = false
     @State private var currentStreamTask: Task<Void, Never>?
@@ -55,7 +56,8 @@ struct ChatDetailView: View {
             }
 
             ToolbarItem(id: "share", placement: .automatic) {
-                Button {} label: {
+                Button {
+                } label: {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
             }
@@ -65,7 +67,8 @@ struct ChatDetailView: View {
 
     private var currentModelDisplayName: String {
         if let provider = modelData.chatSettings.activeProvider,
-           !modelData.chatSettings.activeModel.isEmpty {
+            !modelData.chatSettings.activeModel.isEmpty
+        {
             return "\(provider.name) / \(modelData.chatSettings.activeModel)"
         }
         return "Select Model"
@@ -78,7 +81,7 @@ struct ChatDetailView: View {
 
         return modelData.chatSettings.availableModels.map { modelID in
             LangModel(
-                provider: provider.id.uuidString,
+                provider: provider.id,
                 model: modelID,
                 providerName: provider.name,
                 modelName: modelID
@@ -108,7 +111,8 @@ struct ChatDetailView: View {
                 .padding()
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(availableModels.prefix(3).enumerated()), id: \.element.model) { index, langModel in
+                    ForEach(Array(availableModels.prefix(3).enumerated()), id: \.element.model) {
+                        index, langModel in
                         Button {
                             selectModel(langModel)
                             showingModelPopover = false
@@ -223,7 +227,7 @@ struct ChatDetailView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 18)
-                .padding(.bottom, 120) // Extra padding so content can scroll behind the composer
+                .padding(.bottom, 120)  // Extra padding so content can scroll behind the composer
             }
             .onAppear {
                 scrollProxy = proxy
@@ -273,7 +277,8 @@ struct ChatDetailView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20, style: .continuous))
+                    .glassEffect(
+                        .regular.interactive(), in: .rect(cornerRadius: 20, style: .continuous))
 
                     Group {
                         if isSending {
@@ -292,7 +297,8 @@ struct ChatDetailView: View {
                             .accessibilityIdentifier("stopMessageButton")
                             .help("Stop generation")
                             .transition(.opacity.combined(with: .scale))
-                        } else if draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        } else if draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        {
                             Button {
                                 // TODO: Implement voice dictation
                             } label: {
@@ -309,7 +315,8 @@ struct ChatDetailView: View {
                                 Image(systemName: "arrow.up")
                                     .font(.system(size: 16, weight: .bold))
                                     .frame(width: 30, height: 30)
-                                    .glassEffect(.regular.tint(.accentColor).interactive(), in: .circle)
+                                    .glassEffect(
+                                        .regular.tint(.accentColor).interactive(), in: .circle)
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("sendMessageButton")
@@ -330,18 +337,12 @@ struct ChatDetailView: View {
         let trimmed = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let userMessage = ChatMessage(
-            threadId: thread.id,
-            role: .user,
-            content: trimmed
-        )
-        messages.append(userMessage)
+        let userMessage = ChatMessage.makeNew(threadId: thread.id, role: .user, content: trimmed)
+        let assistantMessage = ChatMessage.makeNew(
+            threadId: thread.id, role: .assistant, content: "")
+        let assistantId = assistantMessage.id
 
-        let assistantMessage = ChatMessage(
-            threadId: thread.id,
-            role: .assistant,
-            content: ""
-        )
+        messages.append(userMessage)
         messages.append(assistantMessage)
 
         draftText = ""
@@ -365,44 +366,51 @@ struct ChatDetailView: View {
                 for try await partial in await modelData.addMessage(text: trimmed, in: thread) {
                     if Task.isCancelled {
                         await MainActor.run {
-                            let current = assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if current.isEmpty {
-                                assistantMessage.content = "(Generation cancelled)"
-                            } else {
-                                assistantMessage.content += "\n\n(Generation cancelled)"
+                            if let idx = messages.firstIndex(where: { $0.id == assistantId }) {
+                                let current = messages[idx].content.trimmingCharacters(
+                                    in: .whitespacesAndNewlines)
+                                let updated =
+                                    current.isEmpty
+                                    ? "(Generation cancelled)"
+                                    : current + "\n\n(Generation cancelled)"
+                                messages[idx] = messages[idx].withContent(updated)
+                                modelData.updateThread(thread.id, previewText: updated)
                             }
-                            thread.previewText = assistantMessage.content
-                            thread.updatedAt = .now
-                            errorMessageIDs.insert(assistantMessage.id)
+                            errorMessageIDs.insert(assistantId)
                         }
                         return
                     }
 
                     await MainActor.run {
-                        assistantMessage.content = partial.content
-                        thread.previewText = partial.content
-                        thread.updatedAt = .now
+                        if let idx = messages.firstIndex(where: { $0.id == assistantId }) {
+                            messages[idx] = messages[idx].withContent(partial.content)
+                        }
+                        modelData.updateThread(thread.id, previewText: partial.content)
                     }
                 }
 
                 await MainActor.run {
-                    if assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        assistantMessage.content = "(No text returned)"
+                    if let idx = messages.firstIndex(where: { $0.id == assistantId }) {
+                        let content = messages[idx].content
+                        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            messages[idx] = messages[idx].withContent("(No text returned)")
+                        }
+                        modelData.updateThread(thread.id, previewText: messages[idx].content)
                     }
-                    thread.previewText = assistantMessage.content
-                    thread.updatedAt = .now
                 }
             } catch {
                 await MainActor.run {
-                    let base = assistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if base.isEmpty {
-                        assistantMessage.content = "Request failed: \(error.localizedDescription)"
-                    } else {
-                        assistantMessage.content += "\n\nRequest failed: \(error.localizedDescription)"
+                    if let idx = messages.firstIndex(where: { $0.id == assistantId }) {
+                        let base = messages[idx].content.trimmingCharacters(
+                            in: .whitespacesAndNewlines)
+                        let updated =
+                            base.isEmpty
+                            ? "Request failed: \(error.localizedDescription)"
+                            : base + "\n\nRequest failed: \(error.localizedDescription)"
+                        messages[idx] = messages[idx].withContent(updated)
+                        modelData.updateThread(thread.id, previewText: updated)
                     }
-                    thread.previewText = assistantMessage.content
-                    thread.updatedAt = .now
-                    errorMessageIDs.insert(assistantMessage.id)
+                    errorMessageIDs.insert(assistantId)
                 }
             }
         }
@@ -475,11 +483,11 @@ private struct TurnBubble: View {
 
     private func copyPlainTextToPasteboard(_ text: String) {
         #if os(macOS)
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
         #elseif canImport(UIKit)
-        UIPasteboard.general.string = text
+            UIPasteboard.general.string = text
         #endif
     }
 
@@ -488,23 +496,23 @@ private struct TurnBubble: View {
         let nsAttributed = NSAttributedString(attributed)
 
         #if os(macOS)
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        if let rtf = try? nsAttributed.data(
-            from: NSRange(location: 0, length: nsAttributed.length),
-            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-        ) {
-            pasteboard.setData(rtf, forType: .rtf)
-        }
-        pasteboard.setString(nsAttributed.string, forType: .string)
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            if let rtf = try? nsAttributed.data(
+                from: NSRange(location: 0, length: nsAttributed.length),
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+            ) {
+                pasteboard.setData(rtf, forType: .rtf)
+            }
+            pasteboard.setString(nsAttributed.string, forType: .string)
         #elseif canImport(UIKit)
-        if let rtf = try? nsAttributed.data(
-            from: NSRange(location: 0, length: nsAttributed.length),
-            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-        ) {
-            UIPasteboard.general.setData(rtf, forPasteboardType: "public.rtf")
-        }
-        UIPasteboard.general.string = nsAttributed.string
+            if let rtf = try? nsAttributed.data(
+                from: NSRange(location: 0, length: nsAttributed.length),
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+            ) {
+                UIPasteboard.general.setData(rtf, forPasteboardType: "public.rtf")
+            }
+            UIPasteboard.general.string = nsAttributed.string
         #endif
     }
 }
@@ -544,22 +552,22 @@ private struct AssistantMarkdownView: View {
     @ViewBuilder
     private func richTextView(for attributed: AttributedString) -> some View {
         #if os(macOS)
-        ReplySelectableTextView(
-            displayedText: NSAttributedString(attributed),
-            fullReplyMarkdown: markdown,
-            fullReplyRichText: NSAttributedString(attributedMarkdownForWholeReply(markdown))
-        )
+            ReplySelectableTextView(
+                displayedText: NSAttributedString(attributed),
+                fullReplyMarkdown: markdown,
+                fullReplyRichText: NSAttributedString(attributedMarkdownForWholeReply(markdown))
+            )
         #else
-        Text(attributed)
-            .contextMenu {
-                Button("Copy Reply as Markdown") {
-                    onCopyMarkdown()
-                }
+            Text(attributed)
+                .contextMenu {
+                    Button("Copy Reply as Markdown") {
+                        onCopyMarkdown()
+                    }
 
-                Button("Copy Reply as Rich Text") {
-                    onCopyRichText()
+                    Button("Copy Reply as Rich Text") {
+                        onCopyRichText()
+                    }
                 }
-            }
         #endif
     }
 
@@ -736,125 +744,128 @@ private struct SoftBreakToHardBreakRewriter: MarkupRewriter {
 }
 
 #if os(macOS)
-private struct ReplySelectableTextView: NSViewRepresentable {
-    let displayedText: NSAttributedString
-    let fullReplyMarkdown: String
-    let fullReplyRichText: NSAttributedString
+    private struct ReplySelectableTextView: NSViewRepresentable {
+        let displayedText: NSAttributedString
+        let fullReplyMarkdown: String
+        let fullReplyRichText: NSAttributedString
 
-    func makeNSView(context: Context) -> ReplyTextView {
-        let view = ReplyTextView()
-        view.isEditable = false
-        view.isSelectable = true
-        view.drawsBackground = false
-        view.isRichText = true
-        view.importsGraphics = false
-        view.textContainerInset = NSSize(width: 0, height: 0)
-        view.textContainer?.lineFragmentPadding = 0
-        view.textContainer?.widthTracksTextView = true
-        view.isHorizontallyResizable = false
-        view.isVerticallyResizable = true
-        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        view.setContentCompressionResistancePriority(.required, for: .vertical)
-        view.setContentHuggingPriority(.required, for: .vertical)
-        view.updateContextMenu()
-        return view
-    }
-
-    func updateNSView(_ view: ReplyTextView, context: Context) {
-        view.fullReplyMarkdown = fullReplyMarkdown
-        view.fullReplyRichText = fullReplyRichText
-        view.updateContextMenu()
-
-        let display = displayedText.withDefaultTextColor(.labelColor)
-
-        if view.textStorage?.string != display.string {
-            view.textStorage?.setAttributedString(display)
-            view.invalidateIntrinsicContentSize()
-        } else if let storage = view.textStorage, storage.length != display.length {
-            storage.setAttributedString(display)
-            view.invalidateIntrinsicContentSize()
-        }
-    }
-}
-
-private final class ReplyTextView: NSTextView {
-    var fullReplyMarkdown: String = ""
-    var fullReplyRichText: NSAttributedString = NSAttributedString()
-
-    override var intrinsicContentSize: NSSize {
-        guard let layoutManager, let textContainer else {
-            return super.intrinsicContentSize
-        }
-        layoutManager.ensureLayout(for: textContainer)
-        let usedRect = layoutManager.usedRect(for: textContainer)
-        let height = ceil(usedRect.height + textContainerInset.height * 2)
-        return NSSize(width: NSView.noIntrinsicMetric, height: max(1, height))
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        invalidateIntrinsicContentSize()
-    }
-
-    func updateContextMenu() {
-        let menu = NSMenu()
-        let copyMarkdownItem = NSMenuItem(
-            title: "Copy Reply as Markdown",
-            action: #selector(copyReplyAsMarkdown),
-            keyEquivalent: ""
-        )
-        copyMarkdownItem.target = self
-
-        let copyRichItem = NSMenuItem(
-            title: "Copy Reply as Rich Text",
-            action: #selector(copyReplyAsRichText),
-            keyEquivalent: ""
-        )
-        copyRichItem.target = self
-
-        menu.addItem(copyMarkdownItem)
-        menu.addItem(copyRichItem)
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
-        self.menu = menu
-    }
-
-    @objc private func copyReplyAsMarkdown() {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(fullReplyMarkdown, forType: .string)
-    }
-
-    @objc private func copyReplyAsRichText() {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-
-        if let rtf = try? fullReplyRichText.data(
-            from: NSRange(location: 0, length: fullReplyRichText.length),
-            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-        ) {
-            pasteboard.setData(rtf, forType: .rtf)
+        func makeNSView(context: Context) -> ReplyTextView {
+            let view = ReplyTextView()
+            view.isEditable = false
+            view.isSelectable = true
+            view.drawsBackground = false
+            view.isRichText = true
+            view.importsGraphics = false
+            view.textContainerInset = NSSize(width: 0, height: 0)
+            view.textContainer?.lineFragmentPadding = 0
+            view.textContainer?.widthTracksTextView = true
+            view.isHorizontallyResizable = false
+            view.isVerticallyResizable = true
+            view.maxSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            view.setContentCompressionResistancePriority(.required, for: .vertical)
+            view.setContentHuggingPriority(.required, for: .vertical)
+            view.updateContextMenu()
+            return view
         }
 
-        pasteboard.setString(fullReplyRichText.string, forType: .string)
-    }
-}
+        func updateNSView(_ view: ReplyTextView, context: Context) {
+            view.fullReplyMarkdown = fullReplyMarkdown
+            view.fullReplyRichText = fullReplyRichText
+            view.updateContextMenu()
 
-private extension NSAttributedString {
-    func withDefaultTextColor(_ color: NSColor) -> NSAttributedString {
-        guard length > 0 else { return self }
+            let display = displayedText.withDefaultTextColor(.labelColor)
 
-        let mutable = NSMutableAttributedString(attributedString: self)
-        let fullRange = NSRange(location: 0, length: mutable.length)
-        mutable.enumerateAttribute(.foregroundColor, in: fullRange, options: []) { value, range, _ in
-            if value == nil {
-                mutable.addAttribute(.foregroundColor, value: color, range: range)
+            if view.textStorage?.string != display.string {
+                view.textStorage?.setAttributedString(display)
+                view.invalidateIntrinsicContentSize()
+            } else if let storage = view.textStorage, storage.length != display.length {
+                storage.setAttributedString(display)
+                view.invalidateIntrinsicContentSize()
             }
         }
-        return mutable
     }
-}
+
+    private final class ReplyTextView: NSTextView {
+        var fullReplyMarkdown: String = ""
+        var fullReplyRichText: NSAttributedString = NSAttributedString()
+
+        override var intrinsicContentSize: NSSize {
+            guard let layoutManager, let textContainer else {
+                return super.intrinsicContentSize
+            }
+            layoutManager.ensureLayout(for: textContainer)
+            let usedRect = layoutManager.usedRect(for: textContainer)
+            let height = ceil(usedRect.height + textContainerInset.height * 2)
+            return NSSize(width: NSView.noIntrinsicMetric, height: max(1, height))
+        }
+
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            invalidateIntrinsicContentSize()
+        }
+
+        func updateContextMenu() {
+            let menu = NSMenu()
+            let copyMarkdownItem = NSMenuItem(
+                title: "Copy Reply as Markdown",
+                action: #selector(copyReplyAsMarkdown),
+                keyEquivalent: ""
+            )
+            copyMarkdownItem.target = self
+
+            let copyRichItem = NSMenuItem(
+                title: "Copy Reply as Rich Text",
+                action: #selector(copyReplyAsRichText),
+                keyEquivalent: ""
+            )
+            copyRichItem.target = self
+
+            menu.addItem(copyMarkdownItem)
+            menu.addItem(copyRichItem)
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+            menu.addItem(
+                withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+            self.menu = menu
+        }
+
+        @objc private func copyReplyAsMarkdown() {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(fullReplyMarkdown, forType: .string)
+        }
+
+        @objc private func copyReplyAsRichText() {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+
+            if let rtf = try? fullReplyRichText.data(
+                from: NSRange(location: 0, length: fullReplyRichText.length),
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+            ) {
+                pasteboard.setData(rtf, forType: .rtf)
+            }
+
+            pasteboard.setString(fullReplyRichText.string, forType: .string)
+        }
+    }
+
+    extension NSAttributedString {
+        fileprivate func withDefaultTextColor(_ color: NSColor) -> NSAttributedString {
+            guard length > 0 else { return self }
+
+            let mutable = NSMutableAttributedString(attributedString: self)
+            let fullRange = NSRange(location: 0, length: mutable.length)
+            mutable.enumerateAttribute(.foregroundColor, in: fullRange, options: []) {
+                value, range, _ in
+                if value == nil {
+                    mutable.addAttribute(.foregroundColor, value: color, range: range)
+                }
+            }
+            return mutable
+        }
+    }
 #endif
 
 private func attributedMarkdownForWholeReply(_ markdown: String) -> AttributedString {

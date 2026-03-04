@@ -40,7 +40,7 @@ struct ChatListView: View {
                 .accessibilityIdentifier("newChatButton")
             }
         }
-        .onAppear(perform: modelData.ensureInitialThread)
+        .task { await modelData.loadThreads() }
     }
 }
 

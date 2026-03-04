@@ -2,22 +2,12 @@ use super::ChatMessage;
 use super::TurnRole;
 use super::now_millis;
 
-use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use async_stream::stream;
-use futures::{Stream, StreamExt, future::BoxFuture};
-use llm::{
-    API, Completion, CompletionChoice, CompletionRequest, Message, OpenAI, Role, UnnamedToolChoice,
-};
-use minisql::{ConnectionPool, Migration, migrations};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use futures::future::BoxFuture;
+use minisql::ConnectionPool;
 use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
-
-use crate::tools::{Tool, ToolArg};
 
 pub trait ChatStorage: Send + Sync {
     fn list_messages<'a>(&'a self) -> BoxFuture<'a, Vec<ChatMessage>>;
@@ -45,7 +35,7 @@ pub struct MockChatStorage {
 impl MockChatStorage {
     pub fn new(messages: Vec<ChatMessage>) -> Self {
         let mut sorted = messages;
-        sorted.sort_by_key(|m| m.created_at);
+        sorted.sort_by_key(|m| m.created_at_ms);
         Self {
             messages: Mutex::new(sorted),
         }
@@ -66,27 +56,40 @@ impl ChatStorage for MockChatStorage {
 
 pub struct LocalChatStorage {
     chat_thread_id: Uuid,
-    database: ConnectionPool,
+    database: Arc<ConnectionPool>,
     migrations_ready: OnceCell<()>,
 }
 
 impl LocalChatStorage {
-    pub fn new(thread_id: Uuid, database: ConnectionPool) -> Self {
+    pub fn new(thread_id: Uuid, database: Arc<ConnectionPool>) -> Self {
         Self {
             chat_thread_id: thread_id,
             database,
             migrations_ready: OnceCell::new(),
         }
     }
+
+    async fn ensure_ready(&self) {
+        let _ = self
+            .migrations_ready
+            .get_or_init(|| async {
+                let _ = self
+                    .database
+                    .initialize_database(crate::data::get_migrations())
+                    .await;
+            })
+            .await;
+    }
 }
 
 impl ChatStorage for LocalChatStorage {
     fn list_messages<'a>(&'a self) -> BoxFuture<'a, Vec<ChatMessage>> {
         Box::pin(async move {
+            self.ensure_ready().await;
             let result = crate::data::chat_messages::select()
                 .where_(crate::data::chat_messages::thread_id.eq(self.chat_thread_id))
                 .order_by_asc(crate::data::chat_messages::created_at)
-                .all(&self.database)
+                .all(&*self.database)
                 .await;
 
             match result {
@@ -113,8 +116,8 @@ impl ChatStorage for LocalChatStorage {
                             content: row.content,
                             tool_call: row.tool_call,
                             tool_result: row.tool_result,
-                            created_at: row.created_at,
-                            updated_at: row.updated_at,
+                            created_at_ms: row.created_at,
+                            updated_at_ms: row.updated_at,
                             is_done: row.is_done,
                             usage: row.usage,
                         })
@@ -127,17 +130,18 @@ impl ChatStorage for LocalChatStorage {
 
     fn append_message<'a>(&'a self, message: ChatMessage) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            self.ensure_ready().await;
             let now = now_millis();
             let preview = message.content.trim().to_owned();
             let existing = crate::data::chat_threads::select()
                 .where_(crate::data::chat_threads::id.eq(self.chat_thread_id))
                 .limit(1)
-                .all(&self.database)
+                .all(&*self.database)
                 .await;
 
             if let Ok(mut existing) = existing {
                 if let Some(thread) = existing.pop() {
-                    let updated_at = thread.updated_at.max(message.updated_at);
+                    let updated_at = thread.updated_at.max(message.updated_at_ms);
                     let title = if thread.title.is_empty() {
                         if preview.is_empty() {
                             "Chat".to_owned()
@@ -173,11 +177,11 @@ impl ChatStorage for LocalChatStorage {
                         } else {
                             preview.chars().take(80).collect::<String>()
                         })
-                        .created_at(message.created_at)
-                        .updated_at(message.updated_at)
+                        .created_at(message.created_at_ms)
+                        .updated_at(message.updated_at_ms)
                         .preview_text(preview.clone())
                         .is_pinned(false)
-                        .execute(&self.database)
+                        .execute(&*self.database)
                         .await;
                 }
             }
@@ -201,11 +205,11 @@ impl ChatStorage for LocalChatStorage {
                 .content(message.content)
                 .tool_call(message.tool_call)
                 .tool_result(message.tool_result)
-                .created_at(message.created_at)
-                .updated_at(message.updated_at)
+                .created_at(message.created_at_ms)
+                .updated_at(message.updated_at_ms)
                 .is_done(message.is_done)
                 .usage(message.usage)
-                .execute(&self.database)
+                .execute(&*self.database)
                 .await;
         })
     }

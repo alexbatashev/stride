@@ -3,6 +3,7 @@ pub mod data;
 pub mod js;
 pub mod tools;
 
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 uniffi::custom_type!(Uuid, String, {
@@ -12,3 +13,14 @@ uniffi::custom_type!(Uuid, String, {
 });
 
 uniffi::setup_scaffolding!();
+
+static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+pub(crate) fn tokio_runtime() -> &'static tokio::runtime::Runtime {
+    TOKIO_RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("create tokio runtime")
+    })
+}
