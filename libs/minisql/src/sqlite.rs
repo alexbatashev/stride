@@ -1,32 +1,28 @@
 use std::error::Error as StdError;
-use std::sync::Arc;
-use std::{collections::HashMap, ops::Deref};
+use std::thread;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::migration::{Command, SqlType};
 use crate::query::{QueryResult, Row, Value};
 use crate::sql_builder::SQLBuilder;
 use ::sqlite::{self, Connection, State, Value as SqliteValue};
-use parking_lot::Mutex;
+use futures::StreamExt;
+use futures::channel::{mpsc, oneshot};
 
 #[derive(Clone)]
 pub struct SqliteBackend {
-    connection: Arc<Mutex<InnerConnection>>,
+    request_tx: Arc<mpsc::UnboundedSender<WorkerRequest>>,
 }
 
-struct InnerConnection(Connection);
+enum WorkerRequest {
+    Query {
+        query: String,
+        params: Vec<Value>,
+        response: oneshot::Sender<Result<QueryResult, String>>,
+    },
+}
 
 pub struct SqliteBuilder;
-
-unsafe impl Send for InnerConnection {}
-unsafe impl Sync for InnerConnection {}
-
-impl Deref for InnerConnection {
-    type Target = Connection;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 impl SqliteBackend {
     pub fn new(path: &str) -> Result<Self, Box<dyn StdError + Send + Sync>> {
@@ -34,76 +30,55 @@ impl SqliteBackend {
             sqlite::ffi::sqlite3_auto_extension(Some(sqlite_vec::sqlite3_vec_init));
         }
         let connection = Connection::open(path)?;
+        let (request_tx, mut request_rx) = mpsc::unbounded::<WorkerRequest>();
+
+        thread::Builder::new()
+            .name("minisql-sqlite-worker".to_string())
+            .spawn(move || {
+                futures::executor::block_on(async move {
+                    while let Some(request) = request_rx.next().await {
+                        match request {
+                            WorkerRequest::Query {
+                                query,
+                                params,
+                                response,
+                            } => {
+                                let result = execute_query(&connection, &query, &params);
+                                let _ = response.send(result);
+                            }
+                        }
+                    }
+                });
+            })?;
 
         Ok(Self {
-            connection: Arc::new(Mutex::new(InnerConnection(connection))),
+            request_tx: Arc::new(request_tx),
         })
     }
 
-    /// Execute a query synchronously
-    fn execute_query(
+    async fn send_query(
         &self,
         query: &str,
-        params: &[Value],
+        params: Vec<Value>,
     ) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
-        let conn = self.connection.lock();
+        let (response_tx, response_rx) = oneshot::channel();
+        self.request_tx
+            .unbounded_send(WorkerRequest::Query {
+                query: query.to_string(),
+                params,
+                response: response_tx,
+            })
+            .map_err(|_| "sqlite worker is unavailable".to_string())?;
 
-        // Prepare statement
-        let mut statement = conn.prepare(query)?;
-
-        // Bind parameters
-        for (idx, param) in params.iter().enumerate() {
-            match param {
-                Value::Null => statement.bind((idx + 1, SqliteValue::Null))?,
-                Value::Integer(i) => statement.bind((idx + 1, *i))?,
-                Value::Real(r) => statement.bind((idx + 1, *r))?,
-                Value::Text(s) => statement.bind((idx + 1, s.as_str()))?,
-                Value::Blob(b) => statement.bind((idx + 1, b.as_slice()))?,
-                Value::Uuid(u) => statement.bind((idx + 1, u.as_bytes().as_slice()))?,
-            }
-        }
-
-        let mut rows = Vec::new();
-        let mut affected_rows = 0;
-
-        while let State::Row = statement.next()? {
-            let mut values = HashMap::new();
-
-            for i in 0..statement.column_count() {
-                let name = statement.column_name(i)?.to_string();
-                let value = match statement.column_type(i)? {
-                    sqlite::Type::Null => Value::Null,
-                    sqlite::Type::Integer => Value::Integer(statement.read::<i64, _>(i)?),
-                    sqlite::Type::Float => Value::Real(statement.read::<f64, _>(i)?),
-                    sqlite::Type::String => Value::Text(statement.read::<String, _>(i)?),
-                    sqlite::Type::Binary => Value::Blob(statement.read::<Vec<u8>, _>(i)?),
-                };
-
-                values.insert(name, value);
-            }
-
-            rows.push(Row::new(values));
-            affected_rows += 1;
-        }
-
-        Ok(QueryResult::new(rows, affected_rows))
+        response_rx
+            .await
+            .map_err(|_| "sqlite worker stopped before responding".to_string())?
+            .map_err(Into::into)
     }
 
     /// Execute a raw SQL query asynchronously
     pub async fn query(&self, query: &str) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
-        // Use tokio to execute the query in a blocking context
-        let query_string = query.to_string();
-        let backend = self.clone();
-
-        // Run the query on a separate thread to not block the async runtime
-        match tokio::task::spawn_blocking(move || {
-            backend.execute_query(&query_string, &[] as &[Value])
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(e) => Err(format!("Task join error: {}", e).into()),
-        }
+        self.send_query(query, Vec::new()).await
     }
 
     /// Execute a prepared statement with parameters asynchronously
@@ -112,47 +87,99 @@ impl SqliteBackend {
         query: &str,
         params: Vec<Value>,
     ) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
-        let query_string = query.to_string();
-        let backend = self.clone();
-
-        // Run the query on a separate thread
-        match tokio::task::spawn_blocking(move || backend.execute_query(&query_string, &params))
-            .await
-        {
-            Ok(result) => result,
-            Err(e) => Err(format!("Task join error: {}", e).into()),
-        }
+        self.send_query(query, params).await
     }
 
     pub async fn begin_transaction(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
-        let backend = self.clone();
-        match tokio::task::spawn_blocking(move || backend.execute_query("BEGIN TRANSACTION;", &[]))
+        self.send_query("BEGIN TRANSACTION;", Vec::new())
             .await
-        {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Task join error: {}", e).into()),
-        }
+            .map(|_| ())
     }
 
     pub async fn commit_transaction(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
-        let backend = self.clone();
-        match tokio::task::spawn_blocking(move || backend.execute_query("COMMIT;", &[])).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Task join error: {}", e).into()),
-        }
+        self.send_query("COMMIT;", Vec::new()).await.map(|_| ())
     }
 
     pub async fn rollback_transaction(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
-        let backend = self.clone();
-        match tokio::task::spawn_blocking(move || backend.execute_query("ROLLBACK;", &[])).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Task join error: {}", e).into()),
-        }
+        self.send_query("ROLLBACK;", Vec::new()).await.map(|_| ())
+    }
+
+    pub(crate) fn rollback_transaction_fire_and_forget(&self) {
+        let (response_tx, _response_rx) = oneshot::channel();
+        let _ = self.request_tx.unbounded_send(WorkerRequest::Query {
+            query: "ROLLBACK;".to_string(),
+            params: Vec::new(),
+            response: response_tx,
+        });
     }
 
     pub fn builder(&self) -> SQLBuilder {
         SQLBuilder::Sqlite(SqliteBuilder {})
     }
+}
+
+fn execute_query(
+    connection: &Connection,
+    query: &str,
+    params: &[Value],
+) -> Result<QueryResult, String> {
+    let mut statement = connection.prepare(query).map_err(|e| e.to_string())?;
+
+    for (idx, param) in params.iter().enumerate() {
+        match param {
+            Value::Null => statement
+                .bind((idx + 1, SqliteValue::Null))
+                .map_err(|e| e.to_string())?,
+            Value::Integer(i) => statement.bind((idx + 1, *i)).map_err(|e| e.to_string())?,
+            Value::Real(r) => statement.bind((idx + 1, *r)).map_err(|e| e.to_string())?,
+            Value::Text(s) => statement
+                .bind((idx + 1, s.as_str()))
+                .map_err(|e| e.to_string())?,
+            Value::Blob(b) => statement
+                .bind((idx + 1, b.as_slice()))
+                .map_err(|e| e.to_string())?,
+            Value::Uuid(u) => statement
+                .bind((idx + 1, u.as_bytes().as_slice()))
+                .map_err(|e| e.to_string())?,
+        }
+    }
+
+    let mut rows = Vec::new();
+    let mut affected_rows = 0;
+
+    while let State::Row = statement.next().map_err(|e| e.to_string())? {
+        let mut values = HashMap::new();
+
+        for i in 0..statement.column_count() {
+            let name = statement.column_name(i).map_err(|e| e.to_string())?.to_string();
+            let value = match statement.column_type(i).map_err(|e| e.to_string())? {
+                sqlite::Type::Null => Value::Null,
+                sqlite::Type::Integer => Value::Integer(
+                    statement.read::<i64, _>(i).map_err(|e| e.to_string())?,
+                ),
+                sqlite::Type::Float => {
+                    Value::Real(statement.read::<f64, _>(i).map_err(|e| e.to_string())?)
+                }
+                sqlite::Type::String => Value::Text(
+                    statement
+                        .read::<String, _>(i)
+                        .map_err(|e| e.to_string())?,
+                ),
+                sqlite::Type::Binary => Value::Blob(
+                    statement
+                        .read::<Vec<u8>, _>(i)
+                        .map_err(|e| e.to_string())?,
+                ),
+            };
+
+            values.insert(name, value);
+        }
+
+        rows.push(Row::new(values));
+        affected_rows += 1;
+    }
+
+    Ok(QueryResult::new(rows, affected_rows))
 }
 
 impl SqliteBuilder {

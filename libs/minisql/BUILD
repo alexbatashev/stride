@@ -8,12 +8,11 @@ rust_library(
     edition = "2024",
     deps = crate_deps(
         [
-            "parking_lot",
+            "futures",
             "serde",
             "sqlite",
             "sqlite-vec",
             "sqlparser",
-            "tokio",
             "uuid",
         ],
         package_name = "",

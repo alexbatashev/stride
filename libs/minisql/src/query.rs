@@ -129,14 +129,9 @@ impl Transaction {
 
 impl Drop for Transaction {
     fn drop(&mut self) {
-        let backend = self.backend.clone();
-
-        // FIXME: is this safe enogh?
-        tokio::spawn(async move {
-            match &*backend {
-                Backend::Sqlite(sqlite) => sqlite.rollback_transaction().await,
-            }
-        });
+        match &*self.backend {
+            Backend::Sqlite(sqlite) => sqlite.rollback_transaction_fire_and_forget(),
+        }
     }
 }
 
