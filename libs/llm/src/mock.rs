@@ -39,6 +39,8 @@ impl Mock {
         let message = Some(Message {
             role: Role::Assistant,
             content: format!("Echo: {:?}", request.messages),
+            thinking: None,
+            tool_call_id: None,
         });
         Ok(Completion {
             id: "mock-completion-id".to_string(),
@@ -50,6 +52,7 @@ impl Mock {
                 index: 0,
                 delta: None,
                 logprobs: None,
+                tool_calls: None,
                 finish_reason: Some("stop".to_string()),
             }],
             usage: Usage {
@@ -77,8 +80,11 @@ impl Mock {
                 index: 0,
                 delta: Some(Delta {
                     content: Some("Partial mock stream response.".to_string()),
+                    thinking: None,
+                    tool_calls: None,
                 }),
                 logprobs: None,
+                tool_calls: None,
                 finish_reason: Some("stop".to_string()),
             }],
         };

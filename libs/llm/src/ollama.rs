@@ -35,6 +35,7 @@ struct ChatRequest<'a> {
     model: &'a str,
     stream: bool,
     messages: Vec<Message>,
+    think: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -228,6 +229,7 @@ impl Ollama {
             model: &request.model,
             stream: false,
             messages: request.messages.clone(),
+            think: true,
         })
         .map_err(|_| Error::Unknown)?;
 
@@ -273,6 +275,7 @@ impl Ollama {
                 index: 0,
                 delta: None,
                 logprobs: None,
+                tool_calls: None,
                 finish_reason: message.done_reason,
             }],
             usage: Usage {
@@ -300,6 +303,7 @@ impl Ollama {
                 model: &request.model,
                 stream: true,
                 messages: request.messages.clone(),
+                think: true,
             })
             .map_err(|_| Error::Unknown)?;
 
@@ -346,8 +350,13 @@ impl Ollama {
                                         message: Some(data.message.clone()),
                                         text: None,
                                         index: 0,
-                                        delta: Some(Delta { content: Some(data.message.content.clone()) }),
+                                        delta: Some(Delta {
+                                            content: Some(data.message.content.clone()),
+                                            thinking: data.message.thinking.clone(),
+                                            tool_calls: None,
+                                        }),
                                         logprobs: None,
+                                        tool_calls: None,
                                         finish_reason: data.done_reason,
                                     }]
                                 };

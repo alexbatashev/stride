@@ -11,7 +11,10 @@ use std::pin::Pin;
 use thiserror::Error;
 
 pub use anthropic::Anthropic;
-pub use completion_request::CompletionRequest;
+pub use completion_request::{
+    CompletionRequest, Function, FunctionParameters, FunctionProperty, Tool, ToolChoice, ToolType,
+    UnnamedToolChoice,
+};
 pub use mock::Mock;
 pub use ollama::Ollama;
 pub use openai::OpenAI;
@@ -28,6 +31,10 @@ pub enum API {
 pub struct Message {
     pub role: Role,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +72,28 @@ pub struct StreamResponseChunk {
 pub struct Delta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallChunk>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallChunk {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<ToolCallFunction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallFunction {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +107,8 @@ pub struct CompletionChoice {
     pub delta: Option<Delta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logprobs: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallChunk>>,
     pub finish_reason: Option<String>,
 }
 

@@ -222,6 +222,7 @@ impl Anthropic {
                 index: i as u16,
                 delta: None,
                 logprobs: None,
+                tool_calls: None,
                 finish_reason: anthropic.stop_reason.clone(),
             })
             .collect();
@@ -328,6 +329,7 @@ impl Anthropic {
                                         index: chunk.index.unwrap_or(0) as u16,
                                         delta: None,
                                         logprobs: None,
+                                        tool_calls: None,
                                         finish_reason: None,
                                     };
 

@@ -202,7 +202,7 @@ impl Into<ToolChoice> for FunctionRef {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Message, Role, completion_request::UnnamedToolChoice};
+    use crate::{completion_request::UnnamedToolChoice, Message, Role};
 
     use super::{CompletionRequest, Function};
 
@@ -213,18 +213,18 @@ mod tests {
             &[Message {
                 role: Role::User,
                 content: "Hello".to_string(),
+                thinking: None,
+                tool_call_id: None,
             }],
         )
         .frequency_penalty(1.0)
         .top_p(0.2)
-        .tools(vec![
-            Function {
-                description: "Test function".to_string(),
-                name: "test".to_string(),
-                parameters: None,
-            }
-            .into(),
-        ])
+        .tools(vec![Function {
+            description: "Test function".to_string(),
+            name: "test".to_string(),
+            parameters: None,
+        }
+        .into()])
         .tool_choice(UnnamedToolChoice::Required);
 
         let json = serde_json::to_string(&request).unwrap();
