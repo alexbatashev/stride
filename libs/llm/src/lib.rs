@@ -18,6 +18,7 @@ pub use completion_request::{
 pub use mock::Mock;
 pub use ollama::Ollama;
 pub use openai::OpenAI;
+pub use utils::SharedExecutor;
 
 #[derive(Debug, Clone)]
 pub enum API {

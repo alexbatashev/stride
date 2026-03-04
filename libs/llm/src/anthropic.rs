@@ -6,18 +6,17 @@ use futures::Stream;
 use http_body_util::{BodyExt, Full};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Method, Request};
-use hyper_rustls::ConfigBuilderExt;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
 use uuid;
 
 use crate::completion_request::CompletionRequest;
+use crate::utils::{SharedExecutor, get_http_client};
 use crate::{API, Completion, CompletionChoice, Error, Message, ModelDesc, StreamResponseChunk};
 
 #[derive(Debug, Clone)]
 pub struct Anthropic {
     base_url: String,
+    executor: SharedExecutor,
 }
 
 #[derive(Deserialize)]
@@ -56,9 +55,10 @@ struct AnthropicCompletionRequest<'a> {
 }
 
 impl Anthropic {
-    pub fn new(base_url: &str) -> API {
+    pub fn new(base_url: &str, executor: SharedExecutor) -> API {
         API::Anthropic(Anthropic {
             base_url: base_url.to_string(),
+            executor,
         })
     }
 
@@ -70,17 +70,6 @@ impl Anthropic {
 
         let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
 
-        let tls = rustls::ClientConfig::builder()
-            .with_native_roots()
-            .map_err(|_| Error::Unknown)?
-            .with_no_client_auth();
-
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls)
-            .https_or_http()
-            .enable_http1()
-            .build();
-
         let req = Request::builder()
             .method(Method::GET)
             .uri(url)
@@ -89,7 +78,7 @@ impl Anthropic {
             .body(Full::new(Bytes::new()))
             .map_err(|_| Error::Unknown)?;
 
-        let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
+        let client = get_http_client(self.executor.clone())?;
         let res = client.request(req).await.map_err(|_| Error::Unknown)?;
         let status = res.status();
 
@@ -117,17 +106,6 @@ impl Anthropic {
             model
         );
 
-        let tls = rustls::ClientConfig::builder()
-            .with_native_roots()
-            .map_err(|_| Error::Unknown)?
-            .with_no_client_auth();
-
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls)
-            .https_or_http()
-            .enable_http1()
-            .build();
-
         let req = Request::builder()
             .method(Method::GET)
             .uri(url)
@@ -136,7 +114,7 @@ impl Anthropic {
             .body(Full::new(Bytes::new()))
             .map_err(|_| Error::Unknown)?;
 
-        let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
+        let client = get_http_client(self.executor.clone())?;
         let res = client.request(req).await.map_err(|_| Error::Unknown)?;
         let status = res.status();
 
@@ -183,18 +161,7 @@ impl Anthropic {
             .body(Full::new(Bytes::from(json)))
             .map_err(|_| Error::Unknown)?;
 
-        let tls = rustls::ClientConfig::builder()
-            .with_native_roots()
-            .map_err(|_| Error::Unknown)?
-            .with_no_client_auth();
-
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls)
-            .https_or_http()
-            .enable_http1()
-            .build();
-
-        let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
+        let client = get_http_client(self.executor.clone())?;
         let res = client.request(req).await.map_err(|_| Error::Unknown)?;
         let status = res.status();
 
@@ -255,6 +222,7 @@ impl Anthropic {
 
         let base_url = self.base_url.clone();
         let token = token.to_owned();
+        let executor = self.executor.clone();
 
         let s = stream! {
             let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
@@ -279,18 +247,7 @@ impl Anthropic {
                 .body(Full::new(Bytes::from(json)))
                 .map_err(|_| Error::Unknown)?;
 
-            let tls = rustls::ClientConfig::builder()
-                .with_native_roots()
-                .map_err(|_| Error::Unknown)?
-                .with_no_client_auth();
-
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(tls)
-                .https_or_http()
-                .enable_http1()
-                .build();
-
-            let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
+            let client = get_http_client(executor).map_err(|_| Error::Unknown)?;
             let mut res = client.request(req).await.map_err(|_| Error::Unknown)?;
             if !res.status().is_success() {
                 yield Err(Error::Unknown);

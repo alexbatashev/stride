@@ -1,5 +1,5 @@
 use crate::completion_request::CompletionRequest;
-use crate::utils::get_http_client;
+use crate::utils::{SharedExecutor, get_http_client};
 use crate::{
     API, Completion, CompletionChoice, Delta, EmbeddingData, EmbeddingResponse, Error, Message,
     ModelDesc, StreamResponseChunk, Usage,
@@ -18,6 +18,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Ollama {
     base_url: String,
+    executor: SharedExecutor,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,16 +50,17 @@ struct MessageResponse {
 }
 
 impl Ollama {
-    pub fn new(base_url: &str) -> API {
+    pub fn new(base_url: &str, executor: SharedExecutor) -> API {
         API::Ollama(Ollama {
             base_url: base_url.to_string(),
+            executor,
         })
     }
 
     pub async fn list_models(&self, _token: &str) -> Result<Vec<ModelDesc>, Error> {
         let url = format!("{}/api/tags", self.base_url);
 
-        let client = get_http_client()?;
+        let client = get_http_client(self.executor.clone())?;
 
         let req = Request::builder()
             .method(Method::GET)
@@ -102,7 +104,7 @@ impl Ollama {
     pub async fn get_model(&self, _token: &str, model: &str) -> Result<ModelDesc, Error> {
         let url = format!("{}/api/show", self.base_url);
 
-        let client = get_http_client()?;
+        let client = get_http_client(self.executor.clone())?;
 
         #[derive(Serialize, Debug, Clone)]
         struct Body<'a> {
@@ -169,7 +171,7 @@ impl Ollama {
 
         eprintln!("CREATE REQUEST: {:?}", req);
 
-        let client = get_http_client()?;
+        let client = get_http_client(self.executor.clone())?;
 
         let res = client.request(req).await.map_err(|_| Error::Unknown)?;
         eprintln!("REQUEST COMPLETE");
@@ -222,7 +224,7 @@ impl Ollama {
     ) -> Result<Completion, Error> {
         let url = format!("{}/api/chat", self.base_url);
 
-        let client = get_http_client()?;
+        let client = get_http_client(self.executor.clone())?;
 
         // FIXME: support options and tools
         let body = serde_json::to_string(&ChatRequest {
@@ -292,11 +294,12 @@ impl Ollama {
         request: CompletionRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
         let base_url = self.base_url.clone();
+        let executor = self.executor.clone();
 
         let s = stream! {
             let url = format!("{}/api/chat", base_url);
 
-            let client = get_http_client()?;
+            let client = get_http_client(executor)?;
 
             // FIXME: support options and tools
             let body = serde_json::to_string(&ChatRequest {

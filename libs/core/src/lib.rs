@@ -4,6 +4,7 @@ pub mod js;
 pub mod tools;
 
 use std::sync::OnceLock;
+use std::{future::Future, pin::Pin};
 use uuid::Uuid;
 
 uniffi::custom_type!(Uuid, String, {
@@ -23,4 +24,17 @@ pub(crate) fn tokio_runtime() -> &'static tokio::runtime::Runtime {
             .build()
             .expect("create tokio runtime")
     })
+}
+
+pub fn get_llm_runtime() -> llm::SharedExecutor {
+    #[derive(Clone)]
+    struct CoreExecutor;
+
+    impl hyper::rt::Executor<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> for CoreExecutor {
+        fn execute(&self, fut: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+            tokio_runtime().spawn(fut);
+        }
+    }
+
+    llm::SharedExecutor::new(CoreExecutor)
 }

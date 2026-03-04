@@ -10,6 +10,7 @@ _DEPS = crate_deps(
     [
         "async-stream",
         "futures",
+        "hyper",
         "serde",
         "serde_json",
         "thiserror",

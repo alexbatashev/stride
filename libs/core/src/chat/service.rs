@@ -23,6 +23,7 @@ use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 use crate::tools::{Tool, ToolArg};
+use crate::get_llm_runtime;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 pub enum ChatProviderKind {
@@ -78,10 +79,11 @@ impl DirectChatTransport {
     pub fn from_provider(provider: ChatProviderConfiguration) -> Self {
         let provider_id = provider.id.to_string();
         let token = provider.token.clone();
+        let llm_runtime = get_llm_runtime();
         let api = match provider.kind {
-            ChatProviderKind::OpenAICompatible => OpenAI::new(&provider.base_url),
-            ChatProviderKind::Ollama => llm::Ollama::new(&provider.base_url),
-            ChatProviderKind::Anthropic => llm::Anthropic::new(&provider.base_url),
+            ChatProviderKind::OpenAICompatible => OpenAI::new(&provider.base_url, llm_runtime.clone()),
+            ChatProviderKind::Ollama => llm::Ollama::new(&provider.base_url, llm_runtime.clone()),
+            ChatProviderKind::Anthropic => llm::Anthropic::new(&provider.base_url, llm_runtime.clone()),
             ChatProviderKind::Mock => llm::Mock::new().into(),
         };
         Self {

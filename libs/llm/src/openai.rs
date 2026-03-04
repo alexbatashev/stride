@@ -1,5 +1,5 @@
 use crate::completion_request::CompletionRequest;
-use crate::utils::get_http_client;
+use crate::utils::{SharedExecutor, get_http_client};
 use crate::{API, Completion, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk};
 
 use async_stream::stream;
@@ -8,15 +8,13 @@ use futures::Stream;
 use http_body_util::{BodyExt, Full};
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE};
 use hyper::{Method, Request};
-use hyper_rustls::ConfigBuilderExt;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
 #[derive(Debug, Clone)]
 pub struct OpenAI {
     base_url: String,
+    executor: SharedExecutor,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,9 +24,10 @@ struct ModelListResponse {
 }
 
 impl OpenAI {
-    pub fn new(base_url: &str) -> API {
+    pub fn new(base_url: &str, executor: SharedExecutor) -> API {
         API::OpenAI(OpenAI {
             base_url: base_url.to_string(),
+            executor,
         })
     }
 
@@ -42,7 +41,7 @@ impl OpenAI {
             .body(Full::new(Bytes::new()))
             .map_err(|_| Error::Unknown)?;
 
-        let client = get_http_client()?;
+        let client = get_http_client(self.executor.clone())?;
         let res = client
             .request(req)
             .await
@@ -93,7 +92,7 @@ impl OpenAI {
             .body(Full::new(Bytes::from(json)))
             .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
 
-        let client = get_http_client()?;
+        let client = get_http_client(self.executor.clone())?;
 
         let res = client.request(req).await.map_err(|_| Error::Unknown)?;
         let status = res.status();
@@ -122,17 +121,6 @@ impl OpenAI {
             model
         );
 
-        let tls = rustls::ClientConfig::builder()
-            .with_native_roots()
-            .map_err(|_| Error::Unknown)?
-            .with_no_client_auth();
-
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls)
-            .https_or_http()
-            .enable_http1()
-            .build();
-
         let req = Request::builder()
             .method(Method::GET)
             .uri(url)
@@ -140,7 +128,7 @@ impl OpenAI {
             .body(Full::new(Bytes::new()))
             .map_err(|_| Error::Unknown)?;
 
-        let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
+        let client = get_http_client(self.executor.clone())?;
         let res = client.request(req).await.map_err(|_| Error::Unknown)?;
         let status = res.status();
 
@@ -175,17 +163,6 @@ impl OpenAI {
 
         let auth_header = format!("Bearer {}", token);
 
-        let tls = rustls::ClientConfig::builder()
-            .with_native_roots()
-            .map_err(|e| Error::TlsError(format!("{:?}", e)))?
-            .with_no_client_auth();
-
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls)
-            .https_or_http()
-            .enable_http1()
-            .build();
-
         let req = Request::builder()
             .method(Method::POST)
             .uri(url)
@@ -194,7 +171,7 @@ impl OpenAI {
             .body(Full::new(Bytes::from(json)))
             .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
 
-        let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
+        let client = get_http_client(self.executor.clone())?;
         let res = client
             .request(req)
             .await
@@ -226,6 +203,7 @@ impl OpenAI {
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
         let base_url = self.base_url.clone();
         let token = token.to_owned();
+        let executor = self.executor.clone();
 
         let s = stream! {
             let url = format!(
@@ -237,17 +215,6 @@ impl OpenAI {
 
             let auth_header = format!("Bearer {}", token);
 
-            let tls = rustls::ClientConfig::builder()
-                .with_native_roots()
-                .map_err(|e| Error::TlsError(format!("{}", e)))?
-                .with_no_client_auth();
-
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_tls_config(tls)
-                .https_or_http()
-                .enable_http1()
-                .build();
-
             let req = Request::builder()
                 .method(Method::POST)
                 .uri(url)
@@ -256,7 +223,7 @@ impl OpenAI {
                 .body(Full::new(Bytes::from(json)))
                 .map_err(|e| Error::RequestError(format!("{}", e)))?;
 
-            let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
+            let client = get_http_client(executor).map_err(|e| Error::RequestError(format!("{}", e)))?;
             let mut res = client.request(req).await.map_err(|e| Error::RequestError(format!("{}", e)))?;
             if !res.status().is_success() {
                 yield Err(Error::ServerError(res.status().as_u16()));
