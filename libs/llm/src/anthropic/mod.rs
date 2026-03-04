@@ -1,22 +1,25 @@
 use std::pin::Pin;
 
 use async_stream::stream;
-use bytes::Bytes;
-use futures::Stream;
-use http_body_util::{BodyExt, Full};
-use hyper::header::CONTENT_TYPE;
-use hyper::{Method, Request};
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use uuid;
 
-use crate::completion_request::CompletionRequest;
-use crate::utils::{SharedExecutor, get_http_client};
-use crate::{API, Completion, CompletionChoice, Error, Message, ModelDesc, StreamResponseChunk};
+use crate::utils::{HttpRequest, TransportHandle};
+use crate::{API, Completion, CompletionChoice, CompletionRequest, Error, Message, ModelDesc, StreamResponseChunk};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Anthropic {
     base_url: String,
-    executor: SharedExecutor,
+    transport: TransportHandle,
+}
+
+impl std::fmt::Debug for Anthropic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Anthropic")
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -55,10 +58,10 @@ struct AnthropicCompletionRequest<'a> {
 }
 
 impl Anthropic {
-    pub fn new(base_url: &str, executor: SharedExecutor) -> API {
+    pub fn new(base_url: &str, transport: TransportHandle) -> API {
         API::Anthropic(Anthropic {
             base_url: base_url.to_string(),
-            executor,
+            transport,
         })
     }
 
@@ -68,69 +71,48 @@ impl Anthropic {
             models: Vec<ModelDesc>,
         }
 
-        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let req = HttpRequest {
+            method: "GET".to_string(),
+            url: format!("{}/v1/models", self.base_url.trim_end_matches('/')),
+            headers: vec![
+                ("x-api-key".to_string(), token.to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ],
+            body: vec![],
+        };
 
-        let req = Request::builder()
-            .method(Method::GET)
-            .uri(url)
-            .header("x-api-key", token)
-            .header("anthropic-version", "2023-06-01")
-            .body(Full::new(Bytes::new()))
-            .map_err(|_| Error::Unknown)?;
-
-        let client = get_http_client(self.executor.clone())?;
-        let res = client.request(req).await.map_err(|_| Error::Unknown)?;
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|_| Error::Unknown)?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::Unknown);
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
         let model_list: AnthropicModelList =
-            serde_json::from_slice(&body_bytes).map_err(|_| Error::Unknown)?;
+            serde_json::from_slice(&res.body).map_err(|_| Error::Unknown)?;
 
         Ok(model_list.models)
     }
 
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
-        let url = format!(
-            "{}/v1/models/{}",
-            self.base_url.trim_end_matches('/'),
-            model
-        );
+        let req = HttpRequest {
+            method: "GET".to_string(),
+            url: format!(
+                "{}/v1/models/{}",
+                self.base_url.trim_end_matches('/'),
+                model
+            ),
+            headers: vec![
+                ("x-api-key".to_string(), token.to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ],
+            body: vec![],
+        };
 
-        let req = Request::builder()
-            .method(Method::GET)
-            .uri(url)
-            .header("x-api-key", token)
-            .header("anthropic-version", "2023-06-01")
-            .body(Full::new(Bytes::new()))
-            .map_err(|_| Error::Unknown)?;
-
-        let client = get_http_client(self.executor.clone())?;
-        let res = client.request(req).await.map_err(|_| Error::Unknown)?;
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|_| Error::Unknown)?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::Unknown);
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
-        let model_desc: ModelDesc =
-            serde_json::from_slice(&body_bytes).map_err(|_| Error::Unknown)?;
+        let model_desc: ModelDesc = serde_json::from_slice(&res.body).map_err(|_| Error::Unknown)?;
 
         Ok(model_desc)
     }
@@ -140,8 +122,6 @@ impl Anthropic {
         token: &str,
         request: CompletionRequest,
     ) -> Result<Completion, Error> {
-        let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
-
         let req_body = AnthropicCompletionRequest {
             model: &request.model,
             max_tokens: request.max_tokens.unwrap_or(8192),
@@ -150,34 +130,26 @@ impl Anthropic {
             stream: None,
         };
 
-        let json = serde_json::to_string(&req_body).map_err(|_| Error::Unknown)?;
+        let body = serde_json::to_vec(&req_body).map_err(|_| Error::Unknown)?;
 
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(url)
-            .header("x-api-key", token)
-            .header("anthropic-version", "2023-06-01")
-            .header(CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(json)))
-            .map_err(|_| Error::Unknown)?;
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/v1/messages", self.base_url.trim_end_matches('/')),
+            headers: vec![
+                ("x-api-key".to_string(), token.to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body,
+        };
 
-        let client = get_http_client(self.executor.clone())?;
-        let res = client.request(req).await.map_err(|_| Error::Unknown)?;
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|_| Error::Unknown)?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::Unknown);
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
         let anthropic: AnthropicCompletionResponse =
-            serde_json::from_slice(&body_bytes).map_err(|_| Error::Unknown)?;
+            serde_json::from_slice(&res.body).map_err(|_| Error::Unknown)?;
 
         let choices = anthropic
             .content
@@ -220,50 +192,49 @@ impl Anthropic {
             text: Option<String>,
         }
 
-        let base_url = self.base_url.clone();
-        let token = token.to_owned();
-        let executor = self.executor.clone();
+        let req_body = AnthropicCompletionRequest {
+            model: &request.model,
+            max_tokens: request.max_tokens.unwrap_or(1024),
+            messages: &request.messages,
+            system: None,
+            stream: Some(true),
+        };
+
+        let body = match serde_json::to_vec(&req_body) {
+            Ok(b) => b,
+            Err(_) => {
+                return Box::pin(futures::stream::once(async { Err(Error::Unknown) }));
+            }
+        };
+
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/v1/messages", self.base_url.trim_end_matches('/')),
+            headers: vec![
+                ("x-api-key".to_string(), token.to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body,
+        };
+
+        let model = request.model.clone();
+        let transport = self.transport.clone();
 
         let s = stream! {
-            let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
-
-            let req_body = AnthropicCompletionRequest {
-                model: &request.model,
-                max_tokens: request.max_tokens.unwrap_or(1024),
-                messages: &request.messages,
-                system: None,
-                stream: Some(true),
-            };
-
-            let json = serde_json::to_string(&req_body)
-                .map_err(|_| Error::Unknown)?;
-
-            let req = Request::builder()
-                .method(Method::POST)
-                .uri(url)
-                .header("x-api-key", token)
-                .header("anthropic-version", "2023-06-01")
-                .header(CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(json)))
-                .map_err(|_| Error::Unknown)?;
-
-            let client = get_http_client(executor).map_err(|_| Error::Unknown)?;
-            let mut res = client.request(req).await.map_err(|_| Error::Unknown)?;
-            if !res.status().is_success() {
-                yield Err(Error::Unknown);
-                return;
-            }
-
+            let mut upstream = transport.0.request_stream(req);
             let mut buf = Vec::new();
 
-            while let Some(frame) = res.frame().await {
-                let frame = match frame {
-                    Ok(f) if f.is_data() => f.into_data().unwrap(),
-                    _ => continue
+            while let Some(item) = upstream.next().await {
+                let data = match item {
+                    Ok(d) => d,
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
                 };
-                buf.extend_from_slice(&frame);
+                buf.extend_from_slice(&data);
 
-                // Each SSE event ends with \n\n
                 while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
                     let event = buf.drain(..pos + 2).collect::<Vec<_>>();
                     let s = String::from_utf8_lossy(&event);
@@ -275,7 +246,6 @@ impl Anthropic {
                             }
                             let v = serde_json::from_str::<StreamChunk>(data);
                             if let Ok(chunk) = v {
-                                // Adapt to StreamResponseChunk structure
                                 let text = chunk.text
                                     .or_else(|| chunk.delta.as_ref().map(|d| d.text.clone()))
                                     .or_else(|| chunk.content_block.as_ref().map(|cb| cb.text.clone()));
@@ -291,13 +261,13 @@ impl Anthropic {
                                     };
 
                                     let response_chunk = StreamResponseChunk {
-                                        id: format!("cmpl-{}", uuid::Uuid::new_v4()), // Generate a unique ID
+                                        id: format!("cmpl-{}", uuid::Uuid::new_v4()),
                                         object: "chat.completion.chunk".to_string(),
                                         created: std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
                                             .unwrap_or_default()
                                             .as_secs(),
-                                        model: request.model.clone(),
+                                        model: model.clone(),
                                         system_fingerprint: None,
                                         choices: vec![choice],
                                     };

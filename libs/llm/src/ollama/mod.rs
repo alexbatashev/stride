@@ -1,24 +1,27 @@
-use crate::completion_request::CompletionRequest;
-use crate::utils::{SharedExecutor, get_http_client};
+use crate::utils::{HttpRequest, TransportHandle};
 use crate::{
-    API, Completion, CompletionChoice, Delta, EmbeddingData, EmbeddingResponse, Error, Message,
-    ModelDesc, StreamResponseChunk, Usage,
+    API, Completion, CompletionChoice, CompletionRequest, Delta, EmbeddingData, EmbeddingResponse,
+    Error, Message, ModelDesc, StreamResponseChunk, Usage,
 };
 
 use async_stream::stream;
-use bytes::Bytes;
-use futures::Stream;
-use http_body_util::{BodyExt, Full};
-use hyper::header::CONTENT_TYPE;
-use hyper::{Method, Request};
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Ollama {
     base_url: String,
-    executor: SharedExecutor,
+    transport: TransportHandle,
+}
+
+impl std::fmt::Debug for Ollama {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ollama")
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,44 +53,28 @@ struct MessageResponse {
 }
 
 impl Ollama {
-    pub fn new(base_url: &str, executor: SharedExecutor) -> API {
+    pub fn new(base_url: &str, transport: TransportHandle) -> API {
         API::Ollama(Ollama {
             base_url: base_url.to_string(),
-            executor,
+            transport,
         })
     }
 
     pub async fn list_models(&self, _token: &str) -> Result<Vec<ModelDesc>, Error> {
-        let url = format!("{}/api/tags", self.base_url);
+        let req = HttpRequest {
+            method: "GET".to_string(),
+            url: format!("{}/api/tags", self.base_url),
+            headers: vec![],
+            body: vec![],
+        };
 
-        let client = get_http_client(self.executor.clone())?;
-
-        let req = Request::builder()
-            .method(Method::GET)
-            .uri(url)
-            .body(Full::new(Bytes::new()))
-            .map_err(|_| Error::Unknown)?;
-
-        let res = client
-            .request(req)
-            .await
-            .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
-
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::ServerError(status.as_u16()));
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
-        let model_list: Models = serde_json::from_slice(&body_bytes)
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+        let model_list: Models =
+            serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         Ok(model_list
             .models
@@ -102,39 +89,23 @@ impl Ollama {
     }
 
     pub async fn get_model(&self, _token: &str, model: &str) -> Result<ModelDesc, Error> {
-        let url = format!("{}/api/show", self.base_url);
-
-        let client = get_http_client(self.executor.clone())?;
-
         #[derive(Serialize, Debug, Clone)]
         struct Body<'a> {
             model: &'a str,
         }
 
-        let body = serde_json::to_string(&Body { model }).map_err(|_| Error::Unknown)?;
+        let body = serde_json::to_vec(&Body { model }).map_err(|_| Error::Unknown)?;
 
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(url)
-            .header(CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|_| Error::Unknown)?;
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/api/show", self.base_url),
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body,
+        };
 
-        let res = client
-            .request(req)
-            .await
-            .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
-
-        let status = res.status();
-
-        res.into_body()
-            .collect()
-            .await
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::ServerError(status.as_u16()));
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
         Ok(ModelDesc {
@@ -151,42 +122,24 @@ impl Ollama {
         input: &str,
         model: &str,
     ) -> Result<EmbeddingResponse, Error> {
-        let url = format!("{}/api/embed", self.base_url);
-
         #[derive(Debug, Clone, Serialize)]
         struct RequestData<'a> {
             input: &'a str,
             model: &'a str,
         }
 
-        let json =
-            serde_json::to_string(&RequestData { input, model }).map_err(|_| Error::Unknown)?;
+        let body = serde_json::to_vec(&RequestData { input, model }).map_err(|_| Error::Unknown)?;
 
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(url)
-            .header(CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(json)))
-            .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/api/embed", self.base_url),
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body,
+        };
 
-        eprintln!("CREATE REQUEST: {:?}", req);
-
-        let client = get_http_client(self.executor.clone())?;
-
-        let res = client.request(req).await.map_err(|_| Error::Unknown)?;
-        eprintln!("REQUEST COMPLETE");
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?
-            .to_bytes();
-
-        if !status.is_success() {
-            eprintln!("Bad request {}", String::from_utf8_lossy(&body_bytes));
-            return Err(Error::ServerError(status.as_u16()));
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
         #[derive(Deserialize)]
@@ -196,7 +149,7 @@ impl Ollama {
             prompt_eval_count: u32,
         }
 
-        let mut embeddings: OllamaResponse = serde_json::from_slice(&body_bytes)
+        let mut embeddings: OllamaResponse = serde_json::from_slice(&res.body)
             .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         let embeddings = EmbeddingResponse {
@@ -222,12 +175,7 @@ impl Ollama {
         _token: &str,
         request: CompletionRequest,
     ) -> Result<Completion, Error> {
-        let url = format!("{}/api/chat", self.base_url);
-
-        let client = get_http_client(self.executor.clone())?;
-
-        // FIXME: support options and tools
-        let body = serde_json::to_string(&ChatRequest {
+        let body = serde_json::to_vec(&ChatRequest {
             model: &request.model,
             stream: false,
             messages: request.messages.clone(),
@@ -235,32 +183,19 @@ impl Ollama {
         })
         .map_err(|_| Error::Unknown)?;
 
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(url)
-            .header(CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|_| Error::Unknown)?;
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/api/chat", self.base_url),
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body,
+        };
 
-        let res = client
-            .request(req)
-            .await
-            .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
-
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::ServerError(status.as_u16()));
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
-        let message: MessageResponse = serde_json::from_slice(&body_bytes).map_err(|e| {
+        let message: MessageResponse = serde_json::from_slice(&res.body).map_err(|e| {
             Error::ParsingError(format!("Failed to parse upstream response: {:?}", e))
         })?;
 
@@ -293,49 +228,40 @@ impl Ollama {
         _token: &str,
         request: CompletionRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
-        let base_url = self.base_url.clone();
-        let executor = self.executor.clone();
+        let body = match serde_json::to_vec(&ChatRequest {
+            model: &request.model,
+            stream: true,
+            messages: request.messages.clone(),
+            think: true,
+        }) {
+            Ok(b) => b,
+            Err(_) => {
+                return Box::pin(futures::stream::once(async { Err(Error::Unknown) }));
+            }
+        };
+
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/api/chat", self.base_url),
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body,
+        };
+
+        let transport = self.transport.clone();
 
         let s = stream! {
-            let url = format!("{}/api/chat", base_url);
-
-            let client = get_http_client(executor)?;
-
-            // FIXME: support options and tools
-            let body = serde_json::to_string(&ChatRequest {
-                model: &request.model,
-                stream: true,
-                messages: request.messages.clone(),
-                think: true,
-            })
-            .map_err(|_| Error::Unknown)?;
-
-            let req = Request::builder()
-                .method(Method::POST)
-                .uri(url)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(body)))
-                .map_err(|_| Error::Unknown)?;
-
-            let mut res = client
-                .request(req)
-                .await
-                .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
-
-            let status = res.status();
-
-            if !status.is_success() {
-                yield Err(Error::ServerError(res.status().as_u16()));
-                return;
-            }
-
+            let mut upstream = transport.0.request_stream(req);
             let mut buf = Vec::new();
-            while let Some(frame) = res.frame().await {
-                let frame = match frame {
-                    Ok(f) if f.is_data() => f.into_data().unwrap(),
-                    _ => continue
+
+            while let Some(item) = upstream.next().await {
+                let data = match item {
+                    Ok(d) => d,
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
                 };
-                buf.extend_from_slice(&frame);
+                buf.extend_from_slice(&data);
 
                 while let Some(pos) = buf.windows(1).position(|w| w == b"\n") {
                     let event = buf.drain(..pos + 1).collect::<Vec<_>>();
@@ -360,7 +286,7 @@ impl Ollama {
                                         }),
                                         logprobs: None,
                                         tool_calls: None,
-                                        finish_reason: data.done_reason,
+                                        finish_reason: data.done_reason.clone(),
                                     }]
                                 };
                                 yield Ok(chunk);

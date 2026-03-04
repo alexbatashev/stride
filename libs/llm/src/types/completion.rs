@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::Message;
+
+use super::{Function, FunctionRef, Tool, ToolChoice, ToolType, UnnamedToolChoice};
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub enum ResposeFormatType {
@@ -16,41 +16,6 @@ pub enum ResposeFormatType {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ResponseFormat {
     r#type: ResposeFormatType,
-}
-
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
-pub enum ToolType {
-    #[default]
-    #[serde(rename = "function")]
-    Function,
-}
-
-#[derive(Clone, Default, Serialize, Debug, Deserialize)]
-pub struct Tool {
-    pub r#type: ToolType,
-    pub function: Function,
-}
-
-#[derive(Clone, Default, Serialize, Debug, Deserialize)]
-pub struct Function {
-    pub description: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<Vec<FunctionParameters>>,
-}
-
-#[derive(Clone, Default, Serialize, Debug, Deserialize)]
-pub struct FunctionParameters {
-    pub r#type: String,
-    pub properties: HashMap<String, FunctionProperty>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required: Option<Vec<String>>,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct FunctionProperty {
-    pub r#type: String,
-    pub description: String,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
@@ -81,29 +46,6 @@ pub struct CompletionRequest {
     pub logprobs: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_logprobs: Option<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ToolChoice {
-    Unnamed(UnnamedToolChoice),
-    Named {
-        r#type: String,
-        function: FunctionRef,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum UnnamedToolChoice {
-    None,
-    Auto,
-    Required,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionRef {
-    name: String,
 }
 
 impl CompletionRequest {
@@ -202,7 +144,7 @@ impl Into<ToolChoice> for FunctionRef {
 
 #[cfg(test)]
 mod tests {
-    use crate::{completion_request::UnnamedToolChoice, Message, Role};
+    use crate::{Message, Role, UnnamedToolChoice};
 
     use super::{CompletionRequest, Function};
 
@@ -219,12 +161,14 @@ mod tests {
         )
         .frequency_penalty(1.0)
         .top_p(0.2)
-        .tools(vec![Function {
-            description: "Test function".to_string(),
-            name: "test".to_string(),
-            parameters: None,
-        }
-        .into()])
+        .tools(vec![
+            Function {
+                description: "Test function".to_string(),
+                name: "test".to_string(),
+                parameters: None,
+            }
+            .into(),
+        ])
         .tool_choice(UnnamedToolChoice::Required);
 
         let json = serde_json::to_string(&request).unwrap();

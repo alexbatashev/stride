@@ -1,63 +1,42 @@
 use crate::Error;
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
-use std::future::Future;
+use futures::{Stream, future::BoxFuture};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use hyper_util::{
-    client::legacy::{Client, connect::HttpConnector},
-};
+#[derive(Debug, Clone)]
+pub struct HttpRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
 
-pub type BoxSendFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+#[derive(Debug, Clone)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+pub trait HttpTransport: Send + Sync {
+    fn request<'a>(&'a self, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, Error>>;
+
+    fn request_stream<'a>(
+        &'a self,
+        request: HttpRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, Error>> + Send + 'a>>;
+}
 
 #[derive(Clone)]
-pub struct SharedExecutor(Arc<dyn hyper::rt::Executor<BoxSendFuture> + Send + Sync>);
+pub struct TransportHandle(pub Arc<dyn HttpTransport>);
 
-impl std::fmt::Debug for SharedExecutor {
+impl std::fmt::Debug for TransportHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("SharedExecutor(..)")
+        f.write_str("TransportHandle(..)")
     }
 }
 
-impl SharedExecutor {
-    pub fn new<E>(executor: E) -> Self
-    where
-        E: hyper::rt::Executor<BoxSendFuture> + Send + Sync + 'static,
-    {
-        Self(Arc::new(executor))
+impl TransportHandle {
+    pub fn new(transport: Arc<dyn HttpTransport>) -> Self {
+        Self(transport)
     }
-}
-
-impl<Fut> hyper::rt::Executor<Fut> for SharedExecutor
-where
-    Fut: Future + Send + 'static,
-    Fut::Output: Send + 'static,
-{
-    fn execute(&self, fut: Fut) {
-        self.0.execute(Box::pin(async move {
-            let _ = fut.await;
-        }));
-    }
-}
-
-pub fn get_http_client<E>(
-    executor: E,
-) -> Result<Client<HttpsConnector<HttpConnector>, Full<Bytes>>, Error>
-where
-    E: hyper::rt::Executor<BoxSendFuture> + Clone + Send + Sync + 'static,
-{
-    let tls = rustls::ClientConfig::builder()
-        .with_native_roots()
-        .map_err(|_| Error::Unknown)?
-        .with_no_client_auth();
-
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls)
-        .https_or_http()
-        .enable_http1()
-        .build();
-
-    Ok(Client::builder(executor).build(https))
 }

@@ -9,6 +9,7 @@ _SRCS = glob(["src/**/*.rs"])
 _DEPS = crate_deps(
     [
         "async-stream",
+        "dispatch2",
         "futures",
         "hyper",
         "serde",

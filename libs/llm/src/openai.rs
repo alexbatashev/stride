@@ -1,66 +1,53 @@
-use crate::completion_request::CompletionRequest;
-use crate::utils::{SharedExecutor, get_http_client};
-use crate::{API, Completion, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk};
+use crate::utils::{HttpRequest, TransportHandle};
+use crate::{API, Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk};
 
 use async_stream::stream;
-use bytes::Bytes;
-use futures::Stream;
-use http_body_util::{BodyExt, Full};
-use hyper::header::{AUTHORIZATION, CONTENT_TYPE};
-use hyper::{Method, Request};
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAI {
     base_url: String,
-    executor: SharedExecutor,
+    transport: TransportHandle,
+}
+
+impl std::fmt::Debug for OpenAI {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAI")
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct ModelListResponse {
-    object: String,
     data: Vec<ModelDesc>,
 }
 
 impl OpenAI {
-    pub fn new(base_url: &str, executor: SharedExecutor) -> API {
+    pub fn new(base_url: &str, transport: TransportHandle) -> API {
         API::OpenAI(OpenAI {
             base_url: base_url.to_string(),
-            executor,
+            transport,
         })
     }
 
     pub async fn list_models(&self, token: &str) -> Result<Vec<ModelDesc>, Error> {
-        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let req = HttpRequest {
+            method: "GET".to_string(),
+            url: format!("{}/v1/models", self.base_url.trim_end_matches('/')),
+            headers: vec![("Authorization".to_string(), format!("Bearer {}", token))],
+            body: vec![],
+        };
 
-        let req = Request::builder()
-            .method(Method::GET)
-            .uri(url)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .body(Full::new(Bytes::new()))
-            .map_err(|_| Error::Unknown)?;
-
-        let client = get_http_client(self.executor.clone())?;
-        let res = client
-            .request(req)
-            .await
-            .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::ServerError(status.as_u16()));
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
-        let model_list: ModelListResponse = serde_json::from_slice(&body_bytes)
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+        let model_list: ModelListResponse =
+            serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         Ok(model_list.data)
     }
@@ -71,82 +58,51 @@ impl OpenAI {
         input: &str,
         model: &str,
     ) -> Result<EmbeddingResponse, Error> {
-        let url = format!("{}/v1/embeddings", self.base_url);
-
         #[derive(Debug, Clone, Serialize)]
         struct RequestData<'a> {
             input: &'a str,
             model: &'a str,
         }
 
-        let json =
-            serde_json::to_string(&RequestData { input, model }).map_err(|_| Error::Unknown)?;
+        let body = serde_json::to_vec(&RequestData { input, model })
+            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
-        let auth_header = format!("Bearer {}", token);
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/v1/embeddings", self.base_url.trim_end_matches('/')),
+            headers: vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), format!("Bearer {}", token)),
+            ],
+            body,
+        };
 
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(url)
-            .header(CONTENT_TYPE, "application/json")
-            .header(AUTHORIZATION, auth_header)
-            .body(Full::new(Bytes::from(json)))
-            .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
-
-        let client = get_http_client(self.executor.clone())?;
-
-        let res = client.request(req).await.map_err(|_| Error::Unknown)?;
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|_| Error::Unknown)?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::Unknown);
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
-        let embeddings: EmbeddingResponse =
-            serde_json::from_slice(&body_bytes).map_err(|_| Error::Unknown)?;
-
-        Ok(embeddings)
+        serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
     }
 
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
-        let url = format!(
-            "{}/v1/models/{}",
-            self.base_url.trim_end_matches('/'),
-            model
-        );
+        let req = HttpRequest {
+            method: "GET".to_string(),
+            url: format!(
+                "{}/v1/models/{}",
+                self.base_url.trim_end_matches('/'),
+                model
+            ),
+            headers: vec![("Authorization".to_string(), format!("Bearer {}", token))],
+            body: vec![],
+        };
 
-        let req = Request::builder()
-            .method(Method::GET)
-            .uri(url)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .body(Full::new(Bytes::new()))
-            .map_err(|_| Error::Unknown)?;
-
-        let client = get_http_client(self.executor.clone())?;
-        let res = client.request(req).await.map_err(|_| Error::Unknown)?;
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|_| Error::Unknown)?
-            .to_bytes();
-
-        if !status.is_success() {
-            return Err(Error::Unknown);
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
-        let model_desc: ModelDesc =
-            serde_json::from_slice(&body_bytes).map_err(|_| Error::Unknown)?;
-
-        Ok(model_desc)
+        serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
     }
 
     pub async fn get_completion(
@@ -154,46 +110,24 @@ impl OpenAI {
         token: &str,
         request: CompletionRequest,
     ) -> Result<Completion, Error> {
-        let url = format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
-        );
+        let body = serde_json::to_vec(&request).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
-        let json = serde_json::to_string(&request).map_err(|_| Error::Unknown)?;
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/')),
+            headers: vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), format!("Bearer {}", token)),
+            ],
+            body,
+        };
 
-        let auth_header = format!("Bearer {}", token);
-
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(url)
-            .header(CONTENT_TYPE, "application/json")
-            .header(AUTHORIZATION, auth_header)
-            .body(Full::new(Bytes::from(json)))
-            .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
-
-        let client = get_http_client(self.executor.clone())?;
-        let res = client
-            .request(req)
-            .await
-            .map_err(|e| Error::RequestError(format!("{:?}", e)))?;
-        let status = res.status();
-
-        let body_bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?
-            .to_bytes();
-
-        if !status.is_success() {
-            // TODO improve this error reporting later.
-            return Err(Error::ServerError(status.as_u16()));
+        let res = self.transport.0.request(req).await?;
+        if !(200..300).contains(&res.status) {
+            return Err(Error::ServerError(res.status));
         }
 
-        let completion: Completion = serde_json::from_slice(&body_bytes)
-            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
-
-        Ok(completion)
+        serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
     }
 
     pub fn stream_completion(
@@ -201,64 +135,59 @@ impl OpenAI {
         token: &str,
         request: CompletionRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
-        let base_url = self.base_url.clone();
-        let token = token.to_owned();
-        let executor = self.executor.clone();
+        let req_body = match serde_json::to_vec(&request) {
+            Ok(v) => v,
+            Err(err) => {
+                return Box::pin(futures::stream::once(async move {
+                    Err(Error::ParsingError(format!("{}", err)))
+                }));
+            }
+        };
+
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            url: format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/')),
+            headers: vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), format!("Bearer {}", token)),
+            ],
+            body: req_body,
+        };
+
+        let transport = self.transport.clone();
 
         let s = stream! {
-            let url = format!(
-                "{}/v1/chat/completions",
-                base_url.trim_end_matches('/')
-            );
-
-            let json = serde_json::to_string(&request).map_err(|e| Error::ParsingError(format!("{}", e)))?;
-
-            let auth_header = format!("Bearer {}", token);
-
-            let req = Request::builder()
-                .method(Method::POST)
-                .uri(url)
-                .header(CONTENT_TYPE, "application/json")
-                .header(AUTHORIZATION, auth_header)
-                .body(Full::new(Bytes::from(json)))
-                .map_err(|e| Error::RequestError(format!("{}", e)))?;
-
-            let client = get_http_client(executor).map_err(|e| Error::RequestError(format!("{}", e)))?;
-            let mut res = client.request(req).await.map_err(|e| Error::RequestError(format!("{}", e)))?;
-            if !res.status().is_success() {
-                yield Err(Error::ServerError(res.status().as_u16()));
-                return;
-            }
-
+            let mut upstream = transport.0.request_stream(req);
             let mut buf = Vec::new();
 
-            // iterate frames with hyper_util::BodyExt
-            while let Some(frame) = res.frame().await {
-                let frame = match frame {
-                    Ok(f) if f.is_data() => f.into_data().unwrap(),
-                    _ => continue
+            while let Some(item) = upstream.next().await {
+                let chunk = match item {
+                    Ok(data) => data,
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
                 };
-                buf.extend_from_slice(&frame);
 
-                // Try to split buffer on double-newline as separator for events
+                buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
                     let event = buf.drain(..pos + 2).collect::<Vec<_>>();
                     let s = String::from_utf8_lossy(&event);
                     for line in s.lines() {
                         if let Some(data) = line.strip_prefix("data: ") {
                             if data == "[DONE]" {
-                                return; // End stream on [DONE]
+                                return;
                             }
-                            let json = serde_json::from_str::<StreamResponseChunk>(data);
-                            match json {
+                            match serde_json::from_str::<StreamResponseChunk>(data) {
                                 Ok(chunk) => yield Ok(chunk),
-                                Err(err) => yield Err(Error::ParsingError(format!("{}", err)))
+                                Err(err) => yield Err(Error::ParsingError(format!("{}", err))),
                             }
                         }
                     }
                 }
             }
         };
+
         Box::pin(s)
     }
 }
