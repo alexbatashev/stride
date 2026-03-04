@@ -1,12 +1,69 @@
 module(name = "friday")
 
 bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_rust", version = "0.69.0")
 bazel_dep(name = "rules_swift", version = "3.4.2", repo_name = "build_bazel_rules_swift")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "apple_support", version = "1.24.2", repo_name = "build_bazel_apple_support")
 bazel_dep(name = "rules_apple", version = "4.3.3", repo_name = "build_bazel_rules_apple")
 bazel_dep(name = "sourcekit_bazel_bsp", version = "0.7.1", repo_name = "sourcekit_bazel_bsp")
 bazel_dep(name = "rules_xcodeproj", version = "3.6.0")
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    versions = ["1.93.0"],
+)
+
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.spec(
+    package = "sqlite",
+    version = "0.37.0",
+    features = ["bundled", "extension"],
+)
+crate.spec(
+    package = "tokio",
+    version = "1",
+    features = ["macros", "rt", "rt-multi-thread", "sync"],
+)
+crate.spec(package = "parking_lot", version = "0.12.3")
+crate.spec(
+    package = "uuid",
+    version = "1.16.0",
+    features = ["serde", "v4", "v7"],
+)
+crate.spec(package = "sqlite-vec", version = "0.1.6")
+crate.spec(
+    package = "serde",
+    version = "1.0",
+    features = ["derive"],
+)
+crate.spec(package = "sqlparser", version = "0.57.0")
+crate.spec(package = "proc-macro2", version = "1.0")
+crate.spec(package = "quote", version = "1.0")
+crate.spec(
+    package = "syn",
+    version = "2.0",
+    features = ["full", "parsing", "printing", "proc-macro"],
+)
+crate.spec(
+    package = "hyper",
+    version = "1.6.0",
+    features = ["full"],
+)
+crate.spec(package = "thiserror", version = "1.0")
+crate.spec(package = "serde_json", version = "1.0.140")
+crate.spec(package = "http-body-util", version = "0.1")
+crate.spec(package = "bytes", version = "1")
+crate.spec(package = "hyper-rustls", version = "0.27.5")
+crate.spec(package = "rustls", version = "0.23.27")
+crate.spec(package = "hyper-util", version = "0.1")
+crate.spec(package = "futures", version = "0.3.31")
+crate.spec(package = "async-stream", version = "0.3")
+crate.spec(package = "axum", version = "0.8.4")
+
+crate.from_specs(name = "rust_crates")
+use_repo(crate, "rust_crates")
 
 apple_cc_configure = use_extension(
     "@build_bazel_apple_support//crosstool:setup.bzl",
