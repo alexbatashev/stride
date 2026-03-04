@@ -1,5 +1,7 @@
 use super::ChatMessage;
 use super::LangModel;
+use super::ToolInvocation;
+use super::ToolInvocationStatus;
 use super::TurnRole;
 use super::now_millis;
 use super::storage::*;

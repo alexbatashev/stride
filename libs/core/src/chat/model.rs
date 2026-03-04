@@ -1,3 +1,5 @@
+use super::now_millis;
+
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -33,7 +35,7 @@ pub enum ToolInvocationStatus {
 }
 
 impl ToolInvocationStatus {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             ToolInvocationStatus::Queued => "queued",
             ToolInvocationStatus::Running => "running",

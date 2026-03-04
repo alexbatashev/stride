@@ -1,10 +1,10 @@
 use super::ChatMessage;
+use super::TurnRole;
 use super::now_millis;
 
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_stream::stream;
 use futures::{Stream, StreamExt, future::BoxFuture};
@@ -83,14 +83,43 @@ impl LocalChatStorage {
 impl ChatStorage for LocalChatStorage {
     fn list_messages<'a>(&'a self) -> BoxFuture<'a, Vec<ChatMessage>> {
         Box::pin(async move {
-            let result = chat_schema::chat_messages::select()
-                .where_(chat_schema::chat_messages::thread_id.eq(self.chat_thread_id))
-                .order_by_asc(chat_schema::chat_messages::created_at)
+            let result = crate::data::chat_messages::select()
+                .where_(crate::data::chat_messages::thread_id.eq(self.chat_thread_id))
+                .order_by_asc(crate::data::chat_messages::created_at)
                 .all(&self.database)
                 .await;
 
             match result {
-                Ok(rows) => todo!(), // rows.into_iter().map(StoredChatMessage::from_row).collect(),
+                Ok(rows) => rows
+                    .into_iter()
+                    .filter_map(|row| {
+                        let role = match row.role.as_str() {
+                            "User" => TurnRole::User,
+                            "Assistant" => TurnRole::Assistant,
+                            "Tool" => TurnRole::Tool,
+                            "System" => TurnRole::System,
+                            _ => return None,
+                        };
+                        Some(ChatMessage {
+                            id: row.id,
+                            thread_id: row.thread_id,
+                            user_id: row.user_id,
+                            parent_id: row.parent_id,
+                            provider_id: row.provider_id,
+                            model_id: row.model_id,
+                            model_name: row.model_name,
+                            role,
+                            thinking: row.thinking,
+                            content: row.content,
+                            tool_call: row.tool_call,
+                            tool_result: row.tool_result,
+                            created_at: row.created_at,
+                            updated_at: row.updated_at,
+                            is_done: row.is_done,
+                            usage: row.usage,
+                        })
+                    })
+                    .collect(),
                 Err(_) => vec![],
             }
         })
@@ -100,8 +129,8 @@ impl ChatStorage for LocalChatStorage {
         Box::pin(async move {
             let now = now_millis();
             let preview = message.content.trim().to_owned();
-            let existing = chat_schema::chat_threads::select()
-                .where_(chat_schema::chat_threads::id.eq(self.chat_thread_id))
+            let existing = crate::data::chat_threads::select()
+                .where_(crate::data::chat_threads::id.eq(self.chat_thread_id))
                 .limit(1)
                 .all(&self.database)
                 .await;
@@ -136,43 +165,48 @@ impl ChatStorage for LocalChatStorage {
                         )
                         .await;
                 } else {
-                    // let _ = chat_schema::chat_threads::insert()
-                    //     .id(self.chat_thread_id)
-                    //     .user_id(message.user_id)
-                    //     .title(if preview.is_empty() {
-                    //         "Chat".to_owned()
-                    //     } else {
-                    //         preview.chars().take(80).collect::<String>()
-                    //     })
-                    //     .created_at(message.created_at)
-                    //     .updated_at(message.updated_at)
-                    //     .preview_text(preview.clone())
-                    //     .is_pinned(false)
-                    //     .execute(&self.database)
-                    //     .await;
+                    let _ = crate::data::chat_threads::insert()
+                        .id(self.chat_thread_id)
+                        .user_id(message.user_id)
+                        .title(if preview.is_empty() {
+                            "Chat".to_owned()
+                        } else {
+                            preview.chars().take(80).collect::<String>()
+                        })
+                        .created_at(message.created_at)
+                        .updated_at(message.updated_at)
+                        .preview_text(preview.clone())
+                        .is_pinned(false)
+                        .execute(&self.database)
+                        .await;
                 }
             }
 
-            // let stored = StoredChatMessage::from_domain(self.chat_thread_id, message, now);
-            // let _ = chat_schema::chat_messages::insert()
-            //     .id(stored.id)
-            //     .thread_id(stored.thread_id)
-            //     .user_id(stored.user_id)
-            //     .parent_id(stored.parent_id)
-            //     .provider_id(stored.provider_id)
-            //     .model_id(stored.model_id)
-            //     .model_name(stored.model_name)
-            //     .role(stored.role)
-            //     .thinking(stored.thinking)
-            //     .content(stored.content)
-            //     .tool_call(stored.tool_call)
-            //     .tool_result(stored.tool_result)
-            //     .created_at(stored.created_at)
-            //     .updated_at(stored.updated_at)
-            //     .is_done(stored.is_done)
-            //     .usage(stored.usage)
-            //     .execute(&self.database)
-            //     .await;
+            let role_str = match message.role {
+                TurnRole::User => "User",
+                TurnRole::Assistant => "Assistant",
+                TurnRole::Tool => "Tool",
+                TurnRole::System => "System",
+            };
+            let _ = crate::data::chat_messages::insert()
+                .id(message.id)
+                .thread_id(message.thread_id)
+                .user_id(message.user_id)
+                .parent_id(message.parent_id)
+                .provider_id(message.provider_id)
+                .model_id(message.model_id)
+                .model_name(message.model_name)
+                .role(role_str)
+                .thinking(message.thinking)
+                .content(message.content)
+                .tool_call(message.tool_call)
+                .tool_result(message.tool_result)
+                .created_at(message.created_at)
+                .updated_at(message.updated_at)
+                .is_done(message.is_done)
+                .usage(message.usage)
+                .execute(&self.database)
+                .await;
         })
     }
 }
