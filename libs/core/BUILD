@@ -9,7 +9,6 @@ _SRCS = glob(["src/**/*.rs"])
 _DEPS = crate_deps(
     [
         "async-stream",
-        "dispatch2",
         "futures",
         "hyper",
         "serde",
@@ -17,10 +16,19 @@ _DEPS = crate_deps(
         "thiserror",
         "tokio",
         "uniffi",
+        "ureq",
         "uuid",
     ],
     package_name = "",
-) + [
+) + select({
+    "@platforms//os:osx": crate_deps(
+        [
+            "dispatch2",
+        ],
+        package_name = "",
+    ),
+    "//conditions:default": [],
+}) + [
     "//libs/JSKit:CQuickJS",
     "//libs/llm:llm",
     "//libs/minisql:minisql",

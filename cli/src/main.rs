@@ -94,8 +94,8 @@ async fn main() {
             content: prompt,
             tool_call: None,
             tool_result: None,
-            created_at: now,
-            updated_at: now,
+            created_at_ms: now,
+            updated_at_ms: now,
             is_done: false,
             usage: None,
         };

@@ -8,6 +8,10 @@ use uuid;
 use crate::utils::{HttpRequest, TransportHandle};
 use crate::{API, Completion, CompletionChoice, CompletionRequest, Error, Message, ModelDesc, StreamResponseChunk};
 
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Request;
+
 #[derive(Clone)]
 pub struct Anthropic {
     base_url: String,
@@ -71,48 +75,38 @@ impl Anthropic {
             models: Vec<ModelDesc>,
         }
 
-        let req = HttpRequest {
-            method: "GET".to_string(),
-            url: format!("{}/v1/models", self.base_url.trim_end_matches('/')),
-            headers: vec![
-                ("x-api-key".to_string(), token.to_string()),
-                ("anthropic-version".to_string(), "2023-06-01".to_string()),
-            ],
-            body: vec![],
-        };
-
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        let req = Request::builder()
+            .method("GET")
+            .uri(&format!("{}/v1/models", self.base_url.trim_end_matches('/')))
+            .header("x-api-key", token)
+            .header("anthropic-version", "2023-06-01")
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
         let model_list: AnthropicModelList =
-            serde_json::from_slice(&res.body).map_err(|_| Error::Unknown)?;
+            serde_json::from_slice(&res_body).map_err(|_| Error::Unknown)?;
 
         Ok(model_list.models)
     }
 
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
-        let req = HttpRequest {
-            method: "GET".to_string(),
-            url: format!(
-                "{}/v1/models/{}",
-                self.base_url.trim_end_matches('/'),
-                model
-            ),
-            headers: vec![
-                ("x-api-key".to_string(), token.to_string()),
-                ("anthropic-version".to_string(), "2023-06-01".to_string()),
-            ],
-            body: vec![],
-        };
-
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        let req = Request::builder()
+            .method("GET")
+            .uri(&format!("{}/v1/models/{}", self.base_url.trim_end_matches('/'), model))
+            .header("x-api-key", token)
+            .header("anthropic-version", "2023-06-01")
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
-        let model_desc: ModelDesc = serde_json::from_slice(&res.body).map_err(|_| Error::Unknown)?;
+        let model_desc: ModelDesc = serde_json::from_slice(&res_body).map_err(|_| Error::Unknown)?;
 
         Ok(model_desc)
     }
@@ -132,24 +126,21 @@ impl Anthropic {
 
         let body = serde_json::to_vec(&req_body).map_err(|_| Error::Unknown)?;
 
-        let req = HttpRequest {
-            method: "POST".to_string(),
-            url: format!("{}/v1/messages", self.base_url.trim_end_matches('/')),
-            headers: vec![
-                ("x-api-key".to_string(), token.to_string()),
-                ("anthropic-version".to_string(), "2023-06-01".to_string()),
-                ("Content-Type".to_string(), "application/json".to_string()),
-            ],
-            body,
-        };
-
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        let req = Request::builder()
+            .method("POST")
+            .uri(&format!("{}/v1/messages", self.base_url.trim_end_matches('/')))
+            .header("x-api-key", token)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
         let anthropic: AnthropicCompletionResponse =
-            serde_json::from_slice(&res.body).map_err(|_| Error::Unknown)?;
+            serde_json::from_slice(&res_body).map_err(|_| Error::Unknown)?;
 
         let choices = anthropic
             .content

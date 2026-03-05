@@ -17,6 +17,7 @@ pub use anthropic::Anthropic;
 pub use mock::Mock;
 pub use ollama::Ollama;
 pub use openai::OpenAI;
+pub use utils::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {

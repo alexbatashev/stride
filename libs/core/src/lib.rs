@@ -30,7 +30,7 @@ impl llm::HttpTransport for CoreHttpTransport {
     ) -> BoxFuture<'a, Result<llm::HttpResponse, llm::Error>> {
         let (tx, rx) = oneshot::channel();
 
-        gcd_global_queue().exec_async(move || {
+        run_blocking(move || {
             let _ = tx.send(request_blocking(request));
         });
 
@@ -46,7 +46,7 @@ impl llm::HttpTransport for CoreHttpTransport {
     ) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>, llm::Error>> + Send + 'a>> {
         let (tx, rx) = mpsc::unbounded();
 
-        gcd_global_queue().exec_async(move || {
+        run_blocking(move || {
             stream_request_blocking(request, tx);
         });
 
@@ -54,10 +54,23 @@ impl llm::HttpTransport for CoreHttpTransport {
     }
 }
 
-fn gcd_global_queue() -> dispatch2::DispatchRetained<dispatch2::DispatchQueue> {
+#[cfg(target_os = "macos")]
+fn run_blocking<F>(f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
     dispatch2::DispatchQueue::global_queue(dispatch2::GlobalQueueIdentifier::Priority(
         dispatch2::DispatchQueueGlobalPriority::Default,
     ))
+    .exec_async(f);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_blocking<F>(f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::spawn(f);
 }
 
 fn request_blocking(request: llm::HttpRequest) -> Result<llm::HttpResponse, llm::Error> {
@@ -159,4 +172,8 @@ pub fn get_llm_transport() -> llm::TransportHandle {
     static LLM_TRANSPORT: OnceLock<Arc<dyn llm::HttpTransport>> = OnceLock::new();
     let transport = LLM_TRANSPORT.get_or_init(|| Arc::new(CoreHttpTransport));
     llm::TransportHandle::new(transport.clone())
+}
+
+pub fn get_llm_runtime() -> llm::TransportHandle {
+    get_llm_transport()
 }

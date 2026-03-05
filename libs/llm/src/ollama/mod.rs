@@ -1,4 +1,8 @@
 use crate::utils::{HttpRequest, TransportHandle};
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Request;
 use crate::{
     API, Completion, CompletionChoice, CompletionRequest, Delta, EmbeddingData, EmbeddingResponse,
     Error, Message, ModelDesc, StreamResponseChunk, Usage,
@@ -61,20 +65,18 @@ impl Ollama {
     }
 
     pub async fn list_models(&self, _token: &str) -> Result<Vec<ModelDesc>, Error> {
-        let req = HttpRequest {
-            method: "GET".to_string(),
-            url: format!("{}/api/tags", self.base_url),
-            headers: vec![],
-            body: vec![],
-        };
-
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        let req = Request::builder()
+            .method("GET")
+            .uri(&format!("{}/api/tags", self.base_url))
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
         let model_list: Models =
-            serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+            serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         Ok(model_list
             .models
@@ -96,16 +98,15 @@ impl Ollama {
 
         let body = serde_json::to_vec(&Body { model }).map_err(|_| Error::Unknown)?;
 
-        let req = HttpRequest {
-            method: "POST".to_string(),
-            url: format!("{}/api/show", self.base_url),
-            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
-            body,
-        };
-
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        let req = Request::builder()
+            .method("POST")
+            .uri(&format!("{}/api/show", self.base_url))
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, _) = crate::net::send_request(req).await?;
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
         Ok(ModelDesc {
@@ -130,16 +131,15 @@ impl Ollama {
 
         let body = serde_json::to_vec(&RequestData { input, model }).map_err(|_| Error::Unknown)?;
 
-        let req = HttpRequest {
-            method: "POST".to_string(),
-            url: format!("{}/api/embed", self.base_url),
-            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
-            body,
-        };
-
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        let req = Request::builder()
+            .method("POST")
+            .uri(&format!("{}/api/embed", self.base_url))
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
         #[derive(Deserialize)]
@@ -149,7 +149,7 @@ impl Ollama {
             prompt_eval_count: u32,
         }
 
-        let mut embeddings: OllamaResponse = serde_json::from_slice(&res.body)
+        let mut embeddings: OllamaResponse = serde_json::from_slice(&res_body)
             .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         let embeddings = EmbeddingResponse {
@@ -183,19 +183,18 @@ impl Ollama {
         })
         .map_err(|_| Error::Unknown)?;
 
-        let req = HttpRequest {
-            method: "POST".to_string(),
-            url: format!("{}/api/chat", self.base_url),
-            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
-            body,
-        };
-
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        let req = Request::builder()
+            .method("POST")
+            .uri(&format!("{}/api/chat", self.base_url))
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
-        let message: MessageResponse = serde_json::from_slice(&res.body).map_err(|e| {
+        let message: MessageResponse = serde_json::from_slice(&res_body).map_err(|e| {
             Error::ParsingError(format!("Failed to parse upstream response: {:?}", e))
         })?;
 

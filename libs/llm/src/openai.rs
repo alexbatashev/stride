@@ -2,7 +2,10 @@ use crate::utils::{HttpRequest, TransportHandle};
 use crate::{API, Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk};
 
 use async_stream::stream;
+use bytes::Bytes;
 use futures::{Stream, StreamExt};
+use http_body_util::Full;
+use hyper::Request;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
@@ -34,20 +37,20 @@ impl OpenAI {
     }
 
     pub async fn list_models(&self, token: &str) -> Result<Vec<ModelDesc>, Error> {
-        let req = HttpRequest {
-            method: "GET".to_string(),
-            url: format!("{}/v1/models", self.base_url.trim_end_matches('/')),
-            headers: vec![("Authorization".to_string(), format!("Bearer {}", token))],
-            body: vec![],
-        };
+        let req = Request::builder()
+            .method("GET")
+            .uri(&format!("{}/v1/models", self.base_url.trim_end_matches('/')))
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
 
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
         let model_list: ModelListResponse =
-            serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+            serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         Ok(model_list.data)
     }
@@ -67,42 +70,36 @@ impl OpenAI {
         let body = serde_json::to_vec(&RequestData { input, model })
             .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
-        let req = HttpRequest {
-            method: "POST".to_string(),
-            url: format!("{}/v1/embeddings", self.base_url.trim_end_matches('/')),
-            headers: vec![
-                ("Content-Type".to_string(), "application/json".to_string()),
-                ("Authorization".to_string(), format!("Bearer {}", token)),
-            ],
-            body,
-        };
+        let req = Request::builder()
+            .method("POST")
+            .uri(&format!("{}/v1/embeddings", self.base_url.trim_end_matches('/')))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
 
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
-        serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+        serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
     }
 
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
-        let req = HttpRequest {
-            method: "GET".to_string(),
-            url: format!(
-                "{}/v1/models/{}",
-                self.base_url.trim_end_matches('/'),
-                model
-            ),
-            headers: vec![("Authorization".to_string(), format!("Bearer {}", token))],
-            body: vec![],
-        };
+        let req = Request::builder()
+            .method("GET")
+            .uri(&format!("{}/v1/models/{}", self.base_url.trim_end_matches('/'), model))
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
 
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
-        serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+        serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
     }
 
     pub async fn get_completion(
@@ -112,22 +109,20 @@ impl OpenAI {
     ) -> Result<Completion, Error> {
         let body = serde_json::to_vec(&request).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
-        let req = HttpRequest {
-            method: "POST".to_string(),
-            url: format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/')),
-            headers: vec![
-                ("Content-Type".to_string(), "application/json".to_string()),
-                ("Authorization".to_string(), format!("Bearer {}", token)),
-            ],
-            body,
-        };
+        let req = Request::builder()
+            .method("POST")
+            .uri(&format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/')))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = crate::net::send_request(req).await?;
 
-        let res = self.transport.0.request(req).await?;
-        if !(200..300).contains(&res.status) {
-            return Err(Error::ServerError(res.status));
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
         }
 
-        serde_json::from_slice(&res.body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+        serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
     }
 
     pub fn stream_completion(
