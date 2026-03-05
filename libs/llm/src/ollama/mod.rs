@@ -1,12 +1,14 @@
+mod types;
+
 use crate::utils::TransportHandle;
 
+use crate::{
+    API, Completion, CompletionChoice, CompletionRequest, Delta, EmbeddingData, EmbeddingResponse,
+    Error, Message, ModelDesc, ModelList, StreamResponseChunk, Usage,
+};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::Request;
-use crate::{
-    API, Completion, CompletionChoice, CompletionRequest, Delta, EmbeddingData, EmbeddingResponse,
-    Error, Message, ModelDesc, StreamResponseChunk, Usage,
-};
 
 use async_stream::stream;
 use futures::{Stream, StreamExt};
@@ -14,10 +16,11 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use uuid::Uuid;
 
+use types::*;
+
 #[derive(Clone)]
 pub struct Ollama {
     base_url: String,
-    _transport: TransportHandle,
 }
 
 impl std::fmt::Debug for Ollama {
@@ -28,39 +31,10 @@ impl std::fmt::Debug for Ollama {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct ModelEntry {
-    model: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Models {
-    models: Vec<ModelEntry>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ChatRequest<'a> {
-    model: &'a str,
-    stream: bool,
-    messages: Vec<Message>,
-    think: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct MessageResponse {
-    model: String,
-    message: Message,
-    done: bool,
-    done_reason: Option<String>,
-    prompt_eval_count: Option<u32>,
-    eval_count: Option<u32>,
-}
-
 impl Ollama {
-    pub fn new(base_url: &str, transport: TransportHandle) -> API {
+    pub fn new(base_url: &str, _transport: TransportHandle) -> API {
         API::Ollama(Ollama {
             base_url: base_url.to_string(),
-            _transport: transport,
         })
     }
 
@@ -75,18 +49,13 @@ impl Ollama {
             return Err(Error::ServerError(status));
         }
 
-        let model_list: Models =
-            serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+        let model_list: ModelList<OllamaModel> = serde_json::from_slice(&res_body)
+            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         Ok(model_list
             .models
             .into_iter()
-            .map(|me| ModelDesc {
-                id: me.model,
-                object: "model".to_string(),
-                created: None,
-                owned_by: None,
-            })
+            .map(Into::<ModelDesc>::into)
             .collect())
     }
 
@@ -111,9 +80,7 @@ impl Ollama {
 
         Ok(ModelDesc {
             id: model.to_string(),
-            object: "model".to_string(),
-            created: None,
-            owned_by: None,
+            ..Default::default()
         })
     }
 
@@ -142,32 +109,10 @@ impl Ollama {
             return Err(Error::ServerError(status));
         }
 
-        #[derive(Deserialize)]
-        struct OllamaResponse {
-            model: String,
-            embeddings: Vec<Vec<f32>>,
-            prompt_eval_count: u32,
-        }
-
-        let mut embeddings: OllamaResponse = serde_json::from_slice(&res_body)
+        let mut embeddings: OllamaEmbeddingsResponse = serde_json::from_slice(&res_body)
             .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
-        let embeddings = EmbeddingResponse {
-            object: "object".to_string(),
-            model: embeddings.model,
-            data: EmbeddingData {
-                object: "list".to_string(),
-                index: 0,
-                embedding: std::mem::replace(&mut embeddings.embeddings[0], vec![]),
-            },
-            usage: Usage {
-                prompt_tokens: embeddings.prompt_eval_count,
-                completion_tokens: 0,
-                total_tokens: embeddings.prompt_eval_count,
-            },
-        };
-
-        Ok(embeddings)
+        Ok(embeddings.into())
     }
 
     pub async fn get_completion(
@@ -175,13 +120,8 @@ impl Ollama {
         _token: &str,
         request: CompletionRequest,
     ) -> Result<Completion, Error> {
-        let body = serde_json::to_vec(&ChatRequest {
-            model: &request.model,
-            stream: false,
-            messages: request.messages.clone(),
-            think: true,
-        })
-        .map_err(|_| Error::Unknown)?;
+        let chat_request: OllamaChatRequest = (&request).into();
+        let body = serde_json::to_vec(&chat_request).map_err(|_| Error::Unknown)?;
 
         let req = Request::builder()
             .method("POST")
@@ -194,32 +134,11 @@ impl Ollama {
             return Err(Error::ServerError(status));
         }
 
-        let message: MessageResponse = serde_json::from_slice(&res_body).map_err(|e| {
+        let message: OllamaMessageResponse = serde_json::from_slice(&res_body).map_err(|e| {
             Error::ParsingError(format!("Failed to parse upstream response: {:?}", e))
         })?;
 
-        let prompt_tokens = message.prompt_eval_count.unwrap_or_default();
-        let completion_tokens = message.eval_count.unwrap_or_default();
-
-        Ok(Completion {
-            id: Uuid::now_v7().into(),
-            created: 0,
-            model: message.model,
-            choices: vec![CompletionChoice {
-                message: Some(message.message),
-                text: None,
-                index: 0,
-                delta: None,
-                logprobs: None,
-                tool_calls: None,
-                finish_reason: message.done_reason,
-            }],
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens: prompt_tokens + completion_tokens,
-            },
-        })
+        Ok(message.into())
     }
 
     pub fn stream_completion(
@@ -227,12 +146,9 @@ impl Ollama {
         _token: &str,
         request: CompletionRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
-        let body = match serde_json::to_vec(&ChatRequest {
-            model: &request.model,
-            stream: true,
-            messages: request.messages.clone(),
-            think: true,
-        }) {
+        let chat_request: OllamaChatRequest = (&request).into();
+        let chat_request = chat_request.stream();
+        let body = match serde_json::to_vec(&chat_request) {
             Ok(b) => b,
             Err(_) => {
                 return Box::pin(futures::stream::once(async { Err(Error::Unknown) }));
@@ -265,7 +181,7 @@ impl Ollama {
                 };
                 parsed.clear();
                 let parse_res = decoder.push(&data, |line| {
-                    let data = serde_json::from_slice::<MessageResponse>(line)
+                    let data = serde_json::from_slice::<OllamaMessageResponse>(line)
                         .map_err(|e| Error::ParsingError(format!("{}", e)))?;
                     parsed.push(data);
                     Ok(())
@@ -277,28 +193,9 @@ impl Ollama {
                 }
 
                 for data in parsed.drain(..) {
-                    let chunk = StreamResponseChunk{
-                        id: Uuid::now_v7().into(),
-                        object: "completion".to_string(),
-                        created: 0,
-                        model: data.model.clone(),
-                        system_fingerprint: None,
-                        choices: vec![CompletionChoice {
-                            message: Some(data.message.clone()),
-                            text: None,
-                            index: 0,
-                            delta: Some(Delta {
-                                content: Some(data.message.content.clone()),
-                                thinking: data.message.thinking.clone(),
-                                tool_calls: None,
-                            }),
-                            logprobs: None,
-                            tool_calls: None,
-                            finish_reason: data.done_reason.clone(),
-                        }]
-                    };
-                    yield Ok(chunk);
-                    if data.done {
+                    let done = data.done;
+                    yield Ok(data.into());
+                    if done {
                         return;
                     }
                 }

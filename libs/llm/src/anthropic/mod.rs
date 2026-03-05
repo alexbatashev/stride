@@ -1,3 +1,5 @@
+mod types;
+
 use std::pin::Pin;
 
 use async_stream::stream;
@@ -6,11 +8,16 @@ use serde::{Deserialize, Serialize};
 use uuid;
 
 use crate::utils::TransportHandle;
-use crate::{API, Completion, CompletionChoice, CompletionRequest, Error, Message, ModelDesc, StreamResponseChunk};
+use crate::{
+    API, Completion, CompletionChoice, CompletionRequest, Error, Message, ModelDesc,
+    StreamResponseChunk,
+};
 
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::Request;
+
+use types::*;
 
 #[derive(Clone)]
 pub struct Anthropic {
@@ -77,7 +84,10 @@ impl Anthropic {
 
         let req = Request::builder()
             .method("GET")
-            .uri(&format!("{}/v1/models", self.base_url.trim_end_matches('/')))
+            .uri(&format!(
+                "{}/v1/models",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("x-api-key", token)
             .header("anthropic-version", "2023-06-01")
             .body(Full::new(Bytes::new()))
@@ -96,7 +106,11 @@ impl Anthropic {
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&format!("{}/v1/models/{}", self.base_url.trim_end_matches('/'), model))
+            .uri(&format!(
+                "{}/v1/models/{}",
+                self.base_url.trim_end_matches('/'),
+                model
+            ))
             .header("x-api-key", token)
             .header("anthropic-version", "2023-06-01")
             .body(Full::new(Bytes::new()))
@@ -106,7 +120,8 @@ impl Anthropic {
             return Err(Error::ServerError(status));
         }
 
-        let model_desc: ModelDesc = serde_json::from_slice(&res_body).map_err(|_| Error::Unknown)?;
+        let model_desc: ModelDesc =
+            serde_json::from_slice(&res_body).map_err(|_| Error::Unknown)?;
 
         Ok(model_desc)
     }
@@ -128,7 +143,10 @@ impl Anthropic {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!("{}/v1/messages", self.base_url.trim_end_matches('/')))
+            .uri(&format!(
+                "{}/v1/messages",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("x-api-key", token)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
@@ -200,7 +218,10 @@ impl Anthropic {
 
         let req = match Request::builder()
             .method("POST")
-            .uri(&format!("{}/v1/messages", self.base_url.trim_end_matches('/')))
+            .uri(&format!(
+                "{}/v1/messages",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("x-api-key", token)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")

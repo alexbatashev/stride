@@ -16,18 +16,14 @@ impl Mock {
     pub async fn list_models(&self, _token: &str) -> Result<Vec<ModelDesc>, Error> {
         Ok(vec![ModelDesc {
             id: "mock-model".to_string(),
-            object: "model".to_string(),
-            created: Some(0),
-            owned_by: Some("mock-owner".to_string()),
+            ..Default::default()
         }])
     }
 
     pub async fn get_model(&self, _token: &str, model: &str) -> Result<ModelDesc, Error> {
         Ok(ModelDesc {
             id: model.to_string(),
-            object: "model".to_string(),
-            created: Some(0),
-            owned_by: Some("mock-owner".to_string()),
+            ..Default::default()
         })
     }
 

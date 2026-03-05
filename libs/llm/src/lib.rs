@@ -112,16 +112,6 @@ pub struct Usage {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ModelDesc {
-    pub id: String,
-    pub object: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub owned_by: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct EmbeddingData {
     pub object: String,
     pub index: u32,

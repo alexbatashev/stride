@@ -1,18 +1,23 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelResponse {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelDesc {
     pub id: String,
     pub canonical_slug: Option<String>,
-    pub created: u64,
+    pub created: Option<u64>,
     pub owned_by: Option<String>,
     pub context_length: Option<u32>,
     pub supported_parameters: Vec<String>,
     pub description: Option<String>,
-    name: Option<String>,
+    pub name: Option<String>,
 }
 
-impl ModelResponse {
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelList<T = ModelDesc> {
+    pub models: Vec<T>,
+}
+
+impl ModelDesc {
     pub fn get_name(&self) -> &str {
         match self.name.as_ref() {
             Some(name) => name.as_str(),
