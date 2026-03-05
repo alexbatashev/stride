@@ -4,14 +4,9 @@ use std::pin::Pin;
 
 use async_stream::stream;
 use futures::{Stream, StreamExt};
-use serde::{Deserialize, Serialize};
-use uuid;
 
 use crate::utils::TransportHandle;
-use crate::{
-    API, Completion, CompletionChoice, CompletionRequest, Error, Message, ModelDesc,
-    StreamResponseChunk,
-};
+use crate::{API, Completion, CompletionRequest, Error, ModelDesc, StreamResponseChunk};
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -33,41 +28,6 @@ impl std::fmt::Debug for Anthropic {
     }
 }
 
-#[derive(Deserialize)]
-struct AnthropicTextContent {
-    r#type: String,
-    text: String,
-}
-
-#[derive(Deserialize)]
-struct AnthropicCompletionResponse {
-    id: String,
-    r#type: String,
-    role: String,
-    model: String,
-    content: Vec<AnthropicTextContent>,
-    stop_reason: Option<String>,
-    stop_sequence: Option<String>,
-    usage: AnthropicUsage,
-}
-
-#[derive(Deserialize)]
-struct AnthropicUsage {
-    input_tokens: u32,
-    output_tokens: u32,
-}
-
-#[derive(Serialize)]
-struct AnthropicCompletionRequest<'a> {
-    model: &'a str,
-    max_tokens: u32,
-    messages: &'a [Message],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream: Option<bool>,
-}
-
 impl Anthropic {
     pub fn new(base_url: &str, transport: TransportHandle) -> API {
         API::Anthropic(Anthropic {
@@ -77,11 +37,6 @@ impl Anthropic {
     }
 
     pub async fn list_models(&self, token: &str) -> Result<Vec<ModelDesc>, Error> {
-        #[derive(Debug, Deserialize)]
-        struct AnthropicModelList {
-            models: Vec<ModelDesc>,
-        }
-
         let req = Request::builder()
             .method("GET")
             .uri(&format!(
@@ -131,13 +86,7 @@ impl Anthropic {
         token: &str,
         request: CompletionRequest,
     ) -> Result<Completion, Error> {
-        let req_body = AnthropicCompletionRequest {
-            model: &request.model,
-            max_tokens: request.max_tokens.unwrap_or(8192),
-            messages: &request.messages,
-            system: None,
-            stream: None,
-        };
+        let req_body: AnthropicCompletionRequest = (&request).into();
 
         let body = serde_json::to_vec(&req_body).map_err(|_| Error::Unknown)?;
 
@@ -160,32 +109,7 @@ impl Anthropic {
         let anthropic: AnthropicCompletionResponse =
             serde_json::from_slice(&res_body).map_err(|_| Error::Unknown)?;
 
-        let choices = anthropic
-            .content
-            .iter()
-            .enumerate()
-            .map(|(i, c)| CompletionChoice {
-                message: None,
-                text: Some(c.text.clone()),
-                index: i as u16,
-                delta: None,
-                logprobs: None,
-                tool_calls: None,
-                finish_reason: anthropic.stop_reason.clone(),
-            })
-            .collect();
-
-        Ok(Completion {
-            id: anthropic.id,
-            created: 0,
-            model: anthropic.model,
-            choices,
-            usage: crate::Usage {
-                prompt_tokens: anthropic.usage.input_tokens,
-                completion_tokens: anthropic.usage.output_tokens,
-                total_tokens: anthropic.usage.input_tokens + anthropic.usage.output_tokens,
-            },
-        })
+        Ok(anthropic.into())
     }
 
     pub fn stream_completion(
@@ -193,21 +117,8 @@ impl Anthropic {
         token: &str,
         request: CompletionRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
-        #[derive(Deserialize)]
-        struct StreamChunk {
-            index: Option<u32>,
-            delta: Option<AnthropicTextContent>,
-            content_block: Option<AnthropicTextContent>,
-            text: Option<String>,
-        }
-
-        let req_body = AnthropicCompletionRequest {
-            model: &request.model,
-            max_tokens: request.max_tokens.unwrap_or(1024),
-            messages: &request.messages,
-            system: None,
-            stream: Some(true),
-        };
+        let req_body: AnthropicCompletionRequest = (&request).into();
+        let req_body = req_body.stream_with_max_tokens(request.max_tokens.unwrap_or(1024));
 
         let body = match serde_json::to_vec(&req_body) {
             Ok(b) => b,
@@ -249,33 +160,14 @@ impl Anthropic {
                 };
                 parsed.clear();
                 let done = decoder.push(&data, |event_data| {
-                    let chunk = serde_json::from_slice::<StreamChunk>(event_data)
+                    let chunk = serde_json::from_slice::<AnthropicStreamChunk>(event_data)
                         .map_err(|e| Error::ParsingError(format!("{}", e)))?;
-                    let text = chunk.text
-                        .or_else(|| chunk.delta.as_ref().map(|d| d.text.clone()))
-                        .or_else(|| chunk.content_block.as_ref().map(|cb| cb.text.clone()));
-                    if let Some(text) = text {
-                        let choice = CompletionChoice {
-                            message: None,
-                            text: Some(text),
-                            index: chunk.index.unwrap_or(0) as u16,
-                            delta: None,
-                            logprobs: None,
-                            tool_calls: None,
-                            finish_reason: None,
-                        };
-
-                        parsed.push(StreamResponseChunk {
-                            id: format!("cmpl-{}", uuid::Uuid::new_v4()),
-                            object: "chat.completion.chunk".to_string(),
-                            created: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                            model: model.clone(),
-                            system_fingerprint: None,
-                            choices: vec![choice],
-                        });
+                    let chunk = AnthropicStreamChunkWithModel {
+                        model: model.clone(),
+                        chunk,
+                    };
+                    if let Ok(chunk) = StreamResponseChunk::try_from(chunk) {
+                        parsed.push(chunk);
                     }
                     Ok(())
                 });
