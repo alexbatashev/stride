@@ -251,8 +251,9 @@ impl Ollama {
         };
 
         let s = stream! {
-            let mut upstream = crate::net::stream_request(req, |data| Ok::<Vec<u8>, Error>(data.to_vec())).await;
-            let mut buf = Vec::new();
+            let mut upstream = crate::net::stream_request(req, Ok::<Bytes, Error>).await;
+            let mut decoder = crate::net::NdjsonDecoder::new();
+            let mut parsed = Vec::new();
 
             while let Some(item) = upstream.next().await {
                 let data = match item {
@@ -262,41 +263,43 @@ impl Ollama {
                         return;
                     }
                 };
-                buf.extend_from_slice(&data);
+                parsed.clear();
+                let parse_res = decoder.push(&data, |line| {
+                    let data = serde_json::from_slice::<MessageResponse>(line)
+                        .map_err(|e| Error::ParsingError(format!("{}", e)))?;
+                    parsed.push(data);
+                    Ok(())
+                });
 
-                while let Some(pos) = buf.windows(1).position(|w| w == b"\n") {
-                    let event = buf.drain(..pos + 1).collect::<Vec<_>>();
-                    let s = String::from_utf8_lossy(&event);
-                    for line in s.lines() {
-                        match serde_json::from_str::<MessageResponse>(line) {
-                            Ok(data) => {
-                                let chunk = StreamResponseChunk{
-                                    id: Uuid::now_v7().into(),
-                                    object: "completion".to_string(),
-                                    created: 0,
-                                    model: data.model,
-                                    system_fingerprint: None,
-                                    choices: vec![CompletionChoice {
-                                        message: Some(data.message.clone()),
-                                        text: None,
-                                        index: 0,
-                                        delta: Some(Delta {
-                                            content: Some(data.message.content.clone()),
-                                            thinking: data.message.thinking.clone(),
-                                            tool_calls: None,
-                                        }),
-                                        logprobs: None,
-                                        tool_calls: None,
-                                        finish_reason: data.done_reason.clone(),
-                                    }]
-                                };
-                                yield Ok(chunk);
-                                if data.done {
-                                    return;
-                                }
-                            },
-                            Err(e) => { yield Err(Error::ParsingError(format!("{}", e))) },
-                        }
+                if let Err(err) = parse_res {
+                    yield Err(err);
+                    return;
+                }
+
+                for data in parsed.drain(..) {
+                    let chunk = StreamResponseChunk{
+                        id: Uuid::now_v7().into(),
+                        object: "completion".to_string(),
+                        created: 0,
+                        model: data.model.clone(),
+                        system_fingerprint: None,
+                        choices: vec![CompletionChoice {
+                            message: Some(data.message.clone()),
+                            text: None,
+                            index: 0,
+                            delta: Some(Delta {
+                                content: Some(data.message.content.clone()),
+                                thinking: data.message.thinking.clone(),
+                                tool_calls: None,
+                            }),
+                            logprobs: None,
+                            tool_calls: None,
+                            finish_reason: data.done_reason.clone(),
+                        }]
+                    };
+                    yield Ok(chunk);
+                    if data.done {
+                        return;
                     }
                 }
             }

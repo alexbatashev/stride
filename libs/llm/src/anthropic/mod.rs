@@ -214,8 +214,9 @@ impl Anthropic {
         let model = request.model.clone();
 
         let s = stream! {
-            let mut upstream = crate::net::stream_request(req, |data| Ok::<Vec<u8>, Error>(data.to_vec())).await;
-            let mut buf = Vec::new();
+            let mut upstream = crate::net::stream_request(req, Ok::<Bytes, Error>).await;
+            let mut decoder = crate::net::SseDecoder::new();
+            let mut parsed = Vec::new();
 
             while let Some(item) = upstream.next().await {
                 let data = match item {
@@ -225,49 +226,51 @@ impl Anthropic {
                         return;
                     }
                 };
-                buf.extend_from_slice(&data);
+                parsed.clear();
+                let done = decoder.push(&data, |event_data| {
+                    let chunk = serde_json::from_slice::<StreamChunk>(event_data)
+                        .map_err(|e| Error::ParsingError(format!("{}", e)))?;
+                    let text = chunk.text
+                        .or_else(|| chunk.delta.as_ref().map(|d| d.text.clone()))
+                        .or_else(|| chunk.content_block.as_ref().map(|cb| cb.text.clone()));
+                    if let Some(text) = text {
+                        let choice = CompletionChoice {
+                            message: None,
+                            text: Some(text),
+                            index: chunk.index.unwrap_or(0) as u16,
+                            delta: None,
+                            logprobs: None,
+                            tool_calls: None,
+                            finish_reason: None,
+                        };
 
-                while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
-                    let event = buf.drain(..pos + 2).collect::<Vec<_>>();
-                    let s = String::from_utf8_lossy(&event);
-                    for line in s.lines() {
-                        let line = line.trim();
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" {
-                                return;
-                            }
-                            let v = serde_json::from_str::<StreamChunk>(data);
-                            if let Ok(chunk) = v {
-                                let text = chunk.text
-                                    .or_else(|| chunk.delta.as_ref().map(|d| d.text.clone()))
-                                    .or_else(|| chunk.content_block.as_ref().map(|cb| cb.text.clone()));
-                                if let Some(text) = text {
-                                    let choice = CompletionChoice {
-                                        message: None,
-                                        text: Some(text),
-                                        index: chunk.index.unwrap_or(0) as u16,
-                                        delta: None,
-                                        logprobs: None,
-                                        tool_calls: None,
-                                        finish_reason: None,
-                                    };
+                        parsed.push(StreamResponseChunk {
+                            id: format!("cmpl-{}", uuid::Uuid::new_v4()),
+                            object: "chat.completion.chunk".to_string(),
+                            created: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                            model: model.clone(),
+                            system_fingerprint: None,
+                            choices: vec![choice],
+                        });
+                    }
+                    Ok(())
+                });
 
-                                    let response_chunk = StreamResponseChunk {
-                                        id: format!("cmpl-{}", uuid::Uuid::new_v4()),
-                                        object: "chat.completion.chunk".to_string(),
-                                        created: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs(),
-                                        model: model.clone(),
-                                        system_fingerprint: None,
-                                        choices: vec![choice],
-                                    };
-
-                                    yield Ok(response_chunk);
-                                }
-                            }
+                match done {
+                    Ok(done) => {
+                        for chunk in parsed.drain(..) {
+                            yield Ok(chunk);
                         }
+                        if done {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        yield Err(err);
+                        return;
                     }
                 }
             }

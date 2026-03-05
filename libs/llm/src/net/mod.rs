@@ -61,7 +61,7 @@ where
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     R: Send + 'static,
-    F: FnMut(&[u8]) -> Result<R, Error> + Send + 'static,
+    F: FnMut(Bytes) -> Result<R, Error> + Send + 'static,
 {
     let (host, is_https, addrs, req) = match prepare_request(req) {
         Ok(v) => v,
@@ -152,7 +152,7 @@ where
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     R: Send + 'static,
-    F: FnMut(&[u8]) -> Result<R, Error> + Send + 'static,
+    F: FnMut(Bytes) -> Result<R, Error> + Send + 'static,
 {
     let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
         Ok(v) => v,
@@ -199,7 +199,7 @@ where
                     match frame_opt {
                         Some(Ok(frame)) => {
                             if let Ok(data) = frame.into_data() {
-                                match f(&data) {
+                                match f(data) {
                                     Ok(mapped) => yield Ok(mapped),
                                     Err(err) => {
                                         yield Err(err);
@@ -271,4 +271,97 @@ fn prepare_request<T>(req: Request<T>) -> Result<(String, bool, Vec<std::net::So
         .or_insert_with(|| HeaderValue::from_str(&host).unwrap_or(HeaderValue::from_static("")));
 
     Ok((host, is_https, addrs, req))
+}
+
+pub(crate) struct SseDecoder {
+    buf: Vec<u8>,
+}
+
+impl SseDecoder {
+    pub(crate) fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
+
+    pub(crate) fn push<F>(&mut self, chunk: &[u8], mut on_data: F) -> Result<bool, Error>
+    where
+        F: FnMut(&[u8]) -> Result<(), Error>,
+    {
+        self.buf.extend_from_slice(chunk);
+
+        let mut scan_from = 0usize;
+        let mut processed = 0usize;
+        while let Some(pos) = self.buf[scan_from..].windows(2).position(|w| w == b"\n\n") {
+            let event_end = scan_from + pos;
+            let event = &self.buf[scan_from..event_end];
+            for line in event.split(|b| *b == b'\n') {
+                let line = trim_ascii(line);
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(data) = line.strip_prefix(b"data: ") {
+                    if data == b"[DONE]" {
+                        return Ok(true);
+                    }
+                    on_data(data)?;
+                }
+            }
+            processed = event_end + 2;
+            scan_from = processed;
+        }
+
+        if processed > 0 {
+            self.buf.drain(..processed);
+        }
+
+        Ok(false)
+    }
+}
+
+pub(crate) struct NdjsonDecoder {
+    buf: Vec<u8>,
+}
+
+impl NdjsonDecoder {
+    pub(crate) fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
+
+    pub(crate) fn push<F>(&mut self, chunk: &[u8], mut on_line: F) -> Result<(), Error>
+    where
+        F: FnMut(&[u8]) -> Result<(), Error>,
+    {
+        self.buf.extend_from_slice(chunk);
+
+        let mut scan_from = 0usize;
+        let mut processed = 0usize;
+        while let Some(pos) = self.buf[scan_from..].iter().position(|b| *b == b'\n') {
+            let line_end = scan_from + pos;
+            let line = trim_ascii(&self.buf[scan_from..line_end]);
+            if !line.is_empty() { on_line(line)?; }
+            processed = line_end + 1;
+            scan_from = processed;
+        }
+
+        if processed > 0 {
+            self.buf.drain(..processed);
+        }
+
+        Ok(())
+    }
+}
+
+fn trim_ascii(mut s: &[u8]) -> &[u8] {
+    while let Some(first) = s.first() {
+        if !first.is_ascii_whitespace() {
+            break;
+        }
+        s = &s[1..];
+    }
+    while let Some(last) = s.last() {
+        if !last.is_ascii_whitespace() {
+            break;
+        }
+        s = &s[..s.len() - 1];
+    }
+    s
 }

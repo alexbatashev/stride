@@ -154,8 +154,9 @@ impl OpenAI {
         };
 
         let s = stream! {
-            let mut upstream = crate::net::stream_request(req, |data| Ok::<Vec<u8>, Error>(data.to_vec())).await;
-            let mut buf = Vec::new();
+            let mut upstream = crate::net::stream_request(req, Ok::<Bytes, Error>).await;
+            let mut decoder = crate::net::SseDecoder::new();
+            let mut parsed = Vec::new();
 
             while let Some(item) = upstream.next().await {
                 let chunk = match item {
@@ -166,20 +167,25 @@ impl OpenAI {
                     }
                 };
 
-                buf.extend_from_slice(&chunk);
-                while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
-                    let event = buf.drain(..pos + 2).collect::<Vec<_>>();
-                    let s = String::from_utf8_lossy(&event);
-                    for line in s.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            if data == "[DONE]" {
-                                return;
-                            }
-                            match serde_json::from_str::<StreamResponseChunk>(data) {
-                                Ok(chunk) => yield Ok(chunk),
-                                Err(err) => yield Err(Error::ParsingError(format!("{}", err))),
-                            }
+                parsed.clear();
+                let done = decoder.push(&chunk, |data| {
+                    let chunk = serde_json::from_slice::<StreamResponseChunk>(data)
+                        .map_err(|err| Error::ParsingError(format!("{}", err)))?;
+                    parsed.push(chunk);
+                    Ok(())
+                });
+                match done {
+                    Ok(done) => {
+                        for parsed_chunk in parsed.drain(..) {
+                            yield Ok(parsed_chunk);
                         }
+                        if done {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        yield Err(err);
+                        return;
                     }
                 }
             }
