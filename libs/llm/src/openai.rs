@@ -1,4 +1,4 @@
-use crate::utils::{HttpRequest, TransportHandle};
+use crate::utils::TransportHandle;
 use crate::{API, Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk};
 
 use async_stream::stream;
@@ -12,7 +12,7 @@ use std::pin::Pin;
 #[derive(Clone)]
 pub struct OpenAI {
     base_url: String,
-    transport: TransportHandle,
+    _transport: TransportHandle,
 }
 
 impl std::fmt::Debug for OpenAI {
@@ -32,7 +32,7 @@ impl OpenAI {
     pub fn new(base_url: &str, transport: TransportHandle) -> API {
         API::OpenAI(OpenAI {
             base_url: base_url.to_string(),
-            transport,
+            _transport: transport,
         })
     }
 
@@ -139,20 +139,22 @@ impl OpenAI {
             }
         };
 
-        let req = HttpRequest {
-            method: "POST".to_string(),
-            url: format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/')),
-            headers: vec![
-                ("Content-Type".to_string(), "application/json".to_string()),
-                ("Authorization".to_string(), format!("Bearer {}", token)),
-            ],
-            body: req_body,
+        let req = match Request::builder()
+            .method("POST")
+            .uri(&format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/')))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Full::new(Bytes::from(req_body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))
+        {
+            Ok(req) => req,
+            Err(err) => {
+                return Box::pin(futures::stream::once(async move { Err(err) }));
+            }
         };
 
-        let transport = self.transport.clone();
-
         let s = stream! {
-            let mut upstream = transport.0.request_stream(req);
+            let mut upstream = crate::net::stream_request(req, |data| Ok::<Vec<u8>, Error>(data.to_vec())).await;
             let mut buf = Vec::new();
 
             while let Some(item) = upstream.next().await {

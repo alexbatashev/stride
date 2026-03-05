@@ -1,16 +1,19 @@
 mod stream;
 
+use std::pin::Pin;
 use std::net::ToSocketAddrs;
 
 use bytes::Bytes;
-use http_body_util::BodyExt;
+use futures::FutureExt;
+use futures::Stream;
 use futures::future::Either;
+use http_body_util::BodyExt;
 use hyper::Request;
 use hyper::body::Body;
-use hyper::header::{HeaderValue, HOST};
+use hyper::header::{HOST, HeaderValue};
 
-use stream::{AsyncTcpStream, AsyncTlsStream};
 use crate::Error;
+use stream::{AsyncTcpStream, AsyncTlsStream};
 
 pub(crate) async fn send_request<T>(req: Request<T>) -> Result<(u16, Bytes), Error>
 where
@@ -18,40 +21,7 @@ where
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let uri = req.uri().clone();
-
-    let host = uri
-        .host()
-        .ok_or_else(|| Error::InvalidRequest("missing host".into()))?
-        .to_string();
-
-    let is_https = uri.scheme_str() == Some("https");
-    let port = uri.port_u16().unwrap_or(if is_https { 443 } else { 80 });
-
-    let mut addrs = format!("{host}:{port}")
-        .to_socket_addrs()
-        .map_err(|e| Error::RequestError(e.to_string()))?
-        .collect::<Vec<_>>();
-    if addrs.is_empty() {
-        return Err(Error::RequestError("DNS resolution failed".into()));
-    }
-    addrs.sort_by_key(|addr| addr.is_ipv6());
-
-    // Rewrite to origin form and ensure Host header is present
-    let path_and_query = uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/")
-        .to_string();
-
-    let mut req = req;
-    *req.uri_mut() = path_and_query
-        .parse()
-        .map_err(|_| Error::InvalidRequest("invalid URI path".into()))?;
-
-    req.headers_mut()
-        .entry(HOST)
-        .or_insert_with(|| HeaderValue::from_str(&host).unwrap_or(HeaderValue::from_static("")));
+    let (host, is_https, addrs, req) = prepare_request(req)?;
 
     if is_https {
         let mut last_err = None;
@@ -78,6 +48,53 @@ where
             last_err
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "failed to connect".to_string()),
+        ))
+    }
+}
+
+pub(crate) async fn stream_request<T, R, F>(
+    req: Request<T>,
+    f: F,
+) -> Pin<Box<dyn Stream<Item = Result<R, Error>> + Send + 'static>>
+where
+    T: Body + Send + 'static,
+    T::Data: Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    R: Send + 'static,
+    F: FnMut(&[u8]) -> Result<R, Error> + Send + 'static,
+{
+    let (host, is_https, addrs, req) = match prepare_request(req) {
+        Ok(v) => v,
+        Err(err) => return Box::pin(futures::stream::once(async move { Err(err) })),
+    };
+
+    if is_https {
+        let mut last_err = None;
+        for addr in addrs {
+            match AsyncTlsStream::connect(addr, &host) {
+                Ok(io) => return do_stream_request(io, req, f).await,
+                Err(err) => last_err = Some(err),
+            }
+        }
+        let msg = last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "failed to connect".to_string());
+        Box::pin(futures::stream::once(
+            async move { Err(Error::RequestError(msg)) },
+        ))
+    } else {
+        let mut last_err = None;
+        for addr in addrs {
+            match AsyncTcpStream::new(addr).await {
+                Ok(io) => return do_stream_request(io, req, f).await,
+                Err(err) => last_err = Some(err),
+            }
+        }
+        let msg = last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "failed to connect".to_string());
+        Box::pin(futures::stream::once(
+            async move { Err(Error::RequestError(msg)) },
         ))
     }
 }
@@ -122,4 +139,136 @@ where
             Err(err) => Err(Error::RequestError(err.to_string())),
         },
     }
+}
+
+async fn do_stream_request<Io, T, R, F>(
+    io: Io,
+    req: Request<T>,
+    mut f: F,
+) -> Pin<Box<dyn Stream<Item = Result<R, Error>> + Send + 'static>>
+where
+    Io: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+    T: Body + Send + 'static,
+    T::Data: Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    R: Send + 'static,
+    F: FnMut(&[u8]) -> Result<R, Error> + Send + 'static,
+{
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
+        Ok(v) => v,
+        Err(e) => {
+            return Box::pin(futures::stream::once(async move {
+                Err(Error::RequestError(e.to_string()))
+            }))
+        }
+    };
+    let mut conn = Box::pin(conn);
+
+    let request_fut = sender.send_request(req);
+    futures::pin_mut!(request_fut);
+
+    let res = match futures::future::select(request_fut, conn.as_mut()).await {
+        Either::Left((Ok(res), _)) => res,
+        Either::Left((Err(err), _)) => {
+            return Box::pin(futures::stream::once(async move {
+                Err(Error::RequestError(err.to_string()))
+            }))
+        }
+        Either::Right((Ok(()), _)) => {
+            return Box::pin(futures::stream::once(async {
+                Err(Error::RequestError(
+                    "connection closed before response completed".to_string(),
+                ))
+            }))
+        }
+        Either::Right((Err(err), _)) => {
+            return Box::pin(futures::stream::once(async move {
+                Err(Error::RequestError(err.to_string()))
+            }))
+        }
+    };
+
+    let mut body = res.into_body();
+    let s = async_stream::stream! {
+        loop {
+            let next_frame_fut = body.frame().fuse();
+            futures::pin_mut!(next_frame_fut);
+
+            match futures::future::select(next_frame_fut, conn.as_mut()).await {
+                Either::Left((frame_opt, _)) => {
+                    match frame_opt {
+                        Some(Ok(frame)) => {
+                            if let Ok(data) = frame.into_data() {
+                                match f(&data) {
+                                    Ok(mapped) => yield Ok(mapped),
+                                    Err(err) => {
+                                        yield Err(err);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        Some(Err(err)) => {
+                            yield Err(Error::RequestError(err.to_string()));
+                            return;
+                        }
+                        None => return,
+                    }
+                }
+                Either::Right((conn_res, _)) => match conn_res {
+                    Ok(()) => {
+                        yield Err(Error::RequestError(
+                            "connection closed before stream completed".to_string(),
+                        ));
+                        return;
+                    }
+                    Err(err) => {
+                        yield Err(Error::RequestError(err.to_string()));
+                        return;
+                    }
+                },
+            }
+        }
+    };
+
+    Box::pin(s)
+}
+
+fn prepare_request<T>(req: Request<T>) -> Result<(String, bool, Vec<std::net::SocketAddr>, Request<T>), Error> {
+    let uri = req.uri().clone();
+
+    let host = uri
+        .host()
+        .ok_or_else(|| Error::InvalidRequest("missing host".into()))?
+        .to_string();
+
+    let is_https = uri.scheme_str() == Some("https");
+    let port = uri.port_u16().unwrap_or(if is_https { 443 } else { 80 });
+
+    let mut addrs = format!("{host}:{port}")
+        .to_socket_addrs()
+        .map_err(|e| Error::RequestError(e.to_string()))?
+        .collect::<Vec<_>>();
+    if addrs.is_empty() {
+        return Err(Error::RequestError("DNS resolution failed".into()));
+    }
+    addrs.sort_by_key(|addr| addr.is_ipv6());
+
+    // Rewrite to origin form and ensure Host header is present.
+    let path_and_query = uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/")
+        .to_string();
+
+    let mut req = req;
+    *req.uri_mut() = path_and_query
+        .parse()
+        .map_err(|_| Error::InvalidRequest("invalid URI path".into()))?;
+
+    req.headers_mut()
+        .entry(HOST)
+        .or_insert_with(|| HeaderValue::from_str(&host).unwrap_or(HeaderValue::from_static("")));
+
+    Ok((host, is_https, addrs, req))
 }

@@ -1,4 +1,4 @@
-use crate::utils::{HttpRequest, TransportHandle};
+use crate::utils::TransportHandle;
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -17,7 +17,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Ollama {
     base_url: String,
-    transport: TransportHandle,
+    _transport: TransportHandle,
 }
 
 impl std::fmt::Debug for Ollama {
@@ -60,7 +60,7 @@ impl Ollama {
     pub fn new(base_url: &str, transport: TransportHandle) -> API {
         API::Ollama(Ollama {
             base_url: base_url.to_string(),
-            transport,
+            _transport: transport,
         })
     }
 
@@ -239,17 +239,19 @@ impl Ollama {
             }
         };
 
-        let req = HttpRequest {
-            method: "POST".to_string(),
-            url: format!("{}/api/chat", self.base_url),
-            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
-            body,
+        let req = match Request::builder()
+            .method("POST")
+            .uri(&format!("{}/api/chat", self.base_url))
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))
+        {
+            Ok(req) => req,
+            Err(err) => return Box::pin(futures::stream::once(async move { Err(err) })),
         };
 
-        let transport = self.transport.clone();
-
         let s = stream! {
-            let mut upstream = transport.0.request_stream(req);
+            let mut upstream = crate::net::stream_request(req, |data| Ok::<Vec<u8>, Error>(data.to_vec())).await;
             let mut buf = Vec::new();
 
             while let Some(item) = upstream.next().await {
