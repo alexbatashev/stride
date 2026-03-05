@@ -541,7 +541,7 @@ impl ChatService {
 
     pub async fn set_model(&self, provider_id: String, model_id: String) {
         let mut state = self.state.lock().await;
-        state.provider_id = Some(provider_id);
+        state.provider_id = Some(provider_id.to_lowercase());
         state.model_id = Some(model_id);
     }
 
