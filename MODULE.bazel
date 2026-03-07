@@ -211,6 +211,10 @@ crate.spec(
     version = "0.14.5",
 )
 crate.spec(
+    package = "tonic-web",
+    version = "0.14.5",
+)
+crate.spec(
     package = "prost",
     version = "0.14.3",
 )

@@ -6,6 +6,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use minisql::{ConnectionPool, Migration, migrations};
+use tonic_web::GrpcWebLayer;
+use tower_http::cors::CorsLayer;
 
 use crate::auth::AppState;
 
@@ -148,8 +150,7 @@ where
         let _ = grpc_shutdown_tx.send(());
     });
 
-    let http_app =
-        auth::grpc_web_router(state.clone()).merge(frontend::http_router(static_dir, proto_dir));
+    let http_app = frontend::http_router(static_dir, proto_dir);
     let http_task = spawn_blocking_compat(move || -> Result<(), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -176,6 +177,9 @@ where
             .map_err(|e| e.to_string())?;
         rt.block_on(async move {
             tonic::transport::Server::builder()
+                .accept_http1(true)
+                .layer(CorsLayer::permissive())
+                .layer(GrpcWebLayer::new())
                 .add_service(auth::auth_service(grpc_state.clone()))
                 .add_service(auth::hello_service(grpc_state))
                 .serve_with_shutdown(grpc_addr, async move {

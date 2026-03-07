@@ -4,7 +4,15 @@ import * as jspbEsm from "https://esm.sh/google-protobuf@3.21.4";
 let generatedPromise;
 
 function grpcEndpoint() {
-  return `${window.location.origin}/grpcweb`;
+  if (window.FRIDAY_GRPC_ENDPOINT) {
+    return window.FRIDAY_GRPC_ENDPOINT;
+  }
+  const url = new URL(window.location.href);
+  url.port = "50051";
+  url.pathname = "";
+  url.search = "";
+  url.hash = "";
+  return url.origin;
 }
 
 function normalizeGrpcWeb(moduleNs) {

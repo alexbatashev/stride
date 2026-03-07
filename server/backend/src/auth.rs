@@ -1,14 +1,8 @@
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use axum::Router;
-use axum::body::{Body, to_bytes};
-use axum::http::{Request as HttpRequest, StatusCode, header};
-use axum::response::Response as AxumResponse;
-use axum::routing::post_service;
 use friday::grpc::generated::friday::core::rpc::{
     AuthReply, HelloReply, HelloRequest, LoginRequest, LogoutReply, LogoutRequest, RegisterRequest,
     auth_service_server::{AuthService, AuthServiceServer},
@@ -16,11 +10,9 @@ use friday::grpc::generated::friday::core::rpc::{
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use minisql::{ConnectionPool, Value};
-use prost::Message;
 use serde::{Deserialize, Serialize};
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
-use tower::util::BoxCloneSyncService;
 use uuid::Uuid;
 
 use crate::{server_sessions, users};
@@ -277,174 +269,6 @@ impl AuthService for AuthServiceImpl {
 
         Ok(Response::new(LogoutReply { success: true }))
     }
-}
-
-fn grpc_web_frame(flag: u8, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(5 + payload.len());
-    out.push(flag);
-    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    out.extend_from_slice(payload);
-    out
-}
-
-fn grpc_web_trailers(status: tonic::Code, message: &str) -> Vec<u8> {
-    let trailers = format!(
-        "grpc-status: {}\r\ngrpc-message: {}\r\n",
-        status as i32, message
-    );
-    grpc_web_frame(0x80, trailers.as_bytes())
-}
-
-fn grpc_web_payload(body: &[u8]) -> Result<&[u8], Status> {
-    if body.len() < 5 {
-        return Err(Status::invalid_argument("grpc-web body is too short"));
-    }
-    if (body[0] & 0x80) != 0 {
-        return Err(Status::invalid_argument("expected grpc-web data frame"));
-    }
-    let len = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
-    if body.len() < 5 + len {
-        return Err(Status::invalid_argument("invalid grpc-web frame length"));
-    }
-    Ok(&body[5..5 + len])
-}
-
-fn grpc_web_response(framed: Vec<u8>) -> AxumResponse {
-    let mut response = AxumResponse::new(Body::from(framed));
-    *response.status_mut() = StatusCode::OK;
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        "application/grpc-web+proto"
-            .parse()
-            .expect("valid grpc-web content-type"),
-    );
-    response.headers_mut().insert(
-        header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        "grpc-status,grpc-message"
-            .parse()
-            .expect("valid exposed headers"),
-    );
-    response
-}
-
-async fn grpc_web_auth(
-    state: Arc<AppState>,
-    request: HttpRequest<Body>,
-    call: fn(AuthServiceImpl, Vec<u8>) -> GrpcWebAuthFuture,
-) -> AxumResponse {
-    let bytes = match to_bytes(request.into_body(), usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return grpc_web_response(grpc_web_trailers(
-                tonic::Code::InvalidArgument,
-                "invalid request body",
-            ));
-        }
-    };
-
-    call(AuthServiceImpl { state }, bytes.to_vec()).await
-}
-
-type GrpcWebAuthFuture = std::pin::Pin<Box<dyn std::future::Future<Output = AxumResponse> + Send>>;
-type GrpcWebHttpFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<AxumResponse, Infallible>> + Send>>;
-
-fn call_register(service: AuthServiceImpl, body: Vec<u8>) -> GrpcWebAuthFuture {
-    Box::pin(async move {
-        let payload = match grpc_web_payload(&body) {
-            Ok(payload) => payload,
-            Err(status) => {
-                return grpc_web_response(grpc_web_trailers(status.code(), status.message()));
-            }
-        };
-        let request = match <RegisterRequest as prost::Message>::decode(payload) {
-            Ok(request) => request,
-            Err(_) => {
-                return grpc_web_response(grpc_web_trailers(
-                    tonic::Code::InvalidArgument,
-                    "invalid request body",
-                ));
-            }
-        };
-
-        match service.register(Request::new(request)).await {
-            Ok(response) => {
-                let encoded = response.into_inner().encode_to_vec();
-                let mut framed = grpc_web_frame(0, &encoded);
-                framed.extend(grpc_web_trailers(tonic::Code::Ok, ""));
-                grpc_web_response(framed)
-            }
-            Err(status) => grpc_web_response(grpc_web_trailers(status.code(), status.message())),
-        }
-    })
-}
-
-fn call_login(service: AuthServiceImpl, body: Vec<u8>) -> GrpcWebAuthFuture {
-    Box::pin(async move {
-        let payload = match grpc_web_payload(&body) {
-            Ok(payload) => payload,
-            Err(status) => {
-                return grpc_web_response(grpc_web_trailers(status.code(), status.message()));
-            }
-        };
-        let request = match <LoginRequest as prost::Message>::decode(payload) {
-            Ok(request) => request,
-            Err(_) => {
-                return grpc_web_response(grpc_web_trailers(
-                    tonic::Code::InvalidArgument,
-                    "invalid request body",
-                ));
-            }
-        };
-
-        match service.login(Request::new(request)).await {
-            Ok(response) => {
-                let encoded = response.into_inner().encode_to_vec();
-                let mut framed = grpc_web_frame(0, &encoded);
-                framed.extend(grpc_web_trailers(tonic::Code::Ok, ""));
-                grpc_web_response(framed)
-            }
-            Err(status) => grpc_web_response(grpc_web_trailers(status.code(), status.message())),
-        }
-    })
-}
-
-pub(crate) fn grpc_web_register_service(
-    state: Arc<AppState>,
-) -> BoxCloneSyncService<HttpRequest<Body>, AxumResponse, Infallible> {
-    BoxCloneSyncService::new(tower::service_fn(move |request: HttpRequest<Body>| {
-        let state = state.clone();
-        let fut: GrpcWebHttpFuture = Box::pin(async move {
-            let response = grpc_web_auth(state, request, call_register).await;
-            Ok::<AxumResponse, Infallible>(response)
-        });
-        fut
-    }))
-}
-
-pub(crate) fn grpc_web_login_service(
-    state: Arc<AppState>,
-) -> BoxCloneSyncService<HttpRequest<Body>, AxumResponse, Infallible> {
-    BoxCloneSyncService::new(tower::service_fn(move |request: HttpRequest<Body>| {
-        let state = state.clone();
-        let fut: GrpcWebHttpFuture = Box::pin(async move {
-            let response = grpc_web_auth(state, request, call_login).await;
-            Ok::<AxumResponse, Infallible>(response)
-        });
-        fut
-    }))
-}
-
-pub(crate) fn grpc_web_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route(
-            "/grpcweb/friday.core.rpc.AuthService/Register",
-            post_service(grpc_web_register_service(state.clone())),
-        )
-        .route(
-            "/grpcweb/friday.core.rpc.AuthService/Login",
-            post_service(grpc_web_login_service(state)),
-        )
 }
 
 pub(crate) fn auth_service(state: Arc<AppState>) -> AuthServiceServer<AuthServiceImpl> {
