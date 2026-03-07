@@ -1,7 +1,10 @@
-load("@build_bazel_rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
-swift_binary(
+rust_binary(
     name = "jskit-test",
-    srcs = ["main.swift"],
-    deps = ["//libs/JSKit:JSKit"],
+    srcs = ["src/main.rs"],
+    crate_name = "jskit_test",
+    edition = "2024",
+    deps = ["//libs/core:core"],
+    visibility = ["//visibility:public"],
 )

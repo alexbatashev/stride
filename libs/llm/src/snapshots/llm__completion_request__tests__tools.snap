@@ -1,0 +1,5 @@
+---
+source: libs/llm/src/completion_request.rs
+expression: json
+---
+{"model":"test-model","messages":[{"role":"user","content":"Hello"}],"frequency_penalty":1.0,"top_p":0.2,"tools":[{"type":"function","function":{"description":"Test function","name":"test"}}],"tool_choice":"required"}

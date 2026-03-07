@@ -5,7 +5,7 @@ load("@build_bazel_rules_swift//swift:swift_library.bzl", "swift_library")
 load("@build_bazel_rules_swift//swift:swift_test.bzl", "swift_test")
 
 _DEPS = [
-    "//libs/CoreFriday:CoreFriday",
+    "//libs/core:FridayCoreSwift",
     "@swiftpkg_swift_markdown//:Markdown",
 ]
 

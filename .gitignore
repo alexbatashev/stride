@@ -86,3 +86,4 @@ bazel-*
 .sourcekit-lsp
 *.xcodeproj
 .bazelrc.local
+rust-project.json

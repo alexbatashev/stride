@@ -5,19 +5,19 @@ import Foundation
 @MainActor
 struct FridayTests {
 
-    @Test("Bootstraps with initial chat and note")
-    func bootstrapState() {
+    @Test("Bootstraps with initial chat thread")
+    func bootstrapState() async {
         let modelData = ModelData()
+        await modelData.loadThreads()
 
         #expect(!modelData.threads.isEmpty)
-        #expect(!modelData.notes.isEmpty)
         #expect(modelData.selectedThread != nil)
-        #expect(modelData.selectedNote != nil)
     }
 
     @Test("Can create and delete threads")
-    func threadLifecycle() {
+    func threadLifecycle() async {
         let modelData = ModelData()
+        await modelData.loadThreads()
         let initialCount = modelData.threads.count
 
         modelData.createThread()
@@ -25,17 +25,5 @@ struct FridayTests {
 
         modelData.deleteThreads(at: IndexSet(integer: 0))
         #expect(modelData.threads.count >= 1)
-    }
-
-    @Test("Can create and delete notes")
-    func noteLifecycle() {
-        let modelData = ModelData()
-        let initialCount = modelData.notes.count
-
-        modelData.createNote()
-        #expect(modelData.notes.count == initialCount + 1)
-
-        modelData.deleteNotes(at: IndexSet(integer: 0))
-        #expect(modelData.notes.count >= 1)
     }
 }
