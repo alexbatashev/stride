@@ -11,6 +11,7 @@ _DEPS = crate_deps(
         "tokio",
         "prost",
         "tonic",
+        "tower",
         "tower-http",
         "uuid",
     ],
