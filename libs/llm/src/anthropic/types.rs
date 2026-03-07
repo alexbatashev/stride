@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Completion, CompletionChoice, CompletionRequest, Message, ModelDesc, StreamResponseChunk,
-    Usage,
+    Completion, CompletionChoice, CompletionRequest, Message, ModelDesc, StreamResponseChunk, Usage,
 };
 
 #[derive(Debug, Deserialize)]

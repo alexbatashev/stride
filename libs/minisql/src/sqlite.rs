@@ -151,25 +151,24 @@ fn execute_query(
         let mut values = HashMap::new();
 
         for i in 0..statement.column_count() {
-            let name = statement.column_name(i).map_err(|e| e.to_string())?.to_string();
+            let name = statement
+                .column_name(i)
+                .map_err(|e| e.to_string())?
+                .to_string();
             let value = match statement.column_type(i).map_err(|e| e.to_string())? {
                 sqlite::Type::Null => Value::Null,
-                sqlite::Type::Integer => Value::Integer(
-                    statement.read::<i64, _>(i).map_err(|e| e.to_string())?,
-                ),
+                sqlite::Type::Integer => {
+                    Value::Integer(statement.read::<i64, _>(i).map_err(|e| e.to_string())?)
+                }
                 sqlite::Type::Float => {
                     Value::Real(statement.read::<f64, _>(i).map_err(|e| e.to_string())?)
                 }
-                sqlite::Type::String => Value::Text(
-                    statement
-                        .read::<String, _>(i)
-                        .map_err(|e| e.to_string())?,
-                ),
-                sqlite::Type::Binary => Value::Blob(
-                    statement
-                        .read::<Vec<u8>, _>(i)
-                        .map_err(|e| e.to_string())?,
-                ),
+                sqlite::Type::String => {
+                    Value::Text(statement.read::<String, _>(i).map_err(|e| e.to_string())?)
+                }
+                sqlite::Type::Binary => {
+                    Value::Blob(statement.read::<Vec<u8>, _>(i).map_err(|e| e.to_string())?)
+                }
             };
 
             values.insert(name, value);

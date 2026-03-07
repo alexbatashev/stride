@@ -1,7 +1,7 @@
 mod stream;
 
-use std::pin::Pin;
 use std::net::ToSocketAddrs;
+use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::FutureExt;
@@ -79,9 +79,9 @@ where
         let msg = last_err
             .map(|e| e.to_string())
             .unwrap_or_else(|| "failed to connect".to_string());
-        Box::pin(futures::stream::once(
-            async move { Err(Error::RequestError(msg)) },
-        ))
+        Box::pin(futures::stream::once(async move {
+            Err(Error::RequestError(msg))
+        }))
     } else {
         let mut last_err = None;
         for addr in addrs {
@@ -93,9 +93,9 @@ where
         let msg = last_err
             .map(|e| e.to_string())
             .unwrap_or_else(|| "failed to connect".to_string());
-        Box::pin(futures::stream::once(
-            async move { Err(Error::RequestError(msg)) },
-        ))
+        Box::pin(futures::stream::once(async move {
+            Err(Error::RequestError(msg))
+        }))
     }
 }
 
@@ -159,7 +159,7 @@ where
         Err(e) => {
             return Box::pin(futures::stream::once(async move {
                 Err(Error::RequestError(e.to_string()))
-            }))
+            }));
         }
     };
     let mut conn = Box::pin(conn);
@@ -172,19 +172,19 @@ where
         Either::Left((Err(err), _)) => {
             return Box::pin(futures::stream::once(async move {
                 Err(Error::RequestError(err.to_string()))
-            }))
+            }));
         }
         Either::Right((Ok(()), _)) => {
             return Box::pin(futures::stream::once(async {
                 Err(Error::RequestError(
                     "connection closed before response completed".to_string(),
                 ))
-            }))
+            }));
         }
         Either::Right((Err(err), _)) => {
             return Box::pin(futures::stream::once(async move {
                 Err(Error::RequestError(err.to_string()))
-            }))
+            }));
         }
     };
 
@@ -234,7 +234,9 @@ where
     Box::pin(s)
 }
 
-fn prepare_request<T>(req: Request<T>) -> Result<(String, bool, Vec<std::net::SocketAddr>, Request<T>), Error> {
+fn prepare_request<T>(
+    req: Request<T>,
+) -> Result<(String, bool, Vec<std::net::SocketAddr>, Request<T>), Error> {
     let uri = req.uri().clone();
 
     let host = uri
@@ -337,7 +339,9 @@ impl NdjsonDecoder {
         while let Some(pos) = self.buf[scan_from..].iter().position(|b| *b == b'\n') {
             let line_end = scan_from + pos;
             let line = trim_ascii(&self.buf[scan_from..line_end]);
-            if !line.is_empty() { on_line(line)?; }
+            if !line.is_empty() {
+                on_line(line)?;
+            }
             processed = line_end + 1;
             scan_from = processed;
         }

@@ -22,8 +22,8 @@ use thiserror::Error;
 use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
-use crate::tools::{Tool, ToolArg};
 use crate::get_llm_runtime;
+use crate::tools::{Tool, ToolArg};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 pub enum ChatProviderKind {
@@ -81,9 +81,13 @@ impl DirectChatTransport {
         let token = provider.token.clone();
         let llm_runtime = get_llm_runtime();
         let api = match provider.kind {
-            ChatProviderKind::OpenAICompatible => OpenAI::new(&provider.base_url, llm_runtime.clone()),
+            ChatProviderKind::OpenAICompatible => {
+                OpenAI::new(&provider.base_url, llm_runtime.clone())
+            }
             ChatProviderKind::Ollama => llm::Ollama::new(&provider.base_url, llm_runtime.clone()),
-            ChatProviderKind::Anthropic => llm::Anthropic::new(&provider.base_url, llm_runtime.clone()),
+            ChatProviderKind::Anthropic => {
+                llm::Anthropic::new(&provider.base_url, llm_runtime.clone())
+            }
             ChatProviderKind::Mock => llm::Mock::new().into(),
         };
         Self {
@@ -697,7 +701,9 @@ impl ChatDatabase {
         let _ = self
             .migrations_ready
             .get_or_init(|| async {
-                let _ = pool.initialize_database(crate::data::get_migrations()).await;
+                let _ = pool
+                    .initialize_database(crate::data::get_migrations())
+                    .await;
             })
             .await;
     }
@@ -848,8 +854,7 @@ impl ChatDatabase {
             .map(DirectChatTransport::from_provider)
             .map(|t| Arc::new(t) as Arc<dyn ChatTransport>)
             .collect();
-        let storage: Arc<dyn ChatStorage> =
-            Arc::new(LocalChatStorage::new(thread_id, pool));
+        let storage: Arc<dyn ChatStorage> = Arc::new(LocalChatStorage::new(thread_id, pool));
         Arc::new(ChatService::new(transports, storage))
     }
 }

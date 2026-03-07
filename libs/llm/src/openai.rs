@@ -1,5 +1,7 @@
 use crate::utils::TransportHandle;
-use crate::{API, Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk};
+use crate::{
+    API, Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk,
+};
 
 use async_stream::stream;
 use bytes::Bytes;
@@ -39,7 +41,10 @@ impl OpenAI {
     pub async fn list_models(&self, token: &str) -> Result<Vec<ModelDesc>, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&format!("{}/v1/models", self.base_url.trim_end_matches('/')))
+            .uri(&format!(
+                "{}/v1/models",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
@@ -49,8 +54,8 @@ impl OpenAI {
             return Err(Error::ServerError(status));
         }
 
-        let model_list: ModelListResponse =
-            serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+        let model_list: ModelListResponse = serde_json::from_slice(&res_body)
+            .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         Ok(model_list.data)
     }
@@ -72,7 +77,10 @@ impl OpenAI {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!("{}/v1/embeddings", self.base_url.trim_end_matches('/')))
+            .uri(&format!(
+                "{}/v1/embeddings",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(body)))
@@ -89,7 +97,11 @@ impl OpenAI {
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&format!("{}/v1/models/{}", self.base_url.trim_end_matches('/'), model))
+            .uri(&format!(
+                "{}/v1/models/{}",
+                self.base_url.trim_end_matches('/'),
+                model
+            ))
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
@@ -107,11 +119,15 @@ impl OpenAI {
         token: &str,
         request: CompletionRequest,
     ) -> Result<Completion, Error> {
-        let body = serde_json::to_vec(&request).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+        let body =
+            serde_json::to_vec(&request).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/')))
+            .uri(&format!(
+                "{}/v1/chat/completions",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(body)))
@@ -141,7 +157,10 @@ impl OpenAI {
 
         let req = match Request::builder()
             .method("POST")
-            .uri(&format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/')))
+            .uri(&format!(
+                "{}/v1/chat/completions",
+                self.base_url.trim_end_matches('/')
+            ))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(req_body)))

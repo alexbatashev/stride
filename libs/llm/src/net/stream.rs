@@ -62,7 +62,7 @@ impl Read for AsyncTlsStream {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     e.to_string(),
-                )))
+                )));
             }
         };
 
@@ -72,9 +72,8 @@ impl Read for AsyncTlsStream {
             // Safety: we write exactly `to_read` bytes before advancing the cursor
             let dst = unsafe { buf.as_mut() };
             let to_read = plaintext_len.min(dst.len());
-            let dst_slice = unsafe {
-                std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, to_read)
-            };
+            let dst_slice =
+                unsafe { std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, to_read) };
             let n = this.tls_conn.reader().read(dst_slice)?;
             unsafe { buf.advance(n) };
             return Poll::Ready(Ok(()));
@@ -160,9 +159,8 @@ impl Read for AsyncTcpStream {
     ) -> Poll<Result<(), io::Error>> {
         // Safety: we write exactly `n` bytes before advancing the cursor
         let dst = unsafe { buf.as_mut() };
-        let dst_slice = unsafe {
-            std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, dst.len())
-        };
+        let dst_slice =
+            unsafe { std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, dst.len()) };
         match self.get_mut().0.read(dst_slice) {
             Ok(n) => {
                 unsafe { buf.advance(n) };
