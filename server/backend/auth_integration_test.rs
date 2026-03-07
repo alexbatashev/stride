@@ -28,16 +28,23 @@ async fn register_with_retry(
 
 #[tokio::test]
 async fn register_login_logout_flow_enforces_jwt_protection() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test port");
-    let addr = listener.local_addr().expect("local addr");
-    drop(listener);
+    let grpc_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind grpc test port");
+    let addr = grpc_listener.local_addr().expect("grpc local addr");
+    drop(grpc_listener);
+
+    let http_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind http test port");
+    let http_addr = http_listener.local_addr().expect("http local addr");
+    drop(http_listener);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_task = tokio::spawn(async move {
         friday_backend::run_server_with_shutdown(
             addr,
+            http_addr,
             "sqlite::memory:",
             "test-secret".to_string(),
+            std::env::temp_dir().to_string_lossy().into_owned(),
+            std::env::temp_dir().to_string_lossy().into_owned(),
             async move {
                 let _ = shutdown_rx.await;
             },

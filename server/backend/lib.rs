@@ -5,6 +5,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use axum::body::Bytes;
+use axum::extract::State as AxumState;
+use axum::http::{StatusCode, header};
+use axum::response::Response as AxumResponse;
+use axum::routing::post;
+use axum::Router;
 use friday::grpc::generated::friday::core::rpc::{
     AuthReply, HelloReply, HelloRequest, LoginRequest, LogoutReply, LogoutRequest, RegisterRequest,
     auth_service_server::{AuthService, AuthServiceServer},
@@ -12,9 +18,11 @@ use friday::grpc::generated::friday::core::rpc::{
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use minisql::{ConnectionPool, Migration, Value, migrations};
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
+use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 migrations! {
@@ -61,6 +69,23 @@ struct GreeterService {
 #[derive(Clone)]
 struct AuthServiceImpl {
     state: Arc<AppState>,
+}
+
+enum CompatTask<T> {
+    Tokio(tokio::task::JoinHandle<T>),
+    Thread(std::thread::JoinHandle<T>),
+}
+
+fn spawn_blocking_compat<F, T>(f: F) -> CompatTask<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        CompatTask::Tokio(tokio::task::spawn_blocking(f))
+    } else {
+        CompatTask::Thread(std::thread::spawn(f))
+    }
 }
 
 fn now_epoch_seconds() -> i64 {
@@ -293,22 +318,178 @@ impl AuthService for AuthServiceImpl {
     }
 }
 
-pub async fn run_server(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn grpc_web_frame(flag: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(5 + payload.len());
+    out.push(flag);
+    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+fn grpc_web_trailers(status: tonic::Code, message: &str) -> Vec<u8> {
+    let trailers = format!("grpc-status: {}\r\ngrpc-message: {}\r\n", status as i32, message);
+    grpc_web_frame(0x80, trailers.as_bytes())
+}
+
+fn grpc_web_payload(body: &[u8]) -> Result<&[u8], Status> {
+    if body.len() < 5 {
+        return Err(Status::invalid_argument("grpc-web body is too short"));
+    }
+    if (body[0] & 0x80) != 0 {
+        return Err(Status::invalid_argument("expected grpc-web data frame"));
+    }
+    let len = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
+    if body.len() < 5 + len {
+        return Err(Status::invalid_argument("invalid grpc-web frame length"));
+    }
+    Ok(&body[5..5 + len])
+}
+
+fn grpc_web_response(framed: Vec<u8>) -> AxumResponse {
+    let mut response = AxumResponse::new(axum::body::Body::from(framed));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/grpc-web+proto".parse().expect("valid grpc-web content-type"),
+    );
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        "grpc-status,grpc-message".parse().expect("valid exposed headers"),
+    );
+    response
+}
+
+async fn grpc_web_register(AxumState(state): AxumState<Arc<AppState>>, body: Bytes) -> AxumResponse {
+    let service = AuthServiceImpl { state };
+    let payload = match grpc_web_payload(&body) {
+        Ok(payload) => payload,
+        Err(status) => return grpc_web_response(grpc_web_trailers(status.code(), status.message())),
+    };
+    let request = match <RegisterRequest as prost::Message>::decode(payload) {
+        Ok(request) => request,
+        Err(_) => {
+            return grpc_web_response(grpc_web_trailers(
+                tonic::Code::InvalidArgument,
+                "invalid request body",
+            ));
+        }
+    };
+
+    match service.register(Request::new(request)).await {
+        Ok(response) => {
+            let encoded = response.into_inner().encode_to_vec();
+            let mut framed = grpc_web_frame(0, &encoded);
+            framed.extend(grpc_web_trailers(tonic::Code::Ok, ""));
+            grpc_web_response(framed)
+        }
+        Err(status) => grpc_web_response(grpc_web_trailers(status.code(), status.message())),
+    }
+}
+
+async fn grpc_web_login(AxumState(state): AxumState<Arc<AppState>>, body: Bytes) -> AxumResponse {
+    let service = AuthServiceImpl { state };
+    let payload = match grpc_web_payload(&body) {
+        Ok(payload) => payload,
+        Err(status) => return grpc_web_response(grpc_web_trailers(status.code(), status.message())),
+    };
+    let request = match <LoginRequest as prost::Message>::decode(payload) {
+        Ok(request) => request,
+        Err(_) => {
+            return grpc_web_response(grpc_web_trailers(
+                tonic::Code::InvalidArgument,
+                "invalid request body",
+            ));
+        }
+    };
+
+    match service.login(Request::new(request)).await {
+        Ok(response) => {
+            let encoded = response.into_inner().encode_to_vec();
+            let mut framed = grpc_web_frame(0, &encoded);
+            framed.extend(grpc_web_trailers(tonic::Code::Ok, ""));
+            grpc_web_response(framed)
+        }
+        Err(status) => grpc_web_response(grpc_web_trailers(status.code(), status.message())),
+    }
+}
+
+fn resolve_static_dir() -> String {
+    if let Ok(dir) = std::env::var("FRIDAY_STATIC_DIR") {
+        return dir;
+    }
+    // When run via `bazel run`, Bazel sets RUNFILES_DIR pointing to the runfiles tree.
+    // Static assets land at <runfiles>/friday/server/frontend/ via the data dep.
+    if let Ok(runfiles) = std::env::var("RUNFILES_DIR") {
+        let path = format!("{}/friday/server/frontend", runfiles);
+        if std::path::Path::new(&path).is_dir() {
+            return path;
+        }
+    }
+    "server/frontend".to_string()
+}
+
+fn resolve_proto_dir() -> String {
+    if let Ok(dir) = std::env::var("FRIDAY_PROTO_DIR") {
+        return dir;
+    }
+    if let Ok(runfiles) = std::env::var("RUNFILES_DIR") {
+        let path = format!("{}/friday/libs/core/proto", runfiles);
+        if std::path::Path::new(&path).is_dir() {
+            return path;
+        }
+    }
+    "libs/core/proto".to_string()
+}
+
+fn resolve_db_url() -> String {
+    if let Ok(url) = std::env::var("FRIDAY_DB_URL") {
+        return url;
+    }
+
+    let db_path = if let Ok(path) = std::env::var("FRIDAY_DB_PATH") {
+        std::path::PathBuf::from(path)
+    } else if std::env::var("RUNFILES_DIR").is_ok() {
+        // Under `bazel run`, runfiles are not a safe writable location.
+        std::env::temp_dir().join("friday").join("auth.db")
+    } else {
+        std::path::PathBuf::from("server/backend/auth.db")
+    };
+
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    format!("sqlite:{}", db_path.to_string_lossy())
+}
+
+pub async fn run_server(
+    grpc_addr: SocketAddr,
+    http_addr: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let jwt_secret =
         std::env::var("FRIDAY_JWT_SECRET").unwrap_or_else(|_| "dev-insecure-secret".to_string());
+    let db_url = resolve_db_url();
+    let static_dir = resolve_static_dir();
+    let proto_dir = resolve_proto_dir();
     run_server_with_shutdown(
-        addr,
-        "sqlite://server/backend/auth.db",
+        grpc_addr,
+        http_addr,
+        &db_url,
         jwt_secret,
+        static_dir,
+        proto_dir,
         std::future::pending::<()>(),
     )
     .await
 }
 
 pub async fn run_server_with_shutdown<F>(
-    addr: SocketAddr,
+    grpc_addr: SocketAddr,
+    http_addr: SocketAddr,
     db_url: &str,
     jwt_secret: String,
+    static_dir: String,
+    proto_dir: String,
     shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
@@ -323,12 +504,94 @@ where
         jwt_secret: Arc::new(jwt_secret),
     });
 
-    tonic::transport::Server::builder()
-        .add_service(AuthServiceServer::new(AuthServiceImpl {
-            state: state.clone(),
-        }))
-        .add_service(HelloServiceServer::new(GreeterService { state }))
-        .serve_with_shutdown(addr, shutdown)
-        .await?;
+    // Broadcast shutdown to HTTP and gRPC runtimes.
+    let (http_shutdown_tx, http_shutdown_rx) = std::sync::mpsc::channel::<()>();
+    let (grpc_shutdown_tx, grpc_shutdown_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        futures::executor::block_on(shutdown);
+        let _ = http_shutdown_tx.send(());
+        let _ = grpc_shutdown_tx.send(());
+    });
+
+    let http_app = Router::new()
+        .route(
+            "/grpcweb/friday.core.rpc.AuthService/Register",
+            post(grpc_web_register),
+        )
+        .route(
+            "/grpcweb/friday.core.rpc.AuthService/Login",
+            post(grpc_web_login),
+        )
+        .nest_service("/proto", ServeDir::new(proto_dir))
+        .with_state(state.clone())
+        .fallback_service(ServeDir::new(static_dir));
+    let http_task = spawn_blocking_compat(move || -> Result<(), String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind(http_addr)
+                .await
+                .map_err(|e| e.to_string())?;
+            axum::serve(listener, http_app.into_make_service())
+                .with_graceful_shutdown(async move {
+                    let _ = tokio::task::spawn_blocking(move || http_shutdown_rx.recv()).await;
+                })
+                .await
+                .map_err(|e| e.to_string())
+        })
+    });
+
+    let grpc_state = state.clone();
+    let grpc_task = spawn_blocking_compat(move || -> Result<(), String> {
+        let rt = tonic_tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async move {
+            tonic::transport::Server::builder()
+                .add_service(AuthServiceServer::new(AuthServiceImpl {
+                    state: grpc_state.clone(),
+                }))
+                .add_service(HelloServiceServer::new(GreeterService {
+                    state: grpc_state,
+                }))
+                .serve_with_shutdown(grpc_addr, async move {
+                    let _ = tonic_tokio::task::spawn_blocking(move || grpc_shutdown_rx.recv()).await;
+                })
+                .await
+                .map_err(|e| e.to_string())
+        })
+    });
+
+    let http_result = match http_task {
+        CompatTask::Tokio(handle) => handle.await.map_err(|e| {
+            Box::new(std::io::Error::other(format!("http task join failed: {e}")))
+                as Box<dyn std::error::Error + Send + Sync>
+        })?,
+        CompatTask::Thread(handle) => handle.join().map_err(|_| {
+            Box::new(std::io::Error::other("http thread panicked"))
+                as Box<dyn std::error::Error + Send + Sync>
+        })?,
+    };
+    http_result.map_err(|msg| {
+        Box::new(std::io::Error::other(msg)) as Box<dyn std::error::Error + Send + Sync>
+    })?;
+
+    let grpc_result = match grpc_task {
+        CompatTask::Tokio(handle) => handle.await.map_err(|e| {
+            Box::new(std::io::Error::other(format!("grpc task join failed: {e}")))
+                as Box<dyn std::error::Error + Send + Sync>
+        })?,
+        CompatTask::Thread(handle) => handle.join().map_err(|_| {
+            Box::new(std::io::Error::other("grpc thread panicked"))
+                as Box<dyn std::error::Error + Send + Sync>
+        })?,
+    };
+    grpc_result.map_err(|msg| {
+        Box::new(std::io::Error::other(msg)) as Box<dyn std::error::Error + Send + Sync>
+    })?;
+
     Ok(())
 }

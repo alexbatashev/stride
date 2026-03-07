@@ -6,6 +6,9 @@ build --output_groups=+rustfmt_checks
 # Format: <target-label>=<comma-delimited-swiftcopts>
 build --@build_bazel_rules_swift//swift:per_module_swiftcopt=@swiftpkg_swift_system//:SystemPackage.rspm=-suppress-warnings
 
+# Keep MODULE.bazel.lock up to date automatically on every build.
+common --lockfile_mode=update
+
 # Per-machine overrides (ignored by git).
 # Use this when local PATH has wrappers (for example, swiftly shims) and you
 # need to point Bazel repo autoconfiguration at real compiler binaries.

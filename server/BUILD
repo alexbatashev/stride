@@ -4,17 +4,20 @@ load("@rust_crates//:defs.bzl", "crate_deps")
 _DEPS = crate_deps(
     [
         "argon2",
+        "axum",
         "futures",
         "jsonwebtoken",
         "serde",
+        "tokio",
+        "prost",
+        "tonic",
+        "tower-http",
         "uuid",
     ],
     package_name = "",
 ) + [
     "//libs/core:core",
     "//libs/minisql:minisql",
-    "@rrprd__tokio-1.39.3//:tokio",
-    "@rrprd__tonic-0.12.1//:tonic",
 ]
 
 rust_library(
@@ -22,6 +25,10 @@ rust_library(
     srcs = ["backend/lib.rs"],
     crate_name = "friday_backend",
     edition = "2024",
+    aliases = {
+        "@rrprd__prost-0.13.1//:prost": "prost",
+        "@rrprd__tokio-1.39.3//:tokio": "tonic_tokio",
+    },
     deps = _DEPS,
 )
 
@@ -32,7 +39,10 @@ rust_binary(
     edition = "2024",
     deps = [
         ":backend",
-        "@rrprd__tokio-1.39.3//:tokio",
+    ] + crate_deps(["tokio"], package_name = ""),
+    data = [
+        "//libs/core:proto/hello.proto",
+        "//server/frontend:frontend",
     ],
 )
 

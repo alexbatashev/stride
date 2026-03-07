@@ -1,1 +1,1 @@
-pub use hello_proto::*;
+pub use api_proto::*;
