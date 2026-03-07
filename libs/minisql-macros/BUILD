@@ -1,5 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_proc_macro")
-load("@rust_crates//:defs.bzl", "crate_deps")
+load("@crates//:defs.bzl", "crate_deps")
 
 rust_proc_macro(
     name = "minisql_macros",

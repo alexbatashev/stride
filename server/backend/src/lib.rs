@@ -1,3 +1,5 @@
+mod auth;
+
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -5,12 +7,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::State as AxumState;
 use axum::http::{StatusCode, header};
 use axum::response::Response as AxumResponse;
 use axum::routing::post;
-use axum::Router;
 use friday::grpc::generated::friday::core::rpc::{
     AuthReply, HelloReply, HelloRequest, LoginRequest, LogoutReply, LogoutRequest, RegisterRequest,
     auth_service_server::{AuthService, AuthServiceServer},
@@ -327,7 +329,10 @@ fn grpc_web_frame(flag: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 fn grpc_web_trailers(status: tonic::Code, message: &str) -> Vec<u8> {
-    let trailers = format!("grpc-status: {}\r\ngrpc-message: {}\r\n", status as i32, message);
+    let trailers = format!(
+        "grpc-status: {}\r\ngrpc-message: {}\r\n",
+        status as i32, message
+    );
     grpc_web_frame(0x80, trailers.as_bytes())
 }
 
@@ -350,20 +355,29 @@ fn grpc_web_response(framed: Vec<u8>) -> AxumResponse {
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().insert(
         header::CONTENT_TYPE,
-        "application/grpc-web+proto".parse().expect("valid grpc-web content-type"),
+        "application/grpc-web+proto"
+            .parse()
+            .expect("valid grpc-web content-type"),
     );
     response.headers_mut().insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        "grpc-status,grpc-message".parse().expect("valid exposed headers"),
+        "grpc-status,grpc-message"
+            .parse()
+            .expect("valid exposed headers"),
     );
     response
 }
 
-async fn grpc_web_register(AxumState(state): AxumState<Arc<AppState>>, body: Bytes) -> AxumResponse {
+async fn grpc_web_register(
+    AxumState(state): AxumState<Arc<AppState>>,
+    body: Bytes,
+) -> AxumResponse {
     let service = AuthServiceImpl { state };
     let payload = match grpc_web_payload(&body) {
         Ok(payload) => payload,
-        Err(status) => return grpc_web_response(grpc_web_trailers(status.code(), status.message())),
+        Err(status) => {
+            return grpc_web_response(grpc_web_trailers(status.code(), status.message()));
+        }
     };
     let request = match <RegisterRequest as prost::Message>::decode(payload) {
         Ok(request) => request,
@@ -390,7 +404,9 @@ async fn grpc_web_login(AxumState(state): AxumState<Arc<AppState>>, body: Bytes)
     let service = AuthServiceImpl { state };
     let payload = match grpc_web_payload(&body) {
         Ok(payload) => payload,
-        Err(status) => return grpc_web_response(grpc_web_trailers(status.code(), status.message())),
+        Err(status) => {
+            return grpc_web_response(grpc_web_trailers(status.code(), status.message()));
+        }
     };
     let request = match <LoginRequest as prost::Message>::decode(payload) {
         Ok(request) => request,
@@ -545,7 +561,7 @@ where
 
     let grpc_state = state.clone();
     let grpc_task = spawn_blocking_compat(move || -> Result<(), String> {
-        let rt = tonic_tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| e.to_string())?;
@@ -558,7 +574,7 @@ where
                     state: grpc_state,
                 }))
                 .serve_with_shutdown(grpc_addr, async move {
-                    let _ = tonic_tokio::task::spawn_blocking(move || grpc_shutdown_rx.recv()).await;
+                    let _ = tokio::task::spawn_blocking(move || grpc_shutdown_rx.recv()).await;
                 })
                 .await
                 .map_err(|e| e.to_string())

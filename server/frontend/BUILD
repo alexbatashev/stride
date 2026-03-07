@@ -16,7 +16,7 @@ ts_project(
 
 js_grpc_web_compile(
     name = "auth_grpc_web_pb",
-    protos = ["//libs/core:hello_proto"],
+    protos = ["//libs/core:api_proto"],
     output_mode = "NO_PREFIX_FLAT",
 )
 

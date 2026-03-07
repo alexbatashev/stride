@@ -23,6 +23,10 @@ rust.toolchain(
     versions = ["1.93.0"],
 )
 
+register_toolchains(
+    "@//bazel/prost_toolchain",
+)
+
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.spec(
     features = [
@@ -198,15 +202,44 @@ crate.spec(
     version = "1.46.3",
 )
 crate.spec(
+    features = ["transport"],
     package = "tonic",
+    version = "0.14.5",
+)
+crate.spec(
+    package = "tonic-prost",
     version = "0.14.5",
 )
 crate.spec(
     package = "prost",
     version = "0.14.3",
 )
-crate.from_specs(name = "rust_crates")
-use_repo(crate, "rust_crates")
+crate.spec(
+    package = "prost-types",
+    version = "0.14.3",
+)
+crate.spec(
+    package = "protoc-gen-prost",
+    version = "0.5",
+)
+crate.annotation(
+    crate = "protoc-gen-prost",
+    gen_binaries = ["protoc-gen-prost"],
+)
+crate.spec(
+    package = "protoc-gen-tonic",
+    version = "0.5",
+)
+crate.annotation(
+    crate = "protoc-gen-tonic",
+    gen_binaries = ["protoc-gen-tonic"],
+)
+crate.spec(
+    package = "tower",
+    version = "0.5.3",
+)
+crate.from_specs()
+use_repo(crate, "crates")
 
 apple_cc_configure = use_extension(
     "@build_bazel_apple_support//crosstool:setup.bzl",
@@ -235,9 +268,6 @@ use_repo(
     "swiftpkg_swift_syntax",
     "swiftpkg_yams",
 )
-
-prost_ext = use_extension("@rules_rust_prost//:extensions.bzl", "rust_ext")
-use_repo(prost_ext, "rrprd", "rrprd__h2-0.4.6", "rrprd__heck", "rrprd__prost-0.13.1", "rrprd__prost-types-0.13.1", "rrprd__protoc-gen-prost-0.4.0", "rrprd__protoc-gen-tonic-0.4.1", "rrprd__tokio-1.39.3", "rrprd__tokio-stream-0.1.15", "rrprd__tonic-0.12.1")
 
 rules_ts_ext = use_extension("@aspect_rules_ts//ts:extensions.bzl", "ext", dev_dependency = True)
 rules_ts_ext.deps(

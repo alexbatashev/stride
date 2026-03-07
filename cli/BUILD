@@ -1,5 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
-load("@rust_crates//:defs.bzl", "crate_deps")
+load("@crates//:defs.bzl", "crate_deps")
 
 rust_binary(
     name = "friday",

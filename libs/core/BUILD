@@ -1,6 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_shared_library", "rust_static_library")
 load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
-load("@rust_crates//:defs.bzl", "crate_deps")
+load("@crates//:defs.bzl", "crate_deps")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@protobuf//bazel:proto_library.bzl", "proto_library")
 load("@build_bazel_rules_swift//swift:swift_interop_hint.bzl", "swift_interop_hint")
@@ -14,7 +14,7 @@ proto_library(
 )
 
 rust_prost_library(
-    name = "hello_grpc_rs",
+    name = "api_grpc_rs",
     proto = ":api_proto",
 )
 
@@ -31,6 +31,7 @@ _DEPS = crate_deps(
         "ureq",
         "uuid",
         "tonic",
+        "tonic-prost",
     ],
     package_name = "",
 ) + select({
@@ -45,7 +46,7 @@ _DEPS = crate_deps(
     "//vendor/quickjs:quickjs",
     "//libs/llm:llm",
     "//libs/minisql:minisql",
-    ":hello_grpc_rs",
+    ":api_grpc_rs",
 ]
 
 rust_library(
