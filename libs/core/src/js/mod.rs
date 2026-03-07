@@ -1,3 +1,10 @@
+mod ffi;
+
+use self::ffi::{
+    qjs_context_consume_console_output, qjs_context_eval, qjs_context_exception_to_string,
+    qjs_context_free, qjs_context_new, qjs_context_set_timeout, qjs_cstring_free, qjs_runtime_free,
+    qjs_runtime_new, qjs_value_free, qjs_value_is_exception, qjs_value_to_string,
+};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use thiserror::Error;
@@ -20,29 +27,6 @@ pub enum JSError {
     InvalidFileName,
 }
 
-unsafe extern "C" {
-    fn qjs_runtime_new() -> *mut c_void;
-    fn qjs_runtime_free(runtime: *mut c_void);
-
-    fn qjs_context_new(runtime: *mut c_void) -> *mut c_void;
-    fn qjs_context_free(context: *mut c_void);
-
-    fn qjs_context_eval(
-        context: *mut c_void,
-        source: *const c_char,
-        file_name: *const c_char,
-        flags: c_int,
-    ) -> *mut c_void;
-    fn qjs_value_is_exception(context: *mut c_void, value: *mut c_void) -> c_int;
-    fn qjs_value_free(context: *mut c_void, value: *mut c_void);
-    fn qjs_context_set_timeout(context: *mut c_void, timeout_seconds: c_int) -> c_int;
-
-    fn qjs_context_exception_to_string(context: *mut c_void) -> *mut c_char;
-    fn qjs_value_to_string(context: *mut c_void, value: *mut c_void) -> *mut c_char;
-    fn qjs_context_consume_console_output(context: *mut c_void) -> *mut c_char;
-    fn qjs_cstring_free(value: *mut c_char);
-}
-
 pub struct JavaScriptRuntime {
     raw_runtime: *mut c_void,
 }
@@ -51,8 +35,7 @@ unsafe impl Send for JavaScriptRuntime {}
 
 impl JavaScriptRuntime {
     pub fn new() -> Result<Self, JSError> {
-        // SAFETY: FFI constructor has no preconditions.
-        let raw_runtime = unsafe { qjs_runtime_new() };
+        let raw_runtime = qjs_runtime_new();
         if raw_runtime.is_null() {
             return Err(JSError::RuntimeCreationFailed);
         }
@@ -60,8 +43,7 @@ impl JavaScriptRuntime {
     }
 
     pub fn make_context(&self) -> Result<JavaScriptContext, JSError> {
-        // SAFETY: runtime pointer is valid for self lifetime.
-        let raw_context = unsafe { qjs_context_new(self.raw_runtime) };
+        let raw_context = qjs_context_new(self.raw_runtime);
         if raw_context.is_null() {
             return Err(JSError::ContextCreationFailed);
         }
@@ -71,8 +53,7 @@ impl JavaScriptRuntime {
 
 impl Drop for JavaScriptRuntime {
     fn drop(&mut self) {
-        // SAFETY: raw_runtime was created by qjs_runtime_new and is dropped once here.
-        unsafe { qjs_runtime_free(self.raw_runtime) };
+        qjs_runtime_free(self.raw_runtime);
     }
 }
 
@@ -91,38 +72,30 @@ impl JavaScriptContext {
         timeout_seconds: Option<i32>,
     ) -> Result<JavaScriptValue<'_>, JSError> {
         if let Some(timeout_seconds) = timeout_seconds {
-            // SAFETY: raw_context is valid for self lifetime.
-            if unsafe { qjs_context_set_timeout(self.raw_context, timeout_seconds as c_int) } != 0 {
+            if qjs_context_set_timeout(self.raw_context, timeout_seconds as c_int) != 0 {
                 return Err(JSError::TimeoutConfigurationFailed);
             }
         } else {
-            // SAFETY: raw_context is valid for self lifetime.
-            let _ = unsafe { qjs_context_set_timeout(self.raw_context, 0) };
+            let _ = qjs_context_set_timeout(self.raw_context, 0);
         }
 
         let source = CString::new(source).map_err(|_| JSError::InvalidSource)?;
         let file_name = CString::new(file_name).map_err(|_| JSError::InvalidFileName)?;
 
-        // SAFETY: all pointers are valid and NUL-terminated for call duration.
-        let raw_value = unsafe {
-            qjs_context_eval(self.raw_context, source.as_ptr(), file_name.as_ptr(), flags)
-        };
+        let raw_value =
+            qjs_context_eval(self.raw_context, source.as_ptr(), file_name.as_ptr(), flags);
 
-        // SAFETY: reset timeout for context regardless of result.
-        let _ = unsafe { qjs_context_set_timeout(self.raw_context, 0) };
+        let _ = qjs_context_set_timeout(self.raw_context, 0);
 
         if raw_value.is_null() {
             return Err(JSError::ContextCreationFailed);
         }
 
-        // SAFETY: pointers are valid.
-        if unsafe { qjs_value_is_exception(self.raw_context, raw_value) } != 0 {
-            // SAFETY: pointer owned by C API and must be released by qjs_cstring_free.
-            let exception = unsafe { qjs_context_exception_to_string(self.raw_context) };
+        if qjs_value_is_exception(self.raw_context, raw_value) != 0 {
+            let exception = qjs_context_exception_to_string(self.raw_context);
             let message = cstring_to_string(exception)
                 .unwrap_or_else(|| "Unknown QuickJS exception".to_owned());
-            // SAFETY: result value must be released after exception check.
-            unsafe { qjs_value_free(self.raw_context, raw_value) };
+            qjs_value_free(self.raw_context, raw_value);
             return Err(JSError::EvaluationFailed(message));
         }
 
@@ -133,16 +106,14 @@ impl JavaScriptContext {
     }
 
     pub fn consume_console_output(&self) -> String {
-        // SAFETY: raw_context is valid.
-        let out = unsafe { qjs_context_consume_console_output(self.raw_context) };
+        let out = qjs_context_consume_console_output(self.raw_context);
         cstring_to_string(out).unwrap_or_default()
     }
 }
 
 impl Drop for JavaScriptContext {
     fn drop(&mut self) {
-        // SAFETY: raw_context was created by qjs_context_new and is dropped once.
-        unsafe { qjs_context_free(self.raw_context) };
+        qjs_context_free(self.raw_context);
     }
 }
 
@@ -153,16 +124,14 @@ pub struct JavaScriptValue<'ctx> {
 
 impl JavaScriptValue<'_> {
     pub fn string(&self) -> Result<String, JSError> {
-        // SAFETY: pointers are valid for conversion call.
-        let value = unsafe { qjs_value_to_string(self.context.raw_context, self.raw_value) };
+        let value = qjs_value_to_string(self.context.raw_context, self.raw_value);
         cstring_to_string(value).ok_or(JSError::StringConversionFailed)
     }
 }
 
 impl Drop for JavaScriptValue<'_> {
     fn drop(&mut self) {
-        // SAFETY: raw_value belongs to this context and is dropped once.
-        unsafe { qjs_value_free(self.context.raw_context, self.raw_value) };
+        qjs_value_free(self.context.raw_context, self.raw_value);
     }
 }
 
@@ -174,7 +143,6 @@ fn cstring_to_string(ptr: *mut c_char) -> Option<String> {
     let text = unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned();
-    // SAFETY: pointer must be freed with qjs_cstring_free.
-    unsafe { qjs_cstring_free(ptr) };
+    qjs_cstring_free(ptr);
     Some(text)
 }

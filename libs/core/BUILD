@@ -29,7 +29,7 @@ _DEPS = crate_deps(
     ),
     "//conditions:default": [],
 }) + [
-    "//libs/JSKit:CQuickJS",
+    "//vendor/quickjs:quickjs",
     "//libs/llm:llm",
     "//libs/minisql:minisql",
 ]
