@@ -144,9 +144,23 @@ impl Into<ToolChoice> for FunctionRef {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use crate::{Message, Role, UnnamedToolChoice};
 
     use super::{CompletionRequest, Function};
+
+    fn snapshot_path() -> String {
+        if let Ok(path) = env::var("INSTA_SNAPSHOT_PATH") {
+            return path;
+        }
+
+        if let Ok(runfiles_dir) = env::var("RUNFILES_DIR") {
+            return format!("{runfiles_dir}/_main/libs/llm/src/types/snapshots");
+        }
+
+        "src/types/snapshots".to_string()
+    }
 
     #[test]
     fn tools() {
@@ -173,6 +187,8 @@ mod tests {
 
         let json = serde_json::to_string(&request).unwrap();
 
-        insta::assert_snapshot!(json);
+        insta::with_settings!({snapshot_path => snapshot_path()}, {
+            insta::assert_snapshot!(json);
+        });
     }
 }

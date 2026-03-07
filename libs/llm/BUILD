@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("@rust_crates//:defs.bzl", "crate_deps")
 
 rust_library(
@@ -28,4 +28,11 @@ rust_library(
         package_name = "",
     ),
     visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "llm_unit_test",
+    crate = ":llm",
+    data = glob(["src/**/snapshots/*.snap"]),
+    deps = crate_deps(["insta"], package_name = ""),
 )
