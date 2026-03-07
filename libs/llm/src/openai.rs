@@ -14,7 +14,6 @@ use std::pin::Pin;
 #[derive(Clone)]
 pub struct OpenAI {
     base_url: String,
-    _transport: TransportHandle,
 }
 
 impl std::fmt::Debug for OpenAI {
@@ -31,10 +30,9 @@ struct ModelListResponse {
 }
 
 impl OpenAI {
-    pub fn new(base_url: &str, transport: TransportHandle) -> API {
+    pub fn new(base_url: &str) -> API {
         API::OpenAI(OpenAI {
             base_url: base_url.to_string(),
-            _transport: transport,
         })
     }
 

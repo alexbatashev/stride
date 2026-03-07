@@ -17,7 +17,6 @@ use types::*;
 #[derive(Clone)]
 pub struct Anthropic {
     base_url: String,
-    _transport: TransportHandle,
 }
 
 impl std::fmt::Debug for Anthropic {
@@ -29,10 +28,9 @@ impl std::fmt::Debug for Anthropic {
 }
 
 impl Anthropic {
-    pub fn new(base_url: &str, transport: TransportHandle) -> API {
+    pub fn new(base_url: &str) -> API {
         API::Anthropic(Anthropic {
             base_url: base_url.to_string(),
-            _transport: transport,
         })
     }
 

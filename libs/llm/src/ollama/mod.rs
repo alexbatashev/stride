@@ -32,7 +32,7 @@ impl std::fmt::Debug for Ollama {
 }
 
 impl Ollama {
-    pub fn new(base_url: &str, _transport: TransportHandle) -> API {
+    pub fn new(base_url: &str) -> API {
         API::Ollama(Ollama {
             base_url: base_url.to_string(),
         })

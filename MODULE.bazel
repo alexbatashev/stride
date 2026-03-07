@@ -2,6 +2,8 @@ module(name = "friday")
 
 bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_rust", version = "0.69.0")
+bazel_dep(name = "rules_rust_prost", version = "0.69.0")
+bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "rules_swift", version = "3.4.2", repo_name = "build_bazel_rules_swift")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "apple_support", version = "1.24.2", repo_name = "build_bazel_apple_support")
@@ -24,7 +26,7 @@ crate.spec(
 crate.spec(
     package = "tokio",
     version = "1",
-    features = ["macros", "rt", "rt-multi-thread", "sync"],
+    features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"],
 )
 crate.spec(
     package = "mio",
@@ -70,6 +72,8 @@ crate.spec(package = "async-stream", version = "0.3")
 crate.spec(package = "ureq", version = "2")
 crate.spec(package = "webpki-roots", version = "0.26")
 crate.spec(package = "axum", version = "0.8.4")
+crate.spec(package = "argon2", version = "0.5.3")
+crate.spec(package = "jsonwebtoken", version = "9.3.0")
 crate.spec(
     package = "uniffi",
     version = "0.29.4",
@@ -108,4 +112,19 @@ use_repo(
     "swiftpkg_swift_markdown",
     "swiftpkg_swift_syntax",
     "swiftpkg_yams",
+)
+
+prost_ext = use_extension("@rules_rust_prost//:extensions.bzl", "rust_ext")
+use_repo(
+    prost_ext,
+    "rrprd",
+    "rrprd__h2-0.4.6",
+    "rrprd__heck",
+    "rrprd__prost-0.13.1",
+    "rrprd__prost-types-0.13.1",
+    "rrprd__protoc-gen-prost-0.4.0",
+    "rrprd__protoc-gen-tonic-0.4.1",
+    "rrprd__tokio-1.39.3",
+    "rrprd__tokio-stream-0.1.15",
+    "rrprd__tonic-0.12.1",
 )
