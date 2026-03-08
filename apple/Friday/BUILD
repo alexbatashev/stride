@@ -5,9 +5,11 @@ load("@build_bazel_rules_swift//swift:swift_library.bzl", "swift_library")
 load("@build_bazel_rules_swift//swift:swift_test.bzl", "swift_test")
 
 _DEPS = [
-    "//libs/core:FridayCoreSwift",
     "@swiftpkg_swift_markdown//:Markdown",
 ]
+
+_DEPS_MACOS = _DEPS + ["//libs/core:FridayCoreSwift"]
+_DEPS_IOS = _DEPS + ["//libs/core:FridayCoreSwiftIOS"]
 
 # Used by tests: excludes FridayApp.swift (@main) to avoid duplicate _main
 # with the test runner's entry point.
@@ -18,7 +20,11 @@ swift_library(
         exclude = ["Friday/FridayApp.swift"],
     ),
     module_name = "Friday",
-    deps = _DEPS,
+    deps = select({
+        "@platforms//os:osx": _DEPS_MACOS,
+        "@platforms//os:ios": _DEPS_IOS,
+        "//conditions:default": _DEPS_MACOS,
+    }),
     tags = ["manual", "apple"],
 )
 
@@ -64,11 +70,14 @@ ios_application(
         "iphone",
         "ipad",
     ],
-    infoplists = ["Friday/Info.plist"],
+    infoplists = ["Friday/Info-iOS.plist"],
     minimum_os_version = "26.2",
     provisioning_profile = ":ios_provisioning_profile",
     resources = glob(
-        ["Friday/Assets.xcassets/**"],
+        [
+            "Friday/Assets.xcassets/**",
+            "Friday/Settings.bundle/**",
+        ],
         exclude = ["Friday/Assets.xcassets/AppIcon.appiconset/**"],
     ),
     deps = [":FridayAppEntry"],

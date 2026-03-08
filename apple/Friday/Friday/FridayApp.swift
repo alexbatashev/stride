@@ -10,5 +10,11 @@ struct FridayApp: App {
             MainView()
                 .environment(modelData)
         }
+        #if os(macOS)
+            Settings {
+                MacOSSettingsView()
+                    .environment(modelData)
+            }
+        #endif
     }
 }

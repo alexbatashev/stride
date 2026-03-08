@@ -2,8 +2,6 @@ import SwiftUI
 
 public struct MainView: View {
     @Environment(ModelData.self) private var modelData
-    @State private var isPresentingChatSettings = false
-
     public init() {}
 
     public var body: some View {
@@ -36,9 +34,6 @@ public struct MainView: View {
         }
         .searchable(text: $modelData.searchString, prompt: "Search")
         .navigationSplitViewStyle(.balanced)
-        .sheet(isPresented: $isPresentingChatSettings) {
-            ChatSettingsView()
-        }
     }
 
     private func sidebarIdentifier(for option: NavigationOptions) -> String {

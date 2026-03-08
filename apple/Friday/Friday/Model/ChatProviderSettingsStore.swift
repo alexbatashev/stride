@@ -43,6 +43,7 @@ private struct PersistedSettings: Codable {
     var providers: [PersistedProvider]
     var selectedProviderID: String?
     var selectedModel: String
+    var providerModels: [String: [ModelConfig]]?
 }
 
 extension ChatProviderConfiguration {
@@ -75,6 +76,7 @@ public final class ChatProviderSettingsStore {
     public var providers: [ChatProviderConfiguration]
     public var selectedProviderID: String?
     public var selectedModel: String
+    public var providerModels: [String: [ModelConfig]] = [:]
     public var availableModels: [String] = []
     public var isRefreshingModels = false
     public var refreshErrorMessage: String?
@@ -86,6 +88,7 @@ public final class ChatProviderSettingsStore {
             providers = loaded.providers
             selectedProviderID = loaded.selectedProviderID ?? loaded.providers.first?.id
             selectedModel = loaded.selectedModel
+            providerModels = loaded.providerModels
         } else {
             let defaults = [
                 ChatProviderConfiguration.starterOllama(),
@@ -157,9 +160,23 @@ public final class ChatProviderSettingsStore {
         return provider
     }
 
+    public func models(for providerID: String) -> [ModelConfig] {
+        if let stored = providerModels[providerID], !stored.isEmpty {
+            return stored
+        }
+        let fallback = providers.first { $0.id == providerID }?.defaultModel ?? ""
+        return fallback.isEmpty ? [] : [ModelConfig(id: fallback)]
+    }
+
+    public func setModels(_ models: [ModelConfig], for providerID: String) {
+        providerModels[providerID] = models.filter { !$0.id.isEmpty }
+        onChange?()
+    }
+
     public func removeSelectedProvider() {
         guard let selectedProviderID else { return }
         providers.removeAll { $0.id == selectedProviderID }
+        providerModels.removeValue(forKey: selectedProviderID)
 
         if providers.isEmpty {
             let defaults = [
@@ -210,7 +227,8 @@ public final class ChatProviderSettingsStore {
         let persisted = PersistedSettings(
             providers: providers.map { $0.asPersistedProvider },
             selectedProviderID: selectedProviderID,
-            selectedModel: selectedModel
+            selectedModel: selectedModel,
+            providerModels: providerModels
         )
         if let data = try? JSONEncoder().encode(persisted) {
             UserDefaults.standard.set(data, forKey: "ChatProviderSettings")
@@ -218,13 +236,17 @@ public final class ChatProviderSettingsStore {
     }
 
     private static func loadFromDefaults() -> (
-        providers: [ChatProviderConfiguration], selectedProviderID: String?, selectedModel: String
+        providers: [ChatProviderConfiguration], selectedProviderID: String?, selectedModel: String,
+        providerModels: [String: [ModelConfig]]
     )? {
         guard let data = UserDefaults.standard.data(forKey: "ChatProviderSettings"),
             let persisted = try? JSONDecoder().decode(PersistedSettings.self, from: data)
         else { return nil }
         let providers = persisted.providers.compactMap { configurationFromPersisted($0) }
         guard !providers.isEmpty else { return nil }
-        return (providers, persisted.selectedProviderID, persisted.selectedModel)
+        return (
+            providers, persisted.selectedProviderID, persisted.selectedModel,
+            persisted.providerModels ?? [:]
+        )
     }
 }

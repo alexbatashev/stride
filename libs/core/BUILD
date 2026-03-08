@@ -7,6 +7,7 @@ load("@build_bazel_rules_swift//swift:swift_interop_hint.bzl", "swift_interop_hi
 load("@build_bazel_rules_swift//swift:swift_library.bzl", "swift_library")
 
 _SRCS = glob(["src/**/*.rs"])
+_SWIFT_EXT_SRCS = ["swift_ext/FridayExtensions.swift"]
 
 proto_library(
     name = "api_proto",
@@ -59,7 +60,6 @@ rust_library(
     visibility = ["//visibility:public"],
 )
 
-# Used by uniffi_bindgen_tool to generate Swift/Kotlin bindings
 rust_shared_library(
     name = "friday_cdylib",
     srcs = _SRCS,
@@ -70,7 +70,6 @@ rust_shared_library(
     visibility = ["//visibility:public"],
 )
 
-# Statically linked for embedding in the Swift app bundle
 rust_static_library(
     name = "friday_staticlib",
     srcs = _SRCS,
@@ -79,6 +78,46 @@ rust_static_library(
     edition = "2024",
     deps = _DEPS,
     visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "friday_ffi_c",
+    hdrs = ["swift/fridayFFI.h"],
+    includes = ["swift"],
+    aspect_hints = [":friday_ffi_interop"],
+    deps = [":friday_staticlib"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "friday_ffi_c_ios",
+    hdrs = ["swift_ios/fridayFFI.h"],
+    includes = ["swift_ios"],
+    aspect_hints = [":friday_ffi_interop"],
+    deps = [":friday_staticlib"],
+    visibility = ["//visibility:public"],
+)
+
+swift_library(
+    name = "FridayCoreSwift",
+    srcs = [
+        "swift/friday.swift",
+    ] + _SWIFT_EXT_SRCS,
+    module_name = "CoreFriday",
+    deps = [":friday_ffi_c"],
+    visibility = ["//visibility:public"],
+    target_compatible_with = ["@platforms//os:osx"],
+)
+
+swift_library(
+    name = "FridayCoreSwiftIOS",
+    srcs = [
+        "swift_ios/friday.swift",
+    ] + _SWIFT_EXT_SRCS,
+    module_name = "CoreFriday",
+    deps = [":friday_ffi_c_ios"],
+    visibility = ["//visibility:public"],
+    target_compatible_with = ["@platforms//os:ios"],
 )
 
 rust_binary(
@@ -110,6 +149,19 @@ genrule(
 )
 
 genrule(
+    name = "swift_bindings_ios",
+    srcs = [":friday_cdylib"],
+    outs = [
+        "swift_ios/friday.swift",
+        "swift_ios/fridayFFI.h",
+        "swift_ios/fridayFFI.modulemap",
+    ],
+    cmd = "$(execpath :uniffi_bindgen_tool) --language swift --library $(location :friday_cdylib) --out-dir $(RULEDIR)/swift_ios && test -f $(RULEDIR)/swift_ios/friday.swift && test -f $(RULEDIR)/swift_ios/fridayFFI.h && test -f $(RULEDIR)/swift_ios/fridayFFI.modulemap",
+    tools = [":uniffi_bindgen_tool"],
+    tags = ["manual"],
+)
+
+genrule(
     name = "kotlin_bindings",
     srcs = [":friday_cdylib"],
     outs = ["kotlin/uniffi/friday/friday.kt"],
@@ -118,31 +170,7 @@ genrule(
     tags = ["manual"],
 )
 
-# C module wrapping the uniffi FFI header, linked against the Rust static lib.
-# swift/fridayFFI.h is a generated output of :swift_bindings — Bazel builds it automatically.
 swift_interop_hint(
     name = "friday_ffi_interop",
     module_name = "fridayFFI",
-)
-
-cc_library(
-    name = "friday_ffi_c",
-    hdrs = ["swift/fridayFFI.h"],
-    includes = ["swift"],
-    aspect_hints = [":friday_ffi_interop"],
-    deps = [":friday_staticlib"],
-    visibility = ["//visibility:public"],
-)
-
-# Swift library with uniffi-generated bindings.
-# swift/friday.swift is a generated output of :swift_bindings — Bazel builds it automatically.
-swift_library(
-    name = "FridayCoreSwift",
-    srcs = [
-        "swift/friday.swift",
-        "swift_ext/FridayExtensions.swift",
-    ],
-    module_name = "CoreFriday",
-    deps = [":friday_ffi_c"],
-    visibility = ["//visibility:public"],
 )

@@ -109,6 +109,20 @@ public final class ModelData {
         await database.listMessages(threadId: thread.id)
     }
 
+    func fetchModels(for provider: ChatProviderConfiguration) async throws -> [LangModel] {
+        let service = ChatService.newWithProviders(providers: [provider])
+        let models = await service.listModels()
+        guard !models.isEmpty else {
+            throw NSError(
+                domain: "Friday.Models", code: 0,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "No models returned. Check your provider configuration."
+                ])
+        }
+        return models
+    }
+
     func refreshModels() async {
         guard let provider = chatSettings.activeProvider else { return }
 
