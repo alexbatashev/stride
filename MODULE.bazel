@@ -7,6 +7,8 @@ bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "rules_proto_grpc", version = "5.8.0")
 bazel_dep(name = "rules_proto_grpc_js", version = "5.8.0")
 bazel_dep(name = "aspect_rules_js", version = "2.9.2")
+bazel_dep(name = "aspect_rules_esbuild", version = "0.25.0")
+bazel_dep(name = "tar.bzl", version = "0.9.0")
 bazel_dep(name = "bazel_lib", version = "3.2.2")
 bazel_dep(name = "aspect_rules_ts", version = "3.8.6")
 bazel_dep(name = "rules_swift", version = "3.4.2", repo_name = "build_bazel_rules_swift")
@@ -166,12 +168,13 @@ crate.spec(
     version = "0.8.4",
 )
 crate.spec(
-    features = [
-        "cors",
-        "fs",
-    ],
+    features = ["cors"],
     package = "tower-http",
     version = "0.6",
+)
+crate.spec(
+    package = "tar",
+    version = "0.4",
 )
 crate.spec(
     package = "argon2",

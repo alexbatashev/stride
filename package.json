@@ -9,6 +9,8 @@
     "lit": "^3.3.2"
   },
   "devDependencies": {
+    "@types/google-protobuf": "3.15.12",
+    "lit-html": "3.3.2",
     "typescript": "5.7.3"
   },
   "pnpm": {

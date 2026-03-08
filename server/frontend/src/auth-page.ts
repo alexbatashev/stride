@@ -1,5 +1,4 @@
 import { LitElement, html, css, nothing } from 'lit';
-import { customElement, state, query } from 'lit/decorators.js';
 import { ifDefined } from 'lit/directives/if-defined.js';
 import '@material/web/tabs/tabs.js';
 import '@material/web/tabs/primary-tab.js';
@@ -9,20 +8,33 @@ import '@material/web/button/text-button.js';
 import '@material/web/progress/linear-progress.js';
 import '@material/web/icon/icon.js';
 import type { MdOutlinedTextField } from '@material/web/textfield/outlined-text-field.js';
-import 'friday-components/friday-auth-card.js';
-import { login, register, type AuthResult } from './auth-grpc.js';
+import '../../components/friday-auth-card.js';
+import { login, logout, register } from './auth-grpc.js';
 
 type Mode = 'login' | 'register';
 
-@customElement('friday-auth-page')
 export class FridayAuthPage extends LitElement {
-  @state() private mode: Mode = 'login';
-  @state() private loading = false;
-  @state() private error = '';
-  @state() private success = false;
+  static properties = {
+    mode: { state: true },
+    loading: { state: true },
+    error: { state: true },
+    success: { state: true },
+    authenticated: { state: true },
+  };
 
-  @query('#email') private emailField!: MdOutlinedTextField;
-  @query('#password') private passwordField!: MdOutlinedTextField;
+  private mode: Mode = 'login';
+  private loading = false;
+  private error = '';
+  private success = false;
+  private authenticated = false;
+
+  private get emailField(): MdOutlinedTextField | null {
+    return this.renderRoot.querySelector('#email') as MdOutlinedTextField | null;
+  }
+
+  private get passwordField(): MdOutlinedTextField | null {
+    return this.renderRoot.querySelector('#password') as MdOutlinedTextField | null;
+  }
 
   static styles = css`
     :host {
@@ -96,8 +108,23 @@ export class FridayAuthPage extends LitElement {
 
   private async onSubmit(e: Event) {
     e.preventDefault();
-    const email = this.emailField.value.trim();
-    const password = this.passwordField.value;
+    await this.submitAuth();
+  }
+
+  private async onPrimaryAction(e: Event) {
+    e.preventDefault();
+    await this.submitAuth();
+  }
+
+  private async submitAuth() {
+    if (this.loading) return;
+
+    const emailField = this.emailField;
+    const passwordField = this.passwordField;
+    if (!emailField || !passwordField) return;
+
+    const email = emailField.value.trim();
+    const password = passwordField.value;
 
     if (!email || !password) return;
 
@@ -106,14 +133,32 @@ export class FridayAuthPage extends LitElement {
     this.success = false;
 
     try {
-      let result: AuthResult;
       if (this.mode === 'login') {
-        result = await login(email, password);
+        await login(email, password);
       } else {
-        result = await register(email, password);
+        await register(email, password);
       }
-      localStorage.setItem('friday.auth.token', result.token);
       this.success = true;
+      this.authenticated = true;
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  private async onLogout(e: Event) {
+    e.preventDefault();
+    if (this.loading) return;
+
+    this.loading = true;
+    this.error = '';
+    this.success = false;
+    try {
+      await logout();
+      this.authenticated = false;
+      this.passwordField?.select();
+      this.error = '';
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -186,13 +231,24 @@ export class FridayAuthPage extends LitElement {
 
             ${this.renderStatus()}
 
-            <md-filled-button type="submit" ?disabled=${this.loading}>
+            <md-filled-button
+              type="submit"
+              @click=${this.onPrimaryAction}
+              ?disabled=${this.loading}
+            >
               ${submitLabel}
             </md-filled-button>
           </div>
         </form>
 
         <div class="footer-links">
+          ${this.authenticated
+            ? html`
+                <md-text-button @click=${this.onLogout} ?disabled=${this.loading}>
+                  Sign out
+                </md-text-button>
+              `
+            : nothing}
           ${isLogin
             ? html`
                 <md-text-button @click=${() => this.switchMode('register')}>
@@ -209,6 +265,8 @@ export class FridayAuthPage extends LitElement {
     `;
   }
 }
+
+customElements.define('friday-auth-page', FridayAuthPage);
 
 declare global {
   interface HTMLElementTagNameMap {

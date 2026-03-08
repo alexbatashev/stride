@@ -21,6 +21,12 @@ importers:
         specifier: ^3.3.2
         version: 3.3.2
     devDependencies:
+      '@types/google-protobuf':
+        specifier: 3.15.12
+        version: 3.15.12
+      lit-html:
+        specifier: 3.3.2
+        version: 3.3.2
       typescript:
         specifier: 5.7.3
         version: 5.7.3
@@ -35,6 +41,9 @@ packages:
 
   '@material/web@2.4.1':
     resolution: {integrity: sha512-0sk9t25acJ72Qv3r0n9r0lgDbPaAKnpm0p+QmEAAwYyZomHxuVbgrrAdtNXaRm7jFyGh+WsTr8bhtvCnpPRFjw==}
+
+  '@types/google-protobuf@3.15.12':
+    resolution: {integrity: sha512-40um9QqwHjRS92qnOaDpL7RmDK15NuZYo9HihiJRbYkMQZlWnuH8AdvbMy8/o6lgLmKbDUKa+OALCltHdbOTpQ==}
 
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
@@ -74,6 +83,8 @@ snapshots:
     dependencies:
       lit: 3.3.2
       tslib: 2.8.1
+
+  '@types/google-protobuf@3.15.12': {}
 
   '@types/trusted-types@2.0.7': {}
 

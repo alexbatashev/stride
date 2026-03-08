@@ -1,19 +1,29 @@
 /**
  * gRPC-Web client for the AuthService.
  *
+ * grpc-web and google-protobuf are bundled by esbuild (no CDN needed).
+ *
  * The Bazel-generated protobuf stubs (hello_pb.js, hello_grpc_web_pb.js) are
- * CommonJS modules. They cannot be statically imported from an ES module
- * without a bundler. Instead we fetch them as text and evaluate them in a
- * minimal CJS environment — matching the original approach.
+ * CommonJS modules that cannot be statically imported from an ES module
+ * without a bundler. They are NOT bundled — they ship as separate files in
+ * frontend.tar and are fetched at runtime from the same origin.
  */
+
+// Bundled by esbuild from node_modules.
+import * as grpcWebEsm from 'grpc-web';
+import * as jspbEsm from 'google-protobuf';
 
 // ---------------------------------------------------------------------------
 // Types for the CJS modules loaded at runtime
 // ---------------------------------------------------------------------------
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyNs = any;
+
 interface AuthServiceClient {
   register(req: RegisterRequestMsg, meta: Record<string, string>): Promise<AuthReplyMsg>;
   login(req: LoginRequestMsg, meta: Record<string, string>): Promise<AuthReplyMsg>;
+  logout(req: LogoutRequestMsg, meta: Record<string, string>): Promise<LogoutReplyMsg>;
 }
 
 interface RegisterRequestMsg {
@@ -32,18 +42,24 @@ interface AuthReplyMsg {
   getExpiresAt(): number | bigint;
 }
 
+interface LogoutRequestMsg {
+  setToken(v: string): void;
+}
+
+interface LogoutReplyMsg {
+  getSuccess(): boolean;
+}
+
 interface GeneratedModule {
   AuthServicePromiseClient: new (
     endpoint: string,
     credentials: null,
-    options: null,
+    options: unknown,
   ) => AuthServiceClient;
   RegisterRequest: new () => RegisterRequestMsg;
   LoginRequest: new () => LoginRequestMsg;
+  LogoutRequest: new () => LogoutRequestMsg;
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyNs = any;
 
 // ---------------------------------------------------------------------------
 // CJS loader
@@ -54,12 +70,7 @@ let generatedPromise: Promise<GeneratedModule> | null = null;
 function grpcEndpoint(): string {
   const w = window as Window & { FRIDAY_GRPC_ENDPOINT?: string };
   if (w.FRIDAY_GRPC_ENDPOINT) return w.FRIDAY_GRPC_ENDPOINT;
-  const url = new URL(window.location.href);
-  url.port = '50051';
-  url.pathname = '';
-  url.search = '';
-  url.hash = '';
-  return url.origin;
+  return window.location.origin;
 }
 
 function normalizeGrpcWeb(ns: AnyNs): AnyNs {
@@ -75,8 +86,8 @@ function normalizeJspb(ns: AnyNs): AnyNs {
   return ns.default ?? ns;
 }
 
-function patchJspbCompat(jspb: AnyNs): void {
-  const proto = jspb?.BinaryReader?.prototype;
+function patchJspbCompat(jspbLib: AnyNs): void {
+  const proto = jspbLib?.BinaryReader?.prototype;
   if (proto && typeof proto.readStringRequireUtf8 !== 'function') {
     proto.readStringRequireUtf8 = proto.readString;
   }
@@ -102,22 +113,21 @@ function evalCjsModule(
 async function loadGenerated(): Promise<GeneratedModule> {
   if (!generatedPromise) {
     generatedPromise = (async () => {
-      const grpcWebUrl = 'https://esm.sh/grpc-web@1.5.0';
-      const jspbUrl = 'https://esm.sh/google-protobuf@3.21.4';
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval
-      const [grpcWebEsm, jspbEsm] = await Promise.all([
-        import(/* @vite-ignore */ grpcWebUrl),
-        import(/* @vite-ignore */ jspbUrl),
-      ]);
-
       const grpcWeb = normalizeGrpcWeb(grpcWebEsm);
       const jspb = normalizeJspb(jspbEsm);
       patchJspbCompat(jspb);
 
-      const [pbSource, grpcSource] = await Promise.all([
-        fetch('./hello_pb.js').then((r) => r.text()),
-        fetch('./hello_grpc_web_pb.js').then((r) => r.text()),
+      const [pbResp, grpcResp] = await Promise.all([
+        fetch('./hello_pb.js'),
+        fetch('./hello_grpc_web_pb.js'),
       ]);
+      if (!pbResp.ok) {
+        throw new Error(`failed to load hello_pb.js: ${pbResp.status} ${pbResp.statusText}`);
+      }
+      if (!grpcResp.ok) {
+        throw new Error(`failed to load hello_grpc_web_pb.js: ${grpcResp.status} ${grpcResp.statusText}`);
+      }
+      const [pbSource, grpcSource] = await Promise.all([pbResp.text(), grpcResp.text()]);
 
       const pbModule = evalCjsModule(
         pbSource,
@@ -154,7 +164,9 @@ export interface AuthResult {
 
 export async function register(email: string, password: string): Promise<AuthResult> {
   const grpc = await loadGenerated();
-  const client = new grpc.AuthServicePromiseClient(grpcEndpoint(), null, null);
+  const client = new grpc.AuthServicePromiseClient(grpcEndpoint(), null, {
+    withCredentials: true,
+  });
   const req = new grpc.RegisterRequest();
   req.setEmail(email);
   req.setPassword(password);
@@ -164,10 +176,23 @@ export async function register(email: string, password: string): Promise<AuthRes
 
 export async function login(email: string, password: string): Promise<AuthResult> {
   const grpc = await loadGenerated();
-  const client = new grpc.AuthServicePromiseClient(grpcEndpoint(), null, null);
+  const client = new grpc.AuthServicePromiseClient(grpcEndpoint(), null, {
+    withCredentials: true,
+  });
   const req = new grpc.LoginRequest();
   req.setEmail(email);
   req.setPassword(password);
   const res = await client.login(req, {});
   return { token: res.getToken(), user_id: res.getUserId(), expires_at: Number(res.getExpiresAt()) };
+}
+
+export async function logout(token = ''): Promise<boolean> {
+  const grpc = await loadGenerated();
+  const client = new grpc.AuthServicePromiseClient(grpcEndpoint(), null, {
+    withCredentials: true,
+  });
+  const req = new grpc.LogoutRequest();
+  req.setToken(token);
+  const res = await client.logout(req, {});
+  return res.getSuccess();
 }

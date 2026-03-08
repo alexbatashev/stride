@@ -1,14 +1,17 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
 
 /**
  * Reusable Material Design 3 card container for auth flows.
  * Renders a centered, elevated surface with a branded header.
  */
-@customElement('friday-auth-card')
 export class FridayAuthCard extends LitElement {
-  @property({ type: String }) headline = 'Friday';
-  @property({ type: String }) subhead = '';
+  static properties = {
+    headline: { type: String },
+    subhead: { type: String },
+  };
+
+  headline = 'Friday';
+  subhead = '';
 
   static styles = css`
     :host {
@@ -82,6 +85,8 @@ export class FridayAuthCard extends LitElement {
     `;
   }
 }
+
+customElements.define('friday-auth-card', FridayAuthCard);
 
 declare global {
   interface HTMLElementTagNameMap {

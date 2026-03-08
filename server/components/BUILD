@@ -1,4 +1,5 @@
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 
 ts_project(
     name = "components",
@@ -8,13 +9,14 @@ ts_project(
     tsconfig = "//:tsconfig",
     deps = [
         "//:node_modules/lit",
+        "//:node_modules/lit-html",
         "//:node_modules/@material/web",
     ],
     visibility = ["//visibility:public"],
 )
 
-# Source TS files for type-checking by downstream packages.
-filegroup(
+# Source TS files copied to bin so cross-package esbuild srcs work.
+copy_to_bin(
     name = "ts_srcs",
     srcs = glob(["**/*.ts"]),
     visibility = ["//visibility:public"],

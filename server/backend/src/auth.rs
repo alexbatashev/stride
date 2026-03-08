@@ -11,6 +11,7 @@ use friday::grpc::generated::friday::core::rpc::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use minisql::{ConnectionPool, Value};
 use serde::{Deserialize, Serialize};
+use tonic::metadata::MetadataValue;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -62,6 +63,63 @@ fn bearer_token(metadata: &MetadataMap) -> Result<&str, Status> {
         return Err(Status::unauthenticated("empty bearer token"));
     }
     Ok(token)
+}
+
+fn cookie_token(metadata: &MetadataMap) -> Option<String> {
+    let raw = metadata.get("cookie")?;
+    let cookie_header = raw.to_str().ok()?;
+    for part in cookie_header.split(';') {
+        let part = part.trim();
+        if let Some(value) = part.strip_prefix("friday_auth=") {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn request_token(metadata: &MetadataMap) -> Result<String, Status> {
+    if let Ok(token) = bearer_token(metadata) {
+        return Ok(token.to_string());
+    }
+    if let Some(token) = cookie_token(metadata) {
+        return Ok(token);
+    }
+    Err(Status::unauthenticated(
+        "missing auth token (expected Bearer metadata or friday_auth cookie)",
+    ))
+}
+
+fn cookie_secure_enabled() -> bool {
+    std::env::var("FRIDAY_COOKIE_SECURE")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn auth_cookie(token: &str, expires_at: i64) -> String {
+    let now = now_epoch_seconds();
+    let max_age = (expires_at - now).max(0);
+    let secure = if cookie_secure_enabled() {
+        "; Secure"
+    } else {
+        ""
+    };
+    format!(
+        "friday_auth={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}"
+    )
+}
+
+fn expired_auth_cookie() -> String {
+    let secure = if cookie_secure_enabled() {
+        "; Secure"
+    } else {
+        ""
+    };
+    format!(
+        "friday_auth=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}"
+    )
 }
 
 fn hash_password(password: &str) -> Result<String, Status> {
@@ -145,8 +203,8 @@ impl HelloService for GreeterService {
         &self,
         request: Request<HelloRequest>,
     ) -> Result<Response<HelloReply>, Status> {
-        let token = bearer_token(request.metadata())?;
-        let claims = decode_jwt(&self.state, token)?;
+        let token = request_token(request.metadata())?;
+        let claims = decode_jwt(&self.state, &token)?;
         validate_active_session(&self.state, &claims).await?;
 
         let name = request.into_inner().name;
@@ -203,11 +261,16 @@ impl AuthService for AuthServiceImpl {
             .await
             .map_err(|_| Status::internal("failed to create session"))?;
 
-        Ok(Response::new(AuthReply {
+        let mut response = Response::new(AuthReply {
             token,
             user_id: user_id.to_string(),
             expires_at,
-        }))
+        });
+        let set_cookie = auth_cookie(&response.get_ref().token, expires_at);
+        let header = MetadataValue::try_from(set_cookie.as_str())
+            .map_err(|_| Status::internal("failed to encode auth cookie header"))?;
+        response.metadata_mut().insert("set-cookie", header);
+        Ok(response)
     }
 
     async fn login(&self, request: Request<LoginRequest>) -> Result<Response<AuthReply>, Status> {
@@ -237,25 +300,31 @@ impl AuthService for AuthServiceImpl {
             .await
             .map_err(|_| Status::internal("failed to create session"))?;
 
-        Ok(Response::new(AuthReply {
+        let mut response = Response::new(AuthReply {
             token,
             user_id: user.id.to_string(),
             expires_at,
-        }))
+        });
+        let set_cookie = auth_cookie(&response.get_ref().token, expires_at);
+        let header = MetadataValue::try_from(set_cookie.as_str())
+            .map_err(|_| Status::internal("failed to encode auth cookie header"))?;
+        response.metadata_mut().insert("set-cookie", header);
+        Ok(response)
     }
 
     async fn logout(
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutReply>, Status> {
+        let metadata = request.metadata().clone();
         let body = request.into_inner();
         let token = if body.token.trim().is_empty() {
-            return Err(Status::invalid_argument("token is required"));
+            request_token(&metadata)?
         } else {
-            body.token.trim()
+            body.token.trim().to_string()
         };
 
-        let claims = decode_jwt(&self.state, token)?;
+        let claims = decode_jwt(&self.state, &token)?;
         let sid =
             Uuid::parse_str(&claims.sid).map_err(|_| Status::unauthenticated("invalid token"))?;
         self.state
@@ -267,7 +336,11 @@ impl AuthService for AuthServiceImpl {
             .await
             .map_err(|_| Status::internal("failed to revoke session"))?;
 
-        Ok(Response::new(LogoutReply { success: true }))
+        let mut response = Response::new(LogoutReply { success: true });
+        let header = MetadataValue::try_from(expired_auth_cookie().as_str())
+            .map_err(|_| Status::internal("failed to encode auth cookie header"))?;
+        response.metadata_mut().insert("set-cookie", header);
+        Ok(response)
     }
 }
 
