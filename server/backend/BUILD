@@ -5,10 +5,13 @@ _DEPS = crate_deps(
     [
         "argon2",
         "axum",
+        "bytes",
         "futures",
         "jsonwebtoken",
         "serde",
+        "tar",
         "tokio",
+        "tower",
         "prost",
         "tonic",
         "tonic-web",
@@ -24,8 +27,12 @@ _DEPS = crate_deps(
 rust_library(
     name = "backend",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    compile_data = ["//server/frontend:frontend_tar"],
     crate_name = "friday_backend",
     edition = "2024",
+    rustc_env = {
+        "FRONTEND_TAR": "$(execpath //server/frontend:frontend_tar)",
+    },
     deps = _DEPS,
 )
 
@@ -37,10 +44,6 @@ rust_binary(
     deps = [
         ":backend",
     ] + crate_deps(["tokio"], package_name = ""),
-    data = [
-        "//libs/core:proto/hello.proto",
-        "//server/frontend:frontend",
-    ],
 )
 
 rust_test(
