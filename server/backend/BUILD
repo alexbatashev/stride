@@ -21,6 +21,8 @@ _DEPS = crate_deps(
         "tonic-web",
         "tower-http",
         "uuid",
+        "toml",
+        "hyper",
     ],
     package_name = "",
 ) + [
