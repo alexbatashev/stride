@@ -16,13 +16,7 @@ use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
-use crate::{server_sessions, users};
-
-#[derive(Clone)]
-pub(crate) struct AppState {
-    pub(crate) db: Arc<ConnectionPool>,
-    pub(crate) jwt_secret: Arc<String>,
-}
+use crate::db::{server_sessions, users};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {

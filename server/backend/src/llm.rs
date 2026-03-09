@@ -30,7 +30,7 @@ use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status, async_trait};
 use uuid::Uuid;
 
-use crate::{llm_models, llm_providers, server_sessions};
+use crate::db::{llm_models, llm_providers, server_sessions};
 
 const PROVIDER_KEY_ENV: &str = "FRIDAY_PROVIDER_ENCRYPTION_KEY";
 
