@@ -9,7 +9,6 @@ use friday::grpc::generated::friday::core::rpc::{
     hello_service_server::{HelloService, HelloServiceServer},
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use ldap3::{LdapConnAsync, Scope, SearchEntry};
 use minisql::{ConnectionPool, Value};
 use serde::{Deserialize, Serialize};
 use tonic::metadata::MetadataMap;
@@ -130,133 +129,6 @@ fn verify_password(password: &str, password_hash: &str) -> Result<(), Status> {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .map_err(|_| Status::unauthenticated("invalid credentials"))
-}
-
-fn ldap_user_filter(template: &str, email: &str) -> String {
-    template.replace("{email}", email)
-}
-
-async fn ldap_authenticate(state: &AppState, email: &str, password: &str) -> Result<bool, Status> {
-    let ldap_cfg = &state.ldap;
-    if !ldap_cfg.enabled {
-        return Ok(false);
-    }
-    if ldap_cfg.url.is_empty() || ldap_cfg.user_base_dn.is_empty() {
-        return Ok(false);
-    }
-
-    let (conn, mut ldap) = LdapConnAsync::new(&ldap_cfg.url)
-        .await
-        .map_err(|_| Status::internal("failed to connect to ldap server"))?;
-    ldap3::drive!(conn);
-
-    if !ldap_cfg.bind_dn.is_empty() {
-        ldap.simple_bind(&ldap_cfg.bind_dn, &ldap_cfg.bind_password)
-            .await
-            .map_err(|_| Status::internal("failed to bind ldap service account"))?
-            .success()
-            .map_err(|_| Status::internal("failed to bind ldap service account"))?;
-    }
-
-    let filter = ldap_user_filter(&ldap_cfg.user_filter, email);
-    let (entries, _res) = ldap
-        .search(
-            &ldap_cfg.user_base_dn,
-            Scope::Subtree,
-            &filter,
-            vec!["dn"],
-        )
-        .await
-        .map_err(|_| Status::internal("failed to query ldap user"))?
-        .success()
-        .map_err(|_| Status::internal("failed to query ldap user"))?;
-
-    let Some(entry) = entries.into_iter().next() else {
-        return Ok(false);
-    };
-    let user_dn = SearchEntry::construct(entry).dn;
-    let is_valid = ldap
-        .simple_bind(&user_dn, password)
-        .await
-        .map_err(|_| Status::internal("failed to bind ldap user"))?
-        .success()
-        .is_ok();
-
-    let _ = ldap.unbind().await;
-    Ok(is_valid)
-}
-
-async fn internal_authenticate(
-    db: &ConnectionPool,
-    email: &str,
-    password: &str,
-) -> Result<Option<users::Row>, Status> {
-    let users_found = users::select()
-        .where_(users::email.eq(email))
-        .limit(1)
-        .all(db)
-        .await
-        .map_err(|_| Status::internal("failed to query users"))?;
-
-    let Some(user) = users_found.first() else {
-        return Ok(None);
-    };
-
-    match verify_password(password, &user.password_hash) {
-        Ok(()) => Ok(Some(user.clone())),
-        Err(_) => Ok(None),
-    }
-}
-
-async fn get_or_create_local_user_for_ldap(state: &AppState, email: &str) -> Result<users::Row, Status> {
-    let users_found = users::select()
-        .where_(users::email.eq(email))
-        .limit(1)
-        .all(&state.db)
-        .await
-        .map_err(|_| Status::internal("failed to query users"))?;
-    if let Some(user) = users_found.first() {
-        return Ok(user.clone());
-    }
-
-    let user_id = Uuid::new_v4();
-    let placeholder_password = Uuid::new_v4().to_string();
-    let password_hash = hash_password(&placeholder_password)?;
-    let created_at = now_epoch_seconds();
-    let insert_result = users::insert()
-        .id(user_id)
-        .email(email)
-        .password_hash(password_hash.as_str())
-        .created_at(created_at)
-        .execute(&state.db)
-        .await;
-
-    match insert_result {
-        Ok(_) => {
-            let created = users::select()
-                .where_(users::id.eq(user_id))
-                .limit(1)
-                .all(&state.db)
-                .await
-                .map_err(|_| Status::internal("failed to query users"))?;
-            created
-                .first()
-                .cloned()
-                .ok_or_else(|| Status::internal("failed to resolve created user"))
-        }
-        Err(_) => {
-            let users_found = users::select()
-                .where_(users::email.eq(email))
-                .limit(1)
-                .all(&state.db)
-                .await
-                .map_err(|_| Status::internal("failed to query users"))?;
-            users_found
-                .first()
-                .cloned()
-                .ok_or_else(|| Status::internal("failed to create local user"))
-        }
-    }
 }
 
 fn issue_jwt(state: &AppState, user_id: Uuid) -> Result<(String, Uuid, i64), Status> {
@@ -395,13 +267,17 @@ impl AuthService for AuthServiceImpl {
     async fn login(&self, request: Request<LoginRequest>) -> Result<Response<AuthReply>, Status> {
         let body = request.into_inner();
         let email = body.email.trim().to_lowercase();
-        let user = if let Some(user) = internal_authenticate(&self.state.db, &email, &body.password).await? {
-            user
-        } else if ldap_authenticate(&self.state, &email, &body.password).await? {
-            get_or_create_local_user_for_ldap(&self.state, &email).await?
-        } else {
-            return Err(Status::unauthenticated("invalid credentials"));
-        };
+        let users_found = users::select()
+            .where_(users::email.eq(email.as_str()))
+            .limit(1)
+            .all(&self.state.db)
+            .await
+            .map_err(|_| Status::internal("failed to query users"))?;
+
+        let user = users_found
+            .first()
+            .ok_or_else(|| Status::unauthenticated("invalid credentials"))?;
+        verify_password(&body.password, &user.password_hash)?;
 
         let (token, session_id, expires_at) = issue_jwt(&self.state, user.id)?;
         server_sessions::insert()

@@ -19,7 +19,6 @@ use std::env;
 struct AppState {
     pub db: Arc<ConnectionPool>,
     pub jwt_secret: Arc<String>,
-    pub ldap: Arc<config::Ldap>,
 }
 
 pub async fn server_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -38,7 +37,6 @@ pub async fn server_main() -> Result<(), Box<dyn std::error::Error + Send + Sync
     let state = Arc::new(AppState {
         db,
         jwt_secret: Arc::new(jwt_secret),
-        ldap: Arc::new(config.ldap),
     });
 
     let frontend_files = frontend::init();
