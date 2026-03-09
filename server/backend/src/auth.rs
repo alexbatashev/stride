@@ -190,7 +190,7 @@ async fn internal_authenticate(
     db: &ConnectionPool,
     email: &str,
     password: &str,
-) -> Result<Option<users::Row>, Status> {
+) -> Result<Option<Uuid>, Status> {
     let users_found = users::select()
         .where_(users::email.eq(email))
         .limit(1)
@@ -203,12 +203,12 @@ async fn internal_authenticate(
     };
 
     match verify_password(password, &user.password_hash) {
-        Ok(()) => Ok(Some(user.clone())),
+        Ok(()) => Ok(Some(user.id)),
         Err(_) => Ok(None),
     }
 }
 
-async fn get_or_create_local_user_for_ldap(state: &AppState, email: &str) -> Result<users::Row, Status> {
+async fn get_or_create_local_user_for_ldap(state: &AppState, email: &str) -> Result<Uuid, Status> {
     let users_found = users::select()
         .where_(users::email.eq(email))
         .limit(1)
@@ -216,7 +216,7 @@ async fn get_or_create_local_user_for_ldap(state: &AppState, email: &str) -> Res
         .await
         .map_err(|_| Status::internal("failed to query users"))?;
     if let Some(user) = users_found.first() {
-        return Ok(user.clone());
+        return Ok(user.id);
     }
 
     let user_id = Uuid::new_v4();
@@ -241,7 +241,7 @@ async fn get_or_create_local_user_for_ldap(state: &AppState, email: &str) -> Res
                 .map_err(|_| Status::internal("failed to query users"))?;
             created
                 .first()
-                .cloned()
+                .map(|u| u.id)
                 .ok_or_else(|| Status::internal("failed to resolve created user"))
         }
         Err(_) => {
@@ -253,7 +253,7 @@ async fn get_or_create_local_user_for_ldap(state: &AppState, email: &str) -> Res
                 .map_err(|_| Status::internal("failed to query users"))?;
             users_found
                 .first()
-                .cloned()
+                .map(|u| u.id)
                 .ok_or_else(|| Status::internal("failed to create local user"))
         }
     }
@@ -395,18 +395,19 @@ impl AuthService for AuthServiceImpl {
     async fn login(&self, request: Request<LoginRequest>) -> Result<Response<AuthReply>, Status> {
         let body = request.into_inner();
         let email = body.email.trim().to_lowercase();
-        let user = if let Some(user) = internal_authenticate(&self.state.db, &email, &body.password).await? {
-            user
+        let user_id =
+            if let Some(user_id) = internal_authenticate(&self.state.db, &email, &body.password).await? {
+                user_id
         } else if ldap_authenticate(&self.state, &email, &body.password).await? {
             get_or_create_local_user_for_ldap(&self.state, &email).await?
         } else {
             return Err(Status::unauthenticated("invalid credentials"));
         };
 
-        let (token, session_id, expires_at) = issue_jwt(&self.state, user.id)?;
+        let (token, session_id, expires_at) = issue_jwt(&self.state, user_id)?;
         server_sessions::insert()
             .id(Uuid::new_v4())
-            .user_id(user.id)
+            .user_id(user_id)
             .token_id(session_id)
             .revoked_at(Option::<i64>::None)
             .created_at(now_epoch_seconds())
@@ -417,7 +418,7 @@ impl AuthService for AuthServiceImpl {
 
         let mut response = Response::new(AuthReply {
             token,
-            user_id: user.id.to_string(),
+            user_id: user_id.to_string(),
             expires_at,
         });
         let set_cookie = auth_cookie(&response.get_ref().token, expires_at);
