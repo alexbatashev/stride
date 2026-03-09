@@ -6,6 +6,9 @@ import SwiftUI
 @Observable
 @MainActor
 public final class ModelData {
+    // Tool execution policy is app-layer only; keep it out of SwiftUI views.
+    private let toolExecutionPolicy = ToolExecutionPolicy()
+
     var selectedNavigation: NavigationOptions?
     var selectedThread: ChatThread?
 
@@ -165,7 +168,10 @@ public final class ModelData {
         await service.setModel(providerId: provider.id, modelId: model)
 
         let userMessage = ChatMessage.makeNew(threadId: thread.id, role: .user, content: text)
-        return service.addMessage(toolsEnabled: false, next: userMessage)
+        return service.addMessage(
+            toolsEnabled: toolExecutionPolicy.areToolsEnabled,
+            next: userMessage
+        )
     }
 
     private static func defaultDatabasePath() -> String {
@@ -176,4 +182,9 @@ public final class ModelData {
         let directory = baseURL.appendingPathComponent("Friday", isDirectory: true)
         return directory.appendingPathComponent("db.sqlite", isDirectory: false).path
     }
+}
+
+private struct ToolExecutionPolicy {
+    // Enable tools unconditionally for now.
+    let areToolsEnabled = true
 }
