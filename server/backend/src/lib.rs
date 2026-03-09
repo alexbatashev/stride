@@ -4,6 +4,7 @@ mod db;
 mod frontend;
 mod hybrid;
 mod llm;
+mod rest_grpc;
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -11,10 +12,7 @@ use std::sync::Arc;
 
 use minisql::{ConnectionPool, Migration};
 use tokio::net::TcpListener;
-use tonic_web::GrpcWebLayer;
-
 use crate::hybrid::hybrid;
-use crate::rest_grpc::RestGrpcService;
 
 use config::Config;
 use std::env;
@@ -47,13 +45,19 @@ pub async fn server_main() -> Result<(), Box<dyn std::error::Error + Send + Sync
 
     let rest = frontend::http_router(frontend_files).into_make_service();
 
-    let auth = auth::auth_service(state.clone());
-    let llm_grpc = llm::language_model_service(state.db.clone(), state.jwt_secret.as_ref());
-
-    let grpc = tonic::transport::Server::builder()
-        .add_service(auth)
-        .add_service(llm_grpc)
-        .into_service();
+    let grpc = axum::Router::new()
+        .route_service(
+            "/friday.core.rpc.AuthService/{*grpc_method}",
+            auth::auth_service(state.clone()),
+        )
+        .route_service(
+            "/friday.core.rpc.HelloService/{*grpc_method}",
+            auth::hello_service(state.clone()),
+        )
+        .route_service(
+            "/friday.core.rpc.LanguageModel/{*grpc_method}",
+            llm::language_model_service(state.db.clone(), state.jwt_secret.as_ref())?,
+        );
 
     let app = hybrid(rest, grpc);
 

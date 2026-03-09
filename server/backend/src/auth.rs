@@ -16,6 +16,7 @@ use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
+use crate::AppState;
 use crate::db::{server_sessions, users};
 
 #[derive(Debug, Serialize, Deserialize)]
