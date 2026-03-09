@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package friday.core.rpc;
+
+import "libs/core/proto/message.proto";
+import "libs/core/proto/tools.proto";
+
+service LanguageModel {
+    rpc RegisterProvider(RegisterProviderRequest) returns (Empty);
+    rpc RegisterModel(RegisterModelRequest) returns (Empty);
+    rpc List(Empty) returns (ModelList);
+    rpc Complete(CompletionRequest) returns (stream CompletionChunk);
+}
+
+message Empty {}
+
+message ModelDesc {
+    string providerId = 1;
+    string providerName = 2;
+    string modelSlug = 3;
+    string modelName = 4; // Human-readable model name
+    string modelDesc = 5;
+    bool supportsThinking = 6;
+    bool supportsTools = 7;
+    bool supportsImageInput = 8;
+}
+
+enum ProviderKind {
+    PROVIDER_KIND_UNSPECIFIED = 0;
+    PROVIDER_KIND_OPENAI_LIKE = 1;
+    PROVIDER_KIND_ANTHROPIC = 2;
+    // Although Friday app supports ollama natively, it is only meant
+    // to be used locally. Remote deployments via Friday server are not
+    // supported.
+}
+
+message RegisterProviderRequest {
+    string providerId = 1;
+    string providerName = 2;
+    ProviderKind kind = 3;
+    string apiBaseUrl = 4;
+    string token = 5;
+}
+
+message RegisterModelRequest {
+    string providerId = 1;
+    string modelSlug = 2;
+    string modelName = 3;
+    // Descriptions are only provided for Friday models,
+    // users can't specify descriptions for their own models.
+    bool supportsThinking = 4;
+    bool supportsTools = 5;
+    bool supportsImageInput = 6;
+}
+
+message ModelList {
+    repeated ModelDesc models = 1;
+}
+
+message CompletionRequest {
+    string providerId = 1;
+    string modelId = 2;
+    repeated Message messages = 3;
+    repeated Tool tools = 4;
+    ToolChoice toolChoice = 5;
+}
+
+message CompletionChunk {
+    uint32 choiceIndex = 1;
+    string content = 2;
+    string thinking = 3;
+    repeated ToolCallChunk toolCalls = 4;
+    string finishReason = 5;
+}

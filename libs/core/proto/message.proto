@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package friday.core.rpc;
+
+enum MessageRole {
+  MESSAGE_ROLE_UNSPECIFIED = 0;
+  MESSAGE_ROLE_SYSTEM = 1;
+  MESSAGE_ROLE_ASSISTANT = 2;
+  MESSAGE_ROLE_USER = 3;
+  MESSAGE_ROLE_TOOL = 4;
+}
+
+enum MessageContentType {
+  MESSAGE_CONTENT_TYPE_UNSPECIFIED = 0;
+  MESSAGE_CONTENT_TYPE_TEXT = 1;
+  MESSAGE_CONTENT_TYPE_IMAGE_URL = 2;
+}
+
+message MessageContent {
+  MessageContentType ty = 1;
+  string data = 2;
+}
+
+message Message {
+  MessageRole role = 1;
+  bool thinking = 2;
+  string tool_call_id = 3;
+  repeated MessageContent content = 4;
+}

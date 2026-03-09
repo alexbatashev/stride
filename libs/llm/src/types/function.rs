@@ -59,3 +59,9 @@ pub enum UnnamedToolChoice {
 pub struct FunctionRef {
     name: String,
 }
+
+impl FunctionRef {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}

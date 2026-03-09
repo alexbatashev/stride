@@ -11,8 +11,8 @@ use friday::grpc::generated::friday::core::rpc::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use minisql::{ConnectionPool, Value};
 use serde::{Deserialize, Serialize};
-use tonic::metadata::MetadataValue;
 use tonic::metadata::MetadataMap;
+use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -106,9 +106,7 @@ fn auth_cookie(token: &str, expires_at: i64) -> String {
     } else {
         ""
     };
-    format!(
-        "friday_auth={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}"
-    )
+    format!("friday_auth={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}")
 }
 
 fn expired_auth_cookie() -> String {
@@ -117,9 +115,7 @@ fn expired_auth_cookie() -> String {
     } else {
         ""
     };
-    format!(
-        "friday_auth=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}"
-    )
+    format!("friday_auth=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}")
 }
 
 fn hash_password(password: &str) -> Result<String, Status> {

@@ -1,5 +1,6 @@
 mod auth;
 mod frontend;
+mod llm;
 mod rest_grpc;
 
 use std::future::Future;
@@ -30,6 +31,36 @@ migrations! {
             expires_at: i64,
 
             foreign_key(user_id -> users.id);
+        }
+
+        table llm_providers {
+            id: uuid::Uuid [PrimaryKey],
+            user_id: uuid::Uuid,
+            provider_name: String,
+            kind: i64,
+            api_base_url: String,
+            token_nonce: String,
+            token_ciphertext: String,
+            created_at: i64,
+            updated_at: i64,
+
+            foreign_key(user_id -> users.id);
+        }
+
+        table llm_models {
+            id: uuid::Uuid [PrimaryKey],
+            user_id: uuid::Uuid,
+            provider_id: uuid::Uuid,
+            model_slug: String,
+            model_name: String,
+            supports_thinking: bool,
+            supports_tools: bool,
+            supports_image_input: bool,
+            created_at: i64,
+            updated_at: i64,
+
+            foreign_key(user_id -> users.id);
+            foreign_key(provider_id -> llm_providers.id);
         }
     }
 }
@@ -75,13 +106,7 @@ pub async fn run_server(addr: SocketAddr) -> Result<(), Box<dyn std::error::Erro
     let jwt_secret =
         std::env::var("FRIDAY_JWT_SECRET").unwrap_or_else(|_| "dev-insecure-secret".to_string());
     let db_url = resolve_db_url();
-    run_server_with_shutdown(
-        addr,
-        &db_url,
-        jwt_secret,
-        std::future::pending::<()>(),
-    )
-    .await
+    run_server_with_shutdown(addr, &db_url, jwt_secret, std::future::pending::<()>()).await
 }
 
 pub async fn run_server_with_shutdown<F>(
@@ -96,6 +121,7 @@ where
     let db = Arc::new(ConnectionPool::new(db_url)?);
     let migrations: Vec<Migration> = get_migrations();
     db.initialize_database(migrations).await?;
+    let llm_service = llm::language_model_service(db.clone(), &jwt_secret)?;
 
     let state = Arc::new(AppState {
         db,
@@ -114,6 +140,7 @@ where
             "/friday.core.rpc.HelloService/{*grpc_method}",
             auth::hello_service(state),
         )
+        .route_service("/friday.core.rpc.LanguageModel/{*grpc_method}", llm_service)
         .layer(GrpcWebLayer::new());
     let app = RestGrpcService::new(rest_router, grpc_router);
 
@@ -143,8 +170,9 @@ where
 
     let serve_result = match serve_task {
         CompatTask::Tokio(handle) => handle.await.map_err(|e| {
-            Box::new(std::io::Error::other(format!("serve task join failed: {e}")))
-                as Box<dyn std::error::Error + Send + Sync>
+            Box::new(std::io::Error::other(format!(
+                "serve task join failed: {e}"
+            ))) as Box<dyn std::error::Error + Send + Sync>
         })?,
         CompatTask::Thread(handle) => handle.join().map_err(|_| {
             Box::new(std::io::Error::other("serve thread panicked"))

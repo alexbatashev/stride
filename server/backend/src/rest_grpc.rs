@@ -1,13 +1,13 @@
 use std::convert::Infallible;
 use std::task::{Context, Poll};
 
-use axum::body::{Body, Bytes, HttpBody};
-use axum::http::header::CONTENT_TYPE;
-use axum::http::Request;
-use axum::response::Response;
 use axum::Router;
+use axum::body::{Body, Bytes, HttpBody};
+use axum::http::Request;
+use axum::http::header::CONTENT_TYPE;
+use axum::response::Response;
 use futures::ready;
-use tower::{make::Shared, Service};
+use tower::{Service, make::Shared};
 
 #[derive(Clone, Debug)]
 pub struct RestGrpcService {

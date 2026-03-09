@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package friday.core.rpc;
+
+enum ToolType {
+  TOOL_TYPE_UNSPECIFIED = 0;
+  TOOL_TYPE_FUNCTION = 1;
+}
+
+message FunctionProperty {
+  string type = 1;
+  string description = 2;
+}
+
+message FunctionParameters {
+  string type = 1;
+  map<string, FunctionProperty> properties = 2;
+  repeated string required = 3;
+}
+
+message Function {
+  string description = 1;
+  string name = 2;
+  repeated FunctionParameters parameters = 3;
+}
+
+message Tool {
+  ToolType type = 1;
+  Function function = 2;
+}
+
+enum UnnamedToolChoice {
+  UNNAMED_TOOL_CHOICE_UNSPECIFIED = 0;
+  UNNAMED_TOOL_CHOICE_NONE = 1;
+  UNNAMED_TOOL_CHOICE_AUTO = 2;
+  UNNAMED_TOOL_CHOICE_REQUIRED = 3;
+}
+
+message FunctionRef {
+  string name = 1;
+}
+
+message ToolChoice {
+  oneof choice {
+    UnnamedToolChoice unnamed = 1;
+    FunctionRef named_function = 2;
+  }
+}
+
+message ToolCallFunctionChunk {
+  string name = 1;
+  string arguments = 2;
+}
+
+message ToolCallChunk {
+  uint32 index = 1;
+  string id = 2;
+  ToolCallFunctionChunk function = 3;
+}

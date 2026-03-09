@@ -11,7 +11,7 @@ _SWIFT_EXT_SRCS = ["swift_ext/FridayExtensions.swift"]
 
 proto_library(
     name = "api_proto",
-    srcs = ["proto/hello.proto"],
+    srcs = glob(["proto/*.proto"]),
 )
 
 rust_prost_library(

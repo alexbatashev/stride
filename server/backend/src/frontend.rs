@@ -26,10 +26,16 @@ pub fn init() -> Files {
         if entry.header().entry_type().is_dir() {
             continue;
         }
-        let raw = entry.path().expect("entry path").to_string_lossy().into_owned();
+        let raw = entry
+            .path()
+            .expect("entry path")
+            .to_string_lossy()
+            .into_owned();
         let key = raw.trim_start_matches("./").to_string();
         let mut content = Vec::new();
-        entry.read_to_end(&mut content).expect("read tar entry content");
+        entry
+            .read_to_end(&mut content)
+            .expect("read tar entry content");
         map.insert(key, Bytes::from(content));
     }
 
@@ -40,9 +46,7 @@ pub fn init() -> Files {
 ///
 /// Unknown paths fall back to `index.html` (SPA-style routing).
 pub fn http_router(files: Files) -> Router {
-    Router::new()
-        .fallback(serve_static)
-        .with_state(files)
+    Router::new().fallback(serve_static).with_state(files)
 }
 
 async fn serve_static(State(files): State<Files>, uri: Uri) -> Response<Body> {

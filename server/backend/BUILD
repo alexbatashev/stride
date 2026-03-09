@@ -4,11 +4,15 @@ load("@crates//:defs.bzl", "crate_deps")
 _DEPS = crate_deps(
     [
         "argon2",
+        "async-stream",
         "axum",
+        "base64",
         "bytes",
+        "chacha20poly1305",
         "futures",
         "jsonwebtoken",
         "serde",
+        "sha2",
         "tar",
         "tokio",
         "tower",
@@ -21,6 +25,7 @@ _DEPS = crate_deps(
     package_name = "",
 ) + [
     "//libs/core:core",
+    "//libs/llm:llm",
     "//libs/minisql:minisql",
 ]
 
@@ -59,6 +64,25 @@ rust_test(
             "uuid",
             "tokio",
             "tonic",
+        ],
+        package_name = "",
+    ),
+)
+
+rust_test(
+    name = "llm_integration_test",
+    srcs = ["tests/llm_integration_test.rs"],
+    crate_root = "tests/llm_integration_test.rs",
+    edition = "2024",
+    deps = [
+        ":backend",
+        "//libs/core:core",
+        "//libs/minisql:minisql",
+    ] + crate_deps(
+        [
+            "tokio",
+            "tonic",
+            "uuid",
         ],
         package_name = "",
     ),
