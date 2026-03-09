@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -45,6 +46,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct HybridService<Web, Grpc> {
     web: Web,
     grpc: Grpc,
@@ -64,14 +66,16 @@ where
     GrpcBody::Error: Into<BoxError>,
 {
     type Response = Response<Body>;
-    type Error = BoxError;
+    type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.web.poll_ready(cx) {
-            Poll::Ready(Ok(())) => self.grpc.poll_ready(cx).map_err(Into::into),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
-            Poll::Pending => Poll::Pending,
+        let web_ready = self.web.poll_ready(cx);
+        let grpc_ready = self.grpc.poll_ready(cx);
+
+        match (web_ready, grpc_ready) {
+            (Poll::Pending, _) | (_, Poll::Pending) => Poll::Pending,
+            _ => Poll::Ready(Ok(())),
         }
     }
 
@@ -79,17 +83,30 @@ where
         if is_grpc_request(&req) {
             let fut = self.grpc.call(req);
             Box::pin(async move {
-                let response = fut.await.map_err(Into::into)?;
-                Ok(response.map(Body::new))
+                let response = match fut.await {
+                    Ok(response) => response.map(Body::new),
+                    Err(err) => internal_error_response(err.into()),
+                };
+                Ok(response)
             })
         } else {
             let fut = self.web.call(req);
             Box::pin(async move {
-                let response = fut.await.map_err(Into::into)?;
-                Ok(response.map(Body::new))
+                let response = match fut.await {
+                    Ok(response) => response.map(Body::new),
+                    Err(err) => internal_error_response(err.into()),
+                };
+                Ok(response)
             })
         }
     }
+}
+
+fn internal_error_response(_err: BoxError) -> Response<Body> {
+    Response::builder()
+        .status(500)
+        .body(Body::from("internal server error"))
+        .expect("response builder should not fail")
 }
 
 fn is_grpc_request<B>(req: &Request<B>) -> bool {

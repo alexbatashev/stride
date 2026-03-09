@@ -30,6 +30,7 @@ use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status, async_trait};
 use uuid::Uuid;
 
+use crate::AppState;
 use crate::db::{llm_models, llm_providers, server_sessions};
 
 const PROVIDER_KEY_ENV: &str = "FRIDAY_PROVIDER_ENCRYPTION_KEY";
@@ -383,14 +384,13 @@ impl LanguageModel for LanguageModelService {
 }
 
 pub(crate) fn language_model_service(
-    db: Arc<ConnectionPool>,
-    jwt_secret: &str,
+    state: &Arc<AppState>,
 ) -> Result<LanguageModelServer<LanguageModelService>, Box<dyn std::error::Error + Send + Sync>> {
-    let crypto = ProviderTokenCrypto::from_env_or_jwt(jwt_secret)?;
+    let crypto = ProviderTokenCrypto::from_env_or_jwt(state.jwt_secret.as_ref())?;
     Ok(LanguageModelServer::new(LanguageModelService {
-        db,
+        db: state.db.clone(),
         crypto: Arc::new(crypto),
-        jwt_secret: Arc::new(jwt_secret.to_owned()),
+        jwt_secret: state.jwt_secret.clone(),
     }))
 }
 
