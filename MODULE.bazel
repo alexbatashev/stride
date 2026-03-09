@@ -196,6 +196,10 @@ crate.spec(
     version = "9.3.0",
 )
 crate.spec(
+    package = "ldap3",
+    version = "0.11.5",
+)
+crate.spec(
     features = [
         "cli",
         "tokio",
