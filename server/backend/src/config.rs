@@ -45,21 +45,7 @@ config_env! {
     }
 }
 
-config_env! {
-    Ldap {
-        enabled: bool = false => "enabled",
-        url: String = "" => "url",
-        bind_dn: String = "" => "bind_dn",
-        bind_password: String = "" => "bind_password",
-        user_base_dn: String = "" => "user_base_dn",
-        user_filter: String = "(mail={email})" => "user_filter",
-    }
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
-    #[serde(default)]
     pub server: Server,
-    #[serde(default)]
-    pub ldap: Ldap,
 }
