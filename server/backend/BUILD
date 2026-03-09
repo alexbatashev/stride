@@ -11,6 +11,7 @@ _DEPS = crate_deps(
         "chacha20poly1305",
         "futures",
         "jsonwebtoken",
+        "ldap3",
         "serde",
         "sha2",
         "tar",
