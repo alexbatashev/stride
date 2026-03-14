@@ -10,6 +10,7 @@ use super::tool_calls::{
     extract_function_calls, json_string, parse_tool_args, tool_result_dictionary,
 };
 use super::transport::*;
+use crate::futures::Stream;
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 
 use async_lock::Mutex;
 use async_stream::stream;
-use futures::{Stream, StreamExt, future::BoxFuture};
+use futures::StreamExt;
 use llm::{
     API, Completion, CompletionChoice, CompletionRequest, Message, OpenAI, Role, UnnamedToolChoice,
 };
@@ -58,12 +59,14 @@ struct ChatServiceState {
     messages: Vec<ChatMessage>,
 }
 
-#[derive(Debug, Clone, Default, uniffi::Object)]
+#[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct ToolsConfig {
     pub use_js: bool,
 }
 
+#[uniffi::export]
 impl ChatService {
+    #[uniffi::constructor]
     pub fn new(transports: Vec<Arc<dyn ChatTransport>>, storage: Arc<dyn ChatStorage>) -> Self {
         let mut transports = transports;
         transports.sort_by(|a, b| a.provider_id().cmp(b.provider_id()));
@@ -79,6 +82,7 @@ impl ChatService {
         tools: ToolsConfig,
         next: ChatMessage,
     ) -> Pin<Box<dyn Stream<Item = Result<ChatMessage, ChatStreamError>> + Send + 'static>> {
+        let this = self.clone();
         self.ensure_messages_loaded().await;
         self.append_message(next.clone()).await;
 
@@ -114,7 +118,6 @@ impl ChatService {
             });
         };
 
-        let this = self.clone();
         if tools.is_empty() {
             let upstream = transport.stream_response(&model_id, &messages, &tools);
             return Box::pin(stream! {

@@ -1,10 +1,10 @@
 use crate::chat::{ChatMessage, LangModel, TurnRole, now_millis};
+use crate::futures::BoxFuture;
 use crate::tools::Tool;
 
 use super::tool_calls::{ModelFunctionCall, json_string};
 
 use async_stream::stream;
-use futures::future::BoxFuture;
 use futures::{Stream, StreamExt};
 use llm::{
     API, Anthropic, Completion, CompletionChoice, CompletionRequest, Message, Ollama, OpenAI, Role,

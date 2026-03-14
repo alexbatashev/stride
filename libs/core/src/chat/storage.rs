@@ -2,10 +2,10 @@ use super::ChatMessage;
 use super::TurnRole;
 use super::now_millis;
 
+use crate::futures::BoxFuture;
 use std::sync::Arc;
 
 use async_lock::{Mutex, OnceCell};
-use futures::future::BoxFuture;
 use minisql::ConnectionPool;
 use uuid::Uuid;
 
