@@ -4,9 +4,9 @@ use super::now_millis;
 
 use std::sync::Arc;
 
+use async_lock::{Mutex, OnceCell};
 use futures::future::BoxFuture;
 use minisql::ConnectionPool;
-use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 pub trait ChatStorage: Send + Sync {

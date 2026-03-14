@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use async_lock::Mutex;
 use async_stream::stream;
 use futures::{Stream, StreamExt, future::BoxFuture};
 use llm::{
@@ -23,7 +24,6 @@ use llm::{
 use minisql::ConnectionPool;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 use crate::tools::{JSTool, Tool};
@@ -46,6 +46,7 @@ pub enum ChatStreamError {
 pub struct ChatService {
     transports: Vec<Arc<dyn ChatTransport>>,
     storage: Arc<dyn ChatStorage>,
+    // TODO: for now this is async Mutex, however we never hold lock across .await. Should we change this to std::sync::Mutex?
     state: Arc<Mutex<ChatServiceState>>,
 }
 
@@ -267,14 +268,6 @@ impl ChatService {
         self.state.lock().await.messages.push(message.clone());
         self.storage.append_message(message).await;
     }
-}
-
-#[derive(Debug, Error, uniffi::Error)]
-pub enum ChatFFIError {
-    #[error("chat stream failed: {0}")]
-    Stream(String),
-    #[error("no response produced")]
-    EmptyResponse,
 }
 
 #[uniffi::export]

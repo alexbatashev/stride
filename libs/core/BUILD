@@ -27,7 +27,7 @@ _DEPS = crate_deps(
         "serde",
         "serde_json",
         "thiserror",
-        "tokio",
+        "async-lock",
         "uniffi",
         "ureq",
         "uuid",

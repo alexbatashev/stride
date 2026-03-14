@@ -13,7 +13,6 @@ use llm::{
 use minisql::{ConnectionPool, Migration, migrations};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::{Mutex, OnceCell};
 use uuid::Uuid;
 
 use crate::tools::{Tool, ToolArg};
