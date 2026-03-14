@@ -4,9 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use friday::chat::{
     ChatMessage, ChatProviderConfiguration, ChatProviderKind, ChatService, ChatStorage,
-    DirectChatTransport, NullChatStorage, TurnRole,
+    DirectChatTransport, NullChatStorage, ToolsConfig, TurnRole,
 };
-use friday::tools::{JSTool, Tool};
 use futures::StreamExt;
 use uuid::Uuid;
 
@@ -25,7 +24,6 @@ async fn main() {
     let transport = Arc::new(DirectChatTransport::from_provider(provider.clone()));
     let storage: Arc<dyn ChatStorage> = Arc::new(NullChatStorage);
     let chat = ChatService::new(vec![transport], storage);
-    let js_tool: Arc<dyn Tool> = Arc::new(JSTool::new());
     let mut tools_enabled = false;
 
     let models = chat.list_models().await;
@@ -108,12 +106,9 @@ async fn main() {
 
         write_stdout("friday> ");
 
-        let tools = if tools_enabled {
-            vec![js_tool.clone()]
-        } else {
-            Vec::new()
+        let tools = ToolsConfig {
+            use_js: tools_enabled,
         };
-
         let mut stream = chat.add_message(tools, user_turn).await;
         while let Some(item) = stream.next().await {
             match item {
