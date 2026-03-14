@@ -10,10 +10,9 @@ use super::tool_calls::{
     extract_function_calls, json_string, parse_tool_args, tool_result_dictionary,
 };
 use super::transport::*;
-use crate::futures::Stream;
+use crate::futures::BoxStream;
 
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use async_lock::Mutex;
@@ -29,7 +28,7 @@ use uuid::Uuid;
 
 use crate::tools::{JSTool, Tool};
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, uniffi::Error)]
 pub enum ChatStreamError {
     #[error("provider not selected")]
     ProviderNotSelected,
@@ -81,7 +80,7 @@ impl ChatService {
         &self,
         tools: ToolsConfig,
         next: ChatMessage,
-    ) -> Pin<Box<dyn Stream<Item = Result<ChatMessage, ChatStreamError>> + Send + 'static>> {
+    ) -> BoxStream<ChatMessage, ChatStreamError> {
         let this = self.clone();
         self.ensure_messages_loaded().await;
         self.append_message(next.clone()).await;
@@ -98,14 +97,14 @@ impl ChatService {
         };
 
         let Some(provider_id) = provider_id else {
-            return Box::pin(stream! {
+            return BoxStream::new(Box::pin(stream! {
                 yield Err(ChatStreamError::ProviderNotSelected);
-            });
+            }));
         };
         let Some(model_id) = model_id else {
-            return Box::pin(stream! {
+            return BoxStream::new(Box::pin(stream! {
                 yield Err(ChatStreamError::ModelNotSelected);
-            });
+            }));
         };
         let Some(transport) = self
             .transports
@@ -113,14 +112,14 @@ impl ChatService {
             .find(|transport| transport.provider_id() == provider_id)
             .cloned()
         else {
-            return Box::pin(stream! {
+            return BoxStream::new(Box::pin(stream! {
                 yield Err(ChatStreamError::UnknownProvider(provider_id));
-            });
+            }));
         };
 
         if tools.is_empty() {
             let upstream = transport.stream_response(&model_id, &messages, &tools);
-            return Box::pin(stream! {
+            return BoxStream::new(Box::pin(stream! {
                 let mut latest: Option<ChatMessage> = None;
                 futures::pin_mut!(upstream);
                 while let Some(item) = upstream.next().await {
@@ -142,10 +141,10 @@ impl ChatService {
                 if let Some(latest) = latest {
                     this.append_message(latest).await;
                 }
-            });
+            }));
         }
 
-        Box::pin(stream! {
+        BoxStream::new(Box::pin(stream! {
             let mut working_messages = messages;
             let thread_id = working_messages
                 .last()
@@ -244,7 +243,7 @@ impl ChatService {
             }
 
             yield Err(ChatStreamError::MaxToolIterationsExceeded);
-        })
+        }))
     }
 
     async fn ensure_messages_loaded(&self) {

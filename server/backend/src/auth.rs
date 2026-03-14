@@ -160,12 +160,7 @@ async fn ldap_authenticate(state: &AppState, email: &str, password: &str) -> Res
 
     let filter = ldap_user_filter(&ldap_cfg.user_filter, email);
     let (entries, _res) = ldap
-        .search(
-            &ldap_cfg.user_base_dn,
-            Scope::Subtree,
-            &filter,
-            vec!["dn"],
-        )
+        .search(&ldap_cfg.user_base_dn, Scope::Subtree, &filter, vec!["dn"])
         .await
         .map_err(|_| Status::internal("failed to query ldap user"))?
         .success()
@@ -395,9 +390,10 @@ impl AuthService for AuthServiceImpl {
     async fn login(&self, request: Request<LoginRequest>) -> Result<Response<AuthReply>, Status> {
         let body = request.into_inner();
         let email = body.email.trim().to_lowercase();
-        let user_id =
-            if let Some(user_id) = internal_authenticate(&self.state.db, &email, &body.password).await? {
-                user_id
+        let user_id = if let Some(user_id) =
+            internal_authenticate(&self.state.db, &email, &body.password).await?
+        {
+            user_id
         } else if ldap_authenticate(&self.state, &email, &body.password).await? {
             get_or_create_local_user_for_ldap(&self.state, &email).await?
         } else {

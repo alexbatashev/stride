@@ -1,5 +1,5 @@
 use crate::chat::{ChatMessage, LangModel, TurnRole, now_millis};
-use crate::futures::BoxFuture;
+use crate::futures::{BoxFuture, BoxStream};
 use crate::tools::Tool;
 
 use super::tool_calls::{ModelFunctionCall, json_string};
@@ -11,7 +11,6 @@ use llm::{
     UnnamedToolChoice,
 };
 use serde::{Deserialize, Serialize};
-use std::pin::Pin;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -33,6 +32,7 @@ pub enum ChatProviderKind {
     Mock,
 }
 
+#[uniffi::export(with_foreign)]
 pub trait ChatTransport: Send + Sync {
     fn provider_id(&self) -> &str;
     fn list_models<'a>(&'a self) -> BoxFuture<'a, Vec<LangModel>>;
@@ -47,7 +47,7 @@ pub trait ChatTransport: Send + Sync {
         model_id: &'a str,
         messages: &'a [ChatMessage],
         tools: &'a [Arc<dyn Tool>],
-    ) -> Pin<Box<dyn Stream<Item = Result<ChatMessage, llm::Error>> + Send + 'static>>;
+    ) -> BoxStream<ChatMessage, llm::Error>;
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +116,7 @@ impl ChatTransport for DirectChatTransport {
     }
 
     fn list_models<'a>(&'a self) -> BoxFuture<'a, Vec<LangModel>> {
-        Box::pin(async move {
+        BoxFuture::from_future(async move {
             match self.api.list_models(&self.token).await {
                 Ok(models) => {
                     let mut mapped = models
@@ -142,7 +142,7 @@ impl ChatTransport for DirectChatTransport {
         messages: &'a [ChatMessage],
         tools: &'a [Arc<dyn Tool>],
     ) -> BoxFuture<'a, Result<Completion, llm::Error>> {
-        Box::pin(async move {
+        BoxFuture::from_future(async move {
             let request = self.completion_request(model_id, messages, tools);
             self.api.get_completion(&self.token, request).await
         })
@@ -153,7 +153,7 @@ impl ChatTransport for DirectChatTransport {
         model_id: &'a str,
         messages: &'a [ChatMessage],
         tools: &'a [Arc<dyn Tool>],
-    ) -> Pin<Box<dyn Stream<Item = Result<ChatMessage, llm::Error>> + Send + 'static>> {
+    ) -> BoxStream<ChatMessage, llm::Error> {
         let request = self.completion_request(model_id, messages, tools);
         let provider_id = self.provider_id.clone();
         let model_id = model_id.to_owned();
@@ -164,7 +164,7 @@ impl ChatTransport for DirectChatTransport {
         let parent_id = messages.last().map(|m| m.id);
         let stream = self.api.stream_completion(&self.token, request);
 
-        Box::pin(stream! {
+        BoxStream::new(Box::pin(stream! {
             let mut tool_calls: Vec<ModelFunctionCall> = Vec::new();
             let now = now_millis();
             let mut response = ChatMessage {
@@ -244,7 +244,7 @@ impl ChatTransport for DirectChatTransport {
             response.is_done = true;
             response.updated_at_ms = now_millis();
             yield Ok(response);
-        })
+        }))
     }
 }
 

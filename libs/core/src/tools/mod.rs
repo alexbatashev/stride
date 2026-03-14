@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use futures::future::BoxFuture;
+use crate::futures::BoxFuture;
 use llm::{Function, FunctionParameters, FunctionProperty, Tool as LLMTool, ToolType};
 
 use crate::js::JavaScriptRuntime;
@@ -68,7 +68,7 @@ impl Tool for JSTool {
     }
 
     fn execute<'a>(&'a self, args: &'a [ToolArg]) -> BoxFuture<'a, String> {
-        Box::pin(async move {
+        BoxFuture::from_future(async move {
             let by_name: HashMap<&str, &str> = args
                 .iter()
                 .map(|arg| (arg.name.as_str(), arg.value.as_str()))
