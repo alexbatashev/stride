@@ -1,10 +1,9 @@
 use std::io::{self, BufRead, Write};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use friday::chat::{
     ChatMessage, ChatProviderConfiguration, ChatProviderKind, ChatService, ChatStorage,
-    DirectChatTransport, NullChatStorage, ToolsConfig, TurnRole,
+    ToolsConfig, TurnRole,
 };
 use futures::StreamExt;
 use uuid::Uuid;
@@ -21,9 +20,8 @@ async fn main() {
     };
     let provider_id = provider.id.to_string();
 
-    let transport = Arc::new(DirectChatTransport::from_provider(provider.clone()));
-    let storage: Arc<dyn ChatStorage> = Arc::new(NullChatStorage);
-    let chat = ChatService::new(vec![transport], storage);
+    let storage = ChatStorage::null();
+    let chat = ChatService::new(vec![provider.clone()], storage);
     let mut tools_enabled = false;
 
     let models = chat.list_models().await;

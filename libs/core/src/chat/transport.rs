@@ -1,5 +1,4 @@
 use crate::chat::{ChatMessage, LangModel, TurnRole, now_millis};
-use crate::futures::{BoxFuture, BoxStream};
 use crate::tools::Tool;
 
 use super::tool_calls::{ModelFunctionCall, json_string};
@@ -11,6 +10,7 @@ use llm::{
     UnnamedToolChoice,
 };
 use serde::{Deserialize, Serialize};
+use std::pin::Pin;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -30,24 +30,6 @@ pub enum ChatProviderKind {
     Ollama,
     Anthropic,
     Mock,
-}
-
-#[uniffi::export(with_foreign)]
-pub trait ChatTransport: Send + Sync {
-    fn provider_id(&self) -> &str;
-    fn list_models<'a>(&'a self) -> BoxFuture<'a, Vec<LangModel>>;
-    fn get_response<'a>(
-        &'a self,
-        model_id: &'a str,
-        messages: &'a [ChatMessage],
-        tools: &'a [Arc<dyn Tool>],
-    ) -> BoxFuture<'a, Result<Completion, llm::Error>>;
-    fn stream_response<'a>(
-        &'a self,
-        model_id: &'a str,
-        messages: &'a [ChatMessage],
-        tools: &'a [Arc<dyn Tool>],
-    ) -> BoxStream<ChatMessage, llm::Error>;
 }
 
 #[derive(Debug, Clone)]
@@ -71,8 +53,8 @@ impl DirectChatTransport {
         let token = provider.token.clone();
         let api = match provider.kind {
             ChatProviderKind::OpenAICompatible => OpenAI::new(&provider.base_url),
-            ChatProviderKind::Ollama => llm::Ollama::new(&provider.base_url),
-            ChatProviderKind::Anthropic => llm::Anthropic::new(&provider.base_url),
+            ChatProviderKind::Ollama => Ollama::new(&provider.base_url),
+            ChatProviderKind::Anthropic => Anthropic::new(&provider.base_url),
             ChatProviderKind::Mock => llm::Mock::new().into(),
         };
         Self {
@@ -82,78 +64,45 @@ impl DirectChatTransport {
         }
     }
 
-    fn completion_request(
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub async fn list_models(&self) -> Vec<LangModel> {
+        match self.api.list_models(&self.token).await {
+            Ok(models) => {
+                let mut mapped = models
+                    .into_iter()
+                    .map(|model| LangModel {
+                        provider: self.provider_id.clone(),
+                        model: model.id.clone(),
+                        provider_name: self.provider_id.clone(),
+                        model_name: model.id,
+                    })
+                    .collect::<Vec<_>>();
+                mapped.sort_by(|a, b| a.model.cmp(&b.model));
+                mapped
+            }
+            Err(_) => vec![],
+        }
+    }
+
+    pub async fn get_response(
         &self,
         model_id: &str,
         messages: &[ChatMessage],
         tools: &[Arc<dyn Tool>],
-    ) -> CompletionRequest {
-        let mut request = CompletionRequest::new(
-            model_id,
-            &messages
-                .iter()
-                .map(|m| Message {
-                    role: map_role(m.role),
-                    content: m.content.clone(),
-                    thinking: m.thinking.clone(),
-                    tool_call_id: None,
-                })
-                .collect::<Vec<_>>(),
-        );
-
-        if !tools.is_empty() {
-            request = request
-                .tools(tools.iter().map(|tool| tool.as_llm()).collect())
-                .tool_choice(UnnamedToolChoice::Auto);
-        }
-        request
-    }
-}
-
-impl ChatTransport for DirectChatTransport {
-    fn provider_id(&self) -> &str {
-        &self.provider_id
+    ) -> Result<Completion, llm::Error> {
+        let request = self.completion_request(model_id, messages, tools);
+        self.api.get_completion(&self.token, request).await
     }
 
-    fn list_models<'a>(&'a self) -> BoxFuture<'a, Vec<LangModel>> {
-        BoxFuture::from_future(async move {
-            match self.api.list_models(&self.token).await {
-                Ok(models) => {
-                    let mut mapped = models
-                        .into_iter()
-                        .map(|model| LangModel {
-                            provider: self.provider_id.clone(),
-                            model: model.id.clone(),
-                            provider_name: self.provider_id.clone(),
-                            model_name: model.id,
-                        })
-                        .collect::<Vec<_>>();
-                    mapped.sort_by(|a, b| a.model.cmp(&b.model));
-                    mapped
-                }
-                Err(_) => vec![],
-            }
-        })
-    }
-
-    fn get_response<'a>(
-        &'a self,
-        model_id: &'a str,
-        messages: &'a [ChatMessage],
-        tools: &'a [Arc<dyn Tool>],
-    ) -> BoxFuture<'a, Result<Completion, llm::Error>> {
-        BoxFuture::from_future(async move {
-            let request = self.completion_request(model_id, messages, tools);
-            self.api.get_completion(&self.token, request).await
-        })
-    }
-
-    fn stream_response<'a>(
-        &'a self,
-        model_id: &'a str,
-        messages: &'a [ChatMessage],
-        tools: &'a [Arc<dyn Tool>],
-    ) -> BoxStream<ChatMessage, llm::Error> {
+    pub fn stream_response(
+        &self,
+        model_id: &str,
+        messages: &[ChatMessage],
+        tools: &[Arc<dyn Tool>],
+    ) -> Pin<Box<dyn Stream<Item = Result<ChatMessage, llm::Error>> + Send + 'static>> {
         let request = self.completion_request(model_id, messages, tools);
         let provider_id = self.provider_id.clone();
         let model_id = model_id.to_owned();
@@ -164,7 +113,7 @@ impl ChatTransport for DirectChatTransport {
         let parent_id = messages.last().map(|m| m.id);
         let stream = self.api.stream_completion(&self.token, request);
 
-        BoxStream::new(Box::pin(stream! {
+        Box::pin(stream! {
             let mut tool_calls: Vec<ModelFunctionCall> = Vec::new();
             let now = now_millis();
             let mut response = ChatMessage {
@@ -244,7 +193,81 @@ impl ChatTransport for DirectChatTransport {
             response.is_done = true;
             response.updated_at_ms = now_millis();
             yield Ok(response);
-        }))
+        })
+    }
+
+    fn completion_request(
+        &self,
+        model_id: &str,
+        messages: &[ChatMessage],
+        tools: &[Arc<dyn Tool>],
+    ) -> CompletionRequest {
+        let mut request = CompletionRequest::new(
+            model_id,
+            &messages
+                .iter()
+                .map(|m| Message {
+                    role: map_role(m.role),
+                    content: m.content.clone(),
+                    thinking: m.thinking.clone(),
+                    tool_call_id: None,
+                })
+                .collect::<Vec<_>>(),
+        );
+
+        if !tools.is_empty() {
+            request = request
+                .tools(tools.iter().map(|tool| tool.as_llm()).collect())
+                .tool_choice(UnnamedToolChoice::Auto);
+        }
+        request
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ChatTransport {
+    Direct(DirectChatTransport),
+}
+
+impl ChatTransport {
+    pub fn provider_id(&self) -> &str {
+        match self {
+            Self::Direct(t) => t.provider_id(),
+        }
+    }
+
+    pub async fn list_models(&self) -> Vec<LangModel> {
+        match self {
+            Self::Direct(t) => t.list_models().await,
+        }
+    }
+
+    pub async fn get_response(
+        &self,
+        model_id: &str,
+        messages: &[ChatMessage],
+        tools: &[Arc<dyn Tool>],
+    ) -> Result<Completion, llm::Error> {
+        match self {
+            Self::Direct(t) => t.get_response(model_id, messages, tools).await,
+        }
+    }
+
+    pub fn stream_response(
+        &self,
+        model_id: &str,
+        messages: &[ChatMessage],
+        tools: &[Arc<dyn Tool>],
+    ) -> Pin<Box<dyn Stream<Item = Result<ChatMessage, llm::Error>> + Send + 'static>> {
+        match self {
+            Self::Direct(t) => t.stream_response(model_id, messages, tools),
+        }
+    }
+}
+
+impl From<DirectChatTransport> for ChatTransport {
+    fn from(t: DirectChatTransport) -> Self {
+        Self::Direct(t)
     }
 }
 

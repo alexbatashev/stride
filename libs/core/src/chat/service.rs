@@ -1,5 +1,4 @@
 use super::ChatMessage;
-use super::ChatThread;
 use super::LangModel;
 use super::ToolInvocation;
 use super::ToolInvocationStatus;
@@ -10,19 +9,13 @@ use super::tool_calls::{
     extract_function_calls, json_string, parse_tool_args, tool_result_dictionary,
 };
 use super::transport::*;
-use crate::futures::BoxStream;
 
-use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_lock::Mutex;
 use async_stream::stream;
-use futures::StreamExt;
-use llm::{
-    API, Completion, CompletionChoice, CompletionRequest, Message, OpenAI, Role, UnnamedToolChoice,
-};
-use minisql::ConnectionPool;
-use serde::{Deserialize, Serialize};
+use futures::{Stream, StreamExt};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -42,10 +35,19 @@ pub enum ChatStreamError {
     Transport(String),
 }
 
+/// Callback interface for receiving streaming chat messages.
+/// Implement this in Swift or Kotlin and pass to `add_message_callback`.
+#[uniffi::export(callback_interface)]
+pub trait ChatStreamHandler: Send + Sync {
+    fn on_message(&self, message: ChatMessage);
+    fn on_error(&self, error: String);
+    fn on_done(&self);
+}
+
 #[derive(Clone, uniffi::Object)]
 pub struct ChatService {
-    transports: Vec<Arc<dyn ChatTransport>>,
-    storage: Arc<dyn ChatStorage>,
+    transports: Vec<ChatTransport>,
+    storage: Arc<ChatStorage>,
     // TODO: for now this is async Mutex, however we never hold lock across .await. Should we change this to std::sync::Mutex?
     state: Arc<Mutex<ChatServiceState>>,
 }
@@ -63,24 +65,15 @@ pub struct ToolsConfig {
     pub use_js: bool,
 }
 
-#[uniffi::export]
 impl ChatService {
-    #[uniffi::constructor]
-    pub fn new(transports: Vec<Arc<dyn ChatTransport>>, storage: Arc<dyn ChatStorage>) -> Self {
-        let mut transports = transports;
-        transports.sort_by(|a, b| a.provider_id().cmp(b.provider_id()));
-        Self {
-            transports,
-            storage,
-            state: Arc::new(Mutex::new(ChatServiceState::default())),
-        }
-    }
-
+    /// Returns a stream of partial `ChatMessage` updates, including tool-call
+    /// iterations. The returned stream is runtime-agnostic — it can be driven
+    /// by any executor (tokio, async-std, smol, …).
     pub async fn add_message(
         &self,
         tools: ToolsConfig,
         next: ChatMessage,
-    ) -> BoxStream<ChatMessage, ChatStreamError> {
+    ) -> Pin<Box<dyn Stream<Item = Result<ChatMessage, ChatStreamError>> + Send + 'static>> {
         let this = self.clone();
         self.ensure_messages_loaded().await;
         self.append_message(next.clone()).await;
@@ -97,29 +90,29 @@ impl ChatService {
         };
 
         let Some(provider_id) = provider_id else {
-            return BoxStream::new(Box::pin(stream! {
+            return Box::pin(stream! {
                 yield Err(ChatStreamError::ProviderNotSelected);
-            }));
+            });
         };
         let Some(model_id) = model_id else {
-            return BoxStream::new(Box::pin(stream! {
+            return Box::pin(stream! {
                 yield Err(ChatStreamError::ModelNotSelected);
-            }));
+            });
         };
         let Some(transport) = self
             .transports
             .iter()
-            .find(|transport| transport.provider_id() == provider_id)
+            .find(|t| t.provider_id() == provider_id)
             .cloned()
         else {
-            return BoxStream::new(Box::pin(stream! {
+            return Box::pin(stream! {
                 yield Err(ChatStreamError::UnknownProvider(provider_id));
-            }));
+            });
         };
 
         if tools.is_empty() {
             let upstream = transport.stream_response(&model_id, &messages, &tools);
-            return BoxStream::new(Box::pin(stream! {
+            return Box::pin(stream! {
                 let mut latest: Option<ChatMessage> = None;
                 futures::pin_mut!(upstream);
                 while let Some(item) = upstream.next().await {
@@ -141,10 +134,10 @@ impl ChatService {
                 if let Some(latest) = latest {
                     this.append_message(latest).await;
                 }
-            }));
+            });
         }
 
-        BoxStream::new(Box::pin(stream! {
+        Box::pin(stream! {
             let mut working_messages = messages;
             let thread_id = working_messages
                 .last()
@@ -243,7 +236,7 @@ impl ChatService {
             }
 
             yield Err(ChatStreamError::MaxToolIterationsExceeded);
-        }))
+        })
     }
 
     async fn ensure_messages_loaded(&self) {
@@ -274,6 +267,43 @@ impl ChatService {
 
 #[uniffi::export]
 impl ChatService {
+    #[uniffi::constructor]
+    pub fn new(providers: Vec<ChatProviderConfiguration>, storage: Arc<ChatStorage>) -> Arc<Self> {
+        let mut transports: Vec<ChatTransport> = providers
+            .into_iter()
+            .map(|p| DirectChatTransport::from_provider(p).into())
+            .collect();
+        transports.sort_by(|a, b| a.provider_id().cmp(b.provider_id()));
+        Arc::new(Self {
+            transports,
+            storage,
+            state: Arc::new(Mutex::new(ChatServiceState::default())),
+        })
+    }
+
+    /// FFI-safe callback wrapper around `add_message`. Drives the stream and
+    /// fires `handler` for each partial message, error, or completion. The
+    /// caller's async runtime (Swift async/await, Kotlin coroutines, …) drives
+    /// this function — no specific executor is required on the Rust side.
+    pub async fn add_message_callback(
+        &self,
+        tools: ToolsConfig,
+        next: ChatMessage,
+        handler: Box<dyn ChatStreamHandler>,
+    ) {
+        let mut stream = self.add_message(tools, next).await;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(msg) => handler.on_message(msg),
+                Err(e) => {
+                    handler.on_error(e.to_string());
+                    return;
+                }
+            }
+        }
+        handler.on_done();
+    }
+
     pub async fn list_models(&self) -> Vec<LangModel> {
         let mut merged = Vec::new();
         for transport in &self.transports {

@@ -1,18 +1,10 @@
 pub mod api;
 pub mod chat;
 pub mod data;
-pub mod futures;
 pub mod grpc;
 pub mod js;
 pub mod tools;
 
-use ::futures::channel::{mpsc, oneshot};
-use ::futures::future::BoxFuture;
-use ::futures::{SinkExt, Stream};
-use std::io::Read;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::OnceLock;
 use uuid::Uuid;
 
 uniffi::custom_type!(Uuid, String, {

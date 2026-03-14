@@ -1,8 +1,6 @@
 #![allow(non_upper_case_globals)]
 
-use minisql::{ConnectionPool, Migration, migrations};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use minisql::migrations;
 use uuid::Uuid;
 
 migrations! {
