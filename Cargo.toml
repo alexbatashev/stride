@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["code", "libs/llm"]
+members = ["code", "libs/llm", "libs/minisql", "libs/minisql-macros"]

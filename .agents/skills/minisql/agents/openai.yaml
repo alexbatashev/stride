@@ -1,0 +1,4 @@
+interface:
+  display_name: "MiniSQL"
+  short_description: "Use Friday's MiniSQL macro and typed query workflow"
+  default_prompt: "Use $minisql to add or update schema, inserts, and selects with Friday's MiniSQL library."
