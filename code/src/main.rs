@@ -1,14 +1,16 @@
 mod agent;
+mod agent_capnp {
+    include!(concat!(env!("OUT_DIR"), "/agent_capnp.rs"));
+}
 mod cli;
+mod client;
 mod config;
+mod daemon;
 mod tools;
 
-use agent::Agent;
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
-use tools::ToolRegistry;
-use tools::files::{BashTool, EditFileTool, ListFilesTool, ReadFileTool};
 
 const DEFAULT_CONFIG_FILENAME: &str = "config.toml";
 
@@ -19,10 +21,17 @@ struct Args {
     /// Path to config file
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
+
+    /// Run as background daemon (used internally)
+    #[arg(long, hide = true)]
+    daemon: bool,
+
+    /// Daemon socket path (used internally)
+    #[arg(long, hide = true)]
+    socket: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
@@ -33,24 +42,20 @@ async fn main() -> Result<()> {
             .context("Config path is not valid UTF-8")?,
     )
     .with_context(|| format!("Failed to load config from {:?}", config_path))?;
-    println!("Starting interactive mode...");
 
-    let mut registry = ToolRegistry::new();
-    registry.register(ReadFileTool);
-    registry.register(ListFilesTool);
-    registry.register(EditFileTool);
-    registry.register(BashTool);
+    let socket_path = args.socket.unwrap_or_else(daemon::socket_path);
 
-    let mut agent = Agent::from_config(&config, registry)?;
-    agent.run().await?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
 
-    Ok(())
+    if args.daemon {
+        rt.block_on(daemon::run(config, socket_path))
+    } else {
+        rt.block_on(client::run(config, socket_path, config_path))
+    }
 }
-/// Find the config file, checking multiple locations in order:
-/// 1. CLI argument
-/// 2. Current directory (config.toml)
-/// 3. XDG_CONFIG_HOME/friday/code.toml (if XDG_CONFIG_HOME is set)
-/// 4. ~/.config/friday/code.toml (legacy fallback)
+
 fn find_config_file(cli_config: Option<&PathBuf>) -> Result<PathBuf> {
     if let Some(path) = cli_config {
         if path.exists() {

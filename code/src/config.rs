@@ -127,8 +127,12 @@ impl Config {
 
         // Handle ${VAR_NAME} syntax
         loop {
-            let Some(start) = result.find("${") else { break };
-            let Some(end_offset) = result[start..].find('}') else { break };
+            let Some(start) = result.find("${") else {
+                break;
+            };
+            let Some(end_offset) = result[start..].find('}') else {
+                break;
+            };
             let end = start + end_offset;
 
             let var_name = &result[start + 2..end];

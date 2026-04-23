@@ -34,3 +34,13 @@ dirs = "5.0"
 
 # Tracing
 tracing-subscriber = "0.3"
+
+# Cap'n'Proto RPC
+capnp = "0.20"
+capnp-rpc = "0.20"
+
+# Daemon management
+tokio-util = { version = "0.7", features = ["compat"] }
+
+[build-dependencies]
+capnpc = "0.20"

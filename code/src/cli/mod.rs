@@ -12,7 +12,9 @@ fn print_colored(color: Color, f: impl FnOnce()) {
 }
 
 pub fn print_thinking(thinking: &str) {
-    print_colored(Color::DarkGrey, || println!("\n💭 Thinking:\n{}\n", thinking));
+    print_colored(Color::DarkGrey, || {
+        println!("\n💭 Thinking:\n{}\n", thinking)
+    });
 }
 
 pub fn print_tool_call(name: &str) {
@@ -24,37 +26,18 @@ pub fn print_stream(content: &str) {
     io::stdout().flush().unwrap();
 }
 
-pub fn prompt_user() -> Option<String> {
+pub fn print_prompt() {
     print_colored(Color::Cyan, || print!("\n❯ "));
     io::stdout().flush().unwrap();
-
-    let mut input = String::new();
-    match io::stdin().read_line(&mut input).unwrap() {
-        0 => None,
-        _ => Some(input.trim().to_string()),
-    }
 }
 
-pub fn confirm(prompt: &str) -> bool {
+pub fn print_confirm_prompt(prompt: &str) {
     print_colored(Color::Magenta, || print!("{} [y/N] ", prompt));
     io::stdout().flush().unwrap();
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    let input = input.trim().to_lowercase();
-    input == "y" || input == "yes"
 }
 
 pub fn print_error(msg: &str) {
     print_colored(Color::Red, || println!("❌ Error: {}", msg));
-}
-
-pub fn print_warning(msg: &str) {
-    print_colored(Color::Yellow, || println!("⚠️  Warning: {}", msg));
-}
-
-pub fn print_info(msg: &str) {
-    print_colored(Color::Blue, || println!("ℹ️  {}", msg));
 }
 
 pub fn print_welcome() {
