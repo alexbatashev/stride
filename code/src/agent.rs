@@ -81,6 +81,7 @@ impl Agent {
             role: Role::System,
             content: build_system_prompt(&tool_registry),
             thinking: None,
+            tool_calls: None,
             tool_call_id: None,
         };
         let conversation = conversation.unwrap_or_else(|| vec![system_message.clone()]);
@@ -111,6 +112,7 @@ impl Agent {
             role: Role::User,
             content: text,
             thinking: None,
+            tool_calls: None,
             tool_call_id: None,
         });
         self.checkpoint();
@@ -232,6 +234,22 @@ impl Agent {
             .filter(|c| !c.function.name.is_empty())
             .collect();
         completed.sort_by(|a, b| a.id.cmp(&b.id));
+        if !completed.is_empty() {
+            self.conversation[assistant_idx].tool_calls = Some(
+                completed
+                    .iter()
+                    .map(|call| llm::ToolCallChunk {
+                        index: None,
+                        id: Some(call.id.clone()),
+                        function: Some(llm::ToolCallFunction {
+                            name: Some(call.function.name.clone()),
+                            arguments: Some(call.function.arguments.clone()),
+                        }),
+                    })
+                    .collect(),
+            );
+            self.checkpoint();
+        }
 
         Ok(completed)
     }
@@ -281,6 +299,7 @@ impl Agent {
                 role: Role::Tool,
                 content: serde_json::to_string(&result)?,
                 thinking: None,
+                tool_calls: None,
                 tool_call_id: Some(call.id),
             });
             self.tool_display_names
@@ -296,6 +315,7 @@ impl Agent {
             content: serde_json::to_string(&crate::tools::ToolResult::error(msg))
                 .unwrap_or_default(),
             thinking: None,
+            tool_calls: None,
             tool_call_id: Some(call_id.to_string()),
         });
         self.tool_display_names
@@ -397,6 +417,7 @@ impl Agent {
             role: Role::System,
             content: build_system_prompt(&self.tool_registry),
             thinking: None,
+            tool_calls: None,
             tool_call_id: None,
         }];
         self.checkpoint();
@@ -415,6 +436,7 @@ impl Agent {
             role: Role::Assistant,
             content: String::new(),
             thinking: None,
+            tool_calls: None,
             tool_call_id: None,
         });
         self.checkpoint();
