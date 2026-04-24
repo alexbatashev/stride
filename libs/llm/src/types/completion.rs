@@ -184,6 +184,7 @@ mod tests {
                 role: Role::User,
                 content: "Hello".to_string(),
                 thinking: None,
+                tool_calls: None,
                 tool_call_id: None,
             }],
         )

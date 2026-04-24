@@ -175,6 +175,7 @@ impl ThreadStore {
                 role: parse_role(&row.role)?,
                 content: row.content,
                 thinking: row.thinking,
+                tool_calls: None,
                 tool_call_id: row.tool_call_id,
             });
         }
@@ -394,18 +395,21 @@ mod tests {
                 role: Role::System,
                 content: "system".to_string(),
                 thinking: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::User,
                 content: "hello".to_string(),
                 thinking: None,
+                tool_calls: None,
                 tool_call_id: None,
             },
             Message {
                 role: Role::Assistant,
                 content: "world".to_string(),
                 thinking: Some("thought".to_string()),
+                tool_calls: None,
                 tool_call_id: None,
             },
         ]
@@ -439,6 +443,7 @@ mod tests {
             role: Role::User,
             content: "newer".to_string(),
             thinking: None,
+            tool_calls: None,
             tool_call_id: None,
         });
         let second = store.create_thread(&cwd, &updated_messages).await.unwrap();

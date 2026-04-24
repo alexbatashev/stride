@@ -36,6 +36,7 @@ impl Mock {
             role: Role::Assistant,
             content: format!("Echo: {:?}", request.messages),
             thinking: None,
+            tool_calls: None,
             tool_call_id: None,
         });
         Ok(Completion {
