@@ -26,6 +26,7 @@ migrations! {
             role: String,
             content: String,
             thinking: Option<String>,
+            tool_calls: Option<String>,
             tool_call_id: Option<String>,
             created_at: i64,
 
@@ -129,8 +130,8 @@ impl ThreadStore {
         for (seq, message) in messages.iter().enumerate() {
             self.db
                 .query_with_params(
-                    "INSERT INTO messages (id, thread_id, seq, role, content, thinking, tool_call_id, tool_name, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO messages (id, thread_id, seq, role, content, thinking, tool_calls, tool_call_id, tool_name, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     vec![
                         Value::Text(Uuid::new_v4().to_string()),
                         Value::Text(thread_id.to_string()),
@@ -138,6 +139,7 @@ impl ThreadStore {
                         Value::Text(role_to_string(&message.role).to_string()),
                         Value::Text(message.content.clone()),
                         optional_text(message.thinking.clone()),
+                        optional_text(serialize_tool_calls(message.tool_calls.as_ref())?),
                         optional_text(message.tool_call_id.clone()),
                         optional_text(tool_names.get(&seq).cloned()),
                         Value::Integer(now),
@@ -175,7 +177,7 @@ impl ThreadStore {
                 role: parse_role(&row.role)?,
                 content: row.content,
                 thinking: row.thinking,
-                tool_calls: None,
+                tool_calls: deserialize_tool_calls(row.tool_calls.as_deref())?,
                 tool_call_id: row.tool_call_id,
             });
         }
@@ -330,10 +332,20 @@ async fn ensure_runtime_schema(db: &ConnectionPool) -> Result<()> {
         .await
         .map_err(sql_error)?;
 
+    let has_tool_calls = columns
+        .rows()
+        .iter()
+        .any(|row| row.get_text("name") == Some("tool_calls"));
     let has_tool_name = columns
         .rows()
         .iter()
         .any(|row| row.get_text("name") == Some("tool_name"));
+
+    if !has_tool_calls {
+        db.query("ALTER TABLE messages ADD COLUMN tool_calls TEXT")
+            .await
+            .map_err(sql_error)?;
+    }
 
     if !has_tool_name {
         db.query("ALTER TABLE messages ADD COLUMN tool_name TEXT")
@@ -379,6 +391,22 @@ fn expand_path(path: &str) -> PathBuf {
     }
 
     PathBuf::from(path)
+}
+
+fn serialize_tool_calls(tool_calls: Option<&Vec<llm::ToolCallChunk>>) -> Result<Option<String>> {
+    match tool_calls {
+        Some(tool_calls) => serde_json::to_string(tool_calls)
+            .map(Some)
+            .map_err(|e| anyhow!(e.to_string())),
+        None => Ok(None),
+    }
+}
+
+fn deserialize_tool_calls(value: Option<&str>) -> Result<Option<Vec<llm::ToolCallChunk>>> {
+    match value {
+        Some(value) => serde_json::from_str(value).map_err(|e| anyhow!(e.to_string())),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +455,55 @@ mod tests {
         assert_eq!(loaded.0, cwd);
         assert_eq!(loaded.1.len(), 3);
         assert_eq!(loaded.1[2].thinking.as_deref(), Some("thought"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn save_and_resume_tool_calls() {
+        let path = temp_db_path("tool-calls");
+        let store = ThreadStore::new(path.clone()).await.unwrap();
+        let cwd = PathBuf::from("/tmp/project-c");
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "system".to_string(),
+                thinking: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                thinking: None,
+                tool_calls: Some(vec![llm::ToolCallChunk {
+                    index: None,
+                    id: Some("call_123".to_string()),
+                    function: Some(llm::ToolCallFunction {
+                        name: Some("read_file".to_string()),
+                        arguments: Some("{\"path\":\"src/main.rs\"}".to_string()),
+                    }),
+                }]),
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: "{\"ok\":true}".to_string(),
+                thinking: None,
+                tool_calls: None,
+                tool_call_id: Some("call_123".to_string()),
+            },
+        ];
+
+        let thread_id = store.create_thread(&cwd, &messages).await.unwrap();
+        let loaded = store.load_thread(&thread_id).await.unwrap().unwrap();
+
+        assert_eq!(loaded.0, cwd);
+        assert_eq!(
+            serialize_tool_calls(loaded.1[1].tool_calls.as_ref()).unwrap(),
+            serialize_tool_calls(messages[1].tool_calls.as_ref()).unwrap()
+        );
+        assert_eq!(loaded.1[2].tool_call_id.as_deref(), Some("call_123"));
 
         let _ = std::fs::remove_file(path);
     }
