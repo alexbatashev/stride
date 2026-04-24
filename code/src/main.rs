@@ -1,4 +1,5 @@
 mod agent;
+#[allow(unused_parens)]
 mod agent_capnp {
     include!(concat!(env!("OUT_DIR"), "/agent_capnp.rs"));
 }
@@ -6,10 +7,12 @@ mod cli;
 mod client;
 mod config;
 mod daemon;
+mod persistence;
 mod tools;
 
+use crate::client::ClientCommand;
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 const DEFAULT_CONFIG_FILENAME: &str = "config.toml";
@@ -29,6 +32,40 @@ struct Args {
     /// Daemon socket path (used internally)
     #[arg(long, hide = true)]
     socket: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// List saved conversations for a working directory
+    Threads {
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<PathBuf>,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+    /// Print full history for a saved conversation
+    History { thread_id: String },
+    /// Resume a conversation by thread id
+    Resume { thread_id: String },
+    /// Resume the latest conversation for a working directory
+    Continue {
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<PathBuf>,
+    },
+}
+
+impl From<Command> for ClientCommand {
+    fn from(value: Command) -> Self {
+        match value {
+            Command::Threads { cwd, limit } => Self::Threads { cwd, limit },
+            Command::History { thread_id } => Self::History { thread_id },
+            Command::Resume { thread_id } => Self::Resume { thread_id },
+            Command::Continue { cwd } => Self::Continue { cwd },
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -43,7 +80,7 @@ fn main() -> Result<()> {
     )
     .with_context(|| format!("Failed to load config from {:?}", config_path))?;
 
-    let socket_path = args.socket.unwrap_or_else(daemon::socket_path);
+    let socket_path = args.socket.unwrap_or_else(|| daemon::socket_path(&config));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -52,7 +89,12 @@ fn main() -> Result<()> {
     if args.daemon {
         rt.block_on(daemon::run(config, socket_path))
     } else {
-        rt.block_on(client::run(config, socket_path, config_path))
+        rt.block_on(client::run(
+            config,
+            socket_path,
+            config_path,
+            args.command.map(Into::into),
+        ))
     }
 }
 
@@ -97,6 +139,6 @@ fn find_config_file(cli_config: Option<&PathBuf>) -> Result<PathBuf> {
          - ./config.toml (current directory)\n\
          - $XDG_CONFIG_HOME/friday/config.toml (if XDG_CONFIG_HOME is set)\n\
          - ~/.config/friday/config.toml\n\
-         Or specify a config file with: code -c <path>"
+         Or specify a config file with: friday -c <path>"
     ))
 }

@@ -6,13 +6,14 @@ use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use llm::{API, CompletionRequest, Message, Role, StreamResponseChunk, UnnamedToolChoice};
 use serde_json::Value;
+use std::path::PathBuf;
 use tokio::sync::oneshot;
 
 use crate::{
     agent_capnp::event_sink,
     config::{Config, ProviderConfig, ProviderType, ThinkingConfig},
     tools::files::{BashTool, EditFileTool, ListFilesTool, ReadFileTool},
-    tools::{ToolCall, ToolRegistry},
+    tools::{ToolCall, ToolContext, ToolRegistry},
 };
 
 pub struct ConfirmChannel {
@@ -47,13 +48,21 @@ pub struct Agent {
     thinking: Option<ThinkingConfig>,
     sink: event_sink::Client,
     confirm_channel: Rc<ConfirmChannel>,
+    tool_context: ToolContext,
+    checkpoint: Option<CheckpointFn>,
+    tool_display_names: HashMap<usize, String>,
 }
+
+type CheckpointFn = Rc<dyn Fn(Vec<Message>, HashMap<usize, String>)>;
 
 impl Agent {
     pub fn from_config(
         config: &Config,
         sink: event_sink::Client,
         confirm_channel: Rc<ConfirmChannel>,
+        cwd: PathBuf,
+        conversation: Option<Vec<Message>>,
+        checkpoint: Option<CheckpointFn>,
     ) -> Result<Self> {
         let provider = config.get_default_provider()?;
         let api = create_api(provider)?;
@@ -74,17 +83,21 @@ impl Agent {
             thinking: None,
             tool_call_id: None,
         };
+        let conversation = conversation.unwrap_or_else(|| vec![system_message.clone()]);
 
         Ok(Self {
             api,
             model: config.default.model.clone(),
             token,
             tool_registry,
-            conversation: vec![system_message],
+            conversation,
             max_iterations: config.agent.max_iterations,
             thinking: config.agent.thinking.clone(),
             sink,
             confirm_channel,
+            tool_context: ToolContext { cwd },
+            checkpoint,
+            tool_display_names: HashMap::new(),
         })
     }
 
@@ -100,13 +113,11 @@ impl Agent {
             thinking: None,
             tool_call_id: None,
         });
+        self.checkpoint();
 
         if let Err(e) = self.process_with_tools().await {
             self.emit_error(&format!("{}", e)).await;
             self.emit_done().await;
-            if self.conversation.len() > 1 {
-                self.conversation.pop();
-            }
             return Err(e);
         }
 
@@ -114,15 +125,9 @@ impl Agent {
         Ok(())
     }
 
-    /// Returns true if the client should exit.
     pub async fn execute_command(&mut self, cmd: &str) -> Result<bool> {
         match cmd.split_whitespace().next().unwrap_or("") {
             "/quit" | "/q" => return Ok(true),
-            "/clear" | "/c" => {
-                let system_msg = self.conversation.remove(0);
-                self.conversation.clear();
-                self.conversation.push(system_msg);
-            }
             other => {
                 self.emit_error(&format!("Unknown command: {}", other))
                     .await;
@@ -136,25 +141,13 @@ impl Agent {
         for _ in 0..self.max_iterations {
             let request = self.build_completion_request();
             let mut stream = self.api.stream_completion(&self.token, request);
+            let assistant_idx = self.begin_assistant_message();
 
-            match self.collect_stream(&mut stream).await {
-                Ok((content, thinking, tool_calls)) => {
+            match self.collect_stream(&mut stream, assistant_idx).await {
+                Ok(tool_calls) => {
                     if tool_calls.is_empty() {
-                        self.conversation.push(Message {
-                            role: Role::Assistant,
-                            content,
-                            thinking: None,
-                            tool_call_id: None,
-                        });
                         return Ok(());
                     }
-
-                    self.conversation.push(Message {
-                        role: Role::Assistant,
-                        content,
-                        thinking,
-                        tool_call_id: None,
-                    });
 
                     self.execute_tools(tool_calls).await?;
                 }
@@ -169,12 +162,12 @@ impl Agent {
     }
 
     async fn collect_stream(
-        &self,
+        &mut self,
         stream: &mut std::pin::Pin<
             Box<dyn futures::Stream<Item = Result<StreamResponseChunk, llm::Error>> + Send>,
         >,
-    ) -> Result<(String, Option<String>, Vec<ToolCall>)> {
-        let mut content = String::new();
+        assistant_idx: usize,
+    ) -> Result<Vec<ToolCall>> {
         let mut thinking = String::new();
         let mut tool_calls: HashMap<usize, PartialToolCall> = HashMap::new();
         let mut thinking_sent = false;
@@ -195,11 +188,13 @@ impl Agent {
                         if !thinking_sent && !thinking.is_empty() && !text.is_empty() {
                             self.emit_thinking(&thinking).await;
                             thinking_sent = true;
+                            self.conversation[assistant_idx].thinking = Some(thinking.clone());
                         }
                         if !text.is_empty() {
                             self.emit_text_chunk(&text).await;
+                            self.conversation[assistant_idx].content.push_str(&text);
+                            self.checkpoint();
                         }
-                        content.push_str(&text);
                     }
 
                     if let Some(calls) = delta.tool_calls {
@@ -227,6 +222,8 @@ impl Agent {
 
         if !thinking_sent && !thinking.is_empty() {
             self.emit_thinking(&thinking).await;
+            self.conversation[assistant_idx].thinking = Some(thinking);
+            self.checkpoint();
         }
 
         let mut completed: Vec<ToolCall> = tool_calls
@@ -236,11 +233,7 @@ impl Agent {
             .collect();
         completed.sort_by(|a, b| a.id.cmp(&b.id));
 
-        Ok((
-            content,
-            (!thinking.is_empty()).then_some(thinking),
-            completed,
-        ))
+        Ok(completed)
     }
 
     async fn execute_tools(&mut self, tool_calls: Vec<ToolCall>) -> Result<()> {
@@ -279,7 +272,7 @@ impl Agent {
             }
 
             let result = if let Some(tool) = self.tool_registry.get(&tool_name) {
-                tool.execute(args).await
+                tool.execute(args, &self.tool_context).await
             } else {
                 crate::tools::ToolResult::error(format!("Unknown tool: {}", tool_name))
             };
@@ -290,6 +283,9 @@ impl Agent {
                 thinking: None,
                 tool_call_id: Some(call.id),
             });
+            self.tool_display_names
+                .insert(self.conversation.len() - 1, tool_name);
+            self.checkpoint();
         }
         Ok(())
     }
@@ -302,6 +298,9 @@ impl Agent {
             thinking: None,
             tool_call_id: Some(call_id.to_string()),
         });
+        self.tool_display_names
+            .insert(self.conversation.len() - 1, "tool error".to_string());
+        self.checkpoint();
     }
 
     async fn emit_text_chunk(&self, text: &str) {
@@ -391,6 +390,41 @@ impl Agent {
         }
 
         request
+    }
+
+    pub fn reset_conversation(&mut self) {
+        self.conversation = vec![Message {
+            role: Role::System,
+            content: build_system_prompt(&self.tool_registry),
+            thinking: None,
+            tool_call_id: None,
+        }];
+        self.checkpoint();
+    }
+
+    pub fn conversation(&self) -> &[Message] {
+        &self.conversation
+    }
+
+    pub fn tool_display_names(&self) -> &HashMap<usize, String> {
+        &self.tool_display_names
+    }
+
+    fn begin_assistant_message(&mut self) -> usize {
+        self.conversation.push(Message {
+            role: Role::Assistant,
+            content: String::new(),
+            thinking: None,
+            tool_call_id: None,
+        });
+        self.checkpoint();
+        self.conversation.len() - 1
+    }
+
+    fn checkpoint(&self) {
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint(self.conversation.clone(), self.tool_display_names.clone());
+        }
     }
 }
 

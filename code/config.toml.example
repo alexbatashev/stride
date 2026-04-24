@@ -11,6 +11,10 @@ max_iterations = 50
 confirm_destructive = true
 # thinking = { thinking_type = "native", budget_tokens = 16000 }
 
+[daemon]
+# socket_path = "~/.local/state/friday/friday.sock"
+# database_path = "~/.local/state/friday/threads.sqlite"
+
 [[providers]]
 name = "anthropic"
 type = "anthropic"

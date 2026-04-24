@@ -22,6 +22,8 @@ pub struct Config {
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub daemon: DaemonConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -58,6 +60,14 @@ pub struct AgentConfig {
     pub confirm_destructive: bool,
     #[serde(default)]
     pub thinking: Option<ThinkingConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DaemonConfig {
+    #[serde(default)]
+    pub database_path: Option<String>,
+    #[serde(default)]
+    pub socket_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

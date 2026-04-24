@@ -1,4 +1,4 @@
-use crate::tools::{Tool, ToolDefinition, ToolResult};
+use crate::tools::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -25,16 +25,16 @@ impl Tool for ReadFileTool {
         )
     }
 
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, context: &ToolContext) -> ToolResult {
         let path_str = match args["path"].as_str() {
             Some(s) => s,
             None => return ToolResult::error("Missing required parameter 'path'"),
         };
 
-        let path = resolve_path(path_str);
+        let path = resolve_path(context, path_str);
 
         // Security check: ensure path is within current directory
-        if let Err(e) = check_path_security(&path) {
+        if let Err(e) = check_path_security(context, &path) {
             return ToolResult::error(e);
         }
 
@@ -70,12 +70,12 @@ impl Tool for ListFilesTool {
         )
     }
 
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, context: &ToolContext) -> ToolResult {
         let path_str = args["path"].as_str().unwrap_or(".");
-        let path = resolve_path(path_str);
+        let path = resolve_path(context, path_str);
 
         // Security check
-        if let Err(e) = check_path_security(&path) {
+        if let Err(e) = check_path_security(context, &path) {
             return ToolResult::error(e);
         }
 
@@ -162,7 +162,7 @@ impl Tool for EditFileTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, context: &ToolContext) -> ToolResult {
         let path_str = match args["path"].as_str() {
             Some(s) => s,
             None => return ToolResult::error("Missing required parameter 'path'"),
@@ -174,10 +174,10 @@ impl Tool for EditFileTool {
             None => return ToolResult::error("Missing required parameter 'new_string'"),
         };
 
-        let path = resolve_path(path_str);
+        let path = resolve_path(context, path_str);
 
         // Security check
-        if let Err(e) = check_path_security(&path) {
+        if let Err(e) = check_path_security(context, &path) {
             return ToolResult::error(e);
         }
 
@@ -270,13 +270,15 @@ impl Tool for BashTool {
         format!("Execute command: {}", cmd)
     }
 
-    async fn execute(&self, args: Value) -> ToolResult {
+    async fn execute(&self, args: Value, context: &ToolContext) -> ToolResult {
         let command = match args["command"].as_str() {
             Some(s) => s,
             None => return ToolResult::error("Missing required parameter 'command'"),
         };
 
-        let working_dir = args["working_dir"].as_str().map(resolve_path);
+        let working_dir = args["working_dir"]
+            .as_str()
+            .map(|path| resolve_path(context, path));
 
         // Block obviously dangerous commands
         if is_dangerous_command(command) {
@@ -288,9 +290,7 @@ impl Tool for BashTool {
         let mut cmd_builder = tokio::process::Command::new("bash");
         cmd_builder.arg("-c").arg(command);
 
-        if let Some(dir) = working_dir {
-            cmd_builder.current_dir(dir);
-        }
+        cmd_builder.current_dir(working_dir.unwrap_or_else(|| context.cwd.clone()));
 
         match cmd_builder.output().await {
             Ok(output) => {
@@ -311,22 +311,18 @@ impl Tool for BashTool {
 }
 
 /// Resolve a path string to an absolute PathBuf
-fn resolve_path(path: &str) -> PathBuf {
+fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {
     let path = PathBuf::from(path);
     if path.is_absolute() {
         path
     } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
+        context.cwd.join(path)
     }
 }
 
 /// Check if a path is within allowed boundaries (prevents directory traversal)
-fn check_path_security(path: &PathBuf) -> Result<(), String> {
-    let current_dir =
-        std::env::current_dir().map_err(|e| format!("Cannot get current dir: {}", e))?;
-
+fn check_path_security(context: &ToolContext, path: &PathBuf) -> Result<(), String> {
+    let current_dir = context.cwd.clone();
     let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
     let canonical_current = current_dir.canonicalize().unwrap_or(current_dir);
 
@@ -368,7 +364,10 @@ mod tests {
 
     #[test]
     fn test_resolve_path() {
-        let path = resolve_path("src/main.rs");
+        let context = ToolContext {
+            cwd: std::env::current_dir().unwrap(),
+        };
+        let path = resolve_path(&context, "src/main.rs");
         assert!(path.is_absolute());
     }
 

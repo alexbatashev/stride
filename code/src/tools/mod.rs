@@ -2,8 +2,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub mod files;
+
+#[derive(Debug, Clone)]
+pub struct ToolContext {
+    pub cwd: PathBuf,
+}
 
 /// The result of a tool execution
 #[derive(Debug, Serialize, Clone)]
@@ -133,7 +139,7 @@ pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
 
     /// Execute the tool with the given arguments
-    async fn execute(&self, args: Value) -> ToolResult;
+    async fn execute(&self, args: Value, context: &ToolContext) -> ToolResult;
 
     /// Whether this tool requires confirmation before execution
     fn requires_confirmation(&self) -> bool {
@@ -211,7 +217,7 @@ mod tests {
             )
         }
 
-        async fn execute(&self, _args: Value) -> ToolResult {
+        async fn execute(&self, _args: Value, _context: &ToolContext) -> ToolResult {
             ToolResult::success(Value::String("done".to_string()))
         }
     }
