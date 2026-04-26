@@ -17,11 +17,11 @@ use tokio::{
 
 #[derive(Clone)]
 pub struct Stream {
-    cmd_tx: mpsc::Sender<Command>,
+    cmd_tx: mpsc::UnboundedSender<Command>,
 }
 
 pub struct Terminal {
-    cmd_rx: mpsc::Receiver<Command>,
+    cmd_rx: mpsc::UnboundedReceiver<Command>,
     history: Vec<String>,
     spinner: Spinner,
 }
@@ -34,8 +34,20 @@ pub struct Choice {
 }
 
 enum Command {
-    Print(String),
-    SetSpinner(bool),
+    Print {
+        message: String,
+        color: Option<Color>,
+        done_tx: Option<oneshot::Sender<()>>,
+    },
+    Write {
+        text: String,
+        color: Option<Color>,
+        done_tx: Option<oneshot::Sender<()>>,
+    },
+    SetSpinner {
+        active: bool,
+        done_tx: Option<oneshot::Sender<()>>,
+    },
     Prompt {
         response_tx: oneshot::Sender<Option<String>>,
     },
@@ -47,39 +59,79 @@ enum Command {
 
 impl Stream {
     pub async fn print(&self, message: &str) {
-        let _ = self.cmd_tx.send(Command::Print(message.to_owned())).await;
+        let (done_tx, done_rx) = oneshot::channel();
+        let _ = self.cmd_tx.send(Command::Print {
+            message: message.to_owned(),
+            color: None,
+            done_tx: Some(done_tx),
+        });
+        let _ = done_rx.await;
+    }
+
+    pub fn print_colored_now(&self, message: &str, color: Color) {
+        let _ = self.cmd_tx.send(Command::Print {
+            message: message.to_owned(),
+            color: Some(color),
+            done_tx: None,
+        });
+    }
+
+    pub fn write_now(&self, text: &str) {
+        self.write_colored_now(text, None);
+    }
+
+    pub fn write_colored_now(&self, text: &str, color: Option<Color>) {
+        let _ = self.cmd_tx.send(Command::Write {
+            text: text.to_owned(),
+            color,
+            done_tx: None,
+        });
     }
 
     pub async fn show_spinner(&self) {
-        let _ = self.cmd_tx.send(Command::SetSpinner(true)).await;
+        let (done_tx, done_rx) = oneshot::channel();
+        let _ = self.cmd_tx.send(Command::SetSpinner {
+            active: true,
+            done_tx: Some(done_tx),
+        });
+        let _ = done_rx.await;
     }
 
     pub async fn hide_spinner(&self) {
-        let _ = self.cmd_tx.send(Command::SetSpinner(false)).await;
+        let (done_tx, done_rx) = oneshot::channel();
+        let _ = self.cmd_tx.send(Command::SetSpinner {
+            active: false,
+            done_tx: Some(done_tx),
+        });
+        let _ = done_rx.await;
+    }
+
+    pub fn hide_spinner_now(&self) {
+        let _ = self.cmd_tx.send(Command::SetSpinner {
+            active: false,
+            done_tx: None,
+        });
     }
 
     pub async fn prompt(&self) -> Option<String> {
         let (response_tx, response_rx) = oneshot::channel();
-        let _ = self.cmd_tx.send(Command::Prompt { response_tx }).await;
+        let _ = self.cmd_tx.send(Command::Prompt { response_tx });
         response_rx.await.ok().flatten()
     }
 
     pub async fn select(&self, choices: Vec<Choice>) -> Option<Choice> {
         let (response_tx, response_rx) = oneshot::channel();
-        let _ = self
-            .cmd_tx
-            .send(Command::Select {
-                choices,
-                response_tx,
-            })
-            .await;
+        let _ = self.cmd_tx.send(Command::Select {
+            choices,
+            response_tx,
+        });
         response_rx.await.ok().flatten()
     }
 }
 
 impl Terminal {
     pub fn new() -> (Stream, Self) {
-        let (cmd_tx, cmd_rx) = mpsc::channel(20);
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let stream = Stream { cmd_tx };
         let terminal = Terminal {
             cmd_rx,
@@ -104,13 +156,25 @@ impl Terminal {
                 }
                 Some(cmd) = self.cmd_rx.recv() => {
                     match cmd {
-                        Command::Print(msg) => {
-                            let _ = print_message(&mut stdout, &msg, &mut area);
+                        Command::Print { message, color, done_tx } => {
+                            let _ = print_message(&mut stdout, &message, color, &mut area);
                             let _ = render_spinner(&mut stdout, &self.spinner, &mut area);
+                            if let Some(done_tx) = done_tx {
+                                let _ = done_tx.send(());
+                            }
                         }
-                        Command::SetSpinner(active) => {
+                        Command::Write { text, color, done_tx } => {
+                            let _ = write_message(&mut stdout, &text, color, &mut area);
+                            if let Some(done_tx) = done_tx {
+                                let _ = done_tx.send(());
+                            }
+                        }
+                        Command::SetSpinner { active, done_tx } => {
                             self.spinner.active = active;
                             let _ = render_spinner(&mut stdout, &self.spinner, &mut area);
+                            if let Some(done_tx) = done_tx {
+                                let _ = done_tx.send(());
+                            }
                         }
                         Command::Prompt { response_tx } => {
                             let result = self.read_prompt(&mut stdout, &mut area);
@@ -160,6 +224,15 @@ impl Terminal {
                     }
                     clear_area(stdout, *area)?;
                     *area = RenderArea::default();
+                    queue!(
+                        stdout,
+                        cursor::MoveToColumn(0),
+                        Clear(ClearType::CurrentLine),
+                        Print("> "),
+                        Print(&line),
+                        Print("\r\n")
+                    )?;
+                    stdout.flush()?;
                     render_spinner(stdout, &self.spinner, area)?;
                     return Ok(Some(line));
                 }
@@ -227,8 +300,32 @@ impl Terminal {
     ) -> anyhow::Result<()> {
         loop {
             match self.cmd_rx.try_recv() {
-                Ok(Command::Print(message)) => print_message(stdout, &message, area)?,
-                Ok(Command::SetSpinner(active)) => self.spinner.active = active,
+                Ok(Command::Print {
+                    message,
+                    color,
+                    done_tx,
+                }) => {
+                    print_message(stdout, &message, color, area)?;
+                    if let Some(done_tx) = done_tx {
+                        let _ = done_tx.send(());
+                    }
+                }
+                Ok(Command::Write {
+                    text,
+                    color,
+                    done_tx,
+                }) => {
+                    write_message(stdout, &text, color, area)?;
+                    if let Some(done_tx) = done_tx {
+                        let _ = done_tx.send(());
+                    }
+                }
+                Ok(Command::SetSpinner { active, done_tx }) => {
+                    self.spinner.active = active;
+                    if let Some(done_tx) = done_tx {
+                        let _ = done_tx.send(());
+                    }
+                }
                 Ok(Command::Prompt { response_tx }) => {
                     let _ = response_tx.send(None);
                 }
@@ -304,6 +401,7 @@ const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 
 #[derive(Debug, Clone, Copy, Default)]
 struct RenderArea {
+    active: bool,
     above: usize,
     below: usize,
 }
@@ -514,13 +612,18 @@ fn render_spinner(
         Print(" waiting")
     )?;
     stdout.flush()?;
-    *area = RenderArea::default();
+    *area = RenderArea {
+        active: true,
+        above: 0,
+        below: 0,
+    };
     Ok(())
 }
 
 fn print_message(
     stdout: &mut io::Stdout,
     message: &str,
+    color: Option<Color>,
     area: &mut RenderArea,
 ) -> anyhow::Result<()> {
     clear_area(stdout, *area)?;
@@ -528,11 +631,33 @@ fn print_message(
     queue!(
         stdout,
         cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-        Print(message),
-        Print("\r\n")
+        Clear(ClearType::CurrentLine)
     )?;
+    queue_colored(stdout, message, color)?;
+    queue!(stdout, Print("\r\n"))?;
     stdout.flush()?;
+    Ok(())
+}
+
+fn write_message(
+    stdout: &mut io::Stdout,
+    text: &str,
+    color: Option<Color>,
+    area: &mut RenderArea,
+) -> anyhow::Result<()> {
+    clear_area(stdout, *area)?;
+    *area = RenderArea::default();
+    queue_colored(stdout, text, color)?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn queue_colored(stdout: &mut io::Stdout, text: &str, color: Option<Color>) -> anyhow::Result<()> {
+    if let Some(color) = color {
+        queue!(stdout, SetForegroundColor(color), Print(text), ResetColor)?;
+    } else {
+        queue!(stdout, Print(text))?;
+    }
     Ok(())
 }
 
@@ -562,6 +687,7 @@ fn render_prompt(
         cursor::MoveToColumn((2 + editor.cursor) as u16)
     )?;
     *area = RenderArea {
+        active: true,
         above: usize::from(spinner.active),
         below: 0,
     };
@@ -641,6 +767,7 @@ fn render_choices(
     }
     queue!(stdout, cursor::MoveToColumn(2))?;
     *area = RenderArea {
+        active: true,
         above: usize::from(spinner.active),
         below: rendered,
     };
@@ -649,6 +776,10 @@ fn render_choices(
 }
 
 fn clear_area(stdout: &mut io::Stdout, area: RenderArea) -> anyhow::Result<()> {
+    if !area.active {
+        return Ok(());
+    }
+
     if area.above > 0 {
         queue!(stdout, cursor::MoveUp(area.above as u16))?;
     }

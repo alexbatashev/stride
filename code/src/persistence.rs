@@ -2,11 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use llm::{Message, Role};
 use minisql::{ConnectionPool, Value, migrations};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 migrations! {
@@ -42,6 +44,7 @@ migrations! {
 #[derive(Clone)]
 pub struct ThreadStore {
     db: ConnectionPool,
+    save_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +79,10 @@ impl ThreadStore {
             .await
             .map_err(sql_error)?;
         ensure_runtime_schema(&db).await?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            save_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     pub async fn create_thread_with_model(
@@ -99,6 +105,7 @@ impl ThreadStore {
         tool_names: &HashMap<usize, String>,
         model: Option<&str>,
     ) -> Result<()> {
+        let _save_guard = self.save_lock.lock().await;
         let cwd = cwd_to_string(cwd);
         let now = now_ts();
         let preview = preview_text(messages);

@@ -1,23 +1,28 @@
 use capnp::capability::Promise;
 use capnp_rpc::pry;
+use crossterm::style::Color;
 use tokio::sync::mpsc;
 
-use crate::{agent_capnp::event_sink, cli};
+use crate::{agent_capnp::event_sink, term::Stream};
 
 pub struct EventSinkImpl {
     confirm_destructive: bool,
     confirm_tx: mpsc::UnboundedSender<String>,
-    first_chunk: bool,
-    had_output: bool,
+    stream: Stream,
+    had_text: bool,
 }
 
 impl EventSinkImpl {
-    pub fn new(confirm_destructive: bool, confirm_tx: mpsc::UnboundedSender<String>) -> Self {
+    pub fn new(
+        confirm_destructive: bool,
+        confirm_tx: mpsc::UnboundedSender<String>,
+        stream: Stream,
+    ) -> Self {
         Self {
             confirm_destructive,
             confirm_tx,
-            first_chunk: true,
-            had_output: false,
+            stream,
+            had_text: false,
         }
     }
 }
@@ -30,12 +35,13 @@ impl event_sink::Server for EventSinkImpl {
     ) -> Promise<(), capnp::Error> {
         let text = pry!(pry!(params.get()).get_text()).to_str().unwrap_or("");
         if !text.is_empty() {
-            if self.first_chunk {
-                print!("\n🤖 ");
-                self.first_chunk = false;
-                self.had_output = true;
+            if !self.had_text {
+                self.stream.hide_spinner_now();
+                self.stream
+                    .write_colored_now("Assistant:\r\n", Some(Color::Cyan));
+                self.had_text = true;
             }
-            cli::print_stream(text);
+            self.stream.write_now(text);
         }
         Promise::ok(())
     }
@@ -46,7 +52,8 @@ impl event_sink::Server for EventSinkImpl {
         _: event_sink::OnThinkingResults,
     ) -> Promise<(), capnp::Error> {
         let text = pry!(pry!(params.get()).get_text()).to_str().unwrap_or("");
-        cli::print_thinking(text);
+        self.stream
+            .print_colored_now(&format!("Thinking:\n{text}"), Color::DarkGrey);
         Promise::ok(())
     }
 
@@ -56,7 +63,12 @@ impl event_sink::Server for EventSinkImpl {
         _: event_sink::OnToolCallResults,
     ) -> Promise<(), capnp::Error> {
         let name = pry!(pry!(params.get()).get_name()).to_str().unwrap_or("");
-        cli::print_tool_call(name);
+        if name.is_empty() || is_generated_tool_name(name) {
+            self.stream.print_colored_now("Using tool", Color::Green);
+        } else {
+            self.stream
+                .print_colored_now(&format!("Using tool: {name}"), Color::Green);
+        }
         Promise::ok(())
     }
 
@@ -86,12 +98,12 @@ impl event_sink::Server for EventSinkImpl {
         let msg = pry!(pry!(params.get()).get_message())
             .to_str()
             .unwrap_or("");
-        if self.had_output {
-            println!();
+        if self.had_text {
+            self.stream.write_now("\r\n");
         }
-        cli::print_error(msg);
-        self.first_chunk = true;
-        self.had_output = false;
+        self.stream
+            .print_colored_now(&format!("Error: {msg}"), Color::Red);
+        self.had_text = false;
         Promise::ok(())
     }
 
@@ -100,11 +112,14 @@ impl event_sink::Server for EventSinkImpl {
         _: event_sink::OnDoneParams,
         _: event_sink::OnDoneResults,
     ) -> Promise<(), capnp::Error> {
-        if self.had_output {
-            println!();
+        if self.had_text {
+            self.stream.write_now("\r\n");
         }
-        self.first_chunk = true;
-        self.had_output = false;
+        self.had_text = false;
         Promise::ok(())
     }
+}
+
+fn is_generated_tool_name(name: &str) -> bool {
+    name.starts_with("chatcmpl-tool-") || name.starts_with("toolu_") || name.starts_with("call_")
 }
