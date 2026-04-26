@@ -9,3 +9,4 @@ pub mod config;
 pub mod daemon;
 pub mod persistence;
 pub mod tools;
+pub mod term;
