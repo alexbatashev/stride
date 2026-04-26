@@ -30,10 +30,12 @@ pub fn print_stream(content: &str) {
 }
 
 pub fn print_prompt(thread_id: &str) {
-    print_colored(Color::Cyan, || {
-        print!("\n[{}] ❯ ", shorten_thread_id(thread_id))
-    });
+    print_colored(Color::Cyan, || print!("{}", prompt_text(thread_id)));
     io::stdout().flush().unwrap();
+}
+
+pub fn prompt_text(thread_id: &str) -> String {
+    format!("\n[{}] ❯ ", shorten_thread_id(thread_id))
 }
 
 pub fn print_confirm_prompt(prompt: &str) {
@@ -60,6 +62,7 @@ pub fn print_help() {
 Available commands:
   /quit, /q      - Exit the application
   /clear, /c     - Start a new conversation thread
+  /model         - Change model
   /help, /h      - Show this help message
 
 The assistant can:

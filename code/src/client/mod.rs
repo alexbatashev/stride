@@ -1,3 +1,4 @@
+mod popup;
 mod sink;
 
 use std::path::{Path, PathBuf};
@@ -5,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use llm::API;
 use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -13,7 +15,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::agent_capnp::{agent_daemon, agent_session};
 use crate::cli;
-use crate::config::Config;
+use crate::config::{Config, ProviderConfig, ProviderType};
 
 #[derive(Debug, Clone)]
 pub enum ClientCommand {
@@ -82,7 +84,7 @@ async fn connect_daemon(socket_path: &Path) -> Result<agent_daemon::Client> {
 async fn start_interactive_new(daemon: agent_daemon::Client, config: Config) -> Result<()> {
     let cwd = normalize_cwd(std::env::current_dir()?)?;
     let (session, thread_id, mut confirm_rx) = start_session(&daemon, &config, &cwd).await?;
-    run_repl(session, &thread_id, &mut confirm_rx).await
+    run_repl(session, &thread_id, &mut confirm_rx, &config).await
 }
 
 async fn start_interactive_resume(
@@ -92,7 +94,7 @@ async fn start_interactive_resume(
 ) -> Result<()> {
     let (session, mut confirm_rx) = resume_session(&daemon, &config, thread_id).await?;
     print_full_history(&daemon, thread_id).await?;
-    run_repl(session, thread_id, &mut confirm_rx).await
+    run_repl(session, thread_id, &mut confirm_rx, &config).await
 }
 
 async fn start_interactive_continue(
@@ -102,7 +104,7 @@ async fn start_interactive_continue(
 ) -> Result<()> {
     let (session, thread_id, mut confirm_rx) = resume_latest(&daemon, &config, cwd).await?;
     print_full_history(&daemon, &thread_id).await?;
-    run_repl(session, &thread_id, &mut confirm_rx).await
+    run_repl(session, &thread_id, &mut confirm_rx, &config).await
 }
 
 async fn list_threads(daemon: agent_daemon::Client, cwd: &Path, limit: u32) -> Result<()> {
@@ -186,20 +188,34 @@ async fn run_repl(
     session: agent_session::Client,
     initial_thread_id: &str,
     confirm_rx: &mut mpsc::UnboundedReceiver<String>,
+    config: &Config,
 ) -> Result<()> {
     cli::print_welcome(initial_thread_id);
     let mut current_thread_id = initial_thread_id.to_string();
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    let mut model_choices: Option<Vec<popup::PopupItem>> = None;
 
     loop {
-        cli::print_prompt(&current_thread_id);
-
-        let mut line = String::new();
-        match stdin.read_line(&mut line).await {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) => return Err(anyhow!("stdin error: {}", e)),
+        let prompt = cli::prompt_text(&current_thread_id);
+        let line_result = popup::read_line(&prompt, model_choices.as_deref(), || async {
+            let choices = load_model_choices(config).await?;
+            Ok::<_, anyhow::Error>(choices)
+        })
+        .await;
+        let line = match line_result {
+            Ok(line) => line,
+            Err(e) => {
+                cli::print_error(&e.to_string());
+                continue;
+            }
+        };
+        let popup::ReadLineResult { text, loaded_items } = line;
+        if model_choices.is_none() && loaded_items.is_some() {
+            model_choices = loaded_items;
         }
+        let Some(line) = text else {
+            break;
+        };
 
         let input = line.trim().to_string();
         if input.is_empty() {
@@ -236,6 +252,57 @@ async fn run_repl(
 
     session.disconnect_request().send().promise.await.ok();
     Ok(())
+}
+
+async fn load_model_choices(config: &Config) -> Result<Vec<popup::PopupItem>> {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for provider in &config.providers {
+        let api = create_api(provider);
+        let Some(token) = provider.api_key.clone() else {
+            errors.push(format!("{}: missing API key", provider.name));
+            continue;
+        };
+        let models = match api.list_models(&token).await {
+            Ok(models) => models,
+            Err(e) => {
+                errors.push(format!("{}: {}", provider.name, e));
+                if provider.name == config.default.provider {
+                    let value = format!("{}/{}", provider.name, config.default.model);
+                    out.push(popup::PopupItem {
+                        display: format!("{}  configured default", value),
+                        value,
+                    });
+                }
+                continue;
+            }
+        };
+        for model in models {
+            let value = format!("{}/{}", provider.name, model.id);
+            let display = match model.name {
+                Some(name) if name != model.id => format!("{}  {}", value, name),
+                _ => value.clone(),
+            };
+            out.push(popup::PopupItem { value, display });
+        }
+    }
+    out.sort_by(|a, b| a.value.cmp(&b.value));
+    out.dedup_by(|a, b| a.value == b.value);
+    if out.is_empty() && !errors.is_empty() {
+        return Err(anyhow!("failed to list models: {}", errors.join("; ")));
+    }
+    if out.is_empty() {
+        return Err(anyhow!("no models available"));
+    }
+    Ok(out)
+}
+
+fn create_api(provider: &ProviderConfig) -> API {
+    match provider.provider_type {
+        ProviderType::OpenAi => llm::OpenAI::new(&provider.base_url),
+        ProviderType::Anthropic => llm::Anthropic::new(&provider.base_url),
+        ProviderType::Ollama => llm::Ollama::new(&provider.base_url),
+    }
 }
 
 async fn start_session(

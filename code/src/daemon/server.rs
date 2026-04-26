@@ -219,6 +219,7 @@ struct AgentSessionImpl {
     agent: Rc<RefCell<Option<Agent>>>,
     confirm_channel: Rc<ConfirmChannel>,
     store: ThreadStore,
+    config: Config,
     thread_id: Rc<RefCell<String>>,
     cwd: PathBuf,
     session_count: Arc<AtomicUsize>,
@@ -237,7 +238,10 @@ impl AgentSessionImpl {
         shutdown: Arc<Notify>,
     ) -> anyhow::Result<Self> {
         let confirm_channel = Rc::new(ConfirmChannel::new());
-        let thread_id = store.create_thread(&cwd, &[]).await?;
+        let default_model = format!("{}/{}", config.default.provider, config.default.model);
+        let thread_id = store
+            .create_thread_with_model(&cwd, &[], Some(&default_model))
+            .await?;
         let thread_id_cell = Rc::new(RefCell::new(thread_id.clone()));
         let checkpoint = checkpoint_callback(store.clone(), cwd.clone(), thread_id_cell.clone());
         let agent = Agent::from_config(
@@ -246,10 +250,18 @@ impl AgentSessionImpl {
             confirm_channel.clone(),
             cwd.clone(),
             None,
+            None,
             Some(checkpoint),
-        )?;
+        )
+        .await?;
         store
-            .save_thread(&thread_id, &cwd, agent.conversation(), &HashMap::new())
+            .save_thread_with_model(
+                &thread_id,
+                &cwd,
+                agent.conversation(),
+                &HashMap::new(),
+                Some(&agent.model_key()),
+            )
             .await?;
         session_count.fetch_add(1, Ordering::SeqCst);
         had_connection.store(true, Ordering::SeqCst);
@@ -257,6 +269,7 @@ impl AgentSessionImpl {
             agent: Rc::new(RefCell::new(Some(agent))),
             confirm_channel,
             store,
+            config,
             thread_id: thread_id_cell,
             cwd,
             session_count,
@@ -275,8 +288,8 @@ impl AgentSessionImpl {
         shutdown: Arc<Notify>,
     ) -> anyhow::Result<Self> {
         let confirm_channel = Rc::new(ConfirmChannel::new());
-        let (cwd, conversation) = store
-            .load_thread(&thread_id)
+        let (cwd, conversation, saved_model) = store
+            .load_thread_with_model(&thread_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("thread not found: {}", thread_id))?;
         let thread_id_cell = Rc::new(RefCell::new(thread_id.clone()));
@@ -287,14 +300,17 @@ impl AgentSessionImpl {
             confirm_channel.clone(),
             cwd.clone(),
             Some(conversation),
+            saved_model,
             Some(checkpoint),
-        )?;
+        )
+        .await?;
         session_count.fetch_add(1, Ordering::SeqCst);
         had_connection.store(true, Ordering::SeqCst);
         Ok(Self {
             agent: Rc::new(RefCell::new(Some(agent))),
             confirm_channel,
             store,
+            config,
             thread_id: thread_id_cell,
             cwd,
             session_count,
@@ -339,10 +355,17 @@ impl agent_session::Server for AgentSessionImpl {
             let result = agent.send_message(text).await;
             let snapshot = agent.conversation().to_vec();
             let tool_names = agent.tool_display_names().clone();
+            let model = agent.model_key();
             let current_thread_id = thread_id.borrow().clone();
             *agent_cell.borrow_mut() = Some(agent);
             store
-                .save_thread(&current_thread_id, &cwd, &snapshot, &tool_names)
+                .save_thread_with_model(
+                    &current_thread_id,
+                    &cwd,
+                    &snapshot,
+                    &tool_names,
+                    Some(&model),
+                )
                 .await
                 .map_err(|e| capnp::Error::failed(e.to_string()))?;
             result.map_err(|e| capnp::Error::failed(e.to_string()))
@@ -361,6 +384,7 @@ impl agent_session::Server for AgentSessionImpl {
         let agent_cell = self.agent.clone();
         let store = self.store.clone();
         let cwd = self.cwd.clone();
+        let config = self.config.clone();
         let thread_id_cell = self.thread_id.clone();
         Promise::from_future(async move {
             let mut agent = agent_cell
@@ -371,8 +395,15 @@ impl agent_session::Server for AgentSessionImpl {
                 match cmd.split_whitespace().next().unwrap_or("") {
                     "/clear" | "/c" => {
                         agent.reset_conversation();
+                        agent
+                            .reset_model(&config)
+                            .map_err(|e| capnp::Error::failed(e.to_string()))?;
                         let new_thread_id = store
-                            .create_thread(&cwd, agent.conversation())
+                            .create_thread_with_model(
+                                &cwd,
+                                agent.conversation(),
+                                Some(&agent.model_key()),
+                            )
                             .await
                             .map_err(|e| capnp::Error::failed(e.to_string()))?;
                         *thread_id_cell.borrow_mut() = new_thread_id.clone();
@@ -386,11 +417,12 @@ impl agent_session::Server for AgentSessionImpl {
                             .map_err(|e| capnp::Error::failed(e.to_string()))?;
                         if !should_exit {
                             store
-                                .save_thread(
+                                .save_thread_with_model(
                                     &current_thread_id,
                                     &cwd,
                                     agent.conversation(),
                                     agent.tool_display_names(),
+                                    Some(&agent.model_key()),
                                 )
                                 .await
                                 .map_err(|e| capnp::Error::failed(e.to_string()))?;
@@ -428,15 +460,16 @@ impl agent_session::Server for AgentSessionImpl {
             (
                 agent.conversation().to_vec(),
                 agent.tool_display_names().clone(),
+                agent.model_key(),
             )
         });
         let store = self.store.clone();
         let cwd = self.cwd.clone();
         let thread_id = self.thread_id.borrow().clone();
         Promise::from_future(async move {
-            if let Some((snapshot, tool_names)) = snapshot {
+            if let Some((snapshot, tool_names, model)) = snapshot {
                 store
-                    .save_thread(&thread_id, &cwd, &snapshot, &tool_names)
+                    .save_thread_with_model(&thread_id, &cwd, &snapshot, &tool_names, Some(&model))
                     .await
                     .map_err(|e| capnp::Error::failed(e.to_string()))?;
             }
@@ -458,14 +491,14 @@ fn checkpoint_callback(
     store: ThreadStore,
     cwd: PathBuf,
     thread_id: Rc<RefCell<String>>,
-) -> Rc<dyn Fn(Vec<llm::Message>, HashMap<usize, String>)> {
-    Rc::new(move |messages, tool_names| {
+) -> Rc<dyn Fn(Vec<llm::Message>, HashMap<usize, String>, String)> {
+    Rc::new(move |messages, tool_names, model| {
         let store = store.clone();
         let cwd = cwd.clone();
         let thread_id = thread_id.borrow().clone();
         tokio::task::spawn_local(async move {
             let _ = store
-                .save_thread(&thread_id, &cwd, &messages, &tool_names)
+                .save_thread_with_model(&thread_id, &cwd, &messages, &tool_names, Some(&model))
                 .await;
         });
     })

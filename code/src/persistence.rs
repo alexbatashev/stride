@@ -17,6 +17,7 @@ migrations! {
             created_at: i64,
             updated_at: i64,
             preview: Option<String>,
+            model: Option<String>,
         }
 
         table messages {
@@ -78,19 +79,25 @@ impl ThreadStore {
         Ok(Self { db })
     }
 
-    pub async fn create_thread(&self, cwd: &Path, messages: &[Message]) -> Result<String> {
+    pub async fn create_thread_with_model(
+        &self,
+        cwd: &Path,
+        messages: &[Message],
+        model: Option<&str>,
+    ) -> Result<String> {
         let thread_id = Uuid::new_v4().to_string();
-        self.save_thread(&thread_id, cwd, messages, &HashMap::new())
+        self.save_thread_with_model(&thread_id, cwd, messages, &HashMap::new(), model)
             .await?;
         Ok(thread_id)
     }
 
-    pub async fn save_thread(
+    pub async fn save_thread_with_model(
         &self,
         thread_id: &str,
         cwd: &Path,
         messages: &[Message],
         tool_names: &HashMap<usize, String>,
+        model: Option<&str>,
     ) -> Result<()> {
         let cwd = cwd_to_string(cwd);
         let now = now_ts();
@@ -99,13 +106,14 @@ impl ThreadStore {
 
         self.db
             .query_with_params(
-                "INSERT OR REPLACE INTO threads (id, cwd, created_at, updated_at, preview)
+                "INSERT OR REPLACE INTO threads (id, cwd, created_at, updated_at, preview, model)
                  VALUES (
                    ?,
                    ?,
                    COALESCE((SELECT created_at FROM threads WHERE id = ?), ?),
                    ?,
-                   ?
+                   ?,
+                   COALESCE(?, (SELECT model FROM threads WHERE id = ?))
                  )",
                 vec![
                     Value::Text(thread_id.to_string()),
@@ -114,6 +122,8 @@ impl ThreadStore {
                     Value::Integer(now),
                     Value::Integer(now),
                     optional_text(preview),
+                    optional_text(model.map(ToOwned::to_owned)),
+                    Value::Text(thread_id.to_string()),
                 ],
             )
             .await
@@ -153,7 +163,10 @@ impl ThreadStore {
         Ok(())
     }
 
-    pub async fn load_thread(&self, thread_id: &str) -> Result<Option<(PathBuf, Vec<Message>)>> {
+    pub async fn load_thread_with_model(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<(PathBuf, Vec<Message>, Option<String>)>> {
         let thread = threads::select()
             .where_(threads::id.eq(thread_id))
             .one(&self.db)
@@ -182,7 +195,7 @@ impl ThreadStore {
             });
         }
 
-        Ok(Some((PathBuf::from(thread.cwd), out)))
+        Ok(Some((PathBuf::from(thread.cwd), out, thread.model)))
     }
 
     pub async fn latest_thread_for_cwd(&self, cwd: &Path) -> Result<Option<String>> {
@@ -340,6 +353,14 @@ async fn ensure_runtime_schema(db: &ConnectionPool) -> Result<()> {
         .rows()
         .iter()
         .any(|row| row.get_text("name") == Some("tool_name"));
+    let thread_columns = db
+        .query("PRAGMA table_info(threads)")
+        .await
+        .map_err(sql_error)?;
+    let has_model = thread_columns
+        .rows()
+        .iter()
+        .any(|row| row.get_text("name") == Some("model"));
 
     if !has_tool_calls {
         db.query("ALTER TABLE messages ADD COLUMN tool_calls TEXT")
@@ -349,6 +370,12 @@ async fn ensure_runtime_schema(db: &ConnectionPool) -> Result<()> {
 
     if !has_tool_name {
         db.query("ALTER TABLE messages ADD COLUMN tool_name TEXT")
+            .await
+            .map_err(sql_error)?;
+    }
+
+    if !has_model {
+        db.query("ALTER TABLE threads ADD COLUMN model TEXT")
             .await
             .map_err(sql_error)?;
     }
@@ -449,12 +476,41 @@ mod tests {
         let store = ThreadStore::new(path.clone()).await.unwrap();
         let cwd = PathBuf::from("/tmp/project-a");
 
-        let thread_id = store.create_thread(&cwd, &sample_messages()).await.unwrap();
-        let loaded = store.load_thread(&thread_id).await.unwrap().unwrap();
+        let thread_id = store
+            .create_thread_with_model(&cwd, &sample_messages(), None)
+            .await
+            .unwrap();
+        let loaded = store
+            .load_thread_with_model(&thread_id)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(loaded.0, cwd);
         assert_eq!(loaded.1.len(), 3);
         assert_eq!(loaded.1[2].thinking.as_deref(), Some("thought"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn save_and_resume_thread_model() {
+        let path = temp_db_path("model");
+        let store = ThreadStore::new(path.clone()).await.unwrap();
+        let cwd = PathBuf::from("/tmp/project-model");
+
+        let thread_id = store
+            .create_thread_with_model(&cwd, &sample_messages(), Some("anthropic/claude"))
+            .await
+            .unwrap();
+        let loaded = store
+            .load_thread_with_model(&thread_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(loaded.0, cwd);
+        assert_eq!(loaded.2.as_deref(), Some("anthropic/claude"));
 
         let _ = std::fs::remove_file(path);
     }
@@ -495,8 +551,15 @@ mod tests {
             },
         ];
 
-        let thread_id = store.create_thread(&cwd, &messages).await.unwrap();
-        let loaded = store.load_thread(&thread_id).await.unwrap().unwrap();
+        let thread_id = store
+            .create_thread_with_model(&cwd, &messages, None)
+            .await
+            .unwrap();
+        let loaded = store
+            .load_thread_with_model(&thread_id)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(loaded.0, cwd);
         assert_eq!(
@@ -514,7 +577,10 @@ mod tests {
         let store = ThreadStore::new(path.clone()).await.unwrap();
         let cwd = PathBuf::from("/tmp/project-b");
 
-        let first = store.create_thread(&cwd, &sample_messages()).await.unwrap();
+        let first = store
+            .create_thread_with_model(&cwd, &sample_messages(), None)
+            .await
+            .unwrap();
         let mut updated_messages = sample_messages();
         updated_messages.push(Message {
             role: Role::User,
@@ -523,7 +589,10 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
         });
-        let second = store.create_thread(&cwd, &updated_messages).await.unwrap();
+        let second = store
+            .create_thread_with_model(&cwd, &updated_messages, None)
+            .await
+            .unwrap();
 
         let latest = store.latest_thread_for_cwd(&cwd).await.unwrap();
         let threads = store.list_threads(&cwd, 10).await.unwrap();

@@ -39,7 +39,9 @@ impl ConfirmChannel {
 }
 
 pub struct Agent {
+    config: Config,
     api: API,
+    provider: String,
     model: String,
     token: String,
     tool_registry: ToolRegistry,
@@ -53,23 +55,28 @@ pub struct Agent {
     tool_display_names: HashMap<usize, String>,
 }
 
-type CheckpointFn = Rc<dyn Fn(Vec<Message>, HashMap<usize, String>)>;
+type CheckpointFn = Rc<dyn Fn(Vec<Message>, HashMap<usize, String>, String)>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSelection {
+    pub provider: String,
+    pub model: String,
+}
 
 impl Agent {
-    pub fn from_config(
+    pub async fn from_config(
         config: &Config,
         sink: event_sink::Client,
         confirm_channel: Rc<ConfirmChannel>,
         cwd: PathBuf,
         conversation: Option<Vec<Message>>,
+        saved_model: Option<String>,
         checkpoint: Option<CheckpointFn>,
     ) -> Result<Self> {
-        let provider = config.get_default_provider()?;
+        let selection = initial_model_selection(config, saved_model).await?;
+        let provider = config.get_provider(&selection.provider)?;
         let api = create_api(provider)?;
-        let token = provider
-            .api_key
-            .clone()
-            .ok_or_else(|| anyhow!("API key not configured for provider '{}'", provider.name))?;
+        let token = provider_token(provider)?;
 
         let mut tool_registry = ToolRegistry::new();
         tool_registry.register(ReadFileTool);
@@ -87,8 +94,10 @@ impl Agent {
         let conversation = conversation.unwrap_or_else(|| vec![system_message.clone()]);
 
         Ok(Self {
+            config: config.clone(),
             api,
-            model: config.default.model.clone(),
+            provider: provider.name.clone(),
+            model: selection.model,
             token,
             tool_registry,
             conversation,
@@ -130,6 +139,9 @@ impl Agent {
     pub async fn execute_command(&mut self, cmd: &str) -> Result<bool> {
         match cmd.split_whitespace().next().unwrap_or("") {
             "/quit" | "/q" => return Ok(true),
+            "/model" => {
+                self.select_model(cmd).await?;
+            }
             other => {
                 self.emit_error(&format!("Unknown command: {}", other))
                     .await;
@@ -137,6 +149,32 @@ impl Agent {
         }
         self.emit_done().await;
         Ok(false)
+    }
+
+    async fn select_model(&mut self, cmd: &str) -> Result<()> {
+        let selected = cmd
+            .split_whitespace()
+            .nth(1)
+            .ok_or_else(|| anyhow!("Usage: /model <provider>/<model>"))?;
+        let selection = parse_model_selection(selected)?;
+        let provider = self.config.get_provider(&selection.provider)?.clone();
+        let api = create_api(&provider)?;
+        let token = provider_token(&provider)?;
+        ensure_model_available(
+            &api,
+            &token,
+            &selection.model,
+            AvailabilityMode::AllowUnknown,
+        )
+        .await?;
+
+        self.api = api;
+        self.provider = provider.name.clone();
+        self.model = selection.model;
+        self.token = token;
+        self.emit_text_chunk(&format!("Model set to {}", self.model_key()))
+            .await;
+        Ok(())
     }
 
     async fn process_with_tools(&mut self) -> Result<()> {
@@ -423,12 +461,25 @@ impl Agent {
         self.checkpoint();
     }
 
+    pub fn reset_model(&mut self, config: &Config) -> Result<()> {
+        let provider = config.get_default_provider()?;
+        self.api = create_api(provider)?;
+        self.provider = provider.name.clone();
+        self.model = config.default.model.clone();
+        self.token = provider_token(provider)?;
+        Ok(())
+    }
+
     pub fn conversation(&self) -> &[Message] {
         &self.conversation
     }
 
     pub fn tool_display_names(&self) -> &HashMap<usize, String> {
         &self.tool_display_names
+    }
+
+    pub fn model_key(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
     }
 
     fn begin_assistant_message(&mut self) -> usize {
@@ -445,7 +496,11 @@ impl Agent {
 
     fn checkpoint(&self) {
         if let Some(checkpoint) = &self.checkpoint {
-            checkpoint(self.conversation.clone(), self.tool_display_names.clone());
+            checkpoint(
+                self.conversation.clone(),
+                self.tool_display_names.clone(),
+                self.model_key(),
+            );
         }
     }
 }
@@ -456,6 +511,92 @@ fn create_api(provider: &ProviderConfig) -> Result<API> {
         ProviderType::Anthropic => Ok(llm::Anthropic::new(&provider.base_url)),
         ProviderType::Ollama => Ok(llm::Ollama::new(&provider.base_url)),
     }
+}
+
+fn provider_token(provider: &ProviderConfig) -> Result<String> {
+    provider
+        .api_key
+        .clone()
+        .ok_or_else(|| anyhow!("API key not configured for provider '{}'", provider.name))
+}
+
+async fn initial_model_selection(
+    config: &Config,
+    saved_model: Option<String>,
+) -> Result<ModelSelection> {
+    let default = ModelSelection {
+        provider: config.default.provider.clone(),
+        model: config.default.model.clone(),
+    };
+    let Some(saved_model) = saved_model else {
+        return Ok(default);
+    };
+    let Ok(selection) = parse_model_selection(&saved_model) else {
+        return Ok(default);
+    };
+    let Ok(provider) = config.get_provider(&selection.provider) else {
+        return Ok(default);
+    };
+    let Ok(api) = create_api(provider) else {
+        return Ok(default);
+    };
+    let Ok(token) = provider_token(provider) else {
+        return Ok(default);
+    };
+    if ensure_model_available(
+        &api,
+        &token,
+        &selection.model,
+        AvailabilityMode::FallbackOnUnknown,
+    )
+    .await
+    .is_ok()
+    {
+        Ok(selection)
+    } else {
+        Ok(default)
+    }
+}
+
+#[derive(Copy, Clone)]
+enum AvailabilityMode {
+    AllowUnknown,
+    FallbackOnUnknown,
+}
+
+async fn ensure_model_available(
+    api: &API,
+    token: &str,
+    model: &str,
+    mode: AvailabilityMode,
+) -> Result<()> {
+    let models = match api.list_models(token).await {
+        Ok(models) => models,
+        Err(e) => {
+            return match mode {
+                AvailabilityMode::AllowUnknown => Ok(()),
+                AvailabilityMode::FallbackOnUnknown => Err(anyhow!("failed to list models: {}", e)),
+            };
+        }
+    };
+    if models.iter().any(|item| item.id == model) {
+        Ok(())
+    } else {
+        Err(anyhow!("model '{}' is not available", model))
+    }
+}
+
+fn parse_model_selection(value: &str) -> Result<ModelSelection> {
+    let (provider, model) = value
+        .split_once('/')
+        .ok_or_else(|| anyhow!("model must be qualified as <provider>/<model>"))?;
+    if provider.is_empty() || model.is_empty() {
+        return Err(anyhow!("model must be qualified as <provider>/<model>"));
+    }
+    Ok(ModelSelection {
+        provider: provider.to_string(),
+        model: model.to_string(),
+    })
 }
 
 fn build_system_prompt(registry: &ToolRegistry) -> String {

@@ -23,6 +23,39 @@ impl std::fmt::Debug for OpenAI {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn openai(base_url: &str) -> OpenAI {
+        match OpenAI::new(base_url) {
+            API::OpenAI(api) => api,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn endpoint_does_not_duplicate_v1() {
+        assert_eq!(
+            openai("https://example.com/v1").endpoint("/v1/models"),
+            "https://example.com/v1/models"
+        );
+        assert_eq!(
+            openai("https://example.com").endpoint("/v1/models"),
+            "https://example.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn parses_models_without_supported_parameters() {
+        let body = br#"{"object":"list","data":[{"id":"openai/gpt-5.4","object":"model","created":1777057381,"owned_by":"proxy"}]}"#;
+        let parsed: ModelListResponse = serde_json::from_slice(body).unwrap();
+
+        assert_eq!(parsed.data[0].id, "openai/gpt-5.4");
+        assert!(parsed.data[0].supported_parameters.is_empty());
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ModelListResponse {
     data: Vec<ModelDesc>,
@@ -35,13 +68,20 @@ impl OpenAI {
         })
     }
 
+    fn endpoint(&self, path: &str) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        let path = if base.ends_with("/v1") {
+            path.trim_start_matches("/v1")
+        } else {
+            path
+        };
+        format!("{}{}", base, path)
+    }
+
     pub async fn list_models(&self, token: &str) -> Result<Vec<ModelDesc>, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&format!(
-                "{}/v1/models",
-                self.base_url.trim_end_matches('/')
-            ))
+            .uri(&self.endpoint("/v1/models"))
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
@@ -74,10 +114,7 @@ impl OpenAI {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!(
-                "{}/v1/embeddings",
-                self.base_url.trim_end_matches('/')
-            ))
+            .uri(&self.endpoint("/v1/embeddings"))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(body)))
@@ -94,11 +131,7 @@ impl OpenAI {
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&format!(
-                "{}/v1/models/{}",
-                self.base_url.trim_end_matches('/'),
-                model
-            ))
+            .uri(&self.endpoint(&format!("/v1/models/{}", model)))
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;

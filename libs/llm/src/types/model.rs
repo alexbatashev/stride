@@ -7,6 +7,7 @@ pub struct ModelDesc {
     pub created: Option<u64>,
     pub owned_by: Option<String>,
     pub context_length: Option<u32>,
+    #[serde(default)]
     pub supported_parameters: Vec<String>,
     pub description: Option<String>,
     pub name: Option<String>,
