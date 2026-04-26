@@ -1,4 +1,3 @@
-mod popup;
 mod sink;
 
 use std::path::{Path, PathBuf};
@@ -7,7 +6,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use llm::API;
-use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::task::spawn_local;
@@ -16,6 +14,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use crate::agent_capnp::{agent_daemon, agent_session};
 use crate::cli;
 use crate::config::{Config, ProviderConfig, ProviderType};
+use crate::term::{Choice, Stream, Terminal};
 
 #[derive(Debug, Clone)]
 pub enum ClientCommand {
@@ -82,9 +81,20 @@ async fn connect_daemon(socket_path: &Path) -> Result<agent_daemon::Client> {
 }
 
 async fn start_interactive_new(daemon: agent_daemon::Client, config: Config) -> Result<()> {
+    let (terminal_stream, terminal) = Terminal::new();
+    spawn_local(terminal.run());
+
     let cwd = normalize_cwd(std::env::current_dir()?)?;
-    let (session, thread_id, mut confirm_rx) = start_session(&daemon, &config, &cwd).await?;
-    run_repl(session, &thread_id, &mut confirm_rx, &config).await
+    let (session, thread_id, mut confirm_rx) =
+        start_session(&daemon, &config, &cwd, terminal_stream.clone()).await?;
+    run_repl(
+        session,
+        &thread_id,
+        &mut confirm_rx,
+        &config,
+        terminal_stream,
+    )
+    .await
 }
 
 async fn start_interactive_resume(
@@ -92,9 +102,20 @@ async fn start_interactive_resume(
     config: Config,
     thread_id: &str,
 ) -> Result<()> {
-    let (session, mut confirm_rx) = resume_session(&daemon, &config, thread_id).await?;
+    let (terminal_stream, terminal) = Terminal::new();
+    spawn_local(terminal.run());
+
+    let (session, mut confirm_rx) =
+        resume_session(&daemon, &config, thread_id, terminal_stream.clone()).await?;
     print_full_history(&daemon, thread_id).await?;
-    run_repl(session, thread_id, &mut confirm_rx, &config).await
+    run_repl(
+        session,
+        thread_id,
+        &mut confirm_rx,
+        &config,
+        terminal_stream,
+    )
+    .await
 }
 
 async fn start_interactive_continue(
@@ -102,9 +123,20 @@ async fn start_interactive_continue(
     config: Config,
     cwd: &Path,
 ) -> Result<()> {
-    let (session, thread_id, mut confirm_rx) = resume_latest(&daemon, &config, cwd).await?;
+    let (terminal_stream, terminal) = Terminal::new();
+    spawn_local(terminal.run());
+
+    let (session, thread_id, mut confirm_rx) =
+        resume_latest(&daemon, &config, cwd, terminal_stream.clone()).await?;
     print_full_history(&daemon, &thread_id).await?;
-    run_repl(session, &thread_id, &mut confirm_rx, &config).await
+    run_repl(
+        session,
+        &thread_id,
+        &mut confirm_rx,
+        &config,
+        terminal_stream,
+    )
+    .await
 }
 
 async fn list_threads(daemon: agent_daemon::Client, cwd: &Path, limit: u32) -> Result<()> {
@@ -189,31 +221,21 @@ async fn run_repl(
     initial_thread_id: &str,
     confirm_rx: &mut mpsc::UnboundedReceiver<String>,
     config: &Config,
+    terminal_stream: Stream,
 ) -> Result<()> {
-    cli::print_welcome(initial_thread_id);
+    terminal_stream.print("Friday Agent").await;
+    terminal_stream
+        .print(&format!(
+            "thread {} - type your request or /help for commands",
+            cli::short_thread_id(initial_thread_id)
+        ))
+        .await;
+
     let mut current_thread_id = initial_thread_id.to_string();
-    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
-    let mut model_choices: Option<Vec<popup::PopupItem>> = None;
+    let mut model_choices: Option<Vec<Choice>> = None;
 
     loop {
-        let prompt = cli::prompt_text(&current_thread_id);
-        let line_result = popup::read_line(&prompt, model_choices.as_deref(), || async {
-            let choices = load_model_choices(config).await?;
-            Ok::<_, anyhow::Error>(choices)
-        })
-        .await;
-        let line = match line_result {
-            Ok(line) => line,
-            Err(e) => {
-                cli::print_error(&e.to_string());
-                continue;
-            }
-        };
-        let popup::ReadLineResult { text, loaded_items } = line;
-        if model_choices.is_none() && loaded_items.is_some() {
-            model_choices = loaded_items;
-        }
-        let Some(line) = text else {
+        let Some(line) = terminal_stream.prompt().await else {
             break;
         };
 
@@ -225,18 +247,69 @@ async fn run_repl(
         if input.starts_with('/') {
             match input.as_str() {
                 "/help" | "/h" => {
-                    cli::print_help();
+                    terminal_stream.print(cli::help_text()).await;
                     continue;
+                }
+                "/model" => {
+                    if model_choices.is_none() {
+                        terminal_stream.show_spinner().await;
+                        let loaded = load_model_choices(config).await;
+                        terminal_stream.hide_spinner().await;
+                        match loaded {
+                            Ok(choices) => model_choices = Some(choices),
+                            Err(e) => {
+                                terminal_stream.print(&format!("Error: {e}")).await;
+                                continue;
+                            }
+                        }
+                    }
+
+                    let Some(choice) = terminal_stream
+                        .select(model_choices.clone().unwrap_or_default())
+                        .await
+                    else {
+                        continue;
+                    };
+                    let mut req = session.send_command_request();
+                    req.get().set_command(&format!("/model {}", choice.value));
+                    let result = await_command_rpc(
+                        req.send().promise,
+                        &session,
+                        confirm_rx,
+                        &terminal_stream,
+                    )
+                    .await?;
+                    if result.thread_id != current_thread_id {
+                        current_thread_id = result.thread_id.clone();
+                        terminal_stream
+                            .print(&format!(
+                                "Started thread {}",
+                                cli::short_thread_id(&current_thread_id)
+                            ))
+                            .await;
+                    }
+                    if result.should_exit {
+                        break;
+                    }
                 }
                 cmd => {
                     let mut req = session.send_command_request();
                     req.get().set_command(cmd);
-                    let result =
-                        await_command_rpc(req.send().promise, &session, confirm_rx, &mut stdin)
-                            .await?;
+                    let result = await_command_rpc(
+                        req.send().promise,
+                        &session,
+                        confirm_rx,
+                        &terminal_stream,
+                    )
+                    .await?;
                     if result.thread_id != current_thread_id {
                         current_thread_id = result.thread_id.clone();
-                        cli::print_thread_switched(&current_thread_id);
+                        terminal_stream
+                            .print(&format!(
+                                "Started thread {}",
+                                cli::short_thread_id(&current_thread_id)
+                            ))
+                            .await;
                     }
                     if result.should_exit {
                         break;
@@ -246,7 +319,7 @@ async fn run_repl(
         } else {
             let mut req = session.send_message_request();
             req.get().set_text(&input);
-            await_rpc(req.send().promise, &session, confirm_rx, &mut stdin).await?;
+            await_rpc(req.send().promise, &session, confirm_rx, &terminal_stream).await?;
         }
     }
 
@@ -254,7 +327,7 @@ async fn run_repl(
     Ok(())
 }
 
-async fn load_model_choices(config: &Config) -> Result<Vec<popup::PopupItem>> {
+async fn load_model_choices(config: &Config) -> Result<Vec<Choice>> {
     let mut out = Vec::new();
     let mut errors = Vec::new();
     for provider in &config.providers {
@@ -269,9 +342,10 @@ async fn load_model_choices(config: &Config) -> Result<Vec<popup::PopupItem>> {
                 errors.push(format!("{}: {}", provider.name, e));
                 if provider.name == config.default.provider {
                     let value = format!("{}/{}", provider.name, config.default.model);
-                    out.push(popup::PopupItem {
+                    out.push(Choice {
                         display: format!("{}  configured default", value),
                         value,
+                        description: None,
                     });
                 }
                 continue;
@@ -283,7 +357,11 @@ async fn load_model_choices(config: &Config) -> Result<Vec<popup::PopupItem>> {
                 Some(name) if name != model.id => format!("{}  {}", value, name),
                 _ => value.clone(),
             };
-            out.push(popup::PopupItem { value, display });
+            out.push(Choice {
+                value,
+                display,
+                description: None,
+            });
         }
     }
     out.sort_by(|a, b| a.value.cmp(&b.value));
@@ -309,12 +387,13 @@ async fn start_session(
     daemon: &agent_daemon::Client,
     config: &Config,
     cwd: &Path,
+    stream: Stream,
 ) -> Result<(
     agent_session::Client,
     String,
     mpsc::UnboundedReceiver<String>,
 )> {
-    let (sink_client, confirm_rx) = make_sink(config);
+    let (sink_client, confirm_rx) = make_sink(config, stream);
     let mut req = daemon.start_session_request();
     req.get().set_sink(sink_client);
     req.get().set_cwd(&cwd.to_string_lossy());
@@ -333,8 +412,9 @@ async fn resume_session(
     daemon: &agent_daemon::Client,
     config: &Config,
     thread_id: &str,
+    stream: Stream,
 ) -> Result<(agent_session::Client, mpsc::UnboundedReceiver<String>)> {
-    let (sink_client, confirm_rx) = make_sink(config);
+    let (sink_client, confirm_rx) = make_sink(config, stream);
     let mut req = daemon.resume_session_request();
     req.get().set_sink(sink_client);
     req.get().set_thread_id(thread_id);
@@ -351,12 +431,13 @@ async fn resume_latest(
     daemon: &agent_daemon::Client,
     config: &Config,
     cwd: &Path,
+    stream: Stream,
 ) -> Result<(
     agent_session::Client,
     String,
     mpsc::UnboundedReceiver<String>,
 )> {
-    let (sink_client, confirm_rx) = make_sink(config);
+    let (sink_client, confirm_rx) = make_sink(config, stream);
     let mut req = daemon.resume_latest_for_cwd_request();
     req.get().set_sink(sink_client);
     req.get().set_cwd(&cwd.to_string_lossy());
@@ -373,12 +454,13 @@ async fn resume_latest(
 
 fn make_sink(
     config: &Config,
+    stream: Stream,
 ) -> (
     crate::agent_capnp::event_sink::Client,
     mpsc::UnboundedReceiver<String>,
 ) {
     let (confirm_tx, confirm_rx) = mpsc::unbounded_channel::<String>();
-    let sink_impl = sink::EventSinkImpl::new(config.agent.confirm_destructive, confirm_tx);
+    let sink_impl = sink::EventSinkImpl::new(config.agent.confirm_destructive, confirm_tx, stream);
     let sink_client = capnp_rpc::new_client(sink_impl);
     (sink_client, confirm_rx)
 }
@@ -398,22 +480,27 @@ async fn await_rpc<R>(
     promise: capnp::capability::Promise<capnp::capability::Response<R>, capnp::Error>,
     session: &agent_session::Client,
     confirm_rx: &mut mpsc::UnboundedReceiver<String>,
-    stdin: &mut tokio::io::BufReader<tokio::io::Stdin>,
+    stream: &Stream,
 ) -> Result<()>
 where
     R: capnp::traits::Pipelined + capnp::traits::OwnedStruct + 'static,
 {
+    stream.show_spinner().await;
     futures::pin_mut!(promise);
-    loop {
+    let result = loop {
         tokio::select! {
             result = &mut promise => {
-                return result.map(|_| ()).map_err(|e| anyhow!("{}", e));
+                break result.map(|_| ()).map_err(|e| anyhow!("{}", e));
             }
             Some(prompt) = confirm_rx.recv() => {
-                send_confirmation(session, stdin, &prompt).await?;
+                if let Err(e) = send_confirmation(session, stream, &prompt).await {
+                    break Err(e);
+                }
             }
         }
-    }
+    };
+    stream.hide_spinner().await;
+    result
 }
 
 async fn await_command_rpc(
@@ -423,43 +510,56 @@ async fn await_command_rpc(
     >,
     session: &agent_session::Client,
     confirm_rx: &mut mpsc::UnboundedReceiver<String>,
-    stdin: &mut tokio::io::BufReader<tokio::io::Stdin>,
+    stream: &Stream,
 ) -> Result<CommandOutcome> {
+    stream.show_spinner().await;
     futures::pin_mut!(promise);
-    loop {
+    let result = loop {
         tokio::select! {
             result = &mut promise => {
-                let response = result.map_err(|e| anyhow!("{}", e))?;
-                let reader = response.get().map_err(|e| anyhow!("{}", e))?;
-                let result = reader.get_result().map_err(|e| anyhow!("{}", e))?;
-                return Ok(CommandOutcome {
-                    should_exit: result.get_should_exit(),
-                    thread_id: result.get_thread_id()
-                        .map_err(|e| anyhow!("{}", e))?
-                        .to_string()
-                        .map_err(|e| anyhow!("{}", e))?,
-                });
+                break command_outcome(result);
             }
             Some(prompt) = confirm_rx.recv() => {
-                send_confirmation(session, stdin, &prompt).await?;
+                if let Err(e) = send_confirmation(session, stream, &prompt).await {
+                    break Err(e);
+                }
             }
         }
-    }
+    };
+    stream.hide_spinner().await;
+    result
+}
+
+fn command_outcome(
+    result: Result<
+        capnp::capability::Response<agent_session::send_command_results::Owned>,
+        capnp::Error,
+    >,
+) -> Result<CommandOutcome> {
+    let response = result.map_err(|e| anyhow!("{}", e))?;
+    let reader = response.get().map_err(|e| anyhow!("{}", e))?;
+    let result = reader.get_result().map_err(|e| anyhow!("{}", e))?;
+    Ok(CommandOutcome {
+        should_exit: result.get_should_exit(),
+        thread_id: result
+            .get_thread_id()
+            .map_err(|e| anyhow!("{}", e))?
+            .to_string()
+            .map_err(|e| anyhow!("{}", e))?,
+    })
 }
 
 async fn send_confirmation(
     session: &agent_session::Client,
-    stdin: &mut tokio::io::BufReader<tokio::io::Stdin>,
+    stream: &Stream,
     prompt: &str,
 ) -> Result<()> {
     let answer = if prompt.is_empty() {
         true
     } else {
-        println!();
-        cli::print_confirm_prompt(prompt);
-        let mut ans = String::new();
-        stdin.read_line(&mut ans).await?;
-        matches!(ans.trim().to_lowercase().as_str(), "y" | "yes")
+        stream.print(&format!("{prompt} [y/N]")).await;
+        let answer = stream.prompt().await.unwrap_or_default();
+        matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
     };
     let mut req = session.confirm_request();
     req.get().set_answer(answer);

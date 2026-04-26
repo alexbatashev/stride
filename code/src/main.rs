@@ -8,6 +8,7 @@ mod client;
 mod config;
 mod daemon;
 mod persistence;
+mod term;
 mod tools;
 
 use crate::client::ClientCommand;

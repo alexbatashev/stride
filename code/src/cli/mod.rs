@@ -38,27 +38,8 @@ pub fn prompt_text(thread_id: &str) -> String {
     format!("\n[{}] ❯ ", shorten_thread_id(thread_id))
 }
 
-pub fn print_confirm_prompt(prompt: &str) {
-    print_colored(Color::Magenta, || print!("{} [y/N] ", prompt));
-    io::stdout().flush().unwrap();
-}
-
-pub fn print_error(msg: &str) {
-    print_colored(Color::Red, || println!("❌ Error: {}", msg));
-}
-
-pub fn print_welcome(thread_id: &str) {
-    print_colored(Color::Cyan, || {
-        println!(
-            "Friday Agent - thread {} - type your request or /help for commands",
-            shorten_thread_id(thread_id)
-        );
-    });
-}
-
-pub fn print_help() {
-    println!(
-        r#"
+pub fn help_text() -> &'static str {
+    r#"
 Available commands:
   /quit, /q      - Exit the application
   /clear, /c     - Start a new conversation thread
@@ -73,13 +54,10 @@ The assistant can:
 
 Type your coding request naturally and the assistant will help you!
 "#
-    );
 }
 
-pub fn print_thread_switched(thread_id: &str) {
-    print_colored(Color::Yellow, || {
-        println!("Started thread {}", shorten_thread_id(thread_id));
-    });
+pub fn short_thread_id(thread_id: &str) -> &str {
+    shorten_thread_id(thread_id)
 }
 
 pub fn print_threads(cwd: &str, rows: &[(String, i64, String)]) {

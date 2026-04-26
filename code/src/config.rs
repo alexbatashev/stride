@@ -52,7 +52,7 @@ pub enum ProviderType {
     Ollama,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AgentConfig {
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
@@ -60,6 +60,16 @@ pub struct AgentConfig {
     pub confirm_destructive: bool,
     #[serde(default)]
     pub thinking: Option<ThinkingConfig>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: default_max_iterations(),
+            confirm_destructive: default_confirm_destructive(),
+            thinking: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -205,6 +215,7 @@ api_key = "test-key"
         assert_eq!(config.default.provider, "anthropic");
         assert_eq!(config.default.model, "claude-sonnet-4-20250514");
         assert_eq!(config.providers.len(), 1);
+        assert_eq!(config.agent.max_iterations, 50);
     }
 
     #[test]
