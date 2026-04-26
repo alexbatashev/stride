@@ -1,14 +1,21 @@
 use async_trait::async_trait;
+use llm::{API, ThinkingConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub mod base_agent;
+pub mod explorer;
 pub mod files;
 
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub cwd: PathBuf,
+    pub api: API,
+    pub token: String,
+    pub model: String,
+    pub thinking: Option<ThinkingConfig>,
 }
 
 /// The result of a tool execution

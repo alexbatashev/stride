@@ -1,17 +1,18 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::{Result, anyhow};
-use futures::StreamExt;
-use llm::{API, CompletionRequest, Message, Role, StreamResponseChunk, UnnamedToolChoice};
+use llm::{API, Message, Role, ThinkingConfig};
 use serde_json::Value;
-use std::path::PathBuf;
 use tokio::sync::oneshot;
 
 use crate::{
     agent_capnp::event_sink,
-    config::{Config, ProviderConfig, ProviderType, ThinkingConfig},
+    config::{Config, ProviderConfig, ProviderType},
+    tools::base_agent::{BaseAgent, StreamEvent},
+    tools::explorer::ContextExplorerTool,
     tools::files::{BashTool, EditFileTool, ListFilesTool, ReadFileTool},
     tools::{ToolCall, ToolContext, ToolRegistry},
 };
@@ -40,19 +41,11 @@ impl ConfirmChannel {
 
 pub struct Agent {
     config: Config,
-    api: API,
+    base: BaseAgent,
     provider: String,
-    model: String,
-    token: String,
-    tool_registry: ToolRegistry,
-    conversation: Vec<Message>,
-    max_iterations: usize,
-    thinking: Option<ThinkingConfig>,
     sink: event_sink::Client,
     confirm_channel: Rc<ConfirmChannel>,
-    tool_context: ToolContext,
     checkpoint: Option<CheckpointFn>,
-    tool_display_names: HashMap<usize, String>,
 }
 
 type CheckpointFn = Rc<dyn Fn(Vec<Message>, HashMap<usize, String>, String)>;
@@ -78,36 +71,62 @@ impl Agent {
         let api = create_api(provider)?;
         let token = provider_token(provider)?;
 
-        let mut tool_registry = ToolRegistry::new();
-        tool_registry.register(ReadFileTool);
-        tool_registry.register(ListFilesTool);
-        tool_registry.register(EditFileTool);
-        tool_registry.register(BashTool);
+        let thinking = config.agent.thinking.as_ref().map(|tc| ThinkingConfig {
+            thinking_type: tc.thinking_type.clone(),
+            budget_tokens: tc.budget_tokens,
+        });
 
-        let system_message = Message {
-            role: Role::System,
-            content: build_system_prompt(&tool_registry),
-            thinking: None,
-            tool_calls: None,
-            tool_call_id: None,
+        let tool_context = if let Some(ref subagent_model_str) = config.agent.subagent_model {
+            let sub_selection = parse_model_selection(subagent_model_str)?;
+            let sub_provider = config.get_provider(&sub_selection.provider)?;
+            let sub_api = create_api(sub_provider)?;
+            let sub_token = provider_token(sub_provider)?;
+            ToolContext {
+                cwd: cwd.clone(),
+                api: sub_api,
+                token: sub_token,
+                model: sub_selection.model,
+                thinking: thinking.clone(),
+            }
+        } else {
+            ToolContext {
+                cwd: cwd.clone(),
+                api: api.clone(),
+                token: token.clone(),
+                model: selection.model.clone(),
+                thinking: thinking.clone(),
+            }
         };
-        let conversation = conversation.unwrap_or_else(|| vec![system_message.clone()]);
+
+        let mut base = BaseAgent::new(api, token, selection.model, tool_context);
+        base.set_max_iterations(config.agent.max_iterations);
+        base.set_thinking(thinking);
+
+        base.register_tool(ReadFileTool);
+        base.register_tool(ListFilesTool);
+        base.register_tool(EditFileTool);
+        base.register_tool(BashTool);
+        base.register_tool(ContextExplorerTool);
+
+        if let Some(saved_conversation) = conversation {
+            base.set_conversation(saved_conversation);
+        } else {
+            base.push_message(Message {
+                role: Role::System,
+                content: build_system_prompt(base.tool_registry()),
+                thinking: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
 
         Ok(Self {
             config: config.clone(),
-            api,
+            base,
             provider: provider.name.clone(),
-            model: selection.model,
-            token,
-            tool_registry,
-            conversation,
-            max_iterations: config.agent.max_iterations,
-            thinking: config.agent.thinking.clone(),
             sink,
             confirm_channel,
-            tool_context: ToolContext { cwd },
             checkpoint,
-            tool_display_names: HashMap::new(),
         })
     }
 
@@ -117,7 +136,7 @@ impl Agent {
             return Ok(());
         }
 
-        self.conversation.push(Message {
+        self.base.push_message(Message {
             role: Role::User,
             content: text,
             thinking: None,
@@ -168,139 +187,57 @@ impl Agent {
         )
         .await?;
 
-        self.api = api;
+        self.base.api = api;
+        self.base.token = token;
+        self.base.model = selection.model;
         self.provider = provider.name.clone();
-        self.model = selection.model;
-        self.token = token;
+
+        if self.config.agent.subagent_model.is_none() {
+            self.base.tool_context.api = self.base.api.clone();
+            self.base.tool_context.token = self.base.token.clone();
+            self.base.tool_context.model = self.base.model.clone();
+        }
+
         self.emit_text_chunk(&format!("Model set to {}", self.model_key()))
             .await;
         Ok(())
     }
 
     async fn process_with_tools(&mut self) -> Result<()> {
-        for _ in 0..self.max_iterations {
-            let request = self.build_completion_request();
-            let mut stream = self.api.stream_completion(&self.token, request);
-            let assistant_idx = self.begin_assistant_message();
+        for _ in 0..self.base.max_iterations {
+            let (events, tool_calls) = self.base.collect_response().await?;
 
-            match self.collect_stream(&mut stream, assistant_idx).await {
-                Ok(tool_calls) => {
-                    if tool_calls.is_empty() {
-                        return Ok(());
-                    }
-
-                    self.execute_tools(tool_calls).await?;
+            for event in events {
+                match event {
+                    StreamEvent::Thinking(text) => self.emit_thinking(&text).await,
+                    StreamEvent::TextChunk(text) => self.emit_text_chunk(&text).await,
                 }
-                Err(e) => return Err(e),
             }
+            self.checkpoint();
+
+            if tool_calls.is_empty() {
+                return Ok(());
+            }
+
+            self.execute_tools_with_confirmation(tool_calls).await?;
         }
 
         Err(anyhow!(
             "Reached maximum tool iteration limit ({})",
-            self.max_iterations
+            self.base.max_iterations
         ))
     }
 
-    async fn collect_stream(
-        &mut self,
-        stream: &mut std::pin::Pin<
-            Box<dyn futures::Stream<Item = Result<StreamResponseChunk, llm::Error>> + Send>,
-        >,
-        assistant_idx: usize,
-    ) -> Result<Vec<ToolCall>> {
-        let mut thinking = String::new();
-        let mut tool_calls: HashMap<usize, PartialToolCall> = HashMap::new();
-        let mut thinking_sent = false;
-
-        while let Some(item) = stream.next().await {
-            let chunk = match item {
-                Ok(c) => c,
-                Err(e) => return Err(anyhow!("API error: {}", e)),
-            };
-
-            for choice in chunk.choices {
-                if let Some(delta) = choice.delta {
-                    if let Some(text) = delta.thinking {
-                        thinking.push_str(&text);
-                    }
-
-                    if let Some(text) = delta.content {
-                        if !thinking_sent && !thinking.is_empty() && !text.is_empty() {
-                            self.emit_thinking(&thinking).await;
-                            thinking_sent = true;
-                            self.conversation[assistant_idx].thinking = Some(thinking.clone());
-                        }
-                        if !text.is_empty() {
-                            self.emit_text_chunk(&text).await;
-                            self.conversation[assistant_idx].content.push_str(&text);
-                            self.checkpoint();
-                        }
-                    }
-
-                    if let Some(calls) = delta.tool_calls {
-                        for call_chunk in calls {
-                            let index = call_chunk.index.unwrap_or(0);
-                            let partial = tool_calls
-                                .entry(index)
-                                .or_insert_with(PartialToolCall::default);
-                            if let Some(id) = call_chunk.id {
-                                partial.id.push_str(&id);
-                            }
-                            if let Some(func) = call_chunk.function {
-                                if let Some(name) = func.name {
-                                    partial.name.push_str(&name);
-                                }
-                                if let Some(args) = func.arguments {
-                                    partial.arguments.push_str(&args);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if !thinking_sent && !thinking.is_empty() {
-            self.emit_thinking(&thinking).await;
-            self.conversation[assistant_idx].thinking = Some(thinking);
-            self.checkpoint();
-        }
-
-        let mut completed: Vec<ToolCall> = tool_calls
-            .into_iter()
-            .map(|(_, p)| p.to_tool_call())
-            .filter(|c| !c.function.name.is_empty())
-            .collect();
-        completed.sort_by(|a, b| a.id.cmp(&b.id));
-        if !completed.is_empty() {
-            self.conversation[assistant_idx].tool_calls = Some(
-                completed
-                    .iter()
-                    .map(|call| llm::ToolCallChunk {
-                        index: None,
-                        id: Some(call.id.clone()),
-                        function: Some(llm::ToolCallFunction {
-                            name: Some(call.function.name.clone()),
-                            arguments: Some(call.function.arguments.clone()),
-                        }),
-                    })
-                    .collect(),
-            );
-            self.checkpoint();
-        }
-
-        Ok(completed)
-    }
-
-    async fn execute_tools(&mut self, tool_calls: Vec<ToolCall>) -> Result<()> {
+    async fn execute_tools_with_confirmation(&mut self, tool_calls: Vec<ToolCall>) -> Result<()> {
         for call in tool_calls {
             let tool_name = call.function.name.clone();
 
             if call.call_type != "function" {
-                self.push_tool_error(
+                self.base.push_tool_error(
                     &call.id,
                     &format!("Unsupported tool call type: {}", call.call_type),
                 );
+                self.checkpoint();
                 continue;
             }
 
@@ -310,8 +247,9 @@ impl Agent {
                 .parsed_arguments()
                 .unwrap_or(Value::Object(serde_json::Map::new()));
 
-            if self.tool_registry.requires_confirmation(&tool_name) {
+            if self.base.tool_registry.requires_confirmation(&tool_name) {
                 let prompt = self
+                    .base
                     .tool_registry
                     .confirmation_prompt(&tool_name, &args)
                     .unwrap_or_else(|| format!("Execute {}", tool_name));
@@ -322,43 +260,17 @@ impl Agent {
 
                 let approved = rx.await.unwrap_or(false);
                 if !approved {
-                    self.push_tool_error(&call.id, "User declined the operation");
+                    self.base
+                        .push_tool_error(&call.id, "User declined the operation");
+                    self.checkpoint();
                     continue;
                 }
             }
 
-            let result = if let Some(tool) = self.tool_registry.get(&tool_name) {
-                tool.execute(args, &self.tool_context).await
-            } else {
-                crate::tools::ToolResult::error(format!("Unknown tool: {}", tool_name))
-            };
-
-            self.conversation.push(Message {
-                role: Role::Tool,
-                content: serde_json::to_string(&result)?,
-                thinking: None,
-                tool_calls: None,
-                tool_call_id: Some(call.id),
-            });
-            self.tool_display_names
-                .insert(self.conversation.len() - 1, tool_name);
+            self.base.execute_tool(call).await?;
             self.checkpoint();
         }
         Ok(())
-    }
-
-    fn push_tool_error(&mut self, call_id: &str, msg: &str) {
-        self.conversation.push(Message {
-            role: Role::Tool,
-            content: serde_json::to_string(&crate::tools::ToolResult::error(msg))
-                .unwrap_or_default(),
-            thinking: None,
-            tool_calls: None,
-            tool_call_id: Some(call_id.to_string()),
-        });
-        self.tool_display_names
-            .insert(self.conversation.len() - 1, "tool error".to_string());
-        self.checkpoint();
     }
 
     async fn emit_text_chunk(&self, text: &str) {
@@ -395,110 +307,53 @@ impl Agent {
         let _ = self.sink.on_done_request().send().promise.await;
     }
 
-    fn build_completion_request(&self) -> CompletionRequest {
-        let llm_tools: Vec<llm::Tool> = self
-            .tool_registry
-            .definitions()
-            .into_iter()
-            .map(|def| {
-                let params = llm::FunctionParameters {
-                    param_type: "object".to_string(),
-                    properties: def
-                        .function
-                        .parameters
-                        .properties
-                        .into_iter()
-                        .map(|(k, v)| {
-                            (
-                                k,
-                                llm::FunctionProperty {
-                                    r#type: v.property_type,
-                                    description: v.description,
-                                },
-                            )
-                        })
-                        .collect(),
-                    required: Some(def.function.parameters.required),
-                };
-
-                llm::Tool {
-                    r#type: llm::ToolType::Function,
-                    function: llm::Function {
-                        description: def.function.description,
-                        name: def.function.name,
-                        parameters: Some(params),
-                    },
-                }
-            })
-            .collect();
-
-        let mut request = CompletionRequest::new(&self.model, &self.conversation).stream();
-
-        if !llm_tools.is_empty() {
-            request = request.tools(llm_tools);
-            request = request.tool_choice(UnnamedToolChoice::Auto);
-        }
-
-        if let Some(ref thinking_config) = self.thinking {
-            let thinking = llm::ThinkingConfig {
-                thinking_type: thinking_config.thinking_type.clone(),
-                budget_tokens: thinking_config.budget_tokens,
-            };
-            request = request.thinking(thinking);
-        }
-
-        request
-    }
-
     pub fn reset_conversation(&mut self) {
-        self.conversation = vec![Message {
+        let system_message = Message {
             role: Role::System,
-            content: build_system_prompt(&self.tool_registry),
+            content: build_system_prompt(self.base.tool_registry()),
             thinking: None,
             tool_calls: None,
             tool_call_id: None,
-        }];
+        };
+        self.base.set_conversation(vec![system_message]);
         self.checkpoint();
     }
 
     pub fn reset_model(&mut self, config: &Config) -> Result<()> {
         let provider = config.get_default_provider()?;
-        self.api = create_api(provider)?;
+        let api = create_api(provider)?;
+        let token = provider_token(provider)?;
+        self.base.api = api;
+        self.base.token = token;
+        self.base.model = config.default.model.clone();
         self.provider = provider.name.clone();
-        self.model = config.default.model.clone();
-        self.token = provider_token(provider)?;
+
+        if config.agent.subagent_model.is_none() {
+            self.base.tool_context.api = self.base.api.clone();
+            self.base.tool_context.token = self.base.token.clone();
+            self.base.tool_context.model = self.base.model.clone();
+        }
+
         Ok(())
     }
 
     pub fn conversation(&self) -> &[Message] {
-        &self.conversation
+        self.base.conversation()
     }
 
     pub fn tool_display_names(&self) -> &HashMap<usize, String> {
-        &self.tool_display_names
+        self.base.tool_display_names()
     }
 
     pub fn model_key(&self) -> String {
-        format!("{}/{}", self.provider, self.model)
-    }
-
-    fn begin_assistant_message(&mut self) -> usize {
-        self.conversation.push(Message {
-            role: Role::Assistant,
-            content: String::new(),
-            thinking: None,
-            tool_calls: None,
-            tool_call_id: None,
-        });
-        self.checkpoint();
-        self.conversation.len() - 1
+        format!("{}/{}", self.provider, self.base.model)
     }
 
     fn checkpoint(&self) {
         if let Some(checkpoint) = &self.checkpoint {
             checkpoint(
-                self.conversation.clone(),
-                self.tool_display_names.clone(),
+                self.base.conversation().to_vec(),
+                self.base.tool_display_names().clone(),
                 self.model_key(),
             );
         }
@@ -642,24 +497,4 @@ Available tools:
     );
 
     prompt
-}
-
-#[derive(Default)]
-struct PartialToolCall {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-impl PartialToolCall {
-    fn to_tool_call(self) -> ToolCall {
-        ToolCall {
-            id: self.id,
-            call_type: "function".to_string(),
-            function: crate::tools::FunctionCall {
-                name: self.name,
-                arguments: self.arguments,
-            },
-        }
-    }
 }

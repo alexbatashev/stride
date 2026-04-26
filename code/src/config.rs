@@ -60,6 +60,8 @@ pub struct AgentConfig {
     pub confirm_destructive: bool,
     #[serde(default)]
     pub thinking: Option<ThinkingConfig>,
+    #[serde(default)]
+    pub subagent_model: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -68,6 +70,7 @@ impl Default for AgentConfig {
             max_iterations: default_max_iterations(),
             confirm_destructive: default_confirm_destructive(),
             thinking: None,
+            subagent_model: None,
         }
     }
 }

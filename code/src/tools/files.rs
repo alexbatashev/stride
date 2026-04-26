@@ -361,11 +361,16 @@ fn is_dangerous_command(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm::Mock;
 
     #[test]
     fn test_resolve_path() {
         let context = ToolContext {
             cwd: std::env::current_dir().unwrap(),
+            api: llm::API::Mock(Mock::new()),
+            token: String::new(),
+            model: String::new(),
+            thinking: None,
         };
         let path = resolve_path(&context, "src/main.rs");
         assert!(path.is_absolute());

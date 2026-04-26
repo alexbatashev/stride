@@ -329,7 +329,11 @@ impl Terminal {
         let mut erased = false;
         loop {
             match self.cmd_rx.try_recv() {
-                Ok(Command::Print { message, color, done_tx }) => {
+                Ok(Command::Print {
+                    message,
+                    color,
+                    done_tx,
+                }) => {
                     if !erased {
                         erase_prompt(stdout, *prompt_lines);
                         erased = true;
@@ -340,7 +344,11 @@ impl Terminal {
                         let _ = tx.send(());
                     }
                 }
-                Ok(Command::Write { text, color, done_tx }) => {
+                Ok(Command::Write {
+                    text,
+                    color,
+                    done_tx,
+                }) => {
                     if !erased {
                         erase_prompt(stdout, *prompt_lines);
                         erased = true;
@@ -381,7 +389,11 @@ fn erase_prompt(stdout: &mut io::Stdout, n: usize) {
     if n == 0 {
         return;
     }
-    let _ = queue!(stdout, cursor::MoveToColumn(0), Clear(ClearType::CurrentLine));
+    let _ = queue!(
+        stdout,
+        cursor::MoveToColumn(0),
+        Clear(ClearType::CurrentLine)
+    );
     for _ in 1..n {
         let _ = queue!(
             stdout,
@@ -480,7 +492,12 @@ fn draw_choices(
         queue!(stdout, Print("\r\n"), Clear(ClearType::CurrentLine))?;
         lines += 1;
         if idx == pager.selected {
-            queue!(stdout, SetForegroundColor(Color::Cyan), Print("> "), ResetColor)?;
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Cyan),
+                Print("> "),
+                ResetColor
+            )?;
         } else {
             queue!(stdout, Print("  "))?;
         }
@@ -522,22 +539,14 @@ fn draw_choices(
     Ok(lines)
 }
 
-fn print_line(
-    stdout: &mut io::Stdout,
-    message: &str,
-    color: Option<Color>,
-) -> anyhow::Result<()> {
+fn print_line(stdout: &mut io::Stdout, message: &str, color: Option<Color>) -> anyhow::Result<()> {
     queue_colored(stdout, message, color)?;
     queue!(stdout, Print("\r\n"))?;
     stdout.flush()?;
     Ok(())
 }
 
-fn write_inline(
-    stdout: &mut io::Stdout,
-    text: &str,
-    color: Option<Color>,
-) -> anyhow::Result<()> {
+fn write_inline(stdout: &mut io::Stdout, text: &str, color: Option<Color>) -> anyhow::Result<()> {
     queue_colored(stdout, text, color)?;
     stdout.flush()?;
     Ok(())
@@ -557,17 +566,18 @@ fn queue_colored(stdout: &mut io::Stdout, text: &str, color: Option<Color>) -> a
 fn is_cancel(key: KeyEvent) -> bool {
     matches!(
         key,
-        KeyEvent { code: KeyCode::Esc, .. }
-            | KeyEvent {
-                code: KeyCode::Char('c'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            }
-            | KeyEvent {
-                code: KeyCode::Char('d'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            }
+        KeyEvent {
+            code: KeyCode::Esc,
+            ..
+        } | KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } | KeyEvent {
+            code: KeyCode::Char('d'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        }
     )
 }
 
