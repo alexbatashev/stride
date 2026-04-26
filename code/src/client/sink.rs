@@ -36,7 +36,6 @@ impl event_sink::Server for EventSinkImpl {
         let text = pry!(pry!(params.get()).get_text()).to_str().unwrap_or("");
         if !text.is_empty() {
             if !self.had_text {
-                self.stream.hide_spinner_now();
                 self.stream
                     .write_colored_now("Assistant:\r\n", Some(Color::Cyan));
                 self.had_text = true;

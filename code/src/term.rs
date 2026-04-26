@@ -106,13 +106,6 @@ impl Stream {
         let _ = done_rx.await;
     }
 
-    pub fn hide_spinner_now(&self) {
-        let _ = self.cmd_tx.send(Command::SetSpinner {
-            active: false,
-            done_tx: None,
-        });
-    }
-
     pub async fn prompt(&self) -> Option<String> {
         let (response_tx, response_rx) = oneshot::channel();
         let _ = self.cmd_tx.send(Command::Prompt { response_tx });
@@ -138,50 +131,76 @@ impl Terminal {
             history: Vec::new(),
             spinner: Spinner::new(),
         };
-
         (stream, terminal)
     }
 
     pub async fn run(mut self) {
         let mut stdout = io::stdout();
-        let mut area = RenderArea::default();
+        // prompt_lines: how many lines the current idle prompt occupies (0 = not drawn).
+        // at_bol: whether the cursor is at the start of a fresh line (no inline content pending).
+        let mut at_bol = true;
         let mut spinner_tick = time::interval(Duration::from_millis(120));
+        let mut prompt_lines = draw_idle_prompt(&mut stdout, &self.spinner);
 
         loop {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => { break },
+                _ = tokio::signal::ctrl_c() => {
+                    erase_prompt(&mut stdout, prompt_lines);
+                    break;
+                }
                 _ = spinner_tick.tick(), if self.spinner.active => {
                     self.spinner.tick();
-                    let _ = render_spinner(&mut stdout, &self.spinner, &mut area);
+                    redraw_idle(&mut stdout, &self.spinner, &mut prompt_lines, &mut at_bol);
                 }
                 Some(cmd) = self.cmd_rx.recv() => {
                     match cmd {
                         Command::Print { message, color, done_tx } => {
-                            let _ = print_message(&mut stdout, &message, color, &mut area);
-                            let _ = render_spinner(&mut stdout, &self.spinner, &mut area);
-                            if let Some(done_tx) = done_tx {
-                                let _ = done_tx.send(());
-                            }
+                            ensure_bol(&mut stdout, &mut prompt_lines, &mut at_bol);
+                            let _ = print_line(&mut stdout, &message, color);
+                            prompt_lines = draw_idle_prompt(&mut stdout, &self.spinner);
+                            at_bol = false;
+                            if let Some(tx) = done_tx { let _ = tx.send(()); }
                         }
                         Command::Write { text, color, done_tx } => {
-                            let _ = write_message(&mut stdout, &text, color, &mut area);
-                            if let Some(done_tx) = done_tx {
-                                let _ = done_tx.send(());
+                            // Drain consecutive fire-and-forget writes for smooth streaming.
+                            // Only erase the idle prompt once, then stream directly without
+                            // redrawing it — the prompt will reappear on the next Print /
+                            // SetSpinner / spinner tick.
+                            let mut texts: Vec<(String, Option<Color>)> = vec![(text, color)];
+                            while let Ok(Command::Write { text, color, .. }) =
+                                self.cmd_rx.try_recv()
+                            {
+                                texts.push((text, color));
                             }
+                            if prompt_lines > 0 {
+                                erase_prompt(&mut stdout, prompt_lines);
+                                prompt_lines = 0;
+                            }
+                            for (t, c) in &texts {
+                                at_bol = t.ends_with('\n');
+                                let _ = write_inline(&mut stdout, t, *c);
+                            }
+                            if let Some(tx) = done_tx { let _ = tx.send(()); }
                         }
                         Command::SetSpinner { active, done_tx } => {
+                            ensure_bol(&mut stdout, &mut prompt_lines, &mut at_bol);
                             self.spinner.active = active;
-                            let _ = render_spinner(&mut stdout, &self.spinner, &mut area);
-                            if let Some(done_tx) = done_tx {
-                                let _ = done_tx.send(());
-                            }
+                            prompt_lines = draw_idle_prompt(&mut stdout, &self.spinner);
+                            at_bol = false;
+                            if let Some(tx) = done_tx { let _ = tx.send(()); }
                         }
                         Command::Prompt { response_tx } => {
-                            let result = self.read_prompt(&mut stdout, &mut area);
+                            ensure_bol(&mut stdout, &mut prompt_lines, &mut at_bol);
+                            let result = self.read_prompt(&mut stdout);
+                            prompt_lines = draw_idle_prompt(&mut stdout, &self.spinner);
+                            at_bol = false;
                             let _ = response_tx.send(result.unwrap_or(None));
                         }
                         Command::Select { choices, response_tx } => {
-                            let result = self.select_choice(&mut stdout, &mut area, &choices);
+                            ensure_bol(&mut stdout, &mut prompt_lines, &mut at_bol);
+                            let result = self.select_choice(&mut stdout, &choices);
+                            prompt_lines = draw_idle_prompt(&mut stdout, &self.spinner);
+                            at_bol = false;
                             let _ = response_tx.send(result.unwrap_or(None));
                         }
                     }
@@ -190,28 +209,35 @@ impl Terminal {
         }
     }
 
-    fn read_prompt(
-        &mut self,
-        stdout: &mut io::Stdout,
-        area: &mut RenderArea,
-    ) -> anyhow::Result<Option<String>> {
+    fn read_prompt(&mut self, stdout: &mut io::Stdout) -> anyhow::Result<Option<String>> {
         let _raw = RawMode::new()?;
         let mut editor = PromptEditor::new(&self.history);
-        render_prompt(stdout, &self.spinner, &editor, area)?;
+        let mut prompt_lines = draw_input_prompt(stdout, &self.spinner, &editor)?;
+        let mut at_bol = false;
+
         loop {
-            self.handle_waiting_commands(stdout, area)?;
-            self.spinner.tick();
-            render_prompt(stdout, &self.spinner, &editor, area)?;
+            self.handle_waiting_output(stdout, &mut prompt_lines, &mut at_bol)?;
+            if prompt_lines == 0 {
+                // Output arrived; redraw input prompt below it.
+                if !at_bol {
+                    queue!(stdout, Print("\r\n"))?;
+                    stdout.flush()?;
+                }
+                prompt_lines = draw_input_prompt(stdout, &self.spinner, &editor)?;
+                at_bol = false;
+            }
 
             if !event::poll(Duration::from_millis(120))? {
+                self.spinner.tick();
+                erase_prompt(stdout, prompt_lines);
+                prompt_lines = draw_input_prompt(stdout, &self.spinner, &editor)?;
+                at_bol = false;
                 continue;
             }
 
             match event::read()? {
                 Event::Key(key) if is_cancel(key) => {
-                    clear_area(stdout, *area)?;
-                    *area = RenderArea::default();
-                    render_spinner(stdout, &self.spinner, area)?;
+                    erase_prompt(stdout, prompt_lines);
                     return Ok(None);
                 }
                 Event::Key(KeyEvent {
@@ -222,23 +248,15 @@ impl Terminal {
                     if !line.is_empty() {
                         self.history.push(line.clone());
                     }
-                    clear_area(stdout, *area)?;
-                    *area = RenderArea::default();
-                    queue!(
-                        stdout,
-                        cursor::MoveToColumn(0),
-                        Clear(ClearType::CurrentLine),
-                        Print("> "),
-                        Print(&line),
-                        Print("\r\n")
-                    )?;
-                    stdout.flush()?;
-                    render_spinner(stdout, &self.spinner, area)?;
+                    erase_prompt(stdout, prompt_lines);
+                    let _ = print_line(stdout, &format!("> {line}"), None);
                     return Ok(Some(line));
                 }
                 Event::Key(key) => {
                     editor.handle_key(key);
-                    render_prompt(stdout, &self.spinner, &editor, area)?;
+                    erase_prompt(stdout, prompt_lines);
+                    prompt_lines = draw_input_prompt(stdout, &self.spinner, &editor)?;
+                    at_bol = false;
                 }
                 _ => {}
             }
@@ -248,7 +266,6 @@ impl Terminal {
     fn select_choice(
         &mut self,
         stdout: &mut io::Stdout,
-        area: &mut RenderArea,
         choices: &[Choice],
     ) -> anyhow::Result<Option<Choice>> {
         if choices.is_empty() {
@@ -257,21 +274,31 @@ impl Terminal {
 
         let _raw = RawMode::new()?;
         let mut pager = PagerState::new(choices.len());
-        render_choices(stdout, &self.spinner, choices, &pager, area)?;
+        let mut prompt_lines = draw_choices(stdout, &self.spinner, choices, &pager)?;
+        let mut at_bol = false;
+
         loop {
-            self.handle_waiting_commands(stdout, area)?;
-            self.spinner.tick();
-            render_choices(stdout, &self.spinner, choices, &pager, area)?;
+            self.handle_waiting_output(stdout, &mut prompt_lines, &mut at_bol)?;
+            if prompt_lines == 0 {
+                if !at_bol {
+                    queue!(stdout, Print("\r\n"))?;
+                    stdout.flush()?;
+                }
+                prompt_lines = draw_choices(stdout, &self.spinner, choices, &pager)?;
+                at_bol = false;
+            }
 
             if !event::poll(Duration::from_millis(120))? {
+                self.spinner.tick();
+                erase_prompt(stdout, prompt_lines);
+                prompt_lines = draw_choices(stdout, &self.spinner, choices, &pager)?;
+                at_bol = false;
                 continue;
             }
 
             match event::read()? {
                 Event::Key(key) if is_cancel(key) => {
-                    clear_area(stdout, *area)?;
-                    *area = RenderArea::default();
-                    render_spinner(stdout, &self.spinner, area)?;
+                    erase_prompt(stdout, prompt_lines);
                     return Ok(None);
                 }
                 Event::Key(KeyEvent {
@@ -279,51 +306,55 @@ impl Terminal {
                     ..
                 }) => {
                     let selected = choices[pager.selected].clone();
-                    clear_area(stdout, *area)?;
-                    *area = RenderArea::default();
-                    render_spinner(stdout, &self.spinner, area)?;
+                    erase_prompt(stdout, prompt_lines);
                     return Ok(Some(selected));
                 }
                 Event::Key(key) => {
                     pager.handle_key(key);
-                    render_choices(stdout, &self.spinner, choices, &pager, area)?;
+                    erase_prompt(stdout, prompt_lines);
+                    prompt_lines = draw_choices(stdout, &self.spinner, choices, &pager)?;
+                    at_bol = false;
                 }
                 _ => {}
             }
         }
     }
 
-    fn handle_waiting_commands(
+    fn handle_waiting_output(
         &mut self,
         stdout: &mut io::Stdout,
-        area: &mut RenderArea,
+        prompt_lines: &mut usize,
+        at_bol: &mut bool,
     ) -> anyhow::Result<()> {
+        let mut erased = false;
         loop {
             match self.cmd_rx.try_recv() {
-                Ok(Command::Print {
-                    message,
-                    color,
-                    done_tx,
-                }) => {
-                    print_message(stdout, &message, color, area)?;
-                    if let Some(done_tx) = done_tx {
-                        let _ = done_tx.send(());
+                Ok(Command::Print { message, color, done_tx }) => {
+                    if !erased {
+                        erase_prompt(stdout, *prompt_lines);
+                        erased = true;
+                    }
+                    print_line(stdout, &message, color)?;
+                    *at_bol = true;
+                    if let Some(tx) = done_tx {
+                        let _ = tx.send(());
                     }
                 }
-                Ok(Command::Write {
-                    text,
-                    color,
-                    done_tx,
-                }) => {
-                    write_message(stdout, &text, color, area)?;
-                    if let Some(done_tx) = done_tx {
-                        let _ = done_tx.send(());
+                Ok(Command::Write { text, color, done_tx }) => {
+                    if !erased {
+                        erase_prompt(stdout, *prompt_lines);
+                        erased = true;
+                    }
+                    *at_bol = text.ends_with('\n');
+                    write_inline(stdout, &text, color)?;
+                    if let Some(tx) = done_tx {
+                        let _ = tx.send(());
                     }
                 }
                 Ok(Command::SetSpinner { active, done_tx }) => {
                     self.spinner.active = active;
-                    if let Some(done_tx) = done_tx {
-                        let _ = done_tx.send(());
+                    if let Some(tx) = done_tx {
+                        let _ = tx.send(());
                     }
                 }
                 Ok(Command::Prompt { response_tx }) => {
@@ -332,28 +363,211 @@ impl Terminal {
                 Ok(Command::Select { response_tx, .. }) => {
                     let _ = response_tx.send(None);
                 }
-                Err(mpsc::error::TryRecvError::Empty) => return Ok(()),
-                Err(mpsc::error::TryRecvError::Disconnected) => return Ok(()),
+                Err(_) => {
+                    if erased {
+                        *prompt_lines = 0;
+                    }
+                    return Ok(());
+                }
             }
         }
     }
 }
 
+// --- Render primitives ---
+
+/// Erase `n` prompt lines. Cursor ends at column 0 of the topmost cleared line.
+fn erase_prompt(stdout: &mut io::Stdout, n: usize) {
+    if n == 0 {
+        return;
+    }
+    let _ = queue!(stdout, cursor::MoveToColumn(0), Clear(ClearType::CurrentLine));
+    for _ in 1..n {
+        let _ = queue!(
+            stdout,
+            cursor::MoveToPreviousLine(1),
+            Clear(ClearType::CurrentLine)
+        );
+    }
+    let _ = stdout.flush();
+}
+
+/// Ensure cursor is at the start of a fresh line before drawing a prompt.
+/// Erases the idle prompt if drawn, or emits `\r\n` when mid-line after inline writes.
+fn ensure_bol(stdout: &mut io::Stdout, prompt_lines: &mut usize, at_bol: &mut bool) {
+    if *prompt_lines > 0 {
+        erase_prompt(stdout, *prompt_lines);
+        *prompt_lines = 0;
+    } else if !*at_bol {
+        let _ = queue!(stdout, Print("\r\n"));
+        let _ = stdout.flush();
+        *at_bol = true;
+    }
+}
+
+/// Redraw the idle prompt after a spinner tick.
+fn redraw_idle(
+    stdout: &mut io::Stdout,
+    spinner: &Spinner,
+    prompt_lines: &mut usize,
+    at_bol: &mut bool,
+) {
+    if *prompt_lines > 0 {
+        erase_prompt(stdout, *prompt_lines);
+    } else if !*at_bol {
+        let _ = queue!(stdout, Print("\r\n"));
+        let _ = stdout.flush();
+    }
+    *prompt_lines = draw_idle_prompt(stdout, spinner);
+    *at_bol = false;
+}
+
+/// Draw the idle prompt (`> `, with optional spinner line above). Returns lines drawn.
+/// Caller must ensure cursor is at column 0 of a fresh line before calling.
+fn draw_idle_prompt(stdout: &mut io::Stdout, spinner: &Spinner) -> usize {
+    let lines = if spinner.active {
+        let _ = queue!(stdout, Print(spinner.frame()), Print(" waiting\r\n"));
+        2
+    } else {
+        1
+    };
+    let _ = queue!(stdout, Print("> "));
+    let _ = stdout.flush();
+    lines
+}
+
+/// Draw the interactive input prompt. Returns lines drawn.
+fn draw_input_prompt(
+    stdout: &mut io::Stdout,
+    spinner: &Spinner,
+    editor: &PromptEditor,
+) -> anyhow::Result<usize> {
+    let lines = if spinner.active {
+        queue!(stdout, Print(spinner.frame()), Print(" waiting\r\n"))?;
+        2
+    } else {
+        1
+    };
+    queue!(
+        stdout,
+        Print("> "),
+        Print(&editor.buffer),
+        cursor::MoveToColumn((2 + editor.cursor) as u16)
+    )?;
+    stdout.flush()?;
+    Ok(lines)
+}
+
+/// Draw the choice selector. Returns lines drawn.
+fn draw_choices(
+    stdout: &mut io::Stdout,
+    spinner: &Spinner,
+    choices: &[Choice],
+    pager: &PagerState,
+) -> anyhow::Result<usize> {
+    let mut lines = if spinner.active {
+        queue!(stdout, Print(spinner.frame()), Print(" waiting\r\n"))?;
+        1
+    } else {
+        0
+    };
+
+    queue!(stdout, Print("> "))?;
+    lines += 1;
+
+    for idx in pager.visible_range() {
+        let choice = &choices[idx];
+        queue!(stdout, Print("\r\n"), Clear(ClearType::CurrentLine))?;
+        lines += 1;
+        if idx == pager.selected {
+            queue!(stdout, SetForegroundColor(Color::Cyan), Print("> "), ResetColor)?;
+        } else {
+            queue!(stdout, Print("  "))?;
+        }
+        queue!(stdout, Print(&choice.display))?;
+        if let Some(description) = &choice.description {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::DarkGrey),
+                Print("  "),
+                Print(description),
+                ResetColor
+            )?;
+        }
+    }
+
+    if pager.len > pager.max_visible {
+        let end = pager.visible_range().end;
+        queue!(
+            stdout,
+            Print("\r\n"),
+            Clear(ClearType::CurrentLine),
+            SetForegroundColor(Color::DarkGrey),
+            Print(format!(
+                "rows {} to {} of {}",
+                pager.offset + 1,
+                end,
+                pager.len
+            )),
+            ResetColor
+        )?;
+        lines += 1;
+    }
+
+    if lines > 1 {
+        queue!(stdout, cursor::MoveUp((lines - 1) as u16))?;
+    }
+    queue!(stdout, cursor::MoveToColumn(2))?;
+    stdout.flush()?;
+    Ok(lines)
+}
+
+fn print_line(
+    stdout: &mut io::Stdout,
+    message: &str,
+    color: Option<Color>,
+) -> anyhow::Result<()> {
+    queue_colored(stdout, message, color)?;
+    queue!(stdout, Print("\r\n"))?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn write_inline(
+    stdout: &mut io::Stdout,
+    text: &str,
+    color: Option<Color>,
+) -> anyhow::Result<()> {
+    queue_colored(stdout, text, color)?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn queue_colored(stdout: &mut io::Stdout, text: &str, color: Option<Color>) -> anyhow::Result<()> {
+    if let Some(color) = color {
+        queue!(stdout, SetForegroundColor(color), Print(text), ResetColor)?;
+    } else {
+        queue!(stdout, Print(text))?;
+    }
+    Ok(())
+}
+
+// --- Input helpers ---
+
 fn is_cancel(key: KeyEvent) -> bool {
     matches!(
         key,
-        KeyEvent {
-            code: KeyCode::Esc,
-            ..
-        } | KeyEvent {
-            code: KeyCode::Char('c'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        } | KeyEvent {
-            code: KeyCode::Char('d'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        }
+        KeyEvent { code: KeyCode::Esc, .. }
+            | KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('d'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }
     )
 }
 
@@ -398,13 +612,6 @@ impl Spinner {
 }
 
 const SPINNER_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-
-#[derive(Debug, Clone, Copy, Default)]
-struct RenderArea {
-    active: bool,
-    above: usize,
-    below: usize,
-}
 
 #[derive(Debug)]
 struct PromptEditor {
@@ -586,222 +793,6 @@ impl PagerState {
     fn visible_range(&self) -> std::ops::Range<usize> {
         self.offset..(self.offset + self.max_visible).min(self.len)
     }
-
-    fn rendered_lines(&self) -> usize {
-        self.visible_range().len() + usize::from(self.len > self.max_visible)
-    }
-}
-
-fn render_spinner(
-    stdout: &mut io::Stdout,
-    spinner: &Spinner,
-    area: &mut RenderArea,
-) -> anyhow::Result<()> {
-    clear_area(stdout, *area)?;
-    if !spinner.active {
-        *area = RenderArea::default();
-        stdout.flush()?;
-        return Ok(());
-    }
-
-    queue!(
-        stdout,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-        Print(spinner.frame()),
-        Print(" waiting")
-    )?;
-    stdout.flush()?;
-    *area = RenderArea {
-        active: true,
-        above: 0,
-        below: 0,
-    };
-    Ok(())
-}
-
-fn print_message(
-    stdout: &mut io::Stdout,
-    message: &str,
-    color: Option<Color>,
-    area: &mut RenderArea,
-) -> anyhow::Result<()> {
-    clear_area(stdout, *area)?;
-    *area = RenderArea::default();
-    queue!(
-        stdout,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine)
-    )?;
-    queue_colored(stdout, message, color)?;
-    queue!(stdout, Print("\r\n"))?;
-    stdout.flush()?;
-    Ok(())
-}
-
-fn write_message(
-    stdout: &mut io::Stdout,
-    text: &str,
-    color: Option<Color>,
-    area: &mut RenderArea,
-) -> anyhow::Result<()> {
-    clear_area(stdout, *area)?;
-    *area = RenderArea::default();
-    queue_colored(stdout, text, color)?;
-    stdout.flush()?;
-    Ok(())
-}
-
-fn queue_colored(stdout: &mut io::Stdout, text: &str, color: Option<Color>) -> anyhow::Result<()> {
-    if let Some(color) = color {
-        queue!(stdout, SetForegroundColor(color), Print(text), ResetColor)?;
-    } else {
-        queue!(stdout, Print(text))?;
-    }
-    Ok(())
-}
-
-fn render_prompt(
-    stdout: &mut io::Stdout,
-    spinner: &Spinner,
-    editor: &PromptEditor,
-    area: &mut RenderArea,
-) -> anyhow::Result<()> {
-    clear_area(stdout, *area)?;
-    if spinner.active {
-        queue!(
-            stdout,
-            cursor::MoveToColumn(0),
-            Clear(ClearType::CurrentLine),
-            Print(spinner.frame()),
-            Print(" waiting"),
-            Print("\r\n")
-        )?;
-    }
-    queue!(
-        stdout,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-        Print("> "),
-        Print(&editor.buffer),
-        cursor::MoveToColumn((2 + editor.cursor) as u16)
-    )?;
-    *area = RenderArea {
-        active: true,
-        above: usize::from(spinner.active),
-        below: 0,
-    };
-    stdout.flush()?;
-    Ok(())
-}
-
-fn render_choices(
-    stdout: &mut io::Stdout,
-    spinner: &Spinner,
-    choices: &[Choice],
-    pager: &PagerState,
-    area: &mut RenderArea,
-) -> anyhow::Result<()> {
-    clear_area(stdout, *area)?;
-    if spinner.active {
-        queue!(
-            stdout,
-            cursor::MoveToColumn(0),
-            Clear(ClearType::CurrentLine),
-            Print(spinner.frame()),
-            Print(" waiting"),
-            Print("\r\n")
-        )?;
-    }
-    queue!(
-        stdout,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine),
-        Print("> ")
-    )?;
-
-    for idx in pager.visible_range() {
-        let choice = &choices[idx];
-        queue!(stdout, Print("\r\n"), Clear(ClearType::CurrentLine))?;
-        if idx == pager.selected {
-            queue!(
-                stdout,
-                SetForegroundColor(Color::Cyan),
-                Print("> "),
-                ResetColor
-            )?;
-        } else {
-            queue!(stdout, Print("  "))?;
-        }
-        queue!(stdout, Print(&choice.display))?;
-        if let Some(description) = &choice.description {
-            queue!(
-                stdout,
-                SetForegroundColor(Color::DarkGrey),
-                Print("  "),
-                Print(description),
-                ResetColor
-            )?;
-        }
-    }
-
-    if pager.len > pager.max_visible {
-        queue!(stdout, Print("\r\n"), Clear(ClearType::CurrentLine))?;
-        let end = pager.visible_range().end;
-        queue!(
-            stdout,
-            SetForegroundColor(Color::DarkGrey),
-            Print(format!(
-                "rows {} to {} of {}",
-                pager.offset + 1,
-                end,
-                pager.len
-            )),
-            ResetColor
-        )?;
-    }
-
-    let rendered = pager.rendered_lines();
-    if rendered > 0 {
-        queue!(stdout, cursor::MoveUp(rendered as u16))?;
-    }
-    queue!(stdout, cursor::MoveToColumn(2))?;
-    *area = RenderArea {
-        active: true,
-        above: usize::from(spinner.active),
-        below: rendered,
-    };
-    stdout.flush()?;
-    Ok(())
-}
-
-fn clear_area(stdout: &mut io::Stdout, area: RenderArea) -> anyhow::Result<()> {
-    if !area.active {
-        return Ok(());
-    }
-
-    if area.above > 0 {
-        queue!(stdout, cursor::MoveUp(area.above as u16))?;
-    }
-
-    let lines = area.above + 1 + area.below;
-    queue!(
-        stdout,
-        cursor::MoveToColumn(0),
-        Clear(ClearType::CurrentLine)
-    )?;
-    for _ in 1..lines {
-        queue!(
-            stdout,
-            cursor::MoveDown(1),
-            cursor::MoveToColumn(0),
-            Clear(ClearType::CurrentLine)
-        )?;
-    }
-    if lines > 1 {
-        queue!(stdout, cursor::MoveUp((lines - 1) as u16))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
