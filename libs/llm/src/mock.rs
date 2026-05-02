@@ -3,14 +3,31 @@ use crate::{
     StreamResponseChunk, Usage,
 };
 use futures::{Stream, stream};
+use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
-pub struct Mock;
+pub struct Mock {
+    stream_chunks: Arc<Mutex<VecDeque<Vec<StreamResponseChunk>>>>,
+    stream_requests: Arc<Mutex<Vec<CompletionRequest>>>,
+}
 
 impl Mock {
     pub fn new() -> Self {
-        Mock
+        Mock {
+            stream_chunks: Arc::new(Mutex::new(VecDeque::new())),
+            stream_requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn with_stream_chunks(self, chunks: Vec<Vec<StreamResponseChunk>>) -> Self {
+        *self.stream_chunks.lock().unwrap() = chunks.into();
+        self
+    }
+
+    pub fn stream_requests(&self) -> Vec<CompletionRequest> {
+        self.stream_requests.lock().unwrap().clone()
     }
 
     pub async fn list_models(&self, _token: &str) -> Result<Vec<ModelDesc>, Error> {
@@ -63,8 +80,14 @@ impl Mock {
     pub fn stream_completion(
         &self,
         _token: &str,
-        _request: CompletionRequest,
+        request: CompletionRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
+        self.stream_requests.lock().unwrap().push(request);
+
+        if let Some(chunks) = self.stream_chunks.lock().unwrap().pop_front() {
+            return Box::pin(stream::iter(chunks.into_iter().map(Ok)));
+        }
+
         let chunk = StreamResponseChunk {
             id: "mock-stream-id".to_string(),
             object: "mock.stream".to_string(),

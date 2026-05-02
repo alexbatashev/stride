@@ -57,6 +57,10 @@ impl BaseAgent {
         self.0.borrow_mut().tool_registry.register(tool);
     }
 
+    pub fn allow_tool(&self, name: &str) {
+        self.0.borrow_mut().tool_registry.allow_tool(name);
+    }
+
     pub async fn make_turn(
         &self,
         request: String,
@@ -133,7 +137,29 @@ impl BaseAgent {
                     };
 
                     let result = match tool {
-                        Some(tool) => tool.execute(args).await,
+                        Some(tool) => {
+                            let needs_approval = {
+                                let lock = agent.borrow();
+                                lock.tool_registry.needs_approval(&name, &args)
+                            };
+
+                            if needs_approval {
+                                let message = tool.confirmation_prompt(&args);
+                                let (approved, response) = oneshot::channel();
+                                yield Ok(AgentResponseChunk::Approval { message, approved });
+
+                                if !response.await.unwrap_or(false) {
+                                    append_tool_result(
+                                        &agent,
+                                        id,
+                                        json!({ "error": "tool execution denied by user" }),
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            tool.execute(args).await
+                        }
                         None => json!({ "error": format!("unknown tool: {}", name) }),
                     };
 
@@ -231,4 +257,229 @@ fn append_tool_result(agent: &Rc<RefCell<BaseAgentInner>>, id: String, result: V
         tool_call_id: Some(id),
         ..Default::default()
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use async_trait::async_trait;
+    use futures::{StreamExt, pin_mut};
+    use llm::{
+        CompletionChoice, Delta, Function, FunctionParameters, StreamResponseChunk, ToolCallChunk,
+        ToolCallFunction,
+    };
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct ApprovalTool {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait(?Send)]
+    impl Tool for ApprovalTool {
+        fn name(&self) -> &str {
+            "approval_tool"
+        }
+
+        fn readable_name(&self) -> &str {
+            "Approval tool"
+        }
+
+        fn definition(&self) -> llm::Tool {
+            llm::Tool {
+                r#type: llm::ToolType::Function,
+                function: Function {
+                    description: "Test approval tool".to_string(),
+                    name: self.name().to_string(),
+                    parameters: Some(FunctionParameters {
+                        param_type: "object".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            }
+        }
+
+        async fn execute(&self, _args: Value) -> Value {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            json!({ "success": true })
+        }
+
+        fn requires_confirmation(&self) -> bool {
+            true
+        }
+
+        fn confirmation_prompt(&self, args: &Value) -> String {
+            format!("Approve approval_tool with {args}")
+        }
+    }
+
+    #[test]
+    fn waits_for_approval_before_executing_tool() {
+        futures::executor::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![tool_call_chunk(r#"{"value":1}"#)],
+                vec![text_chunk("done")],
+            ]);
+            let agent = BaseAgent::new(
+                mock.clone().into(),
+                String::new(),
+                AgentConfig {
+                    model: "mock-model".to_string(),
+                    thinking: false,
+                },
+                vec![],
+            );
+            agent.register_tool(ApprovalTool {
+                calls: calls.clone(),
+            });
+
+            let stream = agent.make_turn("run tool".to_string()).await;
+            pin_mut!(stream);
+
+            assert!(matches!(
+                stream.next().await.unwrap().unwrap(),
+                AgentResponseChunk::Chunk(_)
+            ));
+
+            match stream.next().await.unwrap().unwrap() {
+                AgentResponseChunk::Approval { message, approved } => {
+                    assert_eq!(message, r#"Approve approval_tool with {"value":1}"#);
+                    approved.send(true).unwrap();
+                }
+                AgentResponseChunk::Chunk(_) => panic!("expected approval"),
+            }
+
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+            let mut saw_done = false;
+            while let Some(chunk) = stream.next().await {
+                if chunk_text(&chunk.unwrap()) == Some("done") {
+                    saw_done = true;
+                }
+            }
+
+            assert!(saw_done);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(mock.stream_requests().len(), 2);
+        });
+    }
+
+    #[test]
+    fn denial_skips_tool_execution_and_reports_result() {
+        futures::executor::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![tool_call_chunk(r#"{"value":1}"#)],
+                vec![text_chunk("done")],
+            ]);
+            let agent = BaseAgent::new(
+                mock.clone().into(),
+                String::new(),
+                AgentConfig {
+                    model: "mock-model".to_string(),
+                    thinking: false,
+                },
+                vec![],
+            );
+            agent.register_tool(ApprovalTool {
+                calls: calls.clone(),
+            });
+
+            let stream = agent.make_turn("run tool".to_string()).await;
+            pin_mut!(stream);
+
+            stream.next().await.unwrap().unwrap();
+
+            match stream.next().await.unwrap().unwrap() {
+                AgentResponseChunk::Approval { approved, .. } => approved.send(false).unwrap(),
+                AgentResponseChunk::Chunk(_) => panic!("expected approval"),
+            }
+
+            while stream.next().await.is_some() {}
+
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+            let requests = mock.stream_requests();
+            let tool_result = requests[1]
+                .messages
+                .iter()
+                .find(|message| message.role == llm::Role::Tool)
+                .unwrap();
+            assert_eq!(
+                tool_result.content,
+                r#"{"error":"tool execution denied by user"}"#
+            );
+        });
+    }
+
+    fn tool_call_chunk(arguments: &str) -> StreamResponseChunk {
+        StreamResponseChunk {
+            id: "chunk".to_string(),
+            object: "mock.stream".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            system_fingerprint: None,
+            choices: vec![CompletionChoice {
+                message: None,
+                text: None,
+                index: 0,
+                delta: Some(Delta {
+                    content: None,
+                    thinking: None,
+                    tool_calls: Some(vec![ToolCallChunk {
+                        index: Some(0),
+                        id: Some("call_1".to_string()),
+                        function: Some(ToolCallFunction {
+                            name: Some("approval_tool".to_string()),
+                            arguments: Some(arguments.to_string()),
+                        }),
+                    }]),
+                }),
+                logprobs: None,
+                tool_calls: None,
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+        }
+    }
+
+    fn text_chunk(content: &str) -> StreamResponseChunk {
+        StreamResponseChunk {
+            id: "chunk".to_string(),
+            object: "mock.stream".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            system_fingerprint: None,
+            choices: vec![CompletionChoice {
+                message: None,
+                text: Some(content.to_string()),
+                index: 0,
+                delta: Some(Delta {
+                    content: Some(content.to_string()),
+                    thinking: None,
+                    tool_calls: None,
+                }),
+                logprobs: None,
+                tool_calls: None,
+                finish_reason: Some("stop".to_string()),
+            }],
+        }
+    }
+
+    fn chunk_text(chunk: &AgentResponseChunk) -> Option<&str> {
+        let AgentResponseChunk::Chunk(chunk) = chunk else {
+            return None;
+        };
+
+        chunk
+            .choices
+            .first()
+            .and_then(|choice| choice.delta.as_ref())
+            .and_then(|delta| delta.content.as_deref())
+    }
 }

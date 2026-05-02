@@ -52,11 +52,13 @@ impl ToolRegistry {
 
     /// Returns true when the tool needs approval from the user before execution
     pub fn needs_approval(&self, name: &str, args: &Value) -> bool {
-        !self.allowed_tools.contains(name)
-            || self
-                .tools
-                .get(name)
-                .map(|t| t.are_safe_args(args))
-                .unwrap_or_default()
+        if self.allowed_tools.contains(name) {
+            return false;
+        }
+
+        self.tools
+            .get(name)
+            .map(|t| t.requires_confirmation() || !t.are_safe_args(args))
+            .unwrap_or_default()
     }
 }
