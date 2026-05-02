@@ -19,7 +19,7 @@ pub use ollama::Ollama;
 pub use openai::OpenAI;
 pub use utils::*;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Message {
     pub role: Role,
     pub content: String,
@@ -31,12 +31,13 @@ pub struct Message {
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Role {
     #[serde(rename = "system")]
     System,
     #[serde(rename = "assistant")]
     Assistant,
+    #[default]
     #[serde(rename = "user")]
     User,
     #[serde(rename = "tool")]
