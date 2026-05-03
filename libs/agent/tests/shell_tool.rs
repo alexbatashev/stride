@@ -1,4 +1,4 @@
-use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::bash::ShellTool};
+use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::shell::ShellTool};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
