@@ -95,8 +95,17 @@ impl ModelRegistry {
 
 impl BaseAgent {
     pub fn new(model: String, config: Arc<AgentConfig>, thread: Vec<Message>) -> Self {
+        Self::new_with_tools(model, config, thread, ToolRegistry::new())
+    }
+
+    pub fn new_with_tools(
+        model: String,
+        config: Arc<AgentConfig>,
+        thread: Vec<Message>,
+        tool_registry: ToolRegistry,
+    ) -> Self {
         Self(Rc::new(RefCell::new(BaseAgentInner {
-            tool_registry: ToolRegistry::new(),
+            tool_registry,
             thread,
             config,
             model,
@@ -388,7 +397,9 @@ mod tests {
         );
         let agent = BaseAgent::new(
             DEFAULT_MODEL.to_string(),
-            Arc::new(AgentConfig { model_registry: registry }),
+            Arc::new(AgentConfig {
+                model_registry: registry,
+            }),
             vec![],
         );
         agent.register_tool(ApprovalTool { calls });

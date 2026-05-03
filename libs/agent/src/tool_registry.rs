@@ -7,7 +7,7 @@ use crate::Tool;
 use llm::Tool as LlmTool;
 use serde_json::Value;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     allowed_tools: HashSet<String>,
