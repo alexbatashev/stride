@@ -243,6 +243,7 @@ mod tests {
         );
         Arc::new(AgentConfig {
             model_registry: registry,
+            max_iterations: 50,
         })
     }
 

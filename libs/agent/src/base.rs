@@ -42,6 +42,7 @@ pub enum AgentResponseChunk {
 #[derive(Debug)]
 pub struct AgentConfig {
     pub model_registry: ModelRegistry,
+    pub max_iterations: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +61,7 @@ pub struct ModelRegEntry {
 struct BaseAgentInner {
     tool_registry: ToolRegistry,
     thread: Vec<Message>,
+    tool_display_names: HashMap<usize, String>,
     config: Arc<AgentConfig>,
     model: String,
 }
@@ -115,6 +117,7 @@ impl BaseAgent {
         Self(Rc::new(RefCell::new(BaseAgentInner {
             tool_registry,
             thread,
+            tool_display_names: HashMap::new(),
             config,
             model,
         })))
@@ -128,11 +131,33 @@ impl BaseAgent {
         self.0.borrow_mut().tool_registry.allow_tool(name);
     }
 
+    pub fn set_config(&self, config: Arc<AgentConfig>) {
+        self.0.borrow_mut().config = config;
+    }
+
+    pub fn set_thread(&self, system_prompt: String, thread: Vec<Message>) {
+        let mut lock = self.0.borrow_mut();
+        lock.thread = thread_with_system_prompt(system_prompt, thread);
+        lock.tool_display_names.clear();
+    }
+
+    pub fn thread(&self) -> Vec<Message> {
+        self.0.borrow().thread.clone()
+    }
+
+    pub fn tool_display_names(&self) -> HashMap<usize, String> {
+        self.0.borrow().tool_display_names.clone()
+    }
+
+    pub fn tool_definitions(&self) -> Vec<llm::Tool> {
+        self.0.borrow().tool_registry.definitions()
+    }
+
     pub async fn make_turn(
         &self,
         request: String,
     ) -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>> {
-        let (config, model) = {
+        let (config, model, max_iterations) = {
             let lock = self.0.borrow();
             let model_name = &lock.model;
             (
@@ -141,6 +166,7 @@ impl BaseAgent {
                     .model_registry
                     .get_or_default(model_name)
                     .clone(),
+                lock.config.max_iterations,
             )
         };
 
@@ -154,7 +180,7 @@ impl BaseAgent {
         let agent = self.0.clone();
 
         Box::pin(stream! {
-            loop {
+            for _ in 0..max_iterations {
                 {
                     agent.borrow_mut().thread.push(Message {
                         role: llm::Role::Assistant,
@@ -165,13 +191,20 @@ impl BaseAgent {
 
                 let request = {
                     let lock = agent.borrow();
-                    CompletionRequest {
+                    let mut request = CompletionRequest {
                         model: model.model_name.clone(),
                         messages: lock.thread.clone(),
                         stream: Some(true),
                         tools: (!tools.is_empty()).then_some(tools.clone()),
                         ..Default::default()
+                    };
+                    if model.thinking {
+                        request.thinking = Some(llm::ThinkingConfig {
+                            thinking_type: "native".to_string(),
+                            budget_tokens: None,
+                        });
                     }
+                    request
                 };
 
                 let mut stream = model.api.stream_completion(&model.token, request);
@@ -193,14 +226,14 @@ impl BaseAgent {
 
                 let tool_calls = finish_tool_calls(&agent, tool_calls);
                 if tool_calls.is_empty() {
-                    break;
+                    return;
                 }
 
                 for (id, name, arguments) in tool_calls {
                     let args = match serde_json::from_str::<Value>(&arguments) {
                         Ok(args) => args,
                         Err(err) => {
-                            append_tool_result(&agent, id, json!({ "error": err.to_string() }));
+                            append_tool_result(&agent, id, json!({ "error": err.to_string() }), "tool error".to_string());
                             continue;
                         }
                     };
@@ -210,8 +243,9 @@ impl BaseAgent {
                         lock.tool_registry.get(&name)
                     };
 
-                    let result = match tool {
+                    let (result, readable_name) = match tool {
                         Some(tool) => {
+                            let readable_name = tool.readable_name().to_string();
                             let needs_approval = {
                                 let lock = agent.borrow();
                                 lock.tool_registry.needs_approval(&name, &args)
@@ -227,19 +261,27 @@ impl BaseAgent {
                                         &agent,
                                         id,
                                         json!({ "error": "tool execution denied by user" }),
+                                        readable_name,
                                     );
                                     continue;
                                 }
                             }
 
-                            tool.execute(config.clone(), args).await
+                            (tool.execute(config.clone(), args).await, readable_name)
                         }
-                        None => json!({ "error": format!("unknown tool: {}", name) }),
+                        None => (
+                            json!({ "error": format!("unknown tool: {}", name) }),
+                            name.clone(),
+                        ),
                     };
 
-                    append_tool_result(&agent, id, result);
+                    append_tool_result(&agent, id, result, readable_name);
                 }
             }
+
+            yield Err(AgentError::NetworkError(format!(
+                "reached maximum tool iteration limit ({max_iterations})"
+            )));
         })
     }
 }
@@ -332,16 +374,24 @@ fn finish_tool_calls(
     tool_calls
 }
 
-fn append_tool_result(agent: &Rc<RefCell<BaseAgentInner>>, id: String, result: Value) {
+fn append_tool_result(
+    agent: &Rc<RefCell<BaseAgentInner>>,
+    id: String,
+    result: Value,
+    readable_name: String,
+) {
     let content =
         serde_json::to_string(&result).unwrap_or_else(|err| format!(r#"{{"error":"{}"}}"#, err));
 
-    agent.borrow_mut().thread.push(Message {
+    let mut lock = agent.borrow_mut();
+    lock.thread.push(Message {
         role: llm::Role::Tool,
         content,
         tool_call_id: Some(id),
         ..Default::default()
     });
+    let idx = lock.thread.len() - 1;
+    lock.tool_display_names.insert(idx, readable_name);
 }
 
 #[cfg(test)]
@@ -418,6 +468,7 @@ mod tests {
             DEFAULT_MODEL.to_string(),
             Arc::new(AgentConfig {
                 model_registry: registry,
+                max_iterations: 50,
             }),
             String::new(),
             vec![],
@@ -435,6 +486,7 @@ mod tests {
                 DEFAULT_MODEL.to_string(),
                 Arc::new(AgentConfig {
                     model_registry: registry(&mock),
+                    max_iterations: 50,
                 }),
                 "Use short answers.".to_string(),
                 vec![Message {
@@ -494,6 +546,12 @@ mod tests {
 
             assert!(saw_done);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(
+                agent
+                    .tool_display_names()
+                    .values()
+                    .any(|name| name == "Approval tool")
+            );
             assert_eq!(mock.stream_requests().len(), 2);
         });
     }

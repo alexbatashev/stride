@@ -258,7 +258,7 @@ impl AgentSessionImpl {
             .save_thread_with_model(
                 &thread_id,
                 &cwd,
-                agent.conversation(),
+                &agent.conversation(),
                 &HashMap::new(),
                 Some(&agent.model_key()),
             )
@@ -353,8 +353,8 @@ impl agent_session::Server for AgentSessionImpl {
                 .take()
                 .ok_or_else(|| capnp::Error::failed("agent is busy".into()))?;
             let result = agent.send_message(text).await;
-            let snapshot = agent.conversation().to_vec();
-            let tool_names = agent.tool_display_names().clone();
+            let snapshot = agent.conversation();
+            let tool_names = agent.tool_display_names();
             let model = agent.model_key();
             let current_thread_id = thread_id.borrow().clone();
             *agent_cell.borrow_mut() = Some(agent);
@@ -401,7 +401,7 @@ impl agent_session::Server for AgentSessionImpl {
                         let new_thread_id = store
                             .create_thread_with_model(
                                 &cwd,
-                                agent.conversation(),
+                                &agent.conversation(),
                                 Some(&agent.model_key()),
                             )
                             .await
@@ -420,8 +420,8 @@ impl agent_session::Server for AgentSessionImpl {
                                 .save_thread_with_model(
                                     &current_thread_id,
                                     &cwd,
-                                    agent.conversation(),
-                                    agent.tool_display_names(),
+                                    &agent.conversation(),
+                                    &agent.tool_display_names(),
                                     Some(&agent.model_key()),
                                 )
                                 .await
@@ -458,8 +458,8 @@ impl agent_session::Server for AgentSessionImpl {
     ) -> Promise<(), capnp::Error> {
         let snapshot = self.agent.borrow().as_ref().map(|agent| {
             (
-                agent.conversation().to_vec(),
-                agent.tool_display_names().clone(),
+                agent.conversation(),
+                agent.tool_display_names(),
                 agent.model_key(),
             )
         });

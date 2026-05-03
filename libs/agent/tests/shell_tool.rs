@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn dummy_config() -> Arc<AgentConfig> {
     Arc::new(AgentConfig {
         model_registry: ModelRegistry::new(),
+        max_iterations: 50,
     })
 }
 

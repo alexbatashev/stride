@@ -369,6 +369,7 @@ dependencies = [
  "clap",
  "crossterm 0.28.1",
  "dirs",
+ "friday-agent",
  "futures",
  "llm",
  "minisql",

@@ -59,7 +59,7 @@ pub struct AgentConfig {
     #[serde(default = "default_confirm_destructive")]
     pub confirm_destructive: bool,
     #[serde(default)]
-    pub thinking: Option<ThinkingConfig>,
+    pub thinking: bool,
     #[serde(default)]
     pub subagent_model: Option<String>,
 }
@@ -69,7 +69,7 @@ impl Default for AgentConfig {
         Self {
             max_iterations: default_max_iterations(),
             confirm_destructive: default_confirm_destructive(),
-            thinking: None,
+            thinking: false,
             subagent_model: None,
         }
     }
@@ -83,24 +83,12 @@ pub struct DaemonConfig {
     pub socket_path: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
-pub struct ThinkingConfig {
-    #[serde(default = "default_thinking_type")]
-    pub thinking_type: String,
-    #[serde(default)]
-    pub budget_tokens: Option<u32>,
-}
-
 fn default_max_iterations() -> usize {
     50
 }
 
 fn default_confirm_destructive() -> bool {
     true
-}
-
-fn default_thinking_type() -> String {
-    "native".to_string()
 }
 
 impl Config {
