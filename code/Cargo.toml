@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 # Internal
 llm = { path = "../libs/llm" }
+friday-agent = { path = "../libs/agent" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }

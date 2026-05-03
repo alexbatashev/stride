@@ -9,7 +9,6 @@ mod config;
 mod daemon;
 mod persistence;
 mod term;
-mod tools;
 
 use crate::client::ClientCommand;
 use anyhow::{Context, Result};
