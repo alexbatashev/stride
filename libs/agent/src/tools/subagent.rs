@@ -13,6 +13,7 @@ pub struct SubAgentTool {
     desc: String,
     tool_registry: ToolRegistry,
     model: String,
+    system_prompt: String,
 }
 
 #[derive(ToolDesc)]
@@ -27,6 +28,7 @@ impl SubAgentTool {
         readable_name: &str,
         desc: &str,
         model: &str,
+        system_prompt: &str,
         tool_registry: ToolRegistry,
     ) -> Self {
         Self {
@@ -35,6 +37,7 @@ impl SubAgentTool {
             desc: desc.to_string(),
             tool_registry,
             model: model.to_string(),
+            system_prompt: system_prompt.to_string(),
         }
     }
 }
@@ -69,6 +72,7 @@ impl Tool for SubAgentTool {
         let agent = BaseAgent::new_with_tools(
             self.model.clone(),
             config,
+            self.system_prompt.clone(),
             vec![],
             self.tool_registry.clone(),
         );
@@ -162,6 +166,7 @@ mod tests {
                 "Subagent",
                 "Run a subagent.",
                 DEFAULT_MODEL,
+                "Return final content.",
                 ToolRegistry::new(),
             );
             let result = tool
@@ -172,10 +177,10 @@ mod tests {
                 result,
                 json!({ "success": true, "content": "final answer" })
             );
-            assert_eq!(
-                mock.stream_requests()[0].messages[0].content,
-                "inspect this"
-            );
+            let messages = &mock.stream_requests()[0].messages;
+            assert_eq!(messages[0].role, llm::Role::System);
+            assert_eq!(messages[0].content, "Return final content.");
+            assert_eq!(messages[1].content, "inspect this");
         });
     }
 
@@ -196,6 +201,7 @@ mod tests {
                 "Subagent",
                 "Run a subagent.",
                 DEFAULT_MODEL,
+                "Never execute tools without approval.",
                 registry,
             );
 
@@ -207,6 +213,11 @@ mod tests {
             assert_eq!(calls.load(Ordering::SeqCst), 0);
 
             let requests = mock.stream_requests();
+            assert_eq!(requests[0].messages[0].role, llm::Role::System);
+            assert_eq!(
+                requests[0].messages[0].content,
+                "Never execute tools without approval."
+            );
             let tool_result = requests[1]
                 .messages
                 .iter()

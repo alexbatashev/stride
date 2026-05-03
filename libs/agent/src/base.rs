@@ -94,16 +94,24 @@ impl ModelRegistry {
 }
 
 impl BaseAgent {
-    pub fn new(model: String, config: Arc<AgentConfig>, thread: Vec<Message>) -> Self {
-        Self::new_with_tools(model, config, thread, ToolRegistry::new())
+    pub fn new(
+        model: String,
+        config: Arc<AgentConfig>,
+        system_prompt: String,
+        thread: Vec<Message>,
+    ) -> Self {
+        Self::new_with_tools(model, config, system_prompt, thread, ToolRegistry::new())
     }
 
     pub fn new_with_tools(
         model: String,
         config: Arc<AgentConfig>,
+        system_prompt: String,
         thread: Vec<Message>,
         tool_registry: ToolRegistry,
     ) -> Self {
+        let thread = thread_with_system_prompt(system_prompt, thread);
+
         Self(Rc::new(RefCell::new(BaseAgentInner {
             tool_registry,
             thread,
@@ -234,6 +242,17 @@ impl BaseAgent {
             }
         })
     }
+}
+
+fn thread_with_system_prompt(system_prompt: String, thread: Vec<Message>) -> Vec<Message> {
+    let mut prompted_thread = Vec::with_capacity(thread.len() + 1);
+    prompted_thread.push(Message {
+        role: llm::Role::System,
+        content: system_prompt,
+        ..Default::default()
+    });
+    prompted_thread.extend(thread);
+    prompted_thread
 }
 
 fn append_chunk(
@@ -400,10 +419,42 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: registry,
             }),
+            String::new(),
             vec![],
         );
         agent.register_tool(ApprovalTool { calls });
         agent
+    }
+
+    #[test]
+    fn sends_system_prompt_before_thread_messages() {
+        futures::executor::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mock = llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("done")]]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                }),
+                "Use short answers.".to_string(),
+                vec![Message {
+                    role: llm::Role::User,
+                    content: "previous".to_string(),
+                    ..Default::default()
+                }],
+            );
+            agent.register_tool(ApprovalTool { calls });
+
+            let stream = agent.make_turn("next".to_string()).await;
+            pin_mut!(stream);
+            while stream.next().await.is_some() {}
+
+            let requests = mock.stream_requests();
+            assert_eq!(requests[0].messages[0].role, llm::Role::System);
+            assert_eq!(requests[0].messages[0].content, "Use short answers.");
+            assert_eq!(requests[0].messages[1].content, "previous");
+            assert_eq!(requests[0].messages[2].content, "next");
+        });
     }
 
     #[test]
@@ -547,5 +598,19 @@ mod tests {
             .first()
             .and_then(|choice| choice.delta.as_ref())
             .and_then(|delta| delta.content.as_deref())
+    }
+
+    fn registry(mock: &llm::Mock) -> ModelRegistry {
+        let mut registry = ModelRegistry::new();
+        registry.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: mock.clone().into(),
+                token: String::new(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+        registry
     }
 }
