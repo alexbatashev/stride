@@ -51,6 +51,7 @@ pub struct Agent {
     base: BaseAgent,
     provider: String,
     model: String,
+    pending_thinking: String,
     sink: event_sink::Client,
     confirm_channel: Rc<ConfirmChannel>,
     checkpoint: Option<CheckpointFn>,
@@ -89,6 +90,7 @@ impl Agent {
             base,
             provider: selection.provider,
             model: selection.model,
+            pending_thinking: String::new(),
             sink,
             confirm_channel,
             checkpoint,
@@ -123,6 +125,7 @@ impl Agent {
             }
         }
 
+        self.flush_thinking().await;
         self.emit_done().await;
         Ok(())
     }
@@ -170,17 +173,16 @@ impl Agent {
         Ok(())
     }
 
-    async fn emit_chunk(&self, chunk: llm::StreamResponseChunk) {
+    async fn emit_chunk(&mut self, chunk: llm::StreamResponseChunk) {
         for choice in chunk.choices {
             if let Some(delta) = choice.delta {
                 if let Some(thinking) = delta.thinking {
-                    if !thinking.is_empty() {
-                        self.emit_thinking(&thinking).await;
-                    }
+                    self.pending_thinking.push_str(&thinking);
                 }
 
                 if let Some(content) = delta.content {
                     if !content.is_empty() {
+                        self.flush_thinking().await;
                         self.emit_text_chunk(&content).await;
                     }
                 }
@@ -190,6 +192,7 @@ impl Agent {
                         if let Some(function) = call.function {
                             if let Some(name) = function.name {
                                 if !name.is_empty() {
+                                    self.flush_thinking().await;
                                     self.emit_tool_call(&name).await;
                                 }
                             }
@@ -198,6 +201,14 @@ impl Agent {
                 }
             }
         }
+    }
+
+    async fn flush_thinking(&mut self) {
+        if self.pending_thinking.is_empty() {
+            return;
+        }
+        let thinking = std::mem::take(&mut self.pending_thinking);
+        self.emit_thinking(&thinking).await;
     }
 
     async fn emit_text_chunk(&self, text: &str) {
