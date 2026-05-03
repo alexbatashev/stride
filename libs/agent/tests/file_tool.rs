@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn dummy_config() -> Arc<AgentConfig> {
-    Arc::new(AgentConfig { model_registry: ModelRegistry::new() })
+    Arc::new(AgentConfig {
+        model_registry: ModelRegistry::new(),
+    })
 }
 
 fn temp_dir() -> PathBuf {
@@ -27,9 +29,12 @@ fn execute_reads_utf8_file() {
     let file = dir.join("example.txt");
     fs::write(&file, "hello\nworld\n").unwrap();
 
-    let result = futures::executor::block_on(ReadFileTool.execute(dummy_config(), json!({
-        "path": file.to_str().unwrap()
-    })));
+    let result = futures::executor::block_on(ReadFileTool.execute(
+        dummy_config(),
+        json!({
+            "path": file.to_str().unwrap()
+        }),
+    ));
 
     assert_eq!(
         result,
@@ -49,9 +54,12 @@ fn execute_returns_error_when_file_is_missing() {
     let dir = temp_dir();
     let file = dir.join("missing.txt");
 
-    let result = futures::executor::block_on(ReadFileTool.execute(dummy_config(), json!({
-        "path": file.to_str().unwrap()
-    })));
+    let result = futures::executor::block_on(ReadFileTool.execute(
+        dummy_config(),
+        json!({
+            "path": file.to_str().unwrap()
+        }),
+    ));
 
     assert_eq!(result["success"], false);
     assert_eq!(result["content"], json!(null));

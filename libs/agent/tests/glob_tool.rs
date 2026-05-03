@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn dummy_config() -> Arc<AgentConfig> {
-    Arc::new(AgentConfig { model_registry: ModelRegistry::new() })
+    Arc::new(AgentConfig {
+        model_registry: ModelRegistry::new(),
+    })
 }
 
 #[test]
@@ -22,9 +24,12 @@ fn execute_returns_file_sizes_in_bytes() {
     let file = dir.join("example.txt");
     fs::write(&file, b"hello").unwrap();
 
-    let result = futures::executor::block_on(GlobTool.execute(dummy_config(), json!({
-        "pattern": file.to_str().unwrap()
-    })));
+    let result = futures::executor::block_on(GlobTool.execute(
+        dummy_config(),
+        json!({
+            "pattern": file.to_str().unwrap()
+        }),
+    ));
 
     fs::remove_file(&file).unwrap();
     fs::remove_dir(&dir).unwrap();

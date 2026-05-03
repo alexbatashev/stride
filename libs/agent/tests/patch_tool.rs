@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn dummy_config() -> Arc<AgentConfig> {
-    Arc::new(AgentConfig { model_registry: ModelRegistry::new() })
+    Arc::new(AgentConfig {
+        model_registry: ModelRegistry::new(),
+    })
 }
 
 fn temp_dir() -> PathBuf {
@@ -27,9 +29,11 @@ fn execute_applies_unified_diff_to_existing_file() {
     let file = dir.join("example.txt");
     fs::write(&file, "one\ntwo\nthree\n").unwrap();
 
-    let result = futures::executor::block_on(PatchTool.execute(dummy_config(), json!({
-        "working_directory": dir.to_str().unwrap(),
-        "patch": "\
+    let result = futures::executor::block_on(PatchTool.execute(
+        dummy_config(),
+        json!({
+            "working_directory": dir.to_str().unwrap(),
+            "patch": "\
 --- a/example.txt
 +++ b/example.txt
 @@ -1,3 +1,3 @@
@@ -38,7 +42,8 @@ fn execute_applies_unified_diff_to_existing_file() {
 +second
  three
 "
-    })));
+        }),
+    ));
 
     assert_eq!(
         result,
@@ -61,9 +66,11 @@ fn execute_creates_and_deletes_files() {
     let deleted = dir.join("deleted.txt");
     fs::write(&deleted, "remove me\n").unwrap();
 
-    let result = futures::executor::block_on(PatchTool.execute(dummy_config(), json!({
-        "working_directory": dir.to_str().unwrap(),
-        "patch": "\
+    let result = futures::executor::block_on(PatchTool.execute(
+        dummy_config(),
+        json!({
+            "working_directory": dir.to_str().unwrap(),
+            "patch": "\
 --- /dev/null
 +++ b/created.txt
 @@ -0,0 +1 @@
@@ -73,7 +80,8 @@ fn execute_creates_and_deletes_files() {
 @@ -1 +0,0 @@
 -remove me
 "
-    })));
+        }),
+    ));
 
     assert_eq!(result["success"], true);
     assert_eq!(fs::read_to_string(&created).unwrap(), "hello\n");
@@ -89,16 +97,19 @@ fn execute_returns_error_when_hunk_does_not_match() {
     let file = dir.join("example.txt");
     fs::write(&file, "actual\n").unwrap();
 
-    let result = futures::executor::block_on(PatchTool.execute(dummy_config(), json!({
-        "working_directory": dir.to_str().unwrap(),
-        "patch": "\
+    let result = futures::executor::block_on(PatchTool.execute(
+        dummy_config(),
+        json!({
+            "working_directory": dir.to_str().unwrap(),
+            "patch": "\
 --- a/example.txt
 +++ b/example.txt
 @@ -1 +1 @@
 -expected
 +changed
 "
-    })));
+        }),
+    ));
 
     assert_eq!(result["success"], false);
     assert_eq!(fs::read_to_string(&file).unwrap(), "actual\n");

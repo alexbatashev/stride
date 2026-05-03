@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn dummy_config() -> Arc<AgentConfig> {
-    Arc::new(AgentConfig { model_registry: ModelRegistry::new() })
+    Arc::new(AgentConfig {
+        model_registry: ModelRegistry::new(),
+    })
 }
 
 fn temp_dir() -> PathBuf {
@@ -53,9 +55,12 @@ fn file_exists_command() -> &'static str {
 
 #[test]
 fn execute_returns_stdout() {
-    let result = futures::executor::block_on(ShellTool.execute(dummy_config(), json!({
-        "command": echo_command()
-    })));
+    let result = futures::executor::block_on(ShellTool.execute(
+        dummy_config(),
+        json!({
+            "command": echo_command()
+        }),
+    ));
 
     assert_eq!(result["success"], true);
     assert_eq!(result["exit_code"], 0);
@@ -66,9 +71,12 @@ fn execute_returns_stdout() {
 
 #[test]
 fn execute_returns_nonzero_exit_status() {
-    let result = futures::executor::block_on(ShellTool.execute(dummy_config(), json!({
-        "command": fail_command()
-    })));
+    let result = futures::executor::block_on(ShellTool.execute(
+        dummy_config(),
+        json!({
+            "command": fail_command()
+        }),
+    ));
 
     assert_eq!(result["success"], false);
     assert_eq!(result["exit_code"], 7);
@@ -81,10 +89,13 @@ fn execute_uses_working_directory() {
     let file = dir.join("example.txt");
     fs::write(&file, "hello").unwrap();
 
-    let result = futures::executor::block_on(ShellTool.execute(dummy_config(), json!({
-        "command": file_exists_command(),
-        "working_directory": dir.to_str().unwrap()
-    })));
+    let result = futures::executor::block_on(ShellTool.execute(
+        dummy_config(),
+        json!({
+            "command": file_exists_command(),
+            "working_directory": dir.to_str().unwrap()
+        }),
+    ));
 
     fs::remove_file(&file).unwrap();
     fs::remove_dir(&dir).unwrap();
