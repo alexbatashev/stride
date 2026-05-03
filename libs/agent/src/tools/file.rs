@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::AgentConfig;
 use crate::Tool;
 use crate::ToolDesc;
 use async_trait::async_trait;
@@ -41,7 +44,7 @@ impl Tool for ReadFileTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Value {
+    async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
         let result = match ReadFileParams::decode(args) {
             Ok(args) => std::fs::read_to_string(&args.path)
                 .map_err(|err| format!("failed to read {}: {err}", args.path)),

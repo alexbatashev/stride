@@ -1,8 +1,13 @@
-use friday_agent::{Tool, tools::patch::PatchTool};
+use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::patch::PatchTool};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn dummy_config() -> Arc<AgentConfig> {
+    Arc::new(AgentConfig { model_registry: ModelRegistry::new() })
+}
 
 fn temp_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -22,7 +27,7 @@ fn execute_applies_unified_diff_to_existing_file() {
     let file = dir.join("example.txt");
     fs::write(&file, "one\ntwo\nthree\n").unwrap();
 
-    let result = futures::executor::block_on(PatchTool.execute(json!({
+    let result = futures::executor::block_on(PatchTool.execute(dummy_config(), json!({
         "working_directory": dir.to_str().unwrap(),
         "patch": "\
 --- a/example.txt
@@ -56,7 +61,7 @@ fn execute_creates_and_deletes_files() {
     let deleted = dir.join("deleted.txt");
     fs::write(&deleted, "remove me\n").unwrap();
 
-    let result = futures::executor::block_on(PatchTool.execute(json!({
+    let result = futures::executor::block_on(PatchTool.execute(dummy_config(), json!({
         "working_directory": dir.to_str().unwrap(),
         "patch": "\
 --- /dev/null
@@ -84,7 +89,7 @@ fn execute_returns_error_when_hunk_does_not_match() {
     let file = dir.join("example.txt");
     fs::write(&file, "actual\n").unwrap();
 
-    let result = futures::executor::block_on(PatchTool.execute(json!({
+    let result = futures::executor::block_on(PatchTool.execute(dummy_config(), json!({
         "working_directory": dir.to_str().unwrap(),
         "patch": "\
 --- a/example.txt

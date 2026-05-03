@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use llm::{Function, Tool as LlmTool};
 use serde_json::Value;
 
-use crate::{Tool, ToolDesc, ToolRegistry, tool_registry};
+use crate::{AgentConfig, Tool, ToolDesc, ToolRegistry};
 
 pub struct SubAgentTool {
     name: String,
@@ -48,7 +50,7 @@ impl Tool for SubAgentTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Value {
+    async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value {
         todo!()
     }
 }

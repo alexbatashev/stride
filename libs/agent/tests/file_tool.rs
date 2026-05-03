@@ -1,8 +1,13 @@
-use friday_agent::{Tool, tools::file::ReadFileTool};
+use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::file::ReadFileTool};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn dummy_config() -> Arc<AgentConfig> {
+    Arc::new(AgentConfig { model_registry: ModelRegistry::new() })
+}
 
 fn temp_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -22,7 +27,7 @@ fn execute_reads_utf8_file() {
     let file = dir.join("example.txt");
     fs::write(&file, "hello\nworld\n").unwrap();
 
-    let result = futures::executor::block_on(ReadFileTool.execute(json!({
+    let result = futures::executor::block_on(ReadFileTool.execute(dummy_config(), json!({
         "path": file.to_str().unwrap()
     })));
 
@@ -44,7 +49,7 @@ fn execute_returns_error_when_file_is_missing() {
     let dir = temp_dir();
     let file = dir.join("missing.txt");
 
-    let result = futures::executor::block_on(ReadFileTool.execute(json!({
+    let result = futures::executor::block_on(ReadFileTool.execute(dummy_config(), json!({
         "path": file.to_str().unwrap()
     })));
 

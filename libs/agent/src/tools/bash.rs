@@ -1,3 +1,4 @@
+use crate::AgentConfig;
 use crate::Tool;
 use crate::ToolDesc;
 use async_trait::async_trait;
@@ -5,6 +6,7 @@ use llm::{Function, Tool as LlmTool};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::process::Command;
+use std::sync::Arc;
 
 pub struct ShellTool;
 
@@ -46,7 +48,7 @@ impl Tool for ShellTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Value {
+    async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
         let result = match ShellParams::decode(args) {
             Ok(args) => execute_command(args),
             Err(error) => Err(error),

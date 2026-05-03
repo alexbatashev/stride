@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use llm::Tool as LlmTool;
 use serde_json::Value;
+
+use crate::AgentConfig;
 
 #[async_trait(?Send)]
 pub trait Tool: Send + Sync {
@@ -13,7 +17,7 @@ pub trait Tool: Send + Sync {
     fn definition(&self) -> LlmTool;
 
     /// Execute the tool with the given arguments
-    async fn execute(&self, args: Value) -> Value;
+    async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value;
 
     /// Whether this tool requires confirmation before execution
     fn requires_confirmation(&self) -> bool {

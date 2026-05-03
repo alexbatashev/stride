@@ -1,3 +1,4 @@
+use crate::AgentConfig;
 use crate::Tool;
 use crate::ToolDesc;
 use async_trait::async_trait;
@@ -6,6 +7,7 @@ use patch::{Hunk, Line, Patch};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct PatchTool;
 
@@ -46,7 +48,7 @@ impl Tool for PatchTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Value {
+    async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
         let result = match PatchParams::decode(args) {
             Ok(args) => apply_patch_tool(args),
             Err(error) => Err(error),

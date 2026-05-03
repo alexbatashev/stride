@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::{cell::RefCell, rc::Rc};
 
 use async_stream::stream;
@@ -8,10 +9,27 @@ use futures::{Stream, StreamExt};
 use llm::{API, CompletionRequest, Message, StreamResponseChunk, ToolCallChunk, ToolCallFunction};
 use serde_json::Value;
 use serde_json::json;
+use thiserror::Error;
 
 use crate::{Tool, ToolRegistry};
 
+pub const DEFAULT_MODEL: &str = "default";
+
 pub struct BaseAgent(Rc<RefCell<BaseAgentInner>>);
+
+#[derive(Debug, Error)]
+pub enum AgentError {
+    #[error("Missing model designated as '{0}'")]
+    MissingProvider(String),
+    #[error("Network error: {0}")]
+    NetworkError(String),
+}
+
+impl From<llm::Error> for AgentError {
+    fn from(err: llm::Error) -> Self {
+        AgentError::NetworkError(err.to_string())
+    }
+}
 
 pub enum AgentResponseChunk {
     Chunk(StreamResponseChunk),
@@ -21,18 +39,29 @@ pub enum AgentResponseChunk {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct AgentConfig {
-    pub model: String,
+    pub model_registry: ModelRegistry,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelRegistry {
+    models: HashMap<String, ModelRegEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelRegEntry {
+    pub api: API,
+    pub token: String,
+    pub model_name: String,
     pub thinking: bool,
 }
 
 struct BaseAgentInner {
-    api: API,
-    token: String,
     tool_registry: ToolRegistry,
     thread: Vec<Message>,
-    config: AgentConfig,
+    config: Arc<AgentConfig>,
+    model: String,
 }
 
 #[derive(Default)]
@@ -42,14 +71,35 @@ struct PartialToolCall {
     arguments: String,
 }
 
+impl ModelRegistry {
+    pub fn new() -> Self {
+        Self {
+            models: HashMap::new(),
+        }
+    }
+
+    pub fn add_model(&mut self, name: &str, entry: ModelRegEntry) {
+        self.models.insert(name.to_string(), entry);
+    }
+
+    pub fn get_or_default(&self, name: &str) -> &ModelRegEntry {
+        if let Some(entry) = self.models.get(name) {
+            entry
+        } else if let Some(entry) = self.models.get(DEFAULT_MODEL) {
+            entry
+        } else {
+            panic!("ModelRegistry must always have a 'default' model");
+        }
+    }
+}
+
 impl BaseAgent {
-    pub fn new(api: API, token: String, config: AgentConfig, thread: Vec<Message>) -> Self {
+    pub fn new(model: String, config: Arc<AgentConfig>, thread: Vec<Message>) -> Self {
         Self(Rc::new(RefCell::new(BaseAgentInner {
-            api,
-            token,
             tool_registry: ToolRegistry::new(),
             thread,
             config,
+            model,
         })))
     }
 
@@ -64,10 +114,17 @@ impl BaseAgent {
     pub async fn make_turn(
         &self,
         request: String,
-    ) -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, llm::Error>> + 'static>> {
-        let (api, token, config) = {
+    ) -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>> {
+        let (config, model) = {
             let lock = self.0.borrow();
-            (lock.api.clone(), lock.token.clone(), lock.config.clone())
+            let model_name = &lock.model;
+            (
+                lock.config.clone(),
+                lock.config
+                    .model_registry
+                    .get_or_default(model_name)
+                    .clone(),
+            )
         };
 
         self.0.borrow_mut().thread.push(Message {
@@ -92,7 +149,7 @@ impl BaseAgent {
                 let request = {
                     let lock = agent.borrow();
                     CompletionRequest {
-                        model: config.model.clone(),
+                        model: model.model_name.clone(),
                         messages: lock.thread.clone(),
                         stream: Some(true),
                         tools: (!tools.is_empty()).then_some(tools.clone()),
@@ -100,7 +157,7 @@ impl BaseAgent {
                     }
                 };
 
-                let mut stream = api.stream_completion(&token, request);
+                let mut stream = model.api.stream_completion(&model.token, request);
                 let mut tool_calls = BTreeMap::new();
 
                 while let Some(chunk) = stream.next().await {
@@ -110,7 +167,7 @@ impl BaseAgent {
                     }
                     match chunk {
                         Ok(chunk) => { yield Ok(AgentResponseChunk::Chunk(chunk)); },
-                        Err(err) => { yield Err(err); },
+                        Err(err) => { yield Err(AgentError::from(err)); },
                     }
                     if is_err {
                         return;
@@ -158,7 +215,7 @@ impl BaseAgent {
                                 }
                             }
 
-                            tool.execute(args).await
+                            tool.execute(config.clone(), args).await
                         }
                         None => json!({ "error": format!("unknown tool: {}", name) }),
                     };
@@ -304,7 +361,7 @@ mod tests {
             }
         }
 
-        async fn execute(&self, _args: Value) -> Value {
+        async fn execute(&self, _config: Arc<AgentConfig>, _args: Value) -> Value {
             self.calls.fetch_add(1, Ordering::SeqCst);
             json!({ "success": true })
         }
@@ -318,6 +375,26 @@ mod tests {
         }
     }
 
+    fn make_agent(mock: &llm::Mock, calls: Arc<AtomicUsize>) -> BaseAgent {
+        let mut registry = ModelRegistry::new();
+        registry.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: mock.clone().into(),
+                token: String::new(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+        let agent = BaseAgent::new(
+            DEFAULT_MODEL.to_string(),
+            Arc::new(AgentConfig { model_registry: registry }),
+            vec![],
+        );
+        agent.register_tool(ApprovalTool { calls });
+        agent
+    }
+
     #[test]
     fn waits_for_approval_before_executing_tool() {
         futures::executor::block_on(async {
@@ -326,18 +403,7 @@ mod tests {
                 vec![tool_call_chunk(r#"{"value":1}"#)],
                 vec![text_chunk("done")],
             ]);
-            let agent = BaseAgent::new(
-                mock.clone().into(),
-                String::new(),
-                AgentConfig {
-                    model: "mock-model".to_string(),
-                    thinking: false,
-                },
-                vec![],
-            );
-            agent.register_tool(ApprovalTool {
-                calls: calls.clone(),
-            });
+            let agent = make_agent(&mock, calls.clone());
 
             let stream = agent.make_turn("run tool".to_string()).await;
             pin_mut!(stream);
@@ -378,18 +444,7 @@ mod tests {
                 vec![tool_call_chunk(r#"{"value":1}"#)],
                 vec![text_chunk("done")],
             ]);
-            let agent = BaseAgent::new(
-                mock.clone().into(),
-                String::new(),
-                AgentConfig {
-                    model: "mock-model".to_string(),
-                    thinking: false,
-                },
-                vec![],
-            );
-            agent.register_tool(ApprovalTool {
-                calls: calls.clone(),
-            });
+            let agent = make_agent(&mock, calls.clone());
 
             let stream = agent.make_turn("run tool".to_string()).await;
             pin_mut!(stream);

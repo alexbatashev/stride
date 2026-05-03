@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::AgentConfig;
 use crate::Tool;
 use crate::ToolDesc;
 use async_trait::async_trait;
@@ -45,7 +48,7 @@ impl Tool for GlobTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Value {
+    async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
         let args = GlobParams::decode(args).unwrap();
 
         let mut entries = vec![];

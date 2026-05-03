@@ -1,7 +1,12 @@
-use friday_agent::{Tool, tools::glob::GlobTool};
+use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::glob::GlobTool};
 use serde_json::json;
 use std::fs;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn dummy_config() -> Arc<AgentConfig> {
+    Arc::new(AgentConfig { model_registry: ModelRegistry::new() })
+}
 
 #[test]
 fn execute_returns_file_sizes_in_bytes() {
@@ -17,7 +22,7 @@ fn execute_returns_file_sizes_in_bytes() {
     let file = dir.join("example.txt");
     fs::write(&file, b"hello").unwrap();
 
-    let result = futures::executor::block_on(GlobTool.execute(json!({
+    let result = futures::executor::block_on(GlobTool.execute(dummy_config(), json!({
         "pattern": file.to_str().unwrap()
     })));
 
