@@ -3,6 +3,7 @@ use tokio::sync::{mpsc, oneshot};
 
 pub struct Terminal {
     cmd_rx: mpsc::UnboundedReceiver<Command>,
+    user_input_tx: mpsc::UnboundedSender<String>,
     history: Vec<String>,
 }
 
@@ -13,9 +14,9 @@ pub struct Choice {
     pub description: Option<String>,
 }
 
-#[derive(Clone)]
 pub struct Stream {
     cmd_tx: mpsc::UnboundedSender<Command>,
+    user_input_rx: mpsc::UnboundedReceiver<String>,
 }
 
 enum Command {
@@ -24,25 +25,19 @@ enum Command {
         color: Option<Color>,
         done_tx: Option<oneshot::Sender<()>>,
     },
-    SetSpinner {
-        active: bool,
-        done_tx: Option<oneshot::Sender<()>>,
-    },
-    Prompt {
-        response_tx: oneshot::Sender<Option<String>>,
-    },
-    Select {
-        choices: Vec<Choice>,
-        response_tx: oneshot::Sender<Option<Choice>>,
-    },
 }
 
 impl Terminal {
     pub fn new() -> (Stream, Self) {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let stream = Stream { cmd_tx };
+        let (user_input_tx, user_input_rx) = mpsc::unbounded_channel();
+        let stream = Stream {
+            cmd_tx,
+            user_input_rx,
+        };
         let terminal = Terminal {
             cmd_rx,
+            user_input_tx,
             history: Vec::new(),
             // spinner: Spinner::new(),
         };
@@ -50,4 +45,12 @@ impl Terminal {
     }
 
     pub async fn run(mut self) {}
+}
+
+impl Stream {
+    pub async fn recv(&mut self) -> Option<String> {
+        self.user_input_rx.recv().await
+    }
+
+    pub async fn print(&mut self) {}
 }

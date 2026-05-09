@@ -5,6 +5,9 @@ edition = "2024"
 
 [lib]
 
+[[bin]]
+name = "friday"
+path = "main.rs"
 
 [dependencies]
 # Internal

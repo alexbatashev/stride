@@ -4,7 +4,6 @@ use std::{ffi::OsString, path::PathBuf};
 
 use clap::Parser;
 use minisql::ConnectionPool;
-use tokio::select;
 
 use crate::{agent::LocalAgent, cli::term::Terminal, config::Config};
 
@@ -13,35 +12,42 @@ pub async fn cli_main() -> anyhow::Result<()> {
 
     let config_path = args
         .config
-        .map(|p| PathBuf::from(p))
-        .or_else(|| Some(PathBuf::from("/tmp/config.toml")))
-        .unwrap();
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp/config.toml"));
 
     let config = Config::load(&config_path)?;
 
     let db_path: String = args
         .db_path
         .map(|p| p.into_string().unwrap())
-        .or_else(|| Some("/tmp/friday.db".to_string()))
-        .unwrap();
+        .unwrap_or_else(|| "/tmp/friday.db".to_string());
 
     let db = ConnectionPool::new(&format!("sqlite://{}", db_path)).unwrap();
 
     let (stream, terminal) = Terminal::new();
 
-    tokio::spawn(async move {
-        let agent = LocalAgent::new(&config, db, PathBuf::new());
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            tokio::task::spawn_local(async move {
+                let _agent = LocalAgent::new(&config, db, PathBuf::new());
+                let mut stream = stream;
 
-        loop {
-            select! {
-                _ = tokio::signal::ctrl_c() => {
-                    break;
+                loop {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            break;
+                        }
+                        input = stream.recv() => {
+
+                        }
+                    }
                 }
-            }
-        }
-    });
+            });
 
-    terminal.run().await;
+            terminal.run().await;
+        })
+        .await;
 
     Ok(())
 }

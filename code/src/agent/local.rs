@@ -86,4 +86,14 @@ impl CodeAgent for LocalAgent {
     fn get_messages(&self) -> Vec<super::Message> {
         todo!()
     }
+
+    async fn make_turn() -> std::pin::Pin<
+        Box<
+            dyn futures::Stream<
+                    Item = Result<friday_agent::AgentResponseChunk, friday_agent::AgentError>,
+                > + 'static,
+        >,
+    > {
+        todo!()
+    }
 }
