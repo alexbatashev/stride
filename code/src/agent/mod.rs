@@ -10,6 +10,8 @@ pub struct Message {}
 
 pub trait CodeAgent {
     fn get_messages(&self) -> Vec<Message>;
-    async fn make_turn()
-    -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>>;
+    async fn make_turn(
+        &self,
+        message: &str,
+    ) -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>>;
 }

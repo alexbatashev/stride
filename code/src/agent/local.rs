@@ -87,7 +87,10 @@ impl CodeAgent for LocalAgent {
         todo!()
     }
 
-    async fn make_turn() -> std::pin::Pin<
+    async fn make_turn(
+        &self,
+        message: &str,
+    ) -> std::pin::Pin<
         Box<
             dyn futures::Stream<
                     Item = Result<friday_agent::AgentResponseChunk, friday_agent::AgentError>,
