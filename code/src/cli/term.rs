@@ -44,6 +44,8 @@ enum Command {
         message: String,
         result_tx: oneshot::Sender<bool>,
     },
+    ChargeSpinner,
+    DischargeSpinner,
 }
 
 impl Terminal {
@@ -65,13 +67,14 @@ impl Terminal {
     pub async fn run(mut self) {
         terminal::enable_raw_mode().unwrap();
 
-        self.prompt.render(self.text_pos.1 + 1);
+        self.render_prompt();
 
         let mut reader = EventStream::new();
 
         loop {
             let event = reader.next().fuse();
             let prompt = self.prompt.recv().fuse();
+            let tick = self.prompt.tick().fuse();
 
             select! {
                 Some(cmd) = self.cmd_rx.recv() => {
@@ -80,13 +83,22 @@ impl Terminal {
                             self.do_print(message, color)
                         },
                         Command::RequestApproval { message, result_tx } => {}
+                        Command::ChargeSpinner => {
+                            self.prompt.charge_spinner();
+                            self.render_prompt();
+                        }
+                        Command::DischargeSpinner => {
+                            self.prompt.discharge_spinner();
+                            self.render_prompt();
+                        }
                     }
                 }
                 Some(input) = prompt => {
+                    self.do_print(format!("> {input}\n"), None);
                     self.user_input_tx.send(input).unwrap();
-                    self.text_pos.0 = 0;
-                    self.text_pos.1 += 2;
-                    self.prompt.render(self.text_pos.1 + 1);
+                }
+                _ = tick => {
+                    self.render_prompt();
                 }
                 Some(Ok(event)) = event => {
                     if matches!(event, Event::Key(key) if key.code == KeyCode::Esc) {
@@ -96,65 +108,77 @@ impl Terminal {
                     let submitted = matches!(event, Event::Key(key) if key.code == KeyCode::Enter);
                     self.prompt.handle_key(event);
                     if !submitted {
-                        self.prompt.render(self.text_pos.1 + 1);
+                        self.render_prompt();
                     }
                 }
             }
         }
     }
 
+    fn render_prompt(&mut self) {
+        let (_, rows) = terminal::size().expect("Failed to get terminal szie");
+        let start_row = self.text_pos.1 + 1;
+        let end_row = start_row + self.prompt.height() - 1;
+
+        if end_row >= rows {
+            let scroll_lines = end_row - rows + 1;
+            let mut stdout = io::stdout();
+
+            for _ in 0..scroll_lines {
+                execute!(
+                    stdout,
+                    cursor::MoveTo(0, rows.saturating_sub(1)),
+                    Print("\n")
+                )
+                .unwrap();
+            }
+
+            self.text_pos.1 = self.text_pos.1.saturating_sub(scroll_lines);
+            stdout.flush().unwrap();
+        }
+
+        self.prompt.render(self.text_pos.1 + 1);
+    }
+
     fn do_print(&mut self, message: String, color: Option<Color>) {
         let (cols, _) = terminal::size().expect("Failed to get terminal szie");
         let (col, row) = self.text_pos;
         let mut stdout = io::stdout();
+        let clear_prompt = message.contains('\n') || cols - col <= message.len() as u16;
 
         execute!(stdout, cursor::MoveTo(col, row)).unwrap();
 
-        if !message.contains('\n') && cols - col > message.len() as u16 {
-            if let Some(color) = color {
-                execute!(
-                    stdout,
-                    SetForegroundColor(color),
-                    Print(&message),
-                    ResetColor
-                )
-                .unwrap();
-            } else {
-                execute!(stdout, Print(&message)).unwrap();
-            }
-            self.text_pos.0 += message.len() as u16;
-        } else {
+        if clear_prompt {
             execute!(stdout, Clear(ClearType::FromCursorDown)).unwrap();
-
-            if let Some(color) = color {
-                execute!(
-                    stdout,
-                    SetForegroundColor(color),
-                    Print(&message),
-                    ResetColor
-                )
-                .unwrap();
-            } else {
-                execute!(stdout, Print(&message)).unwrap();
-            }
-
-            for ch in message.chars() {
-                if ch == '\n' {
-                    self.text_pos.0 = 0;
-                    self.text_pos.1 += 1;
-                } else {
-                    self.text_pos.0 += 1;
-
-                    if self.text_pos.0 >= cols {
-                        self.text_pos.0 = 0;
-                        self.text_pos.1 += 1;
-                    }
-                }
-            }
-
-            self.prompt.render(self.text_pos.1 + 1);
         }
 
+        if let Some(color) = color {
+            execute!(
+                stdout,
+                SetForegroundColor(color),
+                Print(&message),
+                ResetColor
+            )
+            .unwrap();
+        } else {
+            execute!(stdout, Print(&message)).unwrap();
+        }
+
+        for ch in message.chars() {
+            if ch == '\n' {
+                self.text_pos.0 = 0;
+                self.text_pos.1 += 1;
+            } else {
+                self.text_pos.0 += 1;
+
+                if self.text_pos.0 >= cols {
+                    self.text_pos.0 = 0;
+                    self.text_pos.1 += 1;
+                }
+            }
+        }
+
+        self.render_prompt();
         stdout.flush().unwrap();
     }
 }
@@ -184,5 +208,13 @@ impl TermOutput {
 
         // TODO handle errors
         self.cmd_tx.send(command).unwrap()
+    }
+
+    pub fn charge_spinner(&self) {
+        self.cmd_tx.send(Command::ChargeSpinner).unwrap();
+    }
+
+    pub fn discharge_spinner(&self) {
+        self.cmd_tx.send(Command::DischargeSpinner).unwrap();
     }
 }

@@ -257,6 +257,10 @@ impl CodeAgent for LocalAgent {
                         let mut assistant = assistant_state.borrow_mut();
 
                         for choice in &chunk.choices {
+                            if let Some(content) = &choice.text {
+                                assistant.content.push_str(content);
+                            }
+
                             if let Some(delta) = &choice.delta {
                                 if let Some(content) = &delta.content {
                                     assistant.content.push_str(content);

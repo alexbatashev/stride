@@ -6,6 +6,7 @@ mod widget;
 use std::{collections::VecDeque, ffi::OsString, path::PathBuf, pin::Pin};
 
 use clap::Parser;
+use crossterm::style::Color;
 use friday_agent::{AgentError, AgentResponseChunk};
 use futures::{Stream, StreamExt};
 use minisql::ConnectionPool;
@@ -51,6 +52,7 @@ pub async fn cli_main() -> anyhow::Result<()> {
                 'main: loop {
                     if matches!(state, AgentState::Idle) {
                         if let Some(input) = queue.pop_front() {
+                            term_output.charge_spinner();
                             state = AgentState::Running(agent.make_turn(&input).await);
                             continue;
                         }
@@ -67,7 +69,12 @@ pub async fn cli_main() -> anyhow::Result<()> {
                                 match chunk {
                                     Some(Ok(AgentResponseChunk::Chunk(c))) => {
                                         for choice in &c.choices {
-                                            if let Some(text) = choice.delta.as_ref().and_then(|d| d.content.as_deref()) {
+                                            if let Some(text) = choice
+                                                .delta
+                                                .as_ref()
+                                                .and_then(|d| d.content.as_deref())
+                                                .or(choice.text.as_deref())
+                                            {
                                                 term_output.print(text, None)
                                             }
                                         }
@@ -77,21 +84,26 @@ pub async fn cli_main() -> anyhow::Result<()> {
                                         term_output.request_approval(&message, approved).await;
                                         false
                                     }
-                                    _ => true,
+                                    Some(Err(err)) => {
+                                        term_output.print(&format!("\n{err}\n"), Some(Color::Red));
+                                        true
+                                    }
+                                    None => true,
                                 }
                             }
                         }
                     } else {
                         tokio::select! {
                             _ = tokio::signal::ctrl_c() => break 'main,
-                            // input = term_input.recv() => {
-                                // if let Some(s) = input { queue.push_back(s); }
-                            // }
+                            input = term_input.recv() => {
+                                if let Some(s) = input { queue.push_back(s); }
+                            }
                         };
                         false
                     };
 
                     if done {
+                        term_output.discharge_spinner();
                         state = AgentState::Idle;
                     }
                 }

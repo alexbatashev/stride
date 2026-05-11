@@ -29,6 +29,9 @@ impl Prompt {
             submitted_rx,
         }
     }
+    
+    pub fn charge_spinner(&mut self) {}
+    pub fn discharge_spinner(&mut self) {}
 
     fn handle_event(&mut self, event: Event) {
         let Event::Key(key) = event else {

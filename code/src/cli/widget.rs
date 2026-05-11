@@ -5,5 +5,5 @@ pub trait Widget {
 
     fn handle_key(&mut self, event: Event);
 
-    async fn recv(&mut self) -> Option<String>;
+    async fn recv(&self) -> Option<String>;
 }

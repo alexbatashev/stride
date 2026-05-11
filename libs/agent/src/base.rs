@@ -306,6 +306,10 @@ fn append_chunk(
     let message = lock.thread.last_mut().unwrap();
 
     for choice in &chunk.choices {
+        if let Some(content) = &choice.text {
+            message.content.push_str(content);
+        }
+
         if let Some(delta) = &choice.delta {
             if let Some(content) = &delta.content {
                 message.content.push_str(content);
