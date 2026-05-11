@@ -1,6 +1,6 @@
 {
 	"scripts": {
-		"build": "esbuild src/style/index.css --bundle --outfile=dist/common.css && esbuild src/components/index.ts --bundle --format=esm --outfile=dist/components.js && esbuild src/api/index.ts --bundle --format=esm --outfile=dist/api.js && esbuild src/pages/*.ts --bundle --format=esm --minify --outdir=dist/pages",
+		"build": "node build.mjs",
 		"check": "tsc --noEmit"
 	},
 	"devDependencies": {

@@ -10,7 +10,7 @@ use argon2::{
 use axum::{
     Json,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderName, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
@@ -66,7 +66,7 @@ impl IntoResponse for AuthError {
 pub async fn register(
     State(state): State<Arc<ServerState>>,
     Json(request): Json<AuthRequest>,
-) -> Result<Json<AuthResponse>, AuthError> {
+) -> Result<([(HeaderName, String); 1], Json<AuthResponse>), AuthError> {
     let request = normalize_request(request)?;
 
     let existing = users::select_cols((users::id,))
@@ -90,13 +90,14 @@ pub async fn register(
         .await
         .map_err(|_| AuthError::Conflict)?;
 
-    create_session(&state, user_id).await.map(Json)
+    let resp = create_session(&state, user_id).await?;
+    Ok(([(header::SET_COOKIE, session_cookie(&resp.token))], Json(resp)))
 }
 
 pub async fn login(
     State(state): State<Arc<ServerState>>,
     Json(request): Json<AuthRequest>,
-) -> Result<Json<AuthResponse>, AuthError> {
+) -> Result<([(HeaderName, String); 1], Json<AuthResponse>), AuthError> {
     let request = normalize_request(request)?;
 
     let users = users::select_cols((users::id, users::password_hash))
@@ -113,7 +114,8 @@ pub async fn login(
         return Err(AuthError::Unauthorized);
     }
 
-    create_session(&state, user_id).await.map(Json)
+    let resp = create_session(&state, user_id).await?;
+    Ok(([(header::SET_COOKIE, session_cookie(&resp.token))], Json(resp)))
 }
 
 pub async fn logout(
@@ -190,6 +192,20 @@ async fn create_session(state: &ServerState, user_id: Uuid) -> Result<AuthRespon
     .map_err(|_| AuthError::Internal)?;
 
     Ok(AuthResponse { token })
+}
+
+pub(crate) fn verify_token(jwt_secret: &str, token: &str) -> Result<(), ()> {
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(jwt_secret.as_bytes()),
+        &Validation::default(),
+    )
+    .map(|_| ())
+    .map_err(|_| ())
+}
+
+fn session_cookie(token: &str) -> String {
+    format!("token={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL_SECONDS}")
 }
 
 fn decode_token(state: &ServerState, token: &str) -> Result<Claims, AuthError> {

@@ -2,19 +2,18 @@ mod api;
 mod db;
 mod pages;
 
-use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
 use axum::{
     Router,
-    body::Body,
-    http::{StatusCode, Uri, header},
-    response::{IntoResponse, Response},
+    extract::State,
+    http::{header, HeaderMap},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use handlebars::Handlebars;
 use minisql::ConnectionPool;
-use tokio::fs;
+use tower_http::services::ServeDir;
 
 use crate::pages::get_templates;
 
@@ -51,6 +50,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn app(state: Arc<ServerState>) -> Router {
+    let static_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/frontend/dist");
+
     Router::new()
         .route("/api/register", post(api::auth::register))
         .route("/api/login", post(api::auth::login))
@@ -58,55 +59,29 @@ fn app(state: Arc<ServerState>) -> Router {
         .route("/auth/login", get(pages::auth::login))
         .route("/auth/register", get(pages::auth::register))
         .route("/threads", get(pages::agent::new_thread))
-        .route("/", get(frontend_asset))
-        .fallback(get(frontend_asset))
+        .route("/", get(root))
+        .nest_service("/static", ServeDir::new(static_dir))
         .with_state(state)
 }
 
-async fn frontend_asset(uri: Uri) -> Response {
-    let Some(path) = frontend_path(uri.path()) else {
-        return StatusCode::NOT_FOUND.into_response();
+async fn root(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
+    let path = if is_authenticated(&state, &headers) {
+        "/threads"
+    } else {
+        "/auth/login"
     };
-
-    match fs::read(&path).await {
-        Ok(bytes) => (
-            [
-                (header::CONTENT_TYPE, content_type(&path).to_string()),
-                (header::CACHE_CONTROL, "no-store".to_string()),
-            ],
-            Body::from(bytes),
-        )
-            .into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+    Redirect::to(path).into_response()
 }
 
-fn frontend_path(request_path: &str) -> Option<PathBuf> {
-    let mut path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/frontend"));
-    let request_path = request_path.trim_start_matches('/');
-
-    if request_path.is_empty() || request_path == "login" || request_path == "register" {
-        path.push("index.html");
-        return Some(path);
-    }
-
-    for component in PathBuf::from(request_path).components() {
-        match component {
-            Component::Normal(part) => path.push(part),
-            _ => return None,
-        }
-    }
-
-    Some(path)
-}
-
-fn content_type(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some("css") => "text/css; charset=utf-8",
-        Some("html") => "text/html; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("map") => "application/json; charset=utf-8",
-        _ => "application/octet-stream",
-    }
+fn is_authenticated(state: &ServerState, headers: &HeaderMap) -> bool {
+    headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .find_map(|part| part.trim().strip_prefix("token="))
+        })
+        .map(|token| api::auth::verify_token(&state.jwt_secret, token).is_ok())
+        .unwrap_or(false)
 }
