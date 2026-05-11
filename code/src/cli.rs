@@ -3,7 +3,7 @@ mod prompt;
 mod term;
 mod widget;
 
-use std::{collections::VecDeque, ffi::OsString, path::PathBuf, pin::Pin};
+use std::{ffi::OsString, path::PathBuf, pin::Pin};
 
 use clap::Parser;
 use crossterm::style::Color;
@@ -47,64 +47,56 @@ pub async fn cli_main() -> anyhow::Result<()> {
             tokio::task::spawn_local(async move {
                 let agent = LocalAgent::new(&config, db, PathBuf::new());
                 let mut state = AgentState::Idle;
-                let mut queue: VecDeque<String> = VecDeque::new();
 
                 'main: loop {
-                    if matches!(state, AgentState::Idle) {
-                        if let Some(input) = queue.pop_front() {
-                            term_output.charge_spinner();
-                            state = AgentState::Running(agent.make_turn(&input).await);
-                            continue;
-                        }
-                    }
-
-                    let done = if let AgentState::Running(ref mut stream) = state {
-                        tokio::select! {
-                            _ = tokio::signal::ctrl_c() => break 'main,
-                            input = term_input.recv() => {
-                                if let Some(s) = input { queue.push_back(s); }
-                                false
-                            }
-                            chunk = stream.next() => {
-                                match chunk {
-                                    Some(Ok(AgentResponseChunk::Chunk(c))) => {
-                                        for choice in &c.choices {
-                                            if let Some(text) = choice
-                                                .delta
-                                                .as_ref()
-                                                .and_then(|d| d.content.as_deref())
-                                                .or(choice.text.as_deref())
-                                            {
-                                                term_output.print(text, None)
-                                            }
-                                        }
-                                        false
+                    match state {
+                        AgentState::Idle => {
+                            tokio::select! {
+                                _ = tokio::signal::ctrl_c() => break 'main,
+                                input = term_input.recv() => {
+                                    if let Some(input) = input {
+                                        term_output.charge_spinner();
+                                        state = AgentState::Running(agent.make_turn(&input).await);
                                     }
-                                    Some(Ok(AgentResponseChunk::Approval { message, approved })) => {
-                                        term_output.request_approval(&message, approved).await;
-                                        false
-                                    }
-                                    Some(Err(err)) => {
-                                        term_output.print(&format!("\n{err}\n"), Some(Color::Red));
-                                        true
-                                    }
-                                    None => true,
                                 }
                             }
                         }
-                    } else {
-                        tokio::select! {
-                            _ = tokio::signal::ctrl_c() => break 'main,
-                            input = term_input.recv() => {
-                                if let Some(s) = input { queue.push_back(s); }
-                            }
-                        };
-                        false
-                    };
+                        AgentState::Running(ref mut stream) => {
+                            let done = tokio::select! {
+                                _ = tokio::signal::ctrl_c() => break 'main,
+                                chunk = stream.next() => {
+                                    match chunk {
+                                        Some(Ok(AgentResponseChunk::Chunk(c))) => {
+                                            for choice in &c.choices {
+                                                if let Some(text) = choice
+                                                    .delta
+                                                    .as_ref()
+                                                    .and_then(|d| d.content.as_deref())
+                                                    .or(choice.text.as_deref())
+                                                {
+                                                    term_output.print(text, None)
+                                                }
+                                            }
+                                            false
+                                        }
+                                        Some(Ok(AgentResponseChunk::Approval { message, approved })) => {
+                                            term_output.request_approval(&message, approved).await;
+                                            false
+                                        }
+                                        Some(Err(err)) => {
+                                            term_output.print(&format!("\n{err}\n"), Some(Color::Red));
+                                            true
+                                        }
+                                        None => true,
+                                    }
+                                }
+                            };
 
-                    if done {
-                        term_output.discharge_spinner();
-                        state = AgentState::Idle;
+                            if done {
+                                term_output.discharge_spinner();
+                                state = AgentState::Idle;
+                            }
+                        }
                     }
                 }
             });

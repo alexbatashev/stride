@@ -41,6 +41,7 @@ enum Command {
         color: Option<Color>,
     },
     RequestApproval {
+        tool_name: String,
         message: String,
         result_tx: oneshot::Sender<bool>,
     },
@@ -82,7 +83,7 @@ impl Terminal {
                         Command::Print { message, color } => {
                             self.do_print(message, color)
                         },
-                        Command::RequestApproval { message, result_tx } => {}
+                        Command::RequestApproval { tool_name, message, result_tx } => {}
                         Command::ChargeSpinner => {
                             self.prompt.charge_spinner();
                             self.render_prompt();
@@ -94,6 +95,8 @@ impl Terminal {
                     }
                 }
                 Some(input) = prompt => {
+                    self.text_pos.0 = 0;
+                    self.text_pos.1 += 1;
                     self.do_print(format!("> {input}\n"), None);
                     self.user_input_tx.send(input).unwrap();
                 }
@@ -105,11 +108,8 @@ impl Terminal {
                         break;
                     }
 
-                    let submitted = matches!(event, Event::Key(key) if key.code == KeyCode::Enter);
-                    self.prompt.handle_key(event);
-                    if !submitted {
-                        self.render_prompt();
-                    }
+                    self.prompt.handle_event(event);
+                    self.render_prompt();
                 }
             }
         }
@@ -200,8 +200,14 @@ impl TermOutput {
         self.cmd_tx.send(command).unwrap();
     }
 
-    pub async fn request_approval(&self, message: &str, approved: oneshot::Sender<bool>) {
+    pub async fn request_approval(
+        &self,
+        tool_name: &str,
+        message: &str,
+        approved: oneshot::Sender<bool>,
+    ) {
         let command = Command::RequestApproval {
+            tool_name: tool_name.to_string(),
             message: message.to_string(),
             result_tx: approved,
         };

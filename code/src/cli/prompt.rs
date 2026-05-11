@@ -1,4 +1,8 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use crossterm::{
     cursor,
@@ -7,15 +11,24 @@ use crossterm::{
     style::Print,
     terminal::{Clear, ClearType},
 };
-use tokio::sync::mpsc;
+use tokio::{
+    sync::mpsc,
+    time::{Duration, sleep},
+};
 
 use crate::cli::widget::Widget;
 
 pub struct Prompt {
+    state: Arc<Mutex<PromptState>>,
+    submitted_tx: mpsc::UnboundedSender<String>,
+    submitted_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<String>>>,
+}
+
+#[derive(Default)]
+struct PromptState {
     current_prompt: String,
     cursor: usize,
-    submitted_tx: mpsc::UnboundedSender<String>,
-    submitted_rx: mpsc::UnboundedReceiver<String>,
+    spinner_started: Option<Instant>,
 }
 
 impl Prompt {
@@ -23,17 +36,40 @@ impl Prompt {
         let (submitted_tx, submitted_rx) = mpsc::unbounded_channel();
 
         Prompt {
-            current_prompt: String::with_capacity(2048),
-            cursor: 0,
+            state: Arc::new(Mutex::new(PromptState {
+                current_prompt: String::with_capacity(2048),
+                ..Default::default()
+            })),
             submitted_tx,
-            submitted_rx,
+            submitted_rx: Arc::new(tokio::sync::Mutex::new(submitted_rx)),
         }
     }
-    
-    pub fn charge_spinner(&mut self) {}
-    pub fn discharge_spinner(&mut self) {}
 
-    fn handle_event(&mut self, event: Event) {
+    pub fn charge_spinner(&self) {
+        self.state.lock().unwrap().spinner_started = Some(Instant::now());
+    }
+
+    pub fn discharge_spinner(&self) {
+        self.state.lock().unwrap().spinner_started = None;
+    }
+
+    pub fn height(&self) -> u16 {
+        if self.state.lock().unwrap().spinner_started.is_some() {
+            2
+        } else {
+            1
+        }
+    }
+
+    pub async fn tick(&self) {
+        if self.state.lock().unwrap().spinner_started.is_some() {
+            sleep(Duration::from_secs(1)).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    pub fn handle_event(&self, event: Event) {
         let Event::Key(key) = event else {
             return;
         };
@@ -45,33 +81,38 @@ impl Prompt {
         self.handle_key_event(key);
     }
 
-    fn handle_key_event(&mut self, key: KeyEvent) {
+    fn handle_key_event(&self, key: KeyEvent) {
+        let mut state = self.state.lock().unwrap();
+
         match key.code {
             KeyCode::Char(ch) => {
-                self.current_prompt.insert(self.cursor, ch);
-                self.cursor += ch.len_utf8();
+                let cursor = state.cursor;
+                state.current_prompt.insert(cursor, ch);
+                state.cursor += ch.len_utf8();
             }
             KeyCode::Backspace => {
-                if let Some((idx, _)) = self.current_prompt[..self.cursor].char_indices().last() {
-                    self.current_prompt.remove(idx);
-                    self.cursor = idx;
+                if let Some((idx, _)) = state.current_prompt[..state.cursor].char_indices().last() {
+                    state.current_prompt.remove(idx);
+                    state.cursor = idx;
                 }
             }
             KeyCode::Left => {
-                if let Some((idx, _)) = self.current_prompt[..self.cursor].char_indices().last() {
-                    self.cursor = idx;
+                if let Some((idx, _)) = state.current_prompt[..state.cursor].char_indices().last() {
+                    state.cursor = idx;
                 }
             }
             KeyCode::Right => {
-                if self.cursor < self.current_prompt.len() {
-                    let ch = self.current_prompt[self.cursor..].chars().next().unwrap();
-                    self.cursor += ch.len_utf8();
+                if state.cursor < state.current_prompt.len() {
+                    let ch = state.current_prompt[state.cursor..].chars().next().unwrap();
+                    state.cursor += ch.len_utf8();
                 }
             }
             KeyCode::Enter => {
-                let submitted = std::mem::take(&mut self.current_prompt);
-                self.cursor = 0;
-                self.submitted_tx.send(submitted).unwrap();
+                if state.spinner_started.is_none() {
+                    let submitted = std::mem::take(&mut state.current_prompt);
+                    state.cursor = 0;
+                    self.submitted_tx.send(submitted).unwrap();
+                }
             }
             _ => {}
         }
@@ -80,15 +121,38 @@ impl Prompt {
 
 impl Widget for Prompt {
     fn render(&self, start_row: u16) {
+        let state = self.state.lock().unwrap();
         let mut stdout = io::stdout();
 
         execute!(
             stdout,
             cursor::MoveTo(0, start_row),
             Clear(ClearType::CurrentLine),
+            cursor::MoveTo(0, start_row + 1),
+            Clear(ClearType::CurrentLine),
+            cursor::MoveTo(0, start_row),
+        )
+        .unwrap();
+
+        if let Some(started) = state.spinner_started {
+            let seconds = started.elapsed().as_secs();
+            execute!(
+                stdout,
+                Print(format!("Waiting ({seconds} seconds)")),
+                cursor::MoveTo(0, start_row + 1),
+                Clear(ClearType::CurrentLine),
+            )
+            .unwrap();
+        }
+
+        execute!(
+            stdout,
             Print("> "),
-            Print(&self.current_prompt),
-            cursor::MoveTo(2 + self.cursor as u16, start_row),
+            Print(&state.current_prompt),
+            cursor::MoveTo(
+                2 + state.cursor as u16,
+                start_row + u16::from(state.spinner_started.is_some())
+            ),
         )
         .unwrap();
 
@@ -99,7 +163,7 @@ impl Widget for Prompt {
         self.handle_event(event);
     }
 
-    async fn recv(&mut self) -> Option<String> {
-        self.submitted_rx.recv().await
+    async fn recv(&self) -> Option<String> {
+        self.submitted_rx.lock().await.recv().await
     }
 }
