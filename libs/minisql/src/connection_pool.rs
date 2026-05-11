@@ -1,4 +1,5 @@
 use crate::Migration;
+use crate::postgres::PostgresBackend;
 use crate::query::{QueryResult, Transaction, Value};
 use crate::sql_builder::SQLBuilder;
 use crate::sqlite::SqliteBackend;
@@ -13,6 +14,7 @@ pub struct ConnectionPool {
 
 #[derive(Clone)]
 pub enum Backend {
+    Postgres(PostgresBackend),
     Sqlite(SqliteBackend),
 }
 
@@ -22,6 +24,8 @@ impl ConnectionPool {
             let path = &url[7..]; // Skip "sqlite:"
             let sqlite_backend = SqliteBackend::new(path)?;
             Backend::Sqlite(sqlite_backend)
+        } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+            Backend::Postgres(PostgresBackend::new(url)?)
         } else {
             return Err(format!("Unsupported database URL format: {}", url).into());
         };
@@ -48,7 +52,7 @@ impl ConnectionPool {
             })
             .collect::<Vec<_>>();
 
-        self.query("CREATE TABLE IF NOT EXISTS __migrations (id INTEGER PRIMARY KEY, hash INTEGER NOT NULL);").await?;
+        self.query("CREATE TABLE IF NOT EXISTS __migrations (id BIGINT PRIMARY KEY, hash BIGINT NOT NULL);").await?;
 
         let existing_migrations = self.query("SELECT * FROM __migrations;").await?;
 
@@ -103,6 +107,7 @@ impl ConnectionPool {
     /// Execute a raw SQL query asynchronously
     pub async fn query(&self, query: &str) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
         match &*self.backend {
+            Backend::Postgres(postgres) => postgres.query(query).await,
             Backend::Sqlite(sqlite) => sqlite.query(query).await,
         }
     }
@@ -114,12 +119,17 @@ impl ConnectionPool {
         params: Vec<Value>,
     ) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
         match &*self.backend {
+            Backend::Postgres(postgres) => postgres.query_with_params(query, params).await,
             Backend::Sqlite(sqlite) => sqlite.query_with_params(query, params).await,
         }
     }
 
     pub async fn transaction(&self) -> Result<Transaction, Box<dyn StdError + Send + Sync>> {
         match &*self.backend {
+            Backend::Postgres(postgres) => postgres
+                .begin_transaction()
+                .await
+                .map(|_| Transaction::new(self.backend.clone())),
             Backend::Sqlite(sqlite) => sqlite
                 .begin_transaction()
                 .await
@@ -131,6 +141,7 @@ impl ConnectionPool {
 impl Backend {
     pub(crate) fn builder(&self) -> SQLBuilder {
         match self {
+            Backend::Postgres(postgres) => postgres.builder(),
             Backend::Sqlite(sqlite) => sqlite.builder(),
         }
     }

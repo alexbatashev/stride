@@ -1,6 +1,7 @@
 mod connection_pool;
 mod dsl;
 mod migration;
+mod postgres;
 mod query;
 mod sql_builder;
 mod sqlite;
