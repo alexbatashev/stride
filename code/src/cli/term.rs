@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use crossterm::{
     cursor,
-    event::EventStream,
+    event::{Event, EventStream, KeyCode},
     execute,
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal::{self, Clear, ClearType},
@@ -14,7 +14,7 @@ use super::{prompt::Prompt, widget::Widget};
 
 pub struct Terminal {
     cmd_rx: mpsc::UnboundedReceiver<Command>,
-    user_input_tx: mpsc::UnboundedSender<TermEvent>,
+    user_input_tx: mpsc::UnboundedSender<String>,
     prompt: Prompt,
     text_pos: (u16, u16),
 }
@@ -26,13 +26,8 @@ pub struct Choice {
     pub description: Option<String>,
 }
 
-pub enum TermEvent {
-    Prompt(String),
-    Escape,
-}
-
 pub struct TermInput {
-    user_input_rx: mpsc::UnboundedReceiver<TermEvent>,
+    user_input_rx: mpsc::UnboundedReceiver<String>,
 }
 
 #[derive(Clone)]
@@ -75,7 +70,8 @@ impl Terminal {
         let mut reader = EventStream::new();
 
         loop {
-            let mut event = reader.next().fuse();
+            let event = reader.next().fuse();
+            let prompt = self.prompt.recv().fuse();
 
             select! {
                 Some(cmd) = self.cmd_rx.recv() => {
@@ -86,8 +82,22 @@ impl Terminal {
                         Command::RequestApproval { message, result_tx } => {}
                     }
                 }
+                Some(input) = prompt => {
+                    self.user_input_tx.send(input).unwrap();
+                    self.text_pos.0 = 0;
+                    self.text_pos.1 += 2;
+                    self.prompt.render(self.text_pos.1 + 1);
+                }
                 Some(Ok(event)) = event => {
+                    if matches!(event, Event::Key(key) if key.code == KeyCode::Esc) {
+                        break;
+                    }
+
+                    let submitted = matches!(event, Event::Key(key) if key.code == KeyCode::Enter);
                     self.prompt.handle_key(event);
+                    if !submitted {
+                        self.prompt.render(self.text_pos.1 + 1);
+                    }
                 }
             }
         }
@@ -150,7 +160,7 @@ impl Terminal {
 }
 
 impl TermInput {
-    pub async fn recv(&mut self) -> Option<TermEvent> {
+    pub async fn recv(&mut self) -> Option<String> {
         self.user_input_rx.recv().await
     }
 }
