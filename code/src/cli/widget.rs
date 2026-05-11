@@ -1,7 +1,7 @@
-use crossterm::event::KeyCode;
+use crossterm::event::Event;
 
 pub trait Widget {
     fn render(&self, start_row: u16);
 
-    fn handle_key(&mut self, key: KeyCode);
+    fn handle_key(&mut self, event: Event);
 }

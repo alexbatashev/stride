@@ -17,7 +17,7 @@ impl Widget for Prompt {
         todo!()
     }
 
-    fn handle_key(&mut self, key: crossterm::event::KeyCode) {
+    fn handle_key(&mut self, key: crossterm::event::Event) {
         todo!()
     }
 }

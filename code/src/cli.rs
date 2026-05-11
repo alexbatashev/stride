@@ -84,9 +84,9 @@ pub async fn cli_main() -> anyhow::Result<()> {
                     } else {
                         tokio::select! {
                             _ = tokio::signal::ctrl_c() => break 'main,
-                            input = term_input.recv() => {
-                                if let Some(s) = input { queue.push_back(s); }
-                            }
+                            // input = term_input.recv() => {
+                                // if let Some(s) = input { queue.push_back(s); }
+                            // }
                         };
                         false
                     };

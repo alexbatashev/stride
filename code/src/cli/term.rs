@@ -1,15 +1,20 @@
-use std::io;
+use std::io::{self, Write};
 
-use crossterm::{style::Color, terminal};
-use futures::channel::oneshot;
-use termimad::crossterm::cursor;
+use crossterm::{
+    cursor,
+    event::EventStream,
+    execute,
+    style::{Color, Print, ResetColor, SetForegroundColor},
+    terminal::{self, Clear, ClearType},
+};
+use futures::{FutureExt, StreamExt, channel::oneshot};
 use tokio::{select, sync::mpsc};
 
-use super::prompt::Prompt;
+use super::{prompt::Prompt, widget::Widget};
 
 pub struct Terminal {
     cmd_rx: mpsc::UnboundedReceiver<Command>,
-    user_input_tx: mpsc::UnboundedSender<String>,
+    user_input_tx: mpsc::UnboundedSender<TermEvent>,
     prompt: Prompt,
     text_pos: (u16, u16),
 }
@@ -21,8 +26,13 @@ pub struct Choice {
     pub description: Option<String>,
 }
 
+pub enum TermEvent {
+    Prompt(String),
+    Escape,
+}
+
 pub struct TermInput {
-    user_input_rx: mpsc::UnboundedReceiver<String>,
+    user_input_rx: mpsc::UnboundedReceiver<TermEvent>,
 }
 
 #[derive(Clone)]
@@ -60,7 +70,13 @@ impl Terminal {
     pub async fn run(mut self) {
         terminal::enable_raw_mode().unwrap();
 
+        self.prompt.render(self.text_pos.1 + 1);
+
+        let mut reader = EventStream::new();
+
         loop {
+            let mut event = reader.next().fuse();
+
             select! {
                 Some(cmd) = self.cmd_rx.recv() => {
                     match cmd {
@@ -70,6 +86,9 @@ impl Terminal {
                         Command::RequestApproval { message, result_tx } => {}
                     }
                 }
+                Some(Ok(event)) = event => {
+                    self.prompt.handle_key(event);
+                }
             }
         }
     }
@@ -77,13 +96,61 @@ impl Terminal {
     fn do_print(&mut self, message: String, color: Option<Color>) {
         let (cols, _) = terminal::size().expect("Failed to get terminal szie");
         let (col, row) = self.text_pos;
+        let mut stdout = io::stdout();
 
-        // if ()
+        execute!(stdout, cursor::MoveTo(col, row)).unwrap();
+
+        if !message.contains('\n') && cols - col > message.len() as u16 {
+            if let Some(color) = color {
+                execute!(
+                    stdout,
+                    SetForegroundColor(color),
+                    Print(&message),
+                    ResetColor
+                )
+                .unwrap();
+            } else {
+                execute!(stdout, Print(&message)).unwrap();
+            }
+            self.text_pos.0 += message.len() as u16;
+        } else {
+            execute!(stdout, Clear(ClearType::FromCursorDown)).unwrap();
+
+            if let Some(color) = color {
+                execute!(
+                    stdout,
+                    SetForegroundColor(color),
+                    Print(&message),
+                    ResetColor
+                )
+                .unwrap();
+            } else {
+                execute!(stdout, Print(&message)).unwrap();
+            }
+
+            for ch in message.chars() {
+                if ch == '\n' {
+                    self.text_pos.0 = 0;
+                    self.text_pos.1 += 1;
+                } else {
+                    self.text_pos.0 += 1;
+
+                    if self.text_pos.0 >= cols {
+                        self.text_pos.0 = 0;
+                        self.text_pos.1 += 1;
+                    }
+                }
+            }
+
+            self.prompt.render(self.text_pos.1 + 1);
+        }
+
+        stdout.flush().unwrap();
     }
 }
 
 impl TermInput {
-    pub async fn recv(&mut self) -> Option<String> {
+    pub async fn recv(&mut self) -> Option<TermEvent> {
         self.user_input_rx.recv().await
     }
 }
