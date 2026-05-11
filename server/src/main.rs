@@ -1,5 +1,6 @@
 mod api;
 mod db;
+mod pages;
 
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
@@ -11,12 +12,16 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use handlebars::Handlebars;
 use minisql::ConnectionPool;
 use tokio::fs;
+
+use crate::pages::get_templates;
 
 struct ServerState {
     db: ConnectionPool,
     jwt_secret: String,
+    templates: Handlebars<'static>,
 }
 
 #[tokio::main]
@@ -29,7 +34,13 @@ async fn main() -> anyhow::Result<()> {
     let db = ConnectionPool::new(db_url).unwrap();
     db.initialize_database(db::get_migrations()).await.unwrap();
 
-    let state = Arc::new(ServerState { db, jwt_secret });
+    let templates = get_templates()?;
+
+    let state = Arc::new(ServerState {
+        db,
+        jwt_secret,
+        templates,
+    });
 
     let app = app(state);
 
@@ -44,6 +55,9 @@ fn app(state: Arc<ServerState>) -> Router {
         .route("/api/register", post(api::auth::register))
         .route("/api/login", post(api::auth::login))
         .route("/api/logout", post(api::auth::logout))
+        .route("/auth/login", get(pages::auth::login))
+        .route("/auth/register", get(pages::auth::register))
+        .route("/threads", get(pages::agent::new_thread))
         .route("/", get(frontend_asset))
         .fallback(get(frontend_asset))
         .with_state(state)

@@ -226,6 +226,7 @@ mod tests {
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
     };
+    use handlebars::Handlebars;
     use tower::ServiceExt;
 
     use super::*;
@@ -238,9 +239,12 @@ mod tests {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
 
+        let templates = Handlebars::new();
+
         let app = app(Arc::new(ServerState {
             db: db.clone(),
             jwt_secret: "test-secret".to_string(),
+            templates,
         }));
 
         let response = app
