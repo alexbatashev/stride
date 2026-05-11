@@ -1,0 +1,85 @@
+#![allow(non_upper_case_globals)]
+
+use minisql::{DecodeError, FromValue, IntoValue, SqlLikeType, Value, migrations};
+
+use uuid::Uuid;
+
+#[derive(Debug)]
+pub enum Role {
+    System,
+    Agent,
+    User,
+    Tool,
+}
+
+migrations! {
+    schema {
+        table users {
+            id: Uuid [PrimaryKey],
+            username: String [Unique],
+            password_hash: String,
+        }
+
+        table sessions {
+            id: Uuid [PrimaryKey],
+            user_id: Uuid,
+            expires_at: i64,
+
+            foreign_key(user_id -> users.id);
+        }
+
+        table threads {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            title: String,
+
+            foreign_key(owner -> users.id);
+        }
+
+        table messages {
+            id: Uuid [PrimaryKey],
+            parent_thread: Uuid,
+            seq: u64,
+            role: Role,
+            content: String,
+            thinking: Option<String>,
+
+            foreign_key(parent_thread -> threads.id);
+        }
+    }
+}
+
+impl FromValue for Role {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "system" => Ok(Role::System),
+            Value::Text(s) if s == "agent" => Ok(Role::Agent),
+            Value::Text(s) if s == "user" => Ok(Role::User),
+            Value::Text(s) if s == "tool" => Ok(Role::Tool),
+            _ => Err(DecodeError("Invalid role".to_string())),
+        }
+    }
+}
+
+impl SqlLikeType for Role {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl Into<Value> for Role {
+    fn into(self) -> Value {
+        match self {
+            Role::System => Value::Text("system".to_string()),
+            Role::Agent => Value::Text("agent".to_string()),
+            Role::User => Value::Text("user".to_string()),
+            Role::Tool => Value::Text("tool".to_string()),
+        }
+    }
+}
+
+impl IntoValue for Role {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
