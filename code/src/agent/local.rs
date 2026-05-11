@@ -1,26 +1,38 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{cell::RefCell, path::PathBuf, pin::Pin, rc::Rc, sync::Arc};
 
 use friday_agent::{
-    AgentConfig, BaseAgent, ModelRegEntry, ModelRegistry, Tool,
-    tools::{
-        explorer::{EXPLORER_NAME, make_explorer},
-        file::ReadFileTool,
-        glob::GlobTool,
-        patch::PatchTool,
-    },
+    AgentConfig, AgentError, AgentResponseChunk, BaseAgent, ModelRegEntry, ModelRegistry, Tool,
+    tools::{explorer::make_explorer, file::ReadFileTool, glob::GlobTool, patch::PatchTool},
 };
+use futures::{Stream, StreamExt, stream};
 use llm::{Anthropic, Ollama, OpenAI};
-use minisql::ConnectionPool;
+use minisql::{ConnectionPool, Value};
+use uuid::Uuid;
 
 use crate::{
     agent::CodeAgent,
     config::{self, Config},
+    db::{Role, get_migrations, messages, threads},
 };
 
 pub struct LocalAgent {
     db: ConnectionPool,
     workdir: PathBuf,
     agent: friday_agent::BaseAgent,
+    thread: Rc<RefCell<ThreadState>>,
+}
+
+#[derive(Default)]
+struct ThreadState {
+    id: Option<Uuid>,
+    next_seq: u64,
+}
+
+#[derive(Default)]
+struct AssistantMessageState {
+    id: Option<Uuid>,
+    content: String,
+    thinking: Option<String>,
 }
 
 const SYSTEM_PROMPT: &str =
@@ -44,8 +56,93 @@ impl LocalAgent {
 
         register_default_tools(&mut agent);
 
-        Self { db, workdir, agent }
+        Self {
+            db,
+            workdir,
+            agent,
+            thread: Rc::new(RefCell::new(ThreadState::default())),
+        }
     }
+
+    async fn ensure_thread(&self) -> Result<Uuid, AgentError> {
+        self.db
+            .initialize_database(get_migrations())
+            .await
+            .map_err(db_error)?;
+
+        if let Some(id) = self.thread.borrow().id {
+            return Ok(id);
+        }
+
+        let id = Uuid::now_v7();
+        let base_dir = self.workdir.to_string_lossy().to_string();
+
+        threads::insert()
+            .id(id)
+            .base_dir(base_dir.as_str())
+            .working_dir(base_dir.as_str())
+            .execute(&self.db)
+            .await
+            .map_err(db_error)?;
+
+        self.thread.borrow_mut().id = Some(id);
+        Ok(id)
+    }
+
+    async fn insert_message(
+        &self,
+        thread_id: Uuid,
+        role: Role,
+        content: &str,
+        thinking: Option<&str>,
+    ) -> Result<Uuid, AgentError> {
+        let id = Uuid::now_v7();
+        let seq = {
+            let mut thread = self.thread.borrow_mut();
+            let seq = thread.next_seq;
+            thread.next_seq += 1;
+            seq
+        };
+
+        messages::insert()
+            .id(id)
+            .parent_thread(thread_id)
+            .seq(seq)
+            .role(role)
+            .content(content)
+            .thinking(thinking)
+            .execute(&self.db)
+            .await
+            .map_err(db_error)?;
+
+        Ok(id)
+    }
+}
+
+fn db_error(err: Box<dyn std::error::Error + Send + Sync>) -> AgentError {
+    AgentError::NetworkError(err.to_string())
+}
+
+async fn update_message(
+    db: &ConnectionPool,
+    id: Uuid,
+    content: &str,
+    thinking: Option<&str>,
+) -> Result<(), AgentError> {
+    db.query_with_params(
+        "UPDATE messages SET content = ?, thinking = ? WHERE id = ?",
+        vec![
+            Value::Text(content.to_string()),
+            thinking
+                .map(|s| Value::Text(s.to_string()))
+                .unwrap_or(Value::Null),
+            Value::Uuid(id),
+        ],
+    )
+    .await
+    .map_err(db_error)?;
+
+    Ok(())
 }
 
 fn create_model_registry(config: &Config) -> ModelRegistry {
@@ -78,26 +175,128 @@ fn register_default_tools(agent: &mut BaseAgent) {
     agent.allow_tool(ReadFileTool {}.name());
 
     agent.register_tool(make_explorer());
-    agent.allow_tool(EXPLORER_NAME);
+    agent.allow_tool("explorer");
 
     agent.register_tool(PatchTool {});
 }
 
 impl CodeAgent for LocalAgent {
     fn get_messages(&self) -> Vec<super::Message> {
-        todo!()
+        self.agent
+            .thread()
+            .into_iter()
+            .filter_map(|message| match message.role {
+                llm::Role::System => None,
+                llm::Role::Assistant => Some(super::Message::Agent {
+                    text: message.content,
+                }),
+                llm::Role::User => Some(super::Message::User(message.content)),
+                llm::Role::Tool => Some(super::Message::ToolOutput(message.content)),
+            })
+            .collect()
     }
 
     async fn make_turn(
         &self,
         message: &str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn futures::Stream<
-                    Item = Result<friday_agent::AgentResponseChunk, friday_agent::AgentError>,
-                > + 'static,
-        >,
-    > {
-        todo!()
+    ) -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>> {
+        let thread_id = match self.ensure_thread().await {
+            Ok(id) => id,
+            Err(err) => return Box::pin(stream::once(async { Err(err) })),
+        };
+
+        if let Err(err) = self
+            .insert_message(thread_id, Role::User, message, None)
+            .await
+        {
+            return Box::pin(stream::once(async { Err(err) }));
+        }
+
+        let stream = self.agent.make_turn(message.to_string()).await;
+        let db = self.db.clone();
+        let thread_state = self.thread.clone();
+        let assistant_state = Rc::new(RefCell::new(AssistantMessageState::default()));
+
+        Box::pin(stream.then(move |item| {
+            let db = db.clone();
+            let thread_state = thread_state.clone();
+            let assistant_state = assistant_state.clone();
+
+            async move {
+                if let Ok(AgentResponseChunk::Chunk(chunk)) = &item {
+                    if assistant_state.borrow().id.is_none() {
+                        let id = Uuid::now_v7();
+                        let seq = {
+                            let mut thread = thread_state.borrow_mut();
+                            let seq = thread.next_seq;
+                            thread.next_seq += 1;
+                            seq
+                        };
+
+                        if let Err(err) = messages::insert()
+                            .id(id)
+                            .parent_thread(thread_id)
+                            .seq(seq)
+                            .role(Role::Agent)
+                            .content("")
+                            .thinking(Option::<&str>::None)
+                            .execute(&db)
+                            .await
+                            .map_err(db_error)
+                        {
+                            return Err(err);
+                        }
+
+                        let mut assistant = assistant_state.borrow_mut();
+                        assistant.id = Some(id);
+                        assistant.content.clear();
+                        assistant.thinking = None;
+                    }
+
+                    let (id, content, thinking) = {
+                        let mut assistant = assistant_state.borrow_mut();
+
+                        for choice in &chunk.choices {
+                            if let Some(delta) = &choice.delta {
+                                if let Some(content) = &delta.content {
+                                    assistant.content.push_str(content);
+                                }
+
+                                if let Some(thinking) = &delta.thinking {
+                                    assistant
+                                        .thinking
+                                        .get_or_insert_with(String::new)
+                                        .push_str(thinking);
+                                }
+                            }
+                        }
+
+                        (
+                            assistant.id,
+                            assistant.content.clone(),
+                            assistant.thinking.clone(),
+                        )
+                    };
+
+                    if let Some(id) = id {
+                        if let Err(err) =
+                            update_message(&db, id, &content, thinking.as_deref()).await
+                        {
+                            return Err(err);
+                        }
+                    }
+
+                    if chunk
+                        .choices
+                        .iter()
+                        .any(|choice| choice.finish_reason.is_some())
+                    {
+                        assistant_state.borrow_mut().id = None;
+                    }
+                }
+
+                item
+            }
+        }))
     }
 }

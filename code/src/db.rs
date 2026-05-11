@@ -1,6 +1,6 @@
 #![allow(non_upper_case_globals)]
 
-use minisql::{DecodeError, FromValue, SqlLikeType, Value, migrations};
+use minisql::{DecodeError, FromValue, IntoValue, SqlLikeType, Value, migrations};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -58,5 +58,11 @@ impl Into<Value> for Role {
             Role::User => Value::Text("user".to_string()),
             Role::Tool => Value::Text("tool".to_string()),
         }
+    }
+}
+
+impl IntoValue for Role {
+    fn into_value(self) -> Value {
+        self.into()
     }
 }
