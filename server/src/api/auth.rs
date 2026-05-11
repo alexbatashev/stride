@@ -229,7 +229,9 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::db::sessions;
+    use minisql::ConnectionPool;
+
+    use crate::{app, db, db::sessions};
 
     #[tokio::test]
     async fn auth_flow_register_login_logout() {
