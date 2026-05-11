@@ -4,6 +4,7 @@ use std::{
     time::Instant,
 };
 
+use async_trait::async_trait;
 use crossterm::{
     cursor,
     event::{Event, KeyCode, KeyEvent, KeyEventKind},
@@ -119,6 +120,7 @@ impl Prompt {
     }
 }
 
+#[async_trait]
 impl Widget for Prompt {
     fn render(&self, start_row: u16) {
         let state = self.state.lock().unwrap();

@@ -34,6 +34,7 @@ impl From<llm::Error> for AgentError {
 pub enum AgentResponseChunk {
     Chunk(StreamResponseChunk),
     Approval {
+        tool_name: String,
         message: String,
         approved: oneshot::Sender<bool>,
     },
@@ -254,7 +255,7 @@ impl BaseAgent {
                             if needs_approval {
                                 let message = tool.confirmation_prompt(&args);
                                 let (approved, response) = oneshot::channel();
-                                yield Ok(AgentResponseChunk::Approval { message, approved });
+                                yield Ok(AgentResponseChunk::Approval { tool_name: readable_name.clone(), message, approved });
 
                                 if !response.await.unwrap_or(false) {
                                     append_tool_result(
@@ -532,7 +533,9 @@ mod tests {
             ));
 
             match stream.next().await.unwrap().unwrap() {
-                AgentResponseChunk::Approval { message, approved } => {
+                AgentResponseChunk::Approval {
+                    message, approved, ..
+                } => {
                     assert_eq!(message, r#"Approve approval_tool with {"value":1}"#);
                     approved.send(true).unwrap();
                 }

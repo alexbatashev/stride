@@ -79,8 +79,8 @@ pub async fn cli_main() -> anyhow::Result<()> {
                                             }
                                             false
                                         }
-                                        Some(Ok(AgentResponseChunk::Approval { message, approved })) => {
-                                            term_output.request_approval(&message, approved).await;
+                                        Some(Ok(AgentResponseChunk::Approval { tool_name, message, approved })) => {
+                                            term_output.request_approval(&tool_name, &message, approved).await;
                                             false
                                         }
                                         Some(Err(err)) => {
