@@ -15,6 +15,7 @@ migrations! {
     schema {
         table threads {
             id: Uuid [PrimaryKey],
+            base_dir: String,
             working_dir: String,
         }
 

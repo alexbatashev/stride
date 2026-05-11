@@ -23,7 +23,8 @@ pub struct LocalAgent {
     agent: friday_agent::BaseAgent,
 }
 
-const SYSTEM_PROMPT: &str = "";
+const SYSTEM_PROMPT: &str =
+    "You are Friday, an AI assistant with deep expertise in software engineering.";
 
 impl LocalAgent {
     pub fn new(config: &Config, db: ConnectionPool, workdir: PathBuf) -> Self {

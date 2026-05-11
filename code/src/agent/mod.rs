@@ -6,7 +6,12 @@ use friday_agent::{AgentError, AgentResponseChunk};
 use futures::Stream;
 pub use local::LocalAgent;
 
-pub struct Message {}
+pub enum Message {
+    Agent { text: String },
+    User(String),
+    ToolCall { name: String },
+    ToolOutput(String),
+}
 
 pub trait CodeAgent {
     fn get_messages(&self) -> Vec<Message>;
