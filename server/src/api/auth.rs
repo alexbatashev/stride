@@ -91,7 +91,10 @@ pub async fn register(
         .map_err(|_| AuthError::Conflict)?;
 
     let resp = create_session(&state, user_id).await?;
-    Ok(([(header::SET_COOKIE, session_cookie(&resp.token))], Json(resp)))
+    Ok((
+        [(header::SET_COOKIE, session_cookie(&resp.token))],
+        Json(resp),
+    ))
 }
 
 pub async fn login(
@@ -115,7 +118,10 @@ pub async fn login(
     }
 
     let resp = create_session(&state, user_id).await?;
-    Ok(([(header::SET_COOKIE, session_cookie(&resp.token))], Json(resp)))
+    Ok((
+        [(header::SET_COOKIE, session_cookie(&resp.token))],
+        Json(resp),
+    ))
 }
 
 pub async fn logout(

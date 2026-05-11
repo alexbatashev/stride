@@ -12,10 +12,19 @@ pub fn get_templates() -> anyhow::Result<Handlebars<'static>> {
     Ok(hb)
 }
 
-pub fn render_page(hb: &Handlebars, title: &str, page_script: &str, template: &str, data: &Value) -> String {
+pub fn render_page(
+    hb: &Handlebars,
+    title: &str,
+    page_script: &str,
+    template: &str,
+    data: &Value,
+) -> String {
     let body = hb.render(template, data).unwrap();
-    hb.render("base", &serde_json::json!({"title": title, "page_script": page_script, "body": body}))
-        .unwrap()
+    hb.render(
+        "base",
+        &serde_json::json!({"title": title, "page_script": page_script, "body": body}),
+    )
+    .unwrap()
 }
 
 const BASE_TEMPLATE: &str = r#"<!doctype html>
