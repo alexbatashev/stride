@@ -106,6 +106,8 @@ pub async fn cli_main() -> anyhow::Result<()> {
 
 #[derive(Parser)]
 struct Cli {
+    #[arg(short, long)]
     config: Option<OsString>,
+    #[arg(long)]
     db_path: Option<OsString>,
 }
