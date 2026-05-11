@@ -6,8 +6,14 @@ use crate::cli::widget::Widget;
 
 pub struct Prompt {}
 
+impl Prompt {
+    pub fn new() -> Self {
+        Prompt {}
+    }
+}
+
 impl Widget for Prompt {
-    fn render(&self, start_col: u64, start_row: u64) {
+    fn render(&self, start_row: u16) {
         todo!()
     }
 

@@ -68,7 +68,7 @@ pub async fn cli_main() -> anyhow::Result<()> {
                                     Some(Ok(AgentResponseChunk::Chunk(c))) => {
                                         for choice in &c.choices {
                                             if let Some(text) = choice.delta.as_ref().and_then(|d| d.content.as_deref()) {
-                                                term_output.print(text).await;
+                                                term_output.print(text, None)
                                             }
                                         }
                                         false
