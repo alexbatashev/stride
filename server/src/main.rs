@@ -1,9 +1,10 @@
 mod api;
+mod config;
 mod db;
 mod pages;
 pub mod runner;
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     Router,
@@ -12,6 +13,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
+use clap::Parser;
 use handlebars::Handlebars;
 use minisql::ConnectionPool;
 use tower_http::services::ServeDir;
@@ -19,24 +21,34 @@ use tower_http::services::ServeDir;
 use crate::pages::get_templates;
 
 struct ServerState {
+    #[allow(dead_code)]
+    pub(crate) config: config::Config,
     db: ConnectionPool,
     jwt_secret: String,
     templates: Handlebars<'static>,
 }
 
+#[derive(Debug, Parser)]
+struct Args {
+    #[arg(short = 'c')]
+    config_path: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // TODO change to a configurable value in the future.
-    let db_url = "sqlite:///tmp/server.db";
+    let args = Args::parse();
+    let config = config::Config::load(&args.config_path)?;
     let jwt_secret = std::env::var("FRIDAY_JWT_SECRET")
         .unwrap_or_else(|_| "change-this-development-secret".to_string());
 
-    let db = ConnectionPool::new(db_url).unwrap();
+    let db = ConnectionPool::new(&config.db_url()).unwrap();
     db.initialize_database(db::get_migrations()).await.unwrap();
 
     let templates = get_templates()?;
+    let listen_addr = config.listen_addr().to_string();
 
     let state = Arc::new(ServerState {
+        config,
         db,
         jwt_secret,
         templates,
@@ -44,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = app(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -85,4 +97,23 @@ fn is_authenticated(state: &ServerState, headers: &HeaderMap) -> bool {
         })
         .map(|token| api::auth::verify_token(&state.jwt_secret, token).is_ok())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_path_is_read_from_c_option() {
+        let args = Args::try_parse_from(["server", "-c", "server.toml"]).unwrap();
+
+        assert_eq!(args.config_path, PathBuf::from("server.toml"));
+    }
+
+    #[test]
+    fn config_path_is_required() {
+        let err = Args::try_parse_from(["server"]).unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
 }

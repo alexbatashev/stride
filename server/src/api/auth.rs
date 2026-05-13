@@ -249,9 +249,11 @@ mod tests {
         http::{Request, StatusCode, header},
     };
     use handlebars::Handlebars;
+    use std::collections::HashMap;
     use tower::ServiceExt;
 
     use super::*;
+    use crate::config::Config;
     use minisql::ConnectionPool;
 
     use crate::{app, db, db::sessions};
@@ -264,6 +266,11 @@ mod tests {
         let templates = Handlebars::new();
 
         let app = app(Arc::new(ServerState {
+            config: Config {
+                providers: HashMap::new(),
+                models: HashMap::new(),
+                server: None,
+            },
             db: db.clone(),
             jwt_secret: "test-secret".to_string(),
             templates,
