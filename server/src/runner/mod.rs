@@ -1,8 +1,8 @@
-mod inproc;
-
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+
+pub mod inproc;
 
 pub type EventSeq = u64;
 
@@ -84,5 +84,20 @@ pub enum AgentPoolError {
     ThreadNotFound,
     AlreadyRunning,
     EventHistoryExpired,
+    WorkerStopped,
     Internal(anyhow::Error),
 }
+
+impl std::fmt::Display for AgentPoolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentPoolError::ThreadNotFound => write!(f, "thread not found"),
+            AgentPoolError::AlreadyRunning => write!(f, "thread is already running"),
+            AgentPoolError::EventHistoryExpired => write!(f, "event history expired"),
+            AgentPoolError::WorkerStopped => write!(f, "agent worker stopped"),
+            AgentPoolError::Internal(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for AgentPoolError {}

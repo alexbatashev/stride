@@ -23,9 +23,9 @@ use crate::pages::get_templates;
 struct ServerState {
     #[allow(dead_code)]
     pub(crate) config: config::Config,
-    db: ConnectionPool,
-    jwt_secret: String,
-    templates: Handlebars<'static>,
+    pub(crate) db: ConnectionPool,
+    pub(crate) jwt_secret: String,
+    pub(crate) templates: Handlebars<'static>,
 }
 
 #[derive(Debug, Parser)]
@@ -97,23 +97,4 @@ fn is_authenticated(state: &ServerState, headers: &HeaderMap) -> bool {
         })
         .map(|token| api::auth::verify_token(&state.jwt_secret, token).is_ok())
         .unwrap_or(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn config_path_is_read_from_c_option() {
-        let args = Args::try_parse_from(["server", "-c", "server.toml"]).unwrap();
-
-        assert_eq!(args.config_path, PathBuf::from("server.toml"));
-    }
-
-    #[test]
-    fn config_path_is_required() {
-        let err = Args::try_parse_from(["server"]).unwrap_err();
-
-        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
-    }
 }

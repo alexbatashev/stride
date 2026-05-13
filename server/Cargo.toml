@@ -9,9 +9,11 @@ async-trait = "0.1"
 argon2 = "0.5"
 axum = "0.8.9"
 clap = { version = "4", features = ["derive"] }
+futures = "0.3.32"
 handlebars = "6.4.0"
 hyper = { version = "1.9.0", features = ["http1", "http2", "server"] }
 jsonwebtoken = "9"
+llm = { path = "../libs/llm" }
 minisql = { path = "../libs/minisql" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
