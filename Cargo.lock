@@ -917,13 +917,17 @@ dependencies = [
  "agent-macro",
  "async-stream",
  "async-trait",
+ "bytes",
  "futures",
  "glob",
+ "http-body-util",
+ "hyper",
  "llm",
  "patch",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tinynet",
 ]
 
 [[package]]

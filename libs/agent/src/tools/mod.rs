@@ -1,5 +1,6 @@
 pub mod explorer;
 pub mod file;
+pub mod firecrawl;
 pub mod glob;
 pub mod patch;
 pub mod shell;

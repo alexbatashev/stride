@@ -14,3 +14,7 @@ async-trait = "0.1"
 glob = "0.3.3"
 patch = "0.7.0"
 thiserror = "2.0.18"
+tinynet = { path = "../tinynet" }
+bytes = "1.11.1"
+hyper = { version = "1.9.0", features = ["client"] }
+http-body-util = "0.1.3"
