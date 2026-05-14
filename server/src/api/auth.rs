@@ -43,6 +43,7 @@ struct Claims {
     exp: usize,
 }
 
+#[derive(Debug)]
 pub(crate) enum AuthError {
     BadRequest,
     Unauthorized,
@@ -91,7 +92,10 @@ pub async fn register(
         .map_err(|_| AuthError::Conflict)?;
 
     let resp = create_session(&state, user_id).await?;
-    Ok(([(header::SET_COOKIE, session_cookie(&resp.token))], Json(resp)))
+    Ok((
+        [(header::SET_COOKIE, session_cookie(&resp.token))],
+        Json(resp),
+    ))
 }
 
 pub async fn login(
@@ -115,7 +119,10 @@ pub async fn login(
     }
 
     let resp = create_session(&state, user_id).await?;
-    Ok(([(header::SET_COOKIE, session_cookie(&resp.token))], Json(resp)))
+    Ok((
+        [(header::SET_COOKIE, session_cookie(&resp.token))],
+        Json(resp),
+    ))
 }
 
 pub async fn logout(
@@ -204,6 +211,15 @@ pub(crate) fn verify_token(jwt_secret: &str, token: &str) -> Result<(), ()> {
     .map_err(|_| ())
 }
 
+pub(crate) fn authenticated_user(
+    state: &ServerState,
+    headers: &HeaderMap,
+) -> Result<Uuid, AuthError> {
+    let token = auth_token(headers)?;
+    let claims = decode_token(state, token)?;
+    Uuid::parse_str(&claims.sub).map_err(|_| AuthError::Unauthorized)
+}
+
 fn session_cookie(token: &str) -> String {
     format!("token={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL_SECONDS}")
 }
@@ -229,6 +245,26 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, AuthError> {
         .ok_or(AuthError::Unauthorized)
 }
 
+fn auth_token(headers: &HeaderMap) -> Result<&str, AuthError> {
+    if let Some(token) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    {
+        return Ok(token);
+    }
+
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .find_map(|part| part.trim().strip_prefix("token="))
+        })
+        .ok_or(AuthError::Unauthorized)
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -243,9 +279,12 @@ mod tests {
         http::{Request, StatusCode, header},
     };
     use handlebars::Handlebars;
+    use std::collections::HashMap;
     use tower::ServiceExt;
 
     use super::*;
+    use crate::{config::Config, runner::inproc::InProcessAgentPool};
+    use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
     use minisql::ConnectionPool;
 
     use crate::{app, db, db::sessions};
@@ -254,12 +293,25 @@ mod tests {
     async fn auth_flow_register_login_logout() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
+        let runner = Arc::new(InProcessAgentPool::new(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: mock_model_registry(),
+                max_iterations: 2,
+            }),
+        ));
 
         let templates = Handlebars::new();
 
         let app = app(Arc::new(ServerState {
+            config: Config {
+                providers: HashMap::new(),
+                models: HashMap::new(),
+                server: None,
+            },
             db: db.clone(),
             jwt_secret: "test-secret".to_string(),
+            runner,
             templates,
         }));
 
@@ -317,6 +369,20 @@ mod tests {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap()
+    }
+
+    fn mock_model_registry() -> ModelRegistry {
+        let mut registry = ModelRegistry::new();
+        registry.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new().into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+        registry
     }
 
     fn logout_request(token: &str) -> Request<Body> {

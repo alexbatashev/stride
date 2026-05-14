@@ -4,7 +4,7 @@ use minisql::{DecodeError, FromValue, IntoValue, SqlLikeType, Value, migrations}
 
 use uuid::Uuid;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Role {
     System,
     Agent,

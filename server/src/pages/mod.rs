@@ -12,10 +12,19 @@ pub fn get_templates() -> anyhow::Result<Handlebars<'static>> {
     Ok(hb)
 }
 
-pub fn render_page(hb: &Handlebars, title: &str, page_script: &str, template: &str, data: &Value) -> String {
+pub fn render_page(
+    hb: &Handlebars,
+    title: &str,
+    page_script: &str,
+    template: &str,
+    data: &Value,
+) -> String {
     let body = hb.render(template, data).unwrap();
-    hb.render("base", &serde_json::json!({"title": title, "page_script": page_script, "body": body}))
-        .unwrap()
+    hb.render(
+        "base",
+        &serde_json::json!({"title": title, "page_script": page_script, "body": body}),
+    )
+    .unwrap()
 }
 
 const BASE_TEMPLATE: &str = r#"<!doctype html>
@@ -41,7 +50,7 @@ const AUTH_TEMPLATE: &str = r#"<auth-form mode="{{mode}}"></auth-form>
     document.addEventListener('auth-mode-change', (e) => { window.location.href = '/auth/' + e.detail.mode; });
 </script>"#;
 
-const THREADS_TEMPLATE: &str = r#"<sample-page></sample-page>
+const THREADS_TEMPLATE: &str = r#"<threads-page thread-id="{{thread_id}}"></threads-page>
 <script type="module">
     document.addEventListener('navigate', (e) => {
         window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;
