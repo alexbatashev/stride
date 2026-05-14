@@ -50,7 +50,7 @@ const AUTH_TEMPLATE: &str = r#"<auth-form mode="{{mode}}"></auth-form>
     document.addEventListener('auth-mode-change', (e) => { window.location.href = '/auth/' + e.detail.mode; });
 </script>"#;
 
-const THREADS_TEMPLATE: &str = r#"<sample-page></sample-page>
+const THREADS_TEMPLATE: &str = r#"<threads-page thread-id="{{thread_id}}"></threads-page>
 <script type="module">
     document.addEventListener('navigate', (e) => {
         window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;
