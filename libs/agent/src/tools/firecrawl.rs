@@ -8,7 +8,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub struct FirecrawlTool;
+pub struct FirecrawlTool {
+    pub api_key: String,
+}
 
 #[derive(ToolDesc)]
 struct FirecrawlParams {
@@ -55,12 +57,7 @@ impl Tool for FirecrawlTool {
             Err(e) => return json!({"success": false, "error": e}),
         };
 
-        let api_key = match std::env::var("FIRECRAWL_API_KEY") {
-            Ok(k) => k,
-            Err(_) => return json!({"success": false, "error": "FIRECRAWL_API_KEY not set"}),
-        };
-
-        match scrape(&params.url, &api_key).await {
+        match scrape(&params.url, &self.api_key).await {
             Ok(content) => json!({"success": true, "content": content}),
             Err(e) => json!({"success": false, "error": e}),
         }
