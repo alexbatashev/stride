@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub struct FirecrawlTool {
     pub api_key: String,
+    pub api_url: String,
 }
 
 #[derive(ToolDesc)]
@@ -57,20 +58,22 @@ impl Tool for FirecrawlTool {
             Err(e) => return json!({"success": false, "error": e}),
         };
 
-        match scrape(&params.url, &self.api_key).await {
+        match scrape(&params.url, &self.api_url, &self.api_key).await {
             Ok(content) => json!({"success": true, "content": content}),
             Err(e) => json!({"success": false, "error": e}),
         }
     }
 }
 
-async fn scrape(url: &str, api_key: &str) -> Result<String, String> {
+async fn scrape(url: &str, api_url: &str, api_key: &str) -> Result<String, String> {
     let body = serde_json::to_vec(&json!({"url": url, "formats": ["markdown"]}))
         .map_err(|e| e.to_string())?;
 
+    let endpoint = format!("{}/v1/scrape", api_url.trim_end_matches('/'));
+
     let req = Request::builder()
         .method("POST")
-        .uri("https://api.firecrawl.dev/v1/scrape")
+        .uri(&endpoint)
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", api_key))
         .body(Full::new(Bytes::from(body)))
