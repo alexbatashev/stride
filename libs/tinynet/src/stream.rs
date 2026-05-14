@@ -39,7 +39,6 @@ impl Read for AsyncTlsStream {
     ) -> Poll<Result<(), io::Error>> {
         let this = self.get_mut();
 
-        // Read TLS bytes from the socket into the TLS session
         match this.tls_conn.read_tls(&mut this.socket) {
             Err(e) if !is_pending_socket_error(&e) => return Poll::Ready(Err(e)),
             Err(_) => {
@@ -49,7 +48,6 @@ impl Read for AsyncTlsStream {
             Ok(_) => {}
         }
 
-        // Process any newly received TLS messages
         let io_state = match this.tls_conn.process_new_packets() {
             Ok(state) => state,
             Err(e) => {
@@ -60,7 +58,6 @@ impl Read for AsyncTlsStream {
             }
         };
 
-        // Read available plaintext into the output buffer
         let plaintext_len = io_state.plaintext_bytes_to_read();
         if plaintext_len > 0 {
             // Safety: we write exactly `to_read` bytes before advancing the cursor
@@ -77,7 +74,6 @@ impl Read for AsyncTlsStream {
             return Poll::Ready(Ok(()));
         }
 
-        // No plaintext yet; re-schedule and pend
         cx.waker().wake_by_ref();
         Poll::Pending
     }
@@ -90,9 +86,7 @@ impl Write for AsyncTlsStream {
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         let this = self.get_mut();
-        // Write plaintext into the TLS session buffer; actual socket write happens in flush
         let n = this.tls_conn.writer().write(buf)?;
-        // Best-effort flush to avoid buffering too much
         let _ = this.tls_conn.write_tls(&mut this.socket);
         Poll::Ready(Ok(n))
     }
@@ -136,7 +130,7 @@ impl Write for AsyncTlsStream {
 }
 
 impl AsyncTcpStream {
-    pub async fn new(addr: SocketAddr) -> std::io::Result<Self> {
+    pub fn new(addr: SocketAddr) -> std::io::Result<Self> {
         let conn = TcpStream::connect(addr)?;
 
         // FIXME: mio docs say I need to wait for a (writable) event and check TcpStream::take_err?

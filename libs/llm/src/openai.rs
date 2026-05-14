@@ -85,7 +85,7 @@ impl OpenAI {
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let (status, res_body) = crate::net::send_request(req).await?;
+        let (status, res_body) = tinynet::send_request(req).await?;
 
         if !(200..300).contains(&status) {
             return Err(Error::ServerError(status));
@@ -119,7 +119,7 @@ impl OpenAI {
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let (status, res_body) = crate::net::send_request(req).await?;
+        let (status, res_body) = tinynet::send_request(req).await?;
 
         if !(200..300).contains(&status) {
             return Err(Error::ServerError(status));
@@ -135,7 +135,7 @@ impl OpenAI {
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let (status, res_body) = crate::net::send_request(req).await?;
+        let (status, res_body) = tinynet::send_request(req).await?;
 
         if !(200..300).contains(&status) {
             return Err(Error::ServerError(status));
@@ -166,7 +166,7 @@ impl OpenAI {
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let (status, res_body) = crate::net::send_request(req).await?;
+        let (status, res_body) = tinynet::send_request(req).await?;
 
         if !(200..300).contains(&status) {
             return Err(Error::ServerError(status));
@@ -211,16 +211,15 @@ impl OpenAI {
         };
 
         let s = stream! {
-            let stream = crate::net::stream_request(req, Ok::<Bytes, Error>);
-            let mut upstream = stream.await;
-            let mut decoder = crate::net::SseDecoder::new();
+            let mut upstream = tinynet::stream_request(req).await;
+            let mut decoder = tinynet::SseDecoder::new();
             let mut parsed = Vec::new();
 
             while let Some(item) = upstream.next().await {
                 let chunk = match item {
                     Ok(data) => data,
                     Err(e) => {
-                        yield Err(e);
+                        yield Err(e.into());
                         return;
                     }
                 };
