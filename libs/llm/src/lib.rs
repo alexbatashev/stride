@@ -1,7 +1,6 @@
 mod anthropic;
 mod api;
 mod mock;
-mod net;
 mod ollama;
 mod openai;
 mod types;
@@ -150,5 +149,16 @@ pub enum Error {
 impl Into<axum::Error> for Error {
     fn into(self) -> axum::Error {
         axum::Error::new(self)
+    }
+}
+
+impl From<tinynet::Error> for Error {
+    fn from(e: tinynet::Error) -> Self {
+        match e {
+            tinynet::Error::RequestError(s) => Self::RequestError(s),
+            tinynet::Error::TlsError(s) => Self::TlsError(s),
+            tinynet::Error::InvalidRequest(s) => Self::InvalidRequest(s),
+            tinynet::Error::ServerError(code, msg) => Self::ServerErrorWithMessage(code, msg),
+        }
     }
 }

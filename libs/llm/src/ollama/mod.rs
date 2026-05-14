@@ -41,7 +41,7 @@ impl Ollama {
             .uri(&format!("{}/api/tags", self.base_url))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let (status, res_body) = crate::net::send_request(req).await?;
+        let (status, res_body) = tinynet::send_request(req).await?;
         if !(200..300).contains(&status) {
             return Err(Error::ServerError(status));
         }
@@ -70,7 +70,7 @@ impl Ollama {
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let (status, _) = crate::net::send_request(req).await?;
+        let (status, _) = tinynet::send_request(req).await?;
         if !(200..300).contains(&status) {
             return Err(Error::ServerError(status));
         }
@@ -101,7 +101,7 @@ impl Ollama {
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let (status, res_body) = crate::net::send_request(req).await?;
+        let (status, res_body) = tinynet::send_request(req).await?;
         if !(200..300).contains(&status) {
             return Err(Error::ServerError(status));
         }
@@ -126,7 +126,7 @@ impl Ollama {
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
-        let (status, res_body) = crate::net::send_request(req).await?;
+        let (status, res_body) = tinynet::send_request(req).await?;
         if !(200..300).contains(&status) {
             return Err(Error::ServerError(status));
         }
@@ -164,15 +164,15 @@ impl Ollama {
         };
 
         let s = stream! {
-            let mut upstream = crate::net::stream_request(req, Ok::<Bytes, Error>).await;
-            let mut decoder = crate::net::NdjsonDecoder::new();
+            let mut upstream = tinynet::stream_request(req).await;
+            let mut decoder = tinynet::NdjsonDecoder::new();
             let mut parsed = Vec::new();
 
             while let Some(item) = upstream.next().await {
                 let data = match item {
                     Ok(d) => d,
                     Err(e) => {
-                        yield Err(e);
+                        yield Err(e.into());
                         return;
                     }
                 };

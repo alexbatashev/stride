@@ -11,11 +11,23 @@ use http_body_util::BodyExt;
 use hyper::Request;
 use hyper::body::Body;
 use hyper::header::{HOST, HeaderValue};
+use thiserror::Error;
 
-use crate::Error;
 use stream::{AsyncTcpStream, AsyncTlsStream};
 
-pub(crate) async fn send_request<T>(req: Request<T>) -> Result<(u16, Bytes), Error>
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("Request error: {0}")]
+    RequestError(String),
+    #[error("TLS error: {0}")]
+    TlsError(String),
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+    #[error("Server error {0}: {1}")]
+    ServerError(u16, String),
+}
+
+pub async fn send_request<T>(req: Request<T>) -> Result<(u16, Bytes), Error>
 where
     T: Body + Send + 'static,
     T::Data: Send,
@@ -39,7 +51,7 @@ where
     } else {
         let mut last_err = None;
         for addr in addrs {
-            match AsyncTcpStream::new(addr).await {
+            match AsyncTcpStream::new(addr) {
                 Ok(io) => return do_request(io, req).await,
                 Err(err) => last_err = Some(err),
             }
@@ -52,16 +64,13 @@ where
     }
 }
 
-pub(crate) async fn stream_request<T, R, F>(
+pub async fn stream_request<T>(
     req: Request<T>,
-    f: F,
-) -> Pin<Box<dyn Stream<Item = Result<R, Error>> + Send + 'static>>
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + 'static>>
 where
     T: Body + Send + 'static,
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    R: Send + 'static,
-    F: FnMut(Bytes) -> Result<R, Error> + Send + 'static,
 {
     let (host, is_https, addrs, req) = match prepare_request(req) {
         Ok(v) => v,
@@ -74,7 +83,7 @@ where
         let mut last_err = None;
         for addr in addrs {
             match AsyncTlsStream::connect(addr, &host) {
-                Ok(io) => return do_stream_request(io, req, f).await,
+                Ok(io) => return do_stream_request(io, req).await,
                 Err(err) => last_err = Some(err),
             }
         }
@@ -87,8 +96,8 @@ where
     } else {
         let mut last_err = None;
         for addr in addrs {
-            match AsyncTcpStream::new(addr).await {
-                Ok(io) => return do_stream_request(io, req, f).await,
+            match AsyncTcpStream::new(addr) {
+                Ok(io) => return do_stream_request(io, req).await,
                 Err(err) => last_err = Some(err),
             }
         }
@@ -143,18 +152,15 @@ where
     }
 }
 
-async fn do_stream_request<Io, T, R, F>(
+async fn do_stream_request<Io, T>(
     io: Io,
     req: Request<T>,
-    mut f: F,
-) -> Pin<Box<dyn Stream<Item = Result<R, Error>> + Send + 'static>>
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + 'static>>
 where
     Io: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
     T: Body + Send + 'static,
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    R: Send + 'static,
-    F: FnMut(Bytes) -> Result<R, Error> + Send + 'static,
 {
     let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
         Ok(v) => v,
@@ -178,9 +184,7 @@ where
     let res = match futures::future::select(request_fut, conn.as_mut()).await {
         Either::Left((Ok(res), _)) => res,
         Either::Left((Err(err), _)) => {
-            return Box::pin(futures::stream::once(async move {
-                Err(Error::RequestError(err.to_string()))
-            }));
+            return Box::pin(futures::stream::once(async move { Err(err) }));
         }
         Either::Right((Ok(()), _)) => {
             return Box::pin(futures::stream::once(async {
@@ -209,7 +213,7 @@ where
         };
         let error_msg = String::from_utf8_lossy(&body_bytes).to_string();
         return Box::pin(futures::stream::once(async move {
-            Err(Error::ServerErrorWithMessage(status, error_msg))
+            Err(Error::ServerError(status, error_msg))
         }));
     }
 
@@ -224,13 +228,7 @@ where
                     match frame_opt {
                         Some(Ok(frame)) => {
                             if let Ok(data) = frame.into_data() {
-                                match f(data) {
-                                    Ok(mapped) => yield Ok(mapped),
-                                    Err(err) => {
-                                        yield Err(err);
-                                        return;
-                                    }
-                                }
+                                yield Ok(data);
                             }
                         }
                         Some(Err(err)) => {
@@ -299,18 +297,18 @@ fn prepare_request<T>(
     Ok((host, is_https, addrs, req))
 }
 
-pub(crate) struct SseDecoder {
+pub struct SseDecoder {
     buf: Vec<u8>,
 }
 
 impl SseDecoder {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self { buf: Vec::new() }
     }
 
-    pub(crate) fn push<F>(&mut self, chunk: &[u8], mut on_data: F) -> Result<bool, Error>
+    pub fn push<E, F>(&mut self, chunk: &[u8], mut on_data: F) -> Result<bool, E>
     where
-        F: FnMut(&[u8]) -> Result<(), Error>,
+        F: FnMut(&[u8]) -> Result<(), E>,
     {
         self.buf.extend_from_slice(chunk);
 
@@ -343,18 +341,24 @@ impl SseDecoder {
     }
 }
 
-pub(crate) struct NdjsonDecoder {
+impl Default for SseDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct NdjsonDecoder {
     buf: Vec<u8>,
 }
 
 impl NdjsonDecoder {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self { buf: Vec::new() }
     }
 
-    pub(crate) fn push<F>(&mut self, chunk: &[u8], mut on_line: F) -> Result<(), Error>
+    pub fn push<E, F>(&mut self, chunk: &[u8], mut on_line: F) -> Result<(), E>
     where
-        F: FnMut(&[u8]) -> Result<(), Error>,
+        F: FnMut(&[u8]) -> Result<(), E>,
     {
         self.buf.extend_from_slice(chunk);
 
@@ -375,6 +379,12 @@ impl NdjsonDecoder {
         }
 
         Ok(())
+    }
+}
+
+impl Default for NdjsonDecoder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
