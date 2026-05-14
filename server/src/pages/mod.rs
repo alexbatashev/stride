@@ -33,7 +33,7 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{{title}}</title>
-        <script type="importmap">{"imports": {"lit": "/static/lit.js"}}</script>
+        <script type="importmap">{"imports": {"lit": "/static/lit.js", "lit/decorators.js": "/static/lit-decorators.js"}}</script>
         <link rel="stylesheet" href="/static/common.css" />
         <script type="module" src="/static/api.js"></script>
         <script type="module" src="/static/components.js"></script>

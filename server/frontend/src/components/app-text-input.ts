@@ -1,3 +1,7 @@
+/*
+ * Portions of this component's visual styling are adapted from shadcn/ui.
+ * Copyright (c) 2023 shadcn. Licensed under the MIT License.
+ */
 import {LitElement, css, html} from 'lit';
 
 export class AppTextInput extends LitElement {
@@ -6,6 +10,7 @@ export class AppTextInput extends LitElement {
 		disabled: {type: Boolean},
 		label: {type: String},
 		name: {type: String},
+		placeholder: {type: String},
 		required: {type: Boolean},
 		type: {type: String},
 		value: {type: String}
@@ -15,6 +20,7 @@ export class AppTextInput extends LitElement {
 	disabled = false;
 	label = '';
 	name = '';
+	placeholder = '';
 	required = false;
 	type = 'text';
 	value = '';
@@ -25,28 +31,69 @@ export class AppTextInput extends LitElement {
 		}
 
 		label {
-			color: #202a3d;
+			color: var(--foreground, #09090b);
 			display: grid;
-			font-size: 14px;
-			font-weight: 650;
+			font-size: 0.875rem;
+			font-weight: 500;
 			gap: 8px;
+			line-height: 1.35;
 		}
 
 		input {
-			border: 1px solid #ccd2df;
-			border-radius: 6px;
+			background: var(--background, transparent);
+			border: 1px solid var(--input, #e4e4e7);
+			border-radius: 8px;
 			box-sizing: border-box;
-			color: #172033;
+			color: var(--foreground, #09090b);
 			font: inherit;
-			min-height: 42px;
-			padding: 0 12px;
+			font-size: 1rem;
+			height: 32px;
+			min-width: 0;
+			outline: none;
+			padding: 4px 10px;
+			transition:
+				border-color 140ms ease,
+				box-shadow 140ms ease,
+				background-color 140ms ease,
+				opacity 140ms ease;
 			width: 100%;
 		}
 
 		input:focus {
-			border-color: #1f5eff;
-			box-shadow: 0 0 0 3px rgb(31 94 255 / 15%);
-			outline: none;
+			border-color: var(--ring, #18181b);
+			box-shadow: 0 0 0 3px var(--ring-shadow, rgb(24 24 27 / 12%));
+		}
+
+		input::placeholder {
+			color: var(--muted-foreground, #71717a);
+		}
+
+		input:disabled {
+			background: var(--input-disabled, rgb(244 244 245 / 50%));
+			cursor: not-allowed;
+			opacity: 0.5;
+		}
+
+		input[type='file'] {
+			padding-block: 3px;
+		}
+
+		input[type='file']::file-selector-button {
+			background: transparent;
+			border: 0;
+			color: var(--foreground, #09090b);
+			font: inherit;
+			font-size: 0.875rem;
+			font-weight: 500;
+			height: 24px;
+			margin: 0 10px 0 0;
+			padding: 0;
+		}
+
+		@media (min-width: 768px) {
+			input {
+				font-size: 0.875rem;
+			}
 		}
 	`;
 
@@ -57,6 +104,7 @@ export class AppTextInput extends LitElement {
 				<input
 					.autocomplete=${this.autocomplete}
 					.name=${this.name}
+					.placeholder=${this.placeholder}
 					.type=${this.type}
 					.value=${this.value}
 					?disabled=${this.disabled}

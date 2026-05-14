@@ -166,9 +166,11 @@ export class AppSidebar extends LitElement {
 
 		const targets = [
 			'app-sidebar-group-label',
+			'app-sidebar-menu-button',
 			'app-sidebar-menu-badge',
 			'app-sidebar-menu-action',
 			'app-sidebar-menu-sub',
+			'app-sidebar-menu-sub-button',
 		];
 		targets.forEach((tag) => {
 			this.querySelectorAll(tag).forEach((el) => {
@@ -789,6 +791,7 @@ export class AppSidebarMenuButton extends LitElement {
 				color 150ms,
 				width 200ms ease-linear,
 				height 200ms ease-linear,
+				font-size 200ms ease-linear,
 				padding 200ms ease-linear;
 		}
 
@@ -825,6 +828,19 @@ export class AppSidebarMenuButton extends LitElement {
 			height: 3rem;
 		}
 
+		:host([data-icon-collapsed]) button,
+		:host([data-icon-collapsed]) a {
+			gap: 0;
+			height: 2rem;
+			padding: 0.5rem;
+			width: 2rem;
+			font-size: 0;
+		}
+
+		:host([data-icon-collapsed]) .lg {
+			padding: 0;
+		}
+
 		/* outline variant */
 		.outline {
 			background: hsl(0 0% 100%);
@@ -839,6 +855,11 @@ export class AppSidebarMenuButton extends LitElement {
 			width: 1rem;
 			height: 1rem;
 			flex-shrink: 0;
+		}
+
+		:host([data-icon-collapsed]) ::slotted(svg) {
+			color: currentcolor;
+			display: block;
 		}
 	`;
 
@@ -1023,6 +1044,10 @@ export class AppSidebarMenuSubButton extends LitElement {
 	static styles = css`
 		:host {
 			display: block;
+		}
+
+		:host([data-icon-collapsed]) {
+			display: none;
 		}
 
 		a,

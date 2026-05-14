@@ -1,16 +1,26 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Component Showcase</title>
-    <script type="module" src="./showcase-dist/showcase.js"></script>
-    <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body { background: #f5f5f5; }
-    </style>
-  </head>
-  <body>
-    <friday-showcase></friday-showcase>
-  </body>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{{title}}</title>
+        <script type="importmap">
+            {
+                "imports": {
+                    "lit": "/static/lit.js",
+                    "lit/decorators.js": "/static/lit-decorators.js"
+                }
+            }
+        </script>
+        <link rel="stylesheet" href="/static/common.css" />
+        <script type="module" src="/static/components.js"></script>
+    </head>
+    <body>
+        <app-sidebar-provider>
+            <app-sidebar></app-sidebar>
+            <main>
+                <app-sidebar-trigger></app-sidebar-trigger>
+            </main>
+        </app-sidebar-provider>
+    </body>
 </html>

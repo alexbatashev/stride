@@ -28,6 +28,12 @@ await Promise.all([
     outfile: 'dist/lit.js',
   }),
   esbuild.build({
+    entryPoints: ['node_modules/lit/decorators.js'],
+    bundle: true,
+    format: 'esm',
+    outfile: 'dist/lit-decorators.js',
+  }),
+  esbuild.build({
     entryPoints: ['src/components/index.ts'],
     bundle: true,
     format: 'esm',
