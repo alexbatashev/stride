@@ -1,7 +1,8 @@
 {
 	"scripts": {
 		"build": "node build.mjs",
-		"check": "tsc --noEmit"
+		"check": "tsc --noEmit",
+		"showcase": "node dev.mjs"
 	},
 	"devDependencies": {
 		"@lit/localize-tools": "^0.8.1",
