@@ -7,12 +7,12 @@ const INLINE_RE =
 
 function parseInline(text: string): Node[] {
   const nodes: Node[] = [];
-  INLINE_RE.lastIndex = 0;
   let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = INLINE_RE.exec(text)) !== null) {
-    if (m.index > last) {
-      nodes.push(document.createTextNode(text.slice(last, m.index)));
+  // matchAll clones the regex internally, so recursive calls don't clobber lastIndex
+  for (const m of text.matchAll(INLINE_RE)) {
+    const idx = m.index!;
+    if (idx > last) {
+      nodes.push(document.createTextNode(text.slice(last, idx)));
     }
     if (m[1] !== undefined) {
       const strong = document.createElement("strong");
@@ -30,7 +30,7 @@ function parseInline(text: string): Node[] {
       a.target = "_blank";
       nodes.push(a);
     }
-    last = m.index + m[0].length;
+    last = idx + m[0].length;
   }
   if (last < text.length) {
     nodes.push(document.createTextNode(text.slice(last)));
