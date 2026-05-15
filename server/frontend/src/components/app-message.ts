@@ -1,11 +1,7 @@
 import { LitElement, css, html } from "lit";
-import {
-  customElement,
-  property,
-  eventOptions,
-  query,
-} from "lit/decorators.js";
+import { customElement, property } from "lit/decorators.js";
 import "./app-spoiler.js";
+import "./auto-markdown.js";
 
 type MessageType = "agent" | "user" | "tool_call" | "tool_output";
 
@@ -22,6 +18,9 @@ export class AppMessage extends LitElement {
 
   @property()
   with_thinking: boolean = false;
+
+  @property()
+  text: string = "";
 
   static styles = css`
     .bubble {
@@ -68,7 +67,9 @@ export class AppMessage extends LitElement {
           ></app-spoiler>`
         : null}
       <div class="bubble ${this.type}">
-        <slot></slot>
+        ${this.type === "agent"
+          ? html`<auto-markdown .text="${this.text}"></auto-markdown>`
+          : this.text}
       </div>
     `;
   }
