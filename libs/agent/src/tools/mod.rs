@@ -3,6 +3,7 @@ pub mod file;
 pub mod firecrawl;
 pub mod glob;
 pub mod patch;
+pub mod search;
 pub mod shell;
 pub mod subagent;
 pub mod web_search;
