@@ -1,5 +1,12 @@
 @import './reset.css';
 
+html {
+	font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+	line-height: 1.5;
+	color: var(--foreground);
+	background: var(--background);
+}
+
 :root {
 	--background: #ffffff;
 	--foreground: #09090b;

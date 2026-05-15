@@ -71,6 +71,11 @@ export class AppSidebarProvider extends LitElement {
 		this._mq.addEventListener('change', this._mqListener);
 		window.addEventListener('keydown', this._keyListener);
 
+		// Inline styles win over @layer reset's all:unset.
+		this.style.display = 'flex';
+		this.style.minHeight = '100svh';
+		this.style.width = '100%';
+
 		// Defer so slotted children have time to connect.
 		queueMicrotask(() => this._broadcast());
 	}
@@ -116,6 +121,16 @@ export class AppSidebarProvider extends LitElement {
 			min-height: 100svh;
 			width: 100%;
 		}
+
+		@media (prefers-color-scheme: dark) {
+			:host {
+				--sidebar-bg: hsl(240 5% 16%);
+				--sidebar-fg: hsl(240 5% 90%);
+				--sidebar-accent: hsl(240 5% 22%);
+				--sidebar-accent-fg: hsl(240 5% 96%);
+				--sidebar-border: hsl(240 5% 26%);
+			}
+		}
 	`;
 
 	render() {
@@ -148,6 +163,11 @@ export class AppSidebar extends LitElement {
 	private _mobile = false;
 	private _mobileOpen = false;
 
+	connectedCallback() {
+		super.connectedCallback();
+		this._reflectHostState();
+	}
+
 	/** Called by AppSidebarProvider when open/mobile state changes. */
 	_sync(open: boolean, isMobile: boolean) {
 		this._mobile = isMobile;
@@ -156,7 +176,36 @@ export class AppSidebar extends LitElement {
 		} else {
 			this._state = open ? 'expanded' : 'collapsed';
 		}
+		this._reflectHostState();
 		this._updateIconCollapsed();
+	}
+
+	// Set host layout via inline styles — inline styles win all cascade battles,
+	// so the flex spacer always has the right width regardless of @layer reset.
+	private _reflectHostState() {
+		if (this.collapsible === 'none') return;
+
+		// Inline styles win over any stylesheet rule (including @layer reset's all:unset).
+		this.style.display = 'block';
+		this.style.flexShrink = '0';
+
+		if (this._mobile) {
+			this.setAttribute('data-sidebar-state', 'mobile');
+			this.style.width = '0px';
+			this.style.overflow = 'visible';
+		} else if (this._state === 'collapsed' && this.collapsible === 'offcanvas') {
+			this.setAttribute('data-sidebar-state', 'offcanvas-collapsed');
+			this.style.width = '0px';
+			this.style.removeProperty('overflow');
+		} else if (this._state === 'collapsed' && this.collapsible === 'icon') {
+			this.setAttribute('data-sidebar-state', 'icon-collapsed');
+			this.style.width = 'var(--sidebar-width-icon)';
+			this.style.removeProperty('overflow');
+		} else {
+			this.removeAttribute('data-sidebar-state');
+			this.style.width = 'var(--sidebar-width)';
+			this.style.removeProperty('overflow');
+		}
 	}
 
 	// Propagate icon-collapsed state to sub-components that need to hide.
@@ -189,12 +238,33 @@ export class AppSidebar extends LitElement {
 	}
 
 	static styles = css`
+		/* Host IS the layout gap — participates in parent flex without display:contents.
+		   display:contents on shadow hosts is unreliable across browsers and causes the
+		   gap to not push sibling content, letting the fixed panel cover the trigger. */
 		:host {
-			display: contents;
+			display: block;
+			flex-shrink: 0;
+			background: transparent;
+			transition: width 200ms ease-linear;
+			width: var(--sidebar-width);
 		}
 
-		/* ── static (collapsible=none) ── */
-		.static {
+		:host([data-sidebar-state='offcanvas-collapsed']) {
+			width: 0;
+		}
+
+		:host([data-sidebar-state='icon-collapsed']) {
+			width: var(--sidebar-width-icon);
+		}
+
+		/* Mobile: no layout contribution; sheet renders via position:fixed */
+		:host([data-sidebar-state='mobile']) {
+			width: 0;
+			overflow: visible;
+		}
+
+		/* Static sidebar: host is the sidebar itself, no fixed panel */
+		:host([collapsible='none']) {
 			display: flex;
 			flex-direction: column;
 			height: 100%;
@@ -202,22 +272,7 @@ export class AppSidebar extends LitElement {
 			background: var(--sidebar-bg);
 			color: var(--sidebar-fg);
 			overflow: hidden;
-		}
-
-		/* ── desktop gap: reserves space next to the fixed panel ── */
-		.gap {
-			flex-shrink: 0;
-			width: var(--sidebar-width);
-			background: transparent;
-			transition: width 200ms ease-linear;
-		}
-
-		.gap.offcanvas-collapsed {
-			width: 0;
-		}
-
-		.gap.icon-collapsed {
-			width: var(--sidebar-width-icon);
+			transition: none;
 		}
 
 		/* ── desktop fixed panel ── */
@@ -338,11 +393,7 @@ export class AppSidebar extends LitElement {
 
 	render() {
 		if (this.collapsible === 'none') {
-			return html`
-				<div class="static" part="sidebar">
-					<slot></slot>
-				</div>
-			`;
+			return html`<slot></slot>`;
 		}
 
 		if (this._mobile) {
@@ -374,16 +425,8 @@ export class AppSidebar extends LitElement {
 			.filter(Boolean)
 			.join(' ');
 
-		const gapCls = [
-			'gap',
-			offcanvas ? 'offcanvas-collapsed' : '',
-			icon ? 'icon-collapsed' : '',
-		]
-			.filter(Boolean)
-			.join(' ');
-
+		// No gap div — the host element itself is the gap.
 		return html`
-			<div class=${gapCls} aria-hidden="true"></div>
 			<div class=${panelCls} part="sidebar">
 				<div class="inner">
 					<slot></slot>
@@ -533,6 +576,15 @@ customElements.define('app-sidebar-rail', AppSidebarRail);
 // The main content area rendered beside the sidebar.
 
 export class AppSidebarInset extends LitElement {
+	connectedCallback() {
+		super.connectedCallback();
+		this.style.display = 'flex';
+		this.style.flexDirection = 'column';
+		this.style.flex = '1 1 0%';
+		this.style.minHeight = '0';
+		this.style.position = 'relative';
+	}
+
 	static styles = css`
 		:host {
 			display: flex;
@@ -540,9 +592,8 @@ export class AppSidebarInset extends LitElement {
 			flex: 1 1 0%;
 			width: 100%;
 			min-height: 0;
-			background: hsl(0 0% 100%);
+			background: var(--background, hsl(0 0% 100%));
 			position: relative;
-			overflow: hidden;
 		}
 	`;
 
@@ -656,7 +707,8 @@ export class AppSidebarGroupLabel extends LitElement {
 			padding: 0 0.5rem;
 			font-size: 0.75rem;
 			font-weight: 500;
-			color: hsl(240 5.3% 26.1% / 0.7);
+			color: var(--sidebar-fg, hsl(240 5.3% 26.1%));
+			opacity: 0.7;
 			border-radius: 0.375rem;
 			flex-shrink: 0;
 			overflow: hidden;
@@ -843,7 +895,7 @@ export class AppSidebarMenuButton extends LitElement {
 
 		/* outline variant */
 		.outline {
-			background: hsl(0 0% 100%);
+			background: var(--background, hsl(0 0% 100%));
 			box-shadow: 0 0 0 1px var(--sidebar-border, hsl(220 13% 91%));
 		}
 
@@ -855,6 +907,12 @@ export class AppSidebarMenuButton extends LitElement {
 			width: 1rem;
 			height: 1rem;
 			flex-shrink: 0;
+		}
+
+		::slotted(span) {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
 		}
 
 		:host([data-icon-collapsed]) ::slotted(svg) {

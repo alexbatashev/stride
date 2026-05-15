@@ -3,6 +3,11 @@
     GitHub page: https://github.com/elad2412/the-new-css-reset
 ***/
 
+/* Wrap in a named layer so that unlayered author styles (including shadow-DOM
+   :host rules) take precedence. Without this, all:unset beats :host styles for
+   custom elements, collapsing flex layouts and wiping component display values. */
+@layer reset {
+
 /*
     Remove all the styles of the "User-Agent-Stylesheet", except for the 'display' property
     - The "symbol *" part is to solve Firefox SVG sprite bug
@@ -112,3 +117,5 @@ meter {
 ::-webkit-details-marker {
     display: none;
 }
+
+} /* end @layer reset */
