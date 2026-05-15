@@ -1,21 +1,35 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 
+// Bold before italic so ** is matched before *
+const INLINE_RE =
+  /\*\*((?:(?!\*\*).)+?)\*\*|\*((?:(?!\*).)+?)\*|\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)/g;
+
 function parseInline(text: string): Node[] {
   const nodes: Node[] = [];
-  const re = /\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)/g;
+  INLINE_RE.lastIndex = 0;
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
+  while ((m = INLINE_RE.exec(text)) !== null) {
     if (m.index > last) {
       nodes.push(document.createTextNode(text.slice(last, m.index)));
     }
-    const a = document.createElement("a");
-    a.href = m[2];
-    a.textContent = m[1];
-    a.rel = "noopener noreferrer";
-    a.target = "_blank";
-    nodes.push(a);
+    if (m[1] !== undefined) {
+      const strong = document.createElement("strong");
+      strong.append(...parseInline(m[1]));
+      nodes.push(strong);
+    } else if (m[2] !== undefined) {
+      const em = document.createElement("em");
+      em.append(...parseInline(m[2]));
+      nodes.push(em);
+    } else {
+      const a = document.createElement("a");
+      a.href = m[4];
+      a.textContent = m[3];
+      a.rel = "noopener noreferrer";
+      a.target = "_blank";
+      nodes.push(a);
+    }
     last = m.index + m[0].length;
   }
   if (last < text.length) {
@@ -33,7 +47,9 @@ function parseTableRow(line: string): string[] {
   return inner.split("|").map((c) => c.trim());
 }
 
-function buildTable(tableLines: string[]): HTMLTableElement {
+function buildTable(tableLines: string[]): HTMLDivElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "table-wrap";
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const tbody = document.createElement("tbody");
@@ -57,7 +73,8 @@ function buildTable(tableLines: string[]): HTMLTableElement {
   }
 
   table.append(thead, tbody);
-  return table;
+  wrapper.append(table);
+  return wrapper;
 }
 
 const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
@@ -97,13 +114,45 @@ function renderMarkdown(text: string): Node[] {
       continue;
     }
 
-    // Paragraph: accumulate until blank line, heading, or table start
+    // Unordered list
+    if (/^\s*[-*+] /.test(line)) {
+      const ul = document.createElement("ul");
+      while (i < lines.length && /^\s*[-*+] /.test(lines[i])) {
+        const m = lines[i].match(/^\s*[-*+] (.+)$/);
+        if (!m) break;
+        const li = document.createElement("li");
+        li.append(...parseInline(m[1]));
+        ul.append(li);
+        i++;
+      }
+      nodes.push(ul);
+      continue;
+    }
+
+    // Ordered list
+    if (/^\s*\d+\. /.test(line)) {
+      const ol = document.createElement("ol");
+      while (i < lines.length && /^\s*\d+\. /.test(lines[i])) {
+        const m = lines[i].match(/^\s*\d+\. (.+)$/);
+        if (!m) break;
+        const li = document.createElement("li");
+        li.append(...parseInline(m[1]));
+        ol.append(li);
+        i++;
+      }
+      nodes.push(ol);
+      continue;
+    }
+
+    // Paragraph: accumulate until blank line, heading, list, or table start
     const paraLines = [line];
     i++;
     while (i < lines.length) {
       const next = lines[i];
       if (next.trim() === "") break;
       if (/^#{1,6} /.test(next)) break;
+      if (/^\s*[-*+] /.test(next)) break;
+      if (/^\s*\d+\. /.test(next)) break;
       if (next.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) break;
       paraLines.push(next);
       i++;
@@ -164,11 +213,20 @@ export class AutoMarkdown extends LitElement {
       font-size: 1.2em;
     }
 
+    .table-wrap {
+      overflow-x: auto;
+      max-width: 100%;
+      margin: 0.75em 0;
+    }
+
+    .table-wrap:last-child {
+      margin-bottom: 0;
+    }
+
     table {
       border-collapse: collapse;
-      width: 100%;
-      margin: 0.75em 0;
       font-size: 0.95em;
+      white-space: nowrap;
     }
 
     th,
@@ -181,6 +239,21 @@ export class AutoMarkdown extends LitElement {
     th {
       background: var(--muted, rgba(0, 0, 0, 0.05));
       font-weight: 600;
+    }
+
+    ul,
+    ol {
+      margin: 0 0 0.75em;
+      padding-left: 1.5em;
+    }
+
+    ul:last-child,
+    ol:last-child {
+      margin-bottom: 0;
+    }
+
+    li {
+      margin: 0.2em 0;
     }
 
     a {
