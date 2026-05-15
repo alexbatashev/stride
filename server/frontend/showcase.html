@@ -46,8 +46,12 @@
                     Automations
                 </app-sidebar-nav-item>
                 <app-sidebar-group title="Threads">
-                    <li><a href="/threads/123">My thread...</a></li>
-                    <li><a href="/threads/456">My thread 2...</a></li>
+                    <app-sidebar-group-item target="/threads/123"
+                        >My thread...</app-sidebar-group-item
+                    >
+                    <app-sidebar-group-item target="/threads/456"
+                        >My thread 2...</app-sidebar-group-item
+                    >
                 </app-sidebar-group>
             </app-sidebar>
         </nav>
