@@ -376,17 +376,14 @@ class ThreadsPageHydrator {
 	}
 
 	private updateMessageElement(message: ViewMessage) {
-		const element = this.messagesEl.querySelector<HTMLElement>(
+		const element = this.messagesEl.querySelector<HTMLElement & { text: string; with_thinking: boolean }>(
 			`app-message[data-message-id="${message.id}"]`,
 		);
 		if (!element) {
 			return;
 		}
 
-		const content = element.querySelector<HTMLElement>("[data-content]");
-		if (content) {
-			content.textContent = message.content || (message.pending ? "Thinking..." : "");
-		}
+		element.text = message.content || (message.pending ? "Thinking..." : "");
 
 		if (message.thinking) {
 			let thinking = element.querySelector<HTMLElement>("[data-thinking]");
@@ -397,7 +394,7 @@ class ThreadsPageHydrator {
 				element.prepend(thinking);
 			}
 			thinking.textContent = message.thinking;
-			(element as unknown as { with_thinking: boolean }).with_thinking = true;
+			element.with_thinking = true;
 		}
 
 		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
@@ -409,6 +406,7 @@ class ThreadsPageHydrator {
 			type: string;
 			tool_name?: string;
 			with_thinking: boolean;
+			text: string;
 		};
 		const messageType = this.messageType(message.role);
 		element.message_id = message.id;
@@ -428,10 +426,15 @@ class ThreadsPageHydrator {
 			element.append(thinking);
 		}
 
-		const content = document.createElement("span");
-		content.dataset.content = "";
-		content.textContent = message.content || (message.pending ? "Thinking..." : "");
-		element.append(content);
+		if (messageType.type === "tool_output") {
+			const content = document.createElement("span");
+			content.dataset.content = "";
+			content.textContent = message.content || "";
+			element.append(content);
+		} else {
+			element.text = message.content || (message.pending ? "Thinking..." : "");
+		}
+
 		return element;
 	}
 
