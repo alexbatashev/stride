@@ -59,30 +59,122 @@ export class AppSidebarNavItem extends LitElement {
   @property()
   target: string = "/";
 
+  @property({ type: Boolean, reflect: true })
+  active: boolean = false;
+
+  @state()
+  private hasIcon: boolean = false;
+
   static styles = css`
     :host {
-      height: 24px;
-      width: 100%;
-      padding: 8px;
+      box-sizing: border-box;
       display: block;
-    }
-
-    a:hover {
-      background-color: var(--secondary-hover);
+      padding: 0 8px;
+      width: 100%;
     }
 
     a {
-      width: 100%;
-      height: 100%;
-      display: block;
+      align-items: center;
       border-radius: 8px;
+      box-sizing: border-box;
+      color: var(--sidebar-fg, var(--foreground));
+      display: flex;
+      font-size: 14px;
+      font-weight: 400;
+      gap: 8px;
+      height: 32px;
+      line-height: 20px;
+      outline: none;
+      overflow: hidden;
+      padding: 0 8px;
+      text-align: left;
       text-decoration: none;
-      color: var(--foreground);
+      transition:
+        background-color 140ms ease,
+        color 140ms ease;
+      user-select: none;
+      white-space: nowrap;
+      width: 100%;
+    }
+
+    a:hover,
+    a[aria-current="page"] {
+      background: var(--sidebar-accent, var(--accent));
+      color: var(--sidebar-accent-fg, var(--accent-foreground));
+    }
+
+    a[aria-current="page"] {
+      font-weight: 500;
+    }
+
+    a:focus-visible {
+      box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%));
+    }
+
+    .icon {
+      align-items: center;
+      display: inline-flex;
+      flex: 0 0 16px;
+      height: 16px;
+      justify-content: center;
+      width: 16px;
+    }
+
+    .icon[hidden] {
+      display: none;
+    }
+
+    .icon ::slotted(*) {
+      align-items: center;
+      display: inline-flex;
+      flex-shrink: 0;
+      height: 16px;
+      justify-content: center;
+      width: 16px;
+    }
+
+    .label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
   `;
 
+  private onIconSlotChange(event: Event) {
+    const slot = event.target as HTMLSlotElement;
+    const nodes = slot.assignedNodes({ flatten: true });
+    this.hasIcon = nodes.some((node) => {
+      return (
+        node.nodeType === Node.ELEMENT_NODE ||
+        (node.nodeType === Node.TEXT_NODE && !!node.textContent?.trim())
+      );
+    });
+
+    for (const element of slot.assignedElements({ flatten: true })) {
+      const svgs =
+        element instanceof SVGSVGElement
+          ? [element]
+          : Array.from(element.querySelectorAll("svg"));
+
+      for (const svg of svgs) {
+        svg.style.width = "16px";
+        svg.style.height = "16px";
+        svg.style.flexShrink = "0";
+      }
+    }
+  }
+
   render() {
-    return html`<a href="${this.target}"><slot></slot></a>`;
+    return html`<a
+      href="${this.target}"
+      aria-current=${this.active ? "page" : "false"}
+    >
+      <span class="icon" ?hidden=${!this.hasIcon}
+        ><slot name="icon" @slotchange=${this.onIconSlotChange}></slot
+      ></span>
+      <span class="label"><slot></slot></span>
+    </a>`;
   }
 }
 
@@ -92,7 +184,7 @@ export class AppSidebarToggle extends LitElement {
   is_closed: boolean = false;
 
   render() {
-    return html`<app-button size="icon"
+    return html`<app-button variant="ghost" size="icon-xs"
       >${this.is_closed ? PANEL_LEFT_OPEN : PANEL_LEFT_CLOSE}</app-button
     >`;
   }

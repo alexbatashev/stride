@@ -6,3 +6,5 @@ import "./auth-form.js";
 import "./app-spoiler.js";
 import "./app-message.js";
 import "./icons.js";
+
+export * from "./icons.js";

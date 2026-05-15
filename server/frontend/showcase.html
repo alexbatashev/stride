@@ -20,12 +20,27 @@
             rel="stylesheet"
         />
         <script type="module" src="/static/components.js"></script>
+        <script type="module">
+            import { render } from "lit";
+            import {
+                BOT_MESSAGE_SQUARE,
+                WORKFLOW,
+            } from "/static/components.js";
+
+            render(BOT_MESSAGE_SQUARE, document.querySelector("#chats-icon"));
+            render(WORKFLOW, document.querySelector("#workflow-icon"));
+        </script>
     </head>
     <body>
         <nav>
             <app-sidebar>
                 <app-sidebar-nav-item target="/thread">
+                    <span id="chats-icon" slot="icon"></span>
                     Chats
+                </app-sidebar-nav-item>
+                <app-sidebar-nav-item target="/thread">
+                    <span id="workflow-icon" slot="icon"></span>
+                    Automations
                 </app-sidebar-nav-item>
             </app-sidebar>
         </nav>
