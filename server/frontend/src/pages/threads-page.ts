@@ -1,13 +1,12 @@
-import { LitElement, css, html, nothing } from "lit";
 import { logout } from "../api/auth.js";
 import {
-  ThreadEvent,
-  ThreadMessage,
-  ThreadSummary,
-  createThread,
-  listMessages,
-  listThreads,
-  sendMessage,
+	ThreadEvent,
+	ThreadMessage,
+	ThreadSummary,
+	createThread,
+	listMessages,
+	listThreads,
+	sendMessage,
 } from "../api/threads.js";
 import "../components/app-button.js";
 import "../components/app-message.js";
@@ -16,591 +15,489 @@ import "../components/app-sidebar.js";
 
 type ViewMessage = ThreadMessage & { pending?: boolean };
 
-export class ThreadsPage extends LitElement {
-  static properties = {
-    threadId: { type: String, attribute: "thread-id" },
-    threads: { state: true },
-    messages: { state: true },
-    draft: { state: true },
-    running: { state: true },
-    loading: { state: true },
-    error: { state: true },
-  };
+const root = document.querySelector<HTMLElement>("#threads-page");
 
-  threadId = "";
-  threads: ThreadSummary[] = [];
-  messages: ViewMessage[] = [];
-  draft = "";
-  running = false;
-  loading = true;
-  error = "";
+class ThreadsPageHydrator {
+	private threadId: string;
+	private threads: ThreadSummary[];
+	private messages: ViewMessage[];
+	private draft = "";
+	private running: boolean;
+	private error = "";
+	private events: EventSource | null = null;
+	private pendingAssistant = "";
+	private readonly messagesEl: HTMLElement;
+	private readonly titleEl: HTMLElement;
+	private readonly promptEl: HTMLElement & {
+		value: string;
+		disabled: boolean;
+		placeholder: string;
+	};
+	private readonly errorEl: HTMLElement;
+	private readonly threadListEl: HTMLElement;
 
-  private events: EventSource | null = null;
-  private pendingAssistant = "";
+	constructor(private readonly root: HTMLElement) {
+		this.threadId = root.dataset.threadId ?? "";
+		this.running = root.dataset.running === "true";
+		this.messagesEl = this.mustQuery("[data-messages]");
+		this.titleEl = this.mustQuery("[data-current-title]");
+		this.promptEl = this.mustQuery("[data-prompt]");
+		this.errorEl = this.mustQuery("[data-error]");
+		this.threadListEl = this.mustQuery("[data-thread-list]");
+		this.threads = this.readThreads();
+		this.messages = this.readMessages();
 
-  static styles = css`
-    :host {
-      /*--background: #121212;
-			--foreground: #e5e5e5;
-			--card: #1f1f1f;
-			--card-foreground: #e5e5e5;
-			--primary: #3a3a3a;
-			--primary-foreground: #f4f4f5;
-			--primary-hover: #454545;
-			--secondary: #242424;
-			--secondary-foreground: #fafafa;
-			--secondary-hover: #303030;
-			--muted: #1a1a1a;
-			--muted-foreground: #a3a3a3;
-			--accent: #2a2a2a;
-			--accent-foreground: #fafafa;
-			--border: #303030;
-			--input: #3a3a3a;
-			--input-disabled: rgb(58 58 58 / 55%);
-			--ring: #a3a3a3;
-			--ring-shadow: rgb(255 255 255 / 10%);
-			--destructive: #f87171;
-			--destructive-muted: rgb(248 113 113 / 14%);
-			--destructive-hover: rgb(248 113 113 / 22%);
-			--destructive-ring: rgb(248 113 113 / 40%);
-			--destructive-shadow: rgb(248 113 113 / 24%);
-			--surface-gradient: linear-gradient(rgb(18 18 18 / 0), var(--background) 28px);
-			--topbar-bg: rgb(18 18 18 / 84%);
-			--message-user-bg: #2f2f2f;
-			--message-user-fg: #f4f4f5;
-			--message-agent-bg: #1f1f1f;
-			--message-agent-border: #303030;
-			--message-agent-shadow: 0 1px 2px rgb(0 0 0 / 20%);*/
-      background: var(--background);
-      color: var(--foreground);
-      display: block;
-      font-family:
-        ui-sans-serif,
-        system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        sans-serif;
-      min-height: 100svh;
-    }
+		this.bindEvents();
+		this.syncComposer();
 
-    app-sidebar-provider {
-      --sidebar-width: 17.5rem;
-      --sidebar-bg: var(--muted);
-      --sidebar-fg: var(--muted-foreground);
-      --sidebar-accent: var(--accent);
-      --sidebar-accent-fg: var(--accent-foreground);
-      --sidebar-border: var(--border);
-      background: var(--background);
-      min-height: 100svh;
-    }
+		if (this.threadId) {
+			this.openEvents(this.threadId);
+		}
+	}
 
-    .brand {
-      align-items: center;
-      display: flex;
-      gap: 10px;
-      padding: 4px;
-    }
+	private mustQuery<T extends Element>(selector: string): T {
+		const element = this.root.querySelector<T>(selector);
+		if (!element) {
+			throw new Error(`Missing ${selector}`);
+		}
 
-    .mark {
-      align-items: center;
-      background: var(--primary);
-      border-radius: 8px;
-      color: var(--primary-foreground);
-      display: inline-flex;
-      font-size: 13px;
-      font-weight: 700;
-      height: 32px;
-      justify-content: center;
-      width: 32px;
-    }
+		return element;
+	}
 
-    .brand strong {
-      color: var(--foreground);
-      font-size: 14px;
-      font-weight: 650;
-    }
+	private bindEvents() {
+		this.root
+			.querySelector<HTMLElement>('[data-action="new-thread"]')
+			?.addEventListener("click", () => this.startNew());
+		this.root
+			.querySelector<HTMLElement>('[data-action="logout"]')
+			?.addEventListener("click", () => void this.onLogout());
+		this.threadListEl.addEventListener("click", (event) =>
+			this.onThreadClick(event),
+		);
+		this.promptEl.addEventListener("value-change", (event) =>
+			this.onDraft(event as CustomEvent<{ value: string }>),
+		);
+		this.promptEl.addEventListener("prompt-submit", (event) =>
+			this.onPromptSubmit(event as CustomEvent<{ value: string }>),
+		);
+		window.addEventListener("popstate", () => {
+			window.location.href = window.location.pathname;
+		});
+	}
 
-    .thread-label {
-      display: block;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+	private readThreads(): ThreadSummary[] {
+		return Array.from(
+			this.threadListEl.querySelectorAll<HTMLElement>("[data-thread-id]"),
+		).map((element) => ({
+			id: element.dataset.threadId ?? "",
+			title: element.textContent?.trim() ?? "Untitled",
+		}));
+	}
 
-    .main {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      height: 100svh;
-      min-height: 0;
-      overflow: hidden;
-    }
+	private readMessages(): ViewMessage[] {
+		return Array.from(
+			this.messagesEl.querySelectorAll<HTMLElement>("app-message[data-role]"),
+		).map((element) => ({
+			id: element.dataset.messageId ?? "",
+			seq: Number(element.dataset.seq ?? 0),
+			role: this.readRole(element.dataset.role),
+			content:
+				element.querySelector<HTMLElement>("[data-content]")?.textContent ?? "",
+			thinking:
+				element.querySelector<HTMLElement>("[data-thinking]")?.textContent ??
+				null,
+		}));
+	}
 
-    .topbar {
-      align-items: center;
-      backdrop-filter: blur(18px);
-      background: var(--topbar-bg);
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      gap: 10px;
-      min-height: 52px;
-      padding: 0 clamp(14px, 2.4vw, 28px);
-      position: sticky;
-      top: 0;
-      z-index: 10;
-    }
+	private readRole(role: string | undefined): ThreadMessage["role"] {
+		if (
+			role === "system" ||
+			role === "agent" ||
+			role === "user" ||
+			role === "tool"
+		) {
+			return role;
+		}
 
-    .topbar h1 {
-      color: var(--card-foreground);
-      font-size: 14px;
-      font-weight: 600;
-      margin: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+		return "agent";
+	}
 
-    .messages {
-      margin: 0 auto;
-      max-width: 800px;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 32px clamp(18px, 4vw, 32px) 24px;
-      scrollbar-width: thin;
-      width: 100%;
-    }
+	private openEvents(threadId: string) {
+		this.closeEvents();
+		this.events = new EventSource(`/api/threads/${threadId}/events`);
+		this.events.onmessage = (event) =>
+			this.applyEvent(JSON.parse(event.data) as ThreadEvent);
+		this.events.onerror = () => {
+			this.setError("Live updates disconnected.");
+		};
+	}
 
-    .empty {
-      align-content: center;
-      display: grid;
-      justify-items: center;
-      min-height: 100%;
-      padding-bottom: 96px;
-      text-align: center;
-    }
+	private closeEvents() {
+		this.events?.close();
+		this.events = null;
+	}
 
-    .empty h2 {
-      color: var(--foreground);
-      font-size: clamp(28px, 4vw, 40px);
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      line-height: 1.08;
-      margin: 0 0 12px;
-    }
+	private applyEvent(event: ThreadEvent) {
+		if (event.thread_id !== this.threadId) {
+			return;
+		}
 
-    .empty p {
-      color: var(--muted-foreground);
-      font-size: 15px;
-      line-height: 1.5;
-      margin: 0;
-      max-width: 420px;
-    }
+		if (event.kind.type === "Snapshot") {
+			this.running = event.kind.status === "running";
+			this.syncComposer();
+			if (event.kind.in_progress?.content) {
+				const last = this.messages[this.messages.length - 1];
+				if (
+					last?.role !== "agent" ||
+					last.content !== event.kind.in_progress.content
+				) {
+					this.pendingAssistant = event.kind.in_progress.content;
+					this.upsertPendingAssistant();
+				}
+			}
+		}
 
-    .composer-wrap {
-      background: var(--surface-gradient);
-      padding: 18px clamp(14px, 4vw, 28px) 24px;
-      position: sticky;
-      bottom: 0;
-      z-index: 10;
-    }
+		if (event.kind.type === "RunStarted") {
+			this.running = true;
+			this.syncComposer();
+		}
 
-    app-prompt-input {
-      margin: 0 auto;
-      max-width: 860px;
-      width: 100%;
-    }
+		if (event.kind.type === "AgentDelta") {
+			this.pendingAssistant += event.kind.content;
+			this.upsertPendingAssistant();
+		}
 
-    app-button.sidebar-action {
-      width: 100%;
-    }
+		if (event.kind.type === "ThinkingDelta") {
+			this.upsertPendingAssistant(event.kind.thinking);
+		}
 
-    .error {
-      color: var(--destructive);
-      font-size: 13px;
-      margin: 10px auto 0;
-      max-width: 860px;
-    }
+		if (
+			event.kind.type === "RunFinished" ||
+			event.kind.type === "AgentMessageCommitted"
+		) {
+			this.running = false;
+			this.syncComposer();
+			void this.refreshAfterRun();
+		}
 
-    @media (max-width: 760px) {
-      .main {
-        height: 100svh;
-      }
+		if (event.kind.type === "RunFailed") {
+			this.running = false;
+			this.syncComposer();
+			this.setError(event.kind.error);
+		}
+	}
 
-      .messages {
-        max-width: none;
-        padding: 20px 14px 18px;
-        width: 100%;
-      }
+	private upsertPendingAssistant(thinking?: string) {
+		const last = this.messages[this.messages.length - 1];
 
-      .composer-wrap {
-        padding: 12px 10px 12px;
-      }
-    }
-  `;
+		if (last?.pending && last.role === "agent") {
+			last.content = this.pendingAssistant;
+			last.thinking = thinking ? `${last.thinking ?? ""}${thinking}` : last.thinking;
+			this.updateMessageElement(last);
+			return;
+		}
 
-  connectedCallback() {
-    super.connectedCallback();
-    void this.load();
-  }
+		const message: ViewMessage = {
+			id: "pending-agent",
+			seq: Number.MAX_SAFE_INTEGER,
+			role: "agent",
+			content: this.pendingAssistant,
+			thinking: thinking ?? null,
+			pending: true,
+		};
+		this.messages.push(message);
+		this.appendMessage(message);
+	}
 
-  disconnectedCallback() {
-    this.closeEvents();
-    super.disconnectedCallback();
-  }
+	private async refreshAfterRun() {
+		if (!this.threadId) {
+			return;
+		}
 
-  updated(changed: Map<string, unknown>) {
-    if (changed.has("threadId")) {
-      void this.loadThread();
-    }
-  }
+		this.pendingAssistant = "";
+		this.messages = await listMessages(this.threadId);
+		this.renderMessages();
+		this.threads = await listThreads();
+		this.renderThreads();
+		this.syncTitle();
+	}
 
-  render() {
-    return html`
-      <app-sidebar-provider>
-        <app-sidebar collapsible="offcanvas">
-          <app-sidebar-header>
-            <div class="brand">
-              <span class="mark">F</span><strong>Friday</strong>
-            </div>
-            <app-button
-              class="sidebar-action"
-              variant="secondary"
-              @click=${this.startNew}
-              >New thread</app-button
-            >
-          </app-sidebar-header>
-          <app-sidebar-content>
-            <app-sidebar-group>
-              <app-sidebar-group-label>Threads</app-sidebar-group-label>
-              <app-sidebar-group-content>
-                <app-sidebar-menu
-                  >${this.threads.map((thread) =>
-                    this.renderThread(thread),
-                  )}</app-sidebar-menu
-                >
-              </app-sidebar-group-content>
-            </app-sidebar-group>
-          </app-sidebar-content>
-          <app-sidebar-footer>
-            <app-button
-              class="sidebar-action"
-              variant="secondary"
-              @click=${this.onLogout}
-              >Log out</app-button
-            >
-          </app-sidebar-footer>
-          <app-sidebar-rail></app-sidebar-rail>
-        </app-sidebar>
-        <app-sidebar-inset>
-          <section class="main">
-            <header class="topbar">
-              <app-sidebar-trigger></app-sidebar-trigger>
-              <h1>${this.currentTitle()}</h1>
-            </header>
-            <main class="messages">${this.renderMessages()}</main>
-            <footer class="composer-wrap">
-              <app-prompt-input
-                .value=${this.draft}
-                placeholder=${this.threadId
-                  ? "Message Friday"
-                  : "Ask Friday anything"}
-                ?disabled=${this.running}
-                @value-change=${this.onDraft}
-                @prompt-submit=${this.onPromptSubmit}
-              ></app-prompt-input>
-              ${this.error
-                ? html`<div class="error">${this.error}</div>`
-                : nothing}
-            </footer>
-          </section>
-        </app-sidebar-inset>
-      </app-sidebar-provider>
-    `;
-  }
+	private canSend() {
+		return this.draft.trim().length > 0 && !this.running;
+	}
 
-  private renderThread(thread: ThreadSummary) {
-    return html`
-      <app-sidebar-menu-item>
-        <app-sidebar-menu-button
-          href=${`/threads/${thread.id}`}
-          tooltip=${thread.title}
-          ?active=${thread.id === this.threadId}
-          @click=${this.onThreadClick}
-        >
-          <span class="thread-label">${thread.title}</span>
-        </app-sidebar-menu-button>
-      </app-sidebar-menu-item>
-    `;
-  }
+	private onDraft(event: CustomEvent<{ value: string }>) {
+		this.draft = event.detail.value;
+	}
 
-  private renderMessages() {
-    if (this.loading) {
-      return html`<div class="empty"><p>Loading thread...</p></div>`;
-    }
+	private onPromptSubmit(event: CustomEvent<{ value: string }>) {
+		this.draft = event.detail.value;
+		void this.submitDraft();
+	}
 
-    if (!this.threadId || this.messages.length === 0) {
-      return html`<div class="empty">
-        <h2>What are we working on?</h2>
-        <p>Start a thread and Friday will keep the context here.</p>
-      </div>`;
-    }
+	private async submitDraft() {
+		if (!this.canSend()) {
+			return;
+		}
 
-    return this.messages.map((message) => this.renderMessage(message));
-  }
+		const content = this.draft.trim();
+		this.draft = "";
+		this.error = "";
+		this.running = true;
+		this.syncComposer();
+		this.appendPendingUser(content);
 
-  private renderMessage(message: ViewMessage) {
-    const type =
-      message.role === "tool"
-        ? "tool_output"
-        : message.role === "system"
-          ? "agent"
-          : message.role;
+		try {
+			if (this.threadId) {
+				await sendMessage(this.threadId, content);
+			} else {
+				const response = await createThread(content);
+				this.threadId = response.thread_id;
+				this.root.dataset.threadId = this.threadId;
+				history.pushState(null, "", `/threads/${response.thread_id}`);
+				this.threads = await listThreads();
+				this.renderThreads();
+				await this.loadThread(this.threadId);
+			}
+		} catch (error) {
+			this.running = false;
+			this.syncComposer();
+			this.handleError(error);
+		}
+	}
 
-    return html`
-      <app-message
-        .message_id=${message.id}
-        .type=${type}
-        .tool_name=${message.role === "tool" ? "Tool output" : undefined}
-        .with_thinking=${Boolean(message.thinking)}
-      >
-        ${message.thinking
-          ? html`<span slot="thinking">${message.thinking}</span>`
-          : nothing}
-        ${message.content || (message.pending ? "Thinking..." : "")}
-      </app-message>
-    `;
-  }
+	private appendPendingUser(content: string) {
+		const message: ViewMessage = {
+			id: `pending-user-${Date.now()}`,
+			seq: Number.MAX_SAFE_INTEGER,
+			role: "user",
+			content,
+			thinking: null,
+			pending: true,
+		};
+		this.messages.push(message);
+		this.appendMessage(message);
+	}
 
-  private async load() {
-    try {
-      this.threads = await listThreads();
-      await this.loadThread();
-    } catch (error) {
-      this.handleError(error);
-    }
-  }
+	private async loadThread(threadId: string) {
+		this.closeEvents();
+		this.pendingAssistant = "";
+		this.setError("");
 
-  private async loadThread() {
-    this.closeEvents();
-    this.pendingAssistant = "";
-    this.error = "";
+		try {
+			this.messages = await listMessages(threadId);
+			this.renderMessages();
+			this.syncTitle();
+			this.openEvents(threadId);
+		} catch (error) {
+			this.handleError(error);
+		}
+	}
 
-    if (!this.threadId) {
-      this.messages = [];
-      this.loading = false;
-      this.running = false;
-      return;
-    }
+	private startNew() {
+		this.closeEvents();
+		this.threadId = "";
+		this.root.dataset.threadId = "";
+		this.messages = [];
+		this.draft = "";
+		this.running = false;
+		this.pendingAssistant = "";
+		this.renderMessages();
+		this.renderThreads();
+		this.syncTitle();
+		this.syncComposer();
+		history.pushState(null, "", "/threads");
+	}
 
-    this.loading = true;
-    try {
-      this.messages = await listMessages(this.threadId);
-      this.loading = false;
-      this.openEvents(this.threadId);
-    } catch (error) {
-      this.loading = false;
-      this.handleError(error);
-    }
-  }
+	private onThreadClick(event: Event) {
+		const item = (event.target as Element).closest<HTMLElement>(
+			"[data-thread-id]",
+		);
+		if (!item) {
+			return;
+		}
 
-  private openEvents(threadId: string) {
-    this.events = new EventSource(`/api/threads/${threadId}/events`);
-    this.events.onmessage = (event) =>
-      this.applyEvent(JSON.parse(event.data) as ThreadEvent);
-    this.events.onerror = () => {
-      this.error = "Live updates disconnected.";
-    };
-  }
+		event.preventDefault();
+		const id = item.dataset.threadId ?? "";
+		if (!id || id === this.threadId) {
+			return;
+		}
 
-  private closeEvents() {
-    this.events?.close();
-    this.events = null;
-  }
+		this.threadId = id;
+		this.root.dataset.threadId = id;
+		this.renderThreads();
+		history.pushState(null, "", `/threads/${id}`);
+		void this.loadThread(id);
+	}
 
-  private applyEvent(event: ThreadEvent) {
-    if (event.thread_id !== this.threadId) {
-      return;
-    }
+	private async onLogout() {
+		await logout();
+		this.navigate("/login");
+	}
 
-    if (event.kind.type === "Snapshot") {
-      this.running = event.kind.status === "running";
-      if (event.kind.in_progress?.content) {
-        const last = this.messages[this.messages.length - 1];
-        if (
-          last?.role !== "agent" ||
-          last.content !== event.kind.in_progress.content
-        ) {
-          this.pendingAssistant = event.kind.in_progress.content;
-          this.upsertPendingAssistant();
-        }
-      }
-    }
+	private renderThreads() {
+		this.threadListEl.replaceChildren(
+			...this.threads.map((thread) => this.createThreadElement(thread)),
+		);
+	}
 
-    if (event.kind.type === "RunStarted") {
-      this.running = true;
-    }
+	private createThreadElement(thread: ThreadSummary) {
+		const item = document.createElement("app-sidebar-group-item") as HTMLElement & {
+			target: string;
+			active: boolean;
+		};
+		item.setAttribute("target", `/threads/${thread.id}`);
+		item.dataset.threadId = thread.id;
+		item.active = thread.id === this.threadId;
+		item.toggleAttribute("active", item.active);
 
-    if (event.kind.type === "AgentDelta") {
-      this.pendingAssistant += event.kind.content;
-      this.upsertPendingAssistant();
-    }
+		const label = document.createElement("span");
+		label.className = "thread-label";
+		label.textContent = thread.title;
+		item.append(label);
+		return item;
+	}
 
-    if (event.kind.type === "ThinkingDelta") {
-      this.upsertPendingAssistant(event.kind.thinking);
-    }
+	private renderMessages() {
+		if (!this.threadId || this.messages.length === 0) {
+			this.messagesEl.replaceChildren(this.createEmptyElement());
+			return;
+		}
 
-    if (
-      event.kind.type === "RunFinished" ||
-      event.kind.type === "AgentMessageCommitted"
-    ) {
-      this.running = false;
-      void this.refreshAfterRun();
-    }
+		this.messagesEl.replaceChildren(
+			...this.messages.map((message) => this.createMessageElement(message)),
+		);
+	}
 
-    if (event.kind.type === "RunFailed") {
-      this.running = false;
-      this.error = event.kind.error;
-    }
-  }
+	private appendMessage(message: ViewMessage) {
+		this.messagesEl.querySelector("[data-empty]")?.remove();
+		this.messagesEl.append(this.createMessageElement(message));
+		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+	}
 
-  private upsertPendingAssistant(thinking?: string) {
-    const messages = [...this.messages];
-    const last = messages[messages.length - 1];
+	private updateMessageElement(message: ViewMessage) {
+		const element = this.messagesEl.querySelector<HTMLElement>(
+			`app-message[data-message-id="${message.id}"]`,
+		);
+		if (!element) {
+			return;
+		}
 
-    if (last?.pending && last.role === "agent") {
-      messages[messages.length - 1] = {
-        ...last,
-        content: this.pendingAssistant,
-        thinking: thinking
-          ? `${last.thinking ?? ""}${thinking}`
-          : last.thinking,
-      };
-    } else {
-      messages.push({
-        id: "pending-agent",
-        seq: Number.MAX_SAFE_INTEGER,
-        role: "agent",
-        content: this.pendingAssistant,
-        thinking: thinking ?? null,
-        pending: true,
-      });
-    }
+		const content = element.querySelector<HTMLElement>("[data-content]");
+		if (content) {
+			content.textContent = message.content || (message.pending ? "Thinking..." : "");
+		}
 
-    this.messages = messages;
-  }
+		if (message.thinking) {
+			let thinking = element.querySelector<HTMLElement>("[data-thinking]");
+			if (!thinking) {
+				thinking = document.createElement("span");
+				thinking.slot = "thinking";
+				thinking.dataset.thinking = "";
+				element.prepend(thinking);
+			}
+			thinking.textContent = message.thinking;
+			(element as unknown as { with_thinking: boolean }).with_thinking = true;
+		}
 
-  private async refreshAfterRun() {
-    if (!this.threadId) {
-      return;
-    }
+		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+	}
 
-    this.pendingAssistant = "";
-    this.messages = await listMessages(this.threadId);
-    this.threads = await listThreads();
-  }
+	private createMessageElement(message: ViewMessage) {
+		const element = document.createElement("app-message") as HTMLElement & {
+			message_id: string;
+			type: string;
+			tool_name?: string;
+			with_thinking: boolean;
+		};
+		const messageType = this.messageType(message.role);
+		element.message_id = message.id;
+		element.type = messageType.type;
+		element.dataset.messageId = message.id;
+		element.dataset.seq = String(message.seq);
+		element.dataset.role = message.role;
+		if (messageType.toolName) {
+			element.tool_name = messageType.toolName;
+		}
+		if (message.thinking) {
+			element.with_thinking = true;
+			const thinking = document.createElement("span");
+			thinking.slot = "thinking";
+			thinking.dataset.thinking = "";
+			thinking.textContent = message.thinking;
+			element.append(thinking);
+		}
 
-  private currentTitle() {
-    return (
-      this.threads.find((thread) => thread.id === this.threadId)?.title ??
-      "New thread"
-    );
-  }
+		const content = document.createElement("span");
+		content.dataset.content = "";
+		content.textContent = message.content || (message.pending ? "Thinking..." : "");
+		element.append(content);
+		return element;
+	}
 
-  private canSend() {
-    return this.draft.trim().length > 0 && !this.running;
-  }
+	private createEmptyElement() {
+		const empty = document.createElement("div");
+		empty.className = "empty";
+		empty.dataset.empty = "";
 
-  private onDraft(event: CustomEvent<{ value: string }>) {
-    this.draft = event.detail.value;
-  }
+		const title = document.createElement("h2");
+		title.textContent = "What are we working on?";
 
-  private onPromptSubmit(event: CustomEvent<{ value: string }>) {
-    this.draft = event.detail.value;
-    void this.submitDraft();
-  }
+		const body = document.createElement("p");
+		body.textContent = "Start a thread and Friday will keep the context here.";
 
-  private async submitDraft() {
-    if (!this.canSend()) {
-      return;
-    }
+		empty.append(title, body);
+		return empty;
+	}
 
-    const content = this.draft.trim();
-    this.draft = "";
-    this.error = "";
-    this.running = true;
-    this.messages = [
-      ...this.messages,
-      {
-        id: `pending-user-${Date.now()}`,
-        seq: Number.MAX_SAFE_INTEGER,
-        role: "user",
-        content,
-        thinking: null,
-        pending: true,
-      },
-    ];
+	private messageType(role: ThreadMessage["role"]) {
+		if (role === "tool") {
+			return { type: "tool_output", toolName: "Tool output" };
+		}
+		if (role === "system") {
+			return { type: "agent" };
+		}
+		return { type: role };
+	}
 
-    try {
-      if (this.threadId) {
-        await sendMessage(this.threadId, content);
-      } else {
-        const response = await createThread(content);
-        this.threadId = response.thread_id;
-        history.pushState(null, "", `/threads/${response.thread_id}`);
-        this.threads = await listThreads();
-        await this.loadThread();
-      }
-    } catch (error) {
-      this.running = false;
-      this.handleError(error);
-    }
-  }
+	private syncTitle() {
+		this.titleEl.textContent =
+			this.threads.find((thread) => thread.id === this.threadId)?.title ??
+			"New thread";
+	}
 
-  private startNew() {
-    this.threadId = "";
-    this.messages = [];
-    this.draft = "";
-    this.running = false;
-    history.pushState(null, "", "/threads");
-  }
+	private syncComposer() {
+		this.promptEl.value = this.draft;
+		this.promptEl.disabled = this.running;
+		this.promptEl.placeholder = this.threadId ? "Message Friday" : "Ask Friday anything";
+		this.errorEl.textContent = this.error;
+	}
 
-  private onThreadClick(event: MouseEvent) {
-    event.preventDefault();
-    const href =
-      (event.currentTarget as HTMLElement).getAttribute("href") ?? "";
-    const id = href.split("/").pop() ?? "";
-    if (!id || id === this.threadId) {
-      return;
-    }
-    this.threadId = id;
-    history.pushState(null, "", `/threads/${id}`);
-  }
+	private setError(error: string) {
+		this.error = error;
+		this.syncComposer();
+	}
 
-  private async onLogout() {
-    await logout();
-    this.dispatchEvent(
-      new CustomEvent("navigate", {
-        bubbles: true,
-        composed: true,
-        detail: { path: "/login" },
-      }),
-    );
-  }
+	private handleError(error: unknown) {
+		if (error instanceof Error && error.message === "401") {
+			this.navigate("/login");
+			return;
+		}
 
-  private handleError(error: unknown) {
-    if (error instanceof Error && error.message === "401") {
-      this.dispatchEvent(
-        new CustomEvent("navigate", {
-          bubbles: true,
-          composed: true,
-          detail: { path: "/login" },
-        }),
-      );
-      return;
-    }
+		this.setError("Request failed.");
+	}
 
-    this.error = "Request failed.";
-  }
+	private navigate(path: string) {
+		this.root.dispatchEvent(
+			new CustomEvent("navigate", {
+				bubbles: true,
+				composed: true,
+				detail: { path },
+			}),
+		);
+	}
 }
 
-customElements.define("threads-page", ThreadsPage);
+if (root) {
+	new ThreadsPageHydrator(root);
+}

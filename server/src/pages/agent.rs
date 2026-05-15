@@ -2,29 +2,46 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
-    response::{Html, IntoResponse, Response},
+    http::HeaderMap,
+    response::{Html, IntoResponse, Redirect, Response},
 };
-use serde_json::json;
+use uuid::Uuid;
 
-use crate::ServerState;
+use crate::{ServerState, api::threads};
 
 const PAGE_SCRIPT: &str = r#"<script type="module" src="/static/pages/threads-page.js"></script>"#;
 
-pub async fn new_thread(State(state): State<Arc<ServerState>>) -> Response {
-    render_threads(state, None)
+pub async fn new_thread(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
+    render_threads(state, headers, None).await
 }
 
-pub async fn thread(State(state): State<Arc<ServerState>>, Path(id): Path<String>) -> Response {
-    render_threads(state, Some(id))
+pub async fn thread(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    render_threads(state, headers, Some(id)).await
 }
 
-fn render_threads(state: Arc<ServerState>, thread_id: Option<String>) -> Response {
+async fn render_threads(
+    state: Arc<ServerState>,
+    headers: HeaderMap,
+    thread_id: Option<Uuid>,
+) -> Response {
+    let data = match threads::thread_page_data(&state, &headers, thread_id).await {
+        Ok(data) => data,
+        Err(threads::ThreadApiError::Auth(_)) => {
+            return Redirect::to("/auth/login").into_response();
+        }
+        Err(error) => return error.into_response(),
+    };
+
     Html(super::render_page(
         &state.templates,
         "Friday",
         PAGE_SCRIPT,
         "threads",
-        &json!({ "thread_id": thread_id }),
+        &serde_json::to_value(data).unwrap(),
     ))
     .into_response()
 }
