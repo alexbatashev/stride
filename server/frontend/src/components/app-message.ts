@@ -37,6 +37,17 @@ export class AppMessage extends LitElement {
     }
   `;
 
+  connectedCallback() {
+    super.connectedCallback();
+    // Hydrate text from server-rendered slot content when property is not set
+    if (!this.text) {
+      const content = this.querySelector("[data-content]");
+      if (content?.textContent) {
+        this.text = content.textContent;
+      }
+    }
+  }
+
   render() {
     switch (this.type) {
       case "agent":
