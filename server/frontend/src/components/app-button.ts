@@ -33,9 +33,10 @@ export class AppButton extends LitElement {
 			background-clip: padding-box;
 			border: 1px solid transparent;
 			border-radius: 8px;
+			box-sizing: border-box;
 			color: var(--primary-foreground, #fafafa);
 			cursor: pointer;
-			display: inline-flex;
+			display: flex;
 			font: inherit;
 			font-size: 0.875rem;
 			font-weight: 500;

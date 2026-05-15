@@ -12,7 +12,7 @@ import {
   eventOptions,
   query,
 } from "lit/decorators.js";
-import { PANEL_LEFT_CLOSE, PANEL_LEFT_OPEN } from "./icons";
+import { CHEVRON_RIGHT, PANEL_LEFT_CLOSE, PANEL_LEFT_OPEN } from "./icons";
 
 type SidebarStatus = "open" | "collapsed" | "hidden";
 
@@ -183,9 +183,70 @@ export class AppSidebarToggle extends LitElement {
   @state()
   is_closed: boolean = false;
 
+  static styles = css`
+    :host {
+      display: inline-flex;
+      height: 24px;
+      width: 24px;
+    }
+  `;
+
   render() {
     return html`<app-button variant="ghost" size="icon-xs"
       >${this.is_closed ? PANEL_LEFT_OPEN : PANEL_LEFT_CLOSE}</app-button
     >`;
+  }
+}
+
+@customElement("app-sidebar-group")
+export class AppSidebarGroup extends LitElement {
+  @state()
+  is_open: boolean = true;
+
+  @property()
+  title: string = "Group";
+
+  static styles = css`
+    :host {
+      width: 100%;
+      padding: 8px;
+    }
+    .header {
+      display: inline-flex;
+      flex-direction: row;
+      align-items: center;
+    }
+
+    .chevron {
+      width: 8px;
+      height: 8px;
+      display: inline-block;
+    }
+
+    ul {
+      list-style-type: none;
+      padding: 8px;
+      width: 100%;
+    }
+
+    li {
+      width: 100%;
+    }
+
+    a {
+      width: 100%;
+    }
+  `;
+
+  render() {
+    return html`
+      <div class="header">
+        ${this.title}
+        <span id="chevron">${CHEVRON_RIGHT}</span>
+      </div>
+      <ul>
+        <slot></slot>
+      </ul>
+    `;
   }
 }

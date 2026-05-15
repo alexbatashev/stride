@@ -27,7 +27,10 @@
                 WORKFLOW,
             } from "/static/components.js";
 
-            render(BOT_MESSAGE_SQUARE, document.querySelector("#chats-icon"));
+            render(
+                BOT_MESSAGE_SQUARE,
+                document.querySelector("#new-task-icon"),
+            );
             render(WORKFLOW, document.querySelector("#workflow-icon"));
         </script>
     </head>
@@ -35,13 +38,17 @@
         <nav>
             <app-sidebar>
                 <app-sidebar-nav-item target="/thread">
-                    <span id="chats-icon" slot="icon"></span>
-                    Chats
+                    <span id="new-task-icon" slot="icon"></span>
+                    New task
                 </app-sidebar-nav-item>
                 <app-sidebar-nav-item target="/thread">
                     <span id="workflow-icon" slot="icon"></span>
                     Automations
                 </app-sidebar-nav-item>
+                <app-sidebar-group title="Threads">
+                    <li><a href="/threads/123">My thread...</a></li>
+                    <li><a href="/threads/456">My thread 2...</a></li>
+                </app-sidebar-group>
             </app-sidebar>
         </nav>
         <main>
