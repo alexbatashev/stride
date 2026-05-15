@@ -7,6 +7,7 @@ pub struct Config {
     pub providers: HashMap<String, Provider>,
     pub models: HashMap<String, Model>,
     pub server: Option<Server>,
+    pub tools: Option<Tools>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +43,23 @@ pub struct Server {
     pub db_path: Option<String>,
     pub listen_addr: Option<String>,
     pub ldap: Option<Ldap>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Tools {
+    pub web_search: Option<WebSearch>,
+    pub firecrawl: Option<Firecrawl>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct WebSearch {
+    pub searxng_endpoint: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Firecrawl {
+    pub api_key: Option<String>,
+    pub api_url: Option<String>,
 }
 
 impl Config {
@@ -80,6 +98,20 @@ impl Provider {
     }
 }
 
+impl Firecrawl {
+    pub fn read_api_key(&self) -> Option<String> {
+        self.api_key
+            .clone()
+            .or_else(|| env::var("FRIDAY_FIRECRAWL_API_KEY").ok())
+    }
+
+    pub fn api_url(&self) -> &str {
+        self.api_url
+            .as_deref()
+            .unwrap_or("https://api.firecrawl.dev")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,9 +126,38 @@ mod tests {
                 listen_addr: Some("127.0.0.1:4000".to_string()),
                 ldap: None,
             }),
+            tools: None,
         };
 
         assert_eq!(cfg.db_url(), "sqlite:///tmp/friday-test.db");
         assert_eq!(cfg.listen_addr(), "127.0.0.1:4000");
+    }
+
+    #[test]
+    fn tool_parameters_load_from_config() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [tools.web_search]
+            searxng_endpoint = "https://search.example.com"
+
+            [tools.firecrawl]
+            api_key = "fc-test"
+            api_url = "https://firecrawl.example.com"
+            "#,
+        )
+        .unwrap();
+
+        let tools = cfg.tools.unwrap();
+        assert_eq!(
+            tools.web_search.unwrap().searxng_endpoint,
+            "https://search.example.com"
+        );
+
+        let firecrawl = tools.firecrawl.unwrap();
+        assert_eq!(firecrawl.read_api_key().unwrap(), "fc-test");
+        assert_eq!(firecrawl.api_url(), "https://firecrawl.example.com");
     }
 }

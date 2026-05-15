@@ -7,7 +7,13 @@ use std::{
 };
 
 use async_trait::async_trait;
-use friday_agent::{AgentConfig, AgentResponseChunk, BaseAgent};
+use friday_agent::{
+    AgentConfig, AgentResponseChunk, BaseAgent,
+    tools::{
+        firecrawl::FirecrawlTool,
+        web_search::{SearxngProvider, WebSearchTool},
+    },
+};
 use futures::StreamExt;
 use minisql::{ConnectionPool, Value};
 use tokio::{
@@ -18,6 +24,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
+    config::Tools,
     db::{Role, messages},
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
@@ -62,6 +69,7 @@ enum WorkerCommand {
 struct WorkerState {
     db: ConnectionPool,
     config: Arc<AgentConfig>,
+    tools: Tools,
     system_prompt: String,
     idle_ttl: Duration,
     threads: HashMap<Uuid, ThreadRunner>,
@@ -89,6 +97,10 @@ impl InProcessAgentPool {
         Self::with_system_prompt(db, config, DEFAULT_SYSTEM_PROMPT.to_string())
     }
 
+    pub fn with_tool_config(db: ConnectionPool, config: Arc<AgentConfig>, tools: Tools) -> Self {
+        Self::with_system_prompt_and_tools(db, config, DEFAULT_SYSTEM_PROMPT.to_string(), tools)
+    }
+
     pub fn with_system_prompt(
         db: ConnectionPool,
         config: Arc<AgentConfig>,
@@ -97,11 +109,30 @@ impl InProcessAgentPool {
         Self::with_idle_ttl(db, config, system_prompt, DEFAULT_IDLE_TTL)
     }
 
+    pub fn with_system_prompt_and_tools(
+        db: ConnectionPool,
+        config: Arc<AgentConfig>,
+        system_prompt: String,
+        tools: Tools,
+    ) -> Self {
+        Self::with_idle_ttl_and_tools(db, config, system_prompt, DEFAULT_IDLE_TTL, tools)
+    }
+
     pub fn with_idle_ttl(
         db: ConnectionPool,
         config: Arc<AgentConfig>,
         system_prompt: String,
         idle_ttl: Duration,
+    ) -> Self {
+        Self::with_idle_ttl_and_tools(db, config, system_prompt, idle_ttl, Tools::default())
+    }
+
+    pub fn with_idle_ttl_and_tools(
+        db: ConnectionPool,
+        config: Arc<AgentConfig>,
+        system_prompt: String,
+        idle_ttl: Duration,
+        tools: Tools,
     ) -> Self {
         let workers = (0..WORKER_THREADS)
             .map(|idx| {
@@ -111,6 +142,7 @@ impl InProcessAgentPool {
                     config.clone(),
                     system_prompt.clone(),
                     idle_ttl,
+                    tools.clone(),
                 )
             })
             .collect();
@@ -181,6 +213,7 @@ fn start_worker(
     config: Arc<AgentConfig>,
     system_prompt: String,
     idle_ttl: Duration,
+    tools: Tools,
 ) -> WorkerHandle {
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -195,6 +228,7 @@ fn start_worker(
             let state = Rc::new(RefCell::new(WorkerState {
                 db,
                 config,
+                tools,
                 system_prompt,
                 idle_ttl,
                 threads: HashMap::new(),
@@ -376,11 +410,12 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, system_prompt) = {
+    let (db, config, tools, system_prompt) = {
         let state = state.borrow();
         (
             state.db.clone(),
             state.config.clone(),
+            state.tools.clone(),
             state.system_prompt.clone(),
         )
     };
@@ -388,6 +423,7 @@ async fn ensure_runner(
     ensure_thread_exists(&db, thread_id).await?;
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
+    configure_agent_tools(&agent, &tools);
     let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
 
     state.borrow_mut().threads.insert(
@@ -404,6 +440,25 @@ async fn ensure_runner(
     );
 
     Ok(())
+}
+
+fn configure_agent_tools(agent: &BaseAgent, tools: &Tools) {
+    if let Some(web_search) = &tools.web_search {
+        agent.register_tool(WebSearchTool {
+            providers: vec![Box::new(SearxngProvider {
+                endpoint: web_search.searxng_endpoint.clone(),
+            })],
+        });
+    }
+
+    if let Some(firecrawl) = &tools.firecrawl {
+        if let Some(api_key) = firecrawl.read_api_key() {
+            agent.register_tool(FirecrawlTool {
+                api_key,
+                api_url: firecrawl.api_url().to_string(),
+            });
+        }
+    }
 }
 
 async fn run_agent_turn(
@@ -773,11 +828,47 @@ fn db_error(err: Box<dyn std::error::Error + Send + Sync>) -> AgentPoolError {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::{Firecrawl, WebSearch};
     use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
     use llm::{CompletionChoice, Delta, StreamResponseChunk};
 
     use super::*;
     use crate::db::{self, threads, users};
+
+    #[test]
+    fn configured_tools_are_registered_on_agent() {
+        let agent = BaseAgent::new(
+            "default".to_string(),
+            Arc::new(AgentConfig {
+                model_registry: ModelRegistry::new(),
+                max_iterations: 0,
+            }),
+            "System prompt".to_string(),
+            Vec::new(),
+        );
+
+        configure_agent_tools(
+            &agent,
+            &Tools {
+                web_search: Some(WebSearch {
+                    searxng_endpoint: "https://search.example.com".to_string(),
+                }),
+                firecrawl: Some(Firecrawl {
+                    api_key: Some("fc-test".to_string()),
+                    api_url: Some("https://firecrawl.example.com".to_string()),
+                }),
+            },
+        );
+
+        let names: Vec<_> = agent
+            .tool_definitions()
+            .into_iter()
+            .map(|tool| tool.function.name)
+            .collect();
+
+        assert!(names.contains(&"web_search".to_string()));
+        assert!(names.contains(&"firecrawl".to_string()));
+    }
 
     #[tokio::test]
     async fn send_persists_messages_and_streams_events() {

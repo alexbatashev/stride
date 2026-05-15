@@ -369,6 +369,7 @@ mod tests {
                 providers: HashMap::new(),
                 models: HashMap::new(),
                 server: None,
+                tools: None,
             },
             db: db.clone(),
             jwt_secret: "test-secret".to_string(),

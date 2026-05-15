@@ -49,12 +49,14 @@ async fn main() -> anyhow::Result<()> {
 
     let templates = get_templates()?;
     let listen_addr = config.listen_addr().to_string();
-    let runner = Arc::new(runner::inproc::InProcessAgentPool::new(
+    let tools = config.tools.clone().unwrap_or_default();
+    let runner = Arc::new(runner::inproc::InProcessAgentPool::with_tool_config(
         db.clone(),
         Arc::new(AgentConfig {
             model_registry: create_model_registry(&config),
             max_iterations: 90,
         }),
+        tools,
     ));
 
     let state = Arc::new(ServerState {
