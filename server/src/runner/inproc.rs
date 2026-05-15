@@ -8,8 +8,9 @@ use std::{
 
 use async_trait::async_trait;
 use friday_agent::{
-    AgentConfig, AgentResponseChunk, BaseAgent,
+    AgentConfig, AgentResponseChunk, BaseAgent, Tool, ToolRegistry,
     tools::{
+        expert::{EXPERT_NAME, make_expert},
         firecrawl::FirecrawlTool,
         web_search::{SearxngProvider, WebSearchTool},
     },
@@ -24,7 +25,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    config::Tools,
+    config::{Firecrawl, Tools, WebSearch},
     db::{Role, messages},
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
@@ -443,22 +444,52 @@ async fn ensure_runner(
 }
 
 fn configure_agent_tools(agent: &BaseAgent, tools: &Tools) {
+    agent.register_tool(make_expert(expert_tool_registry(tools)));
+    agent.allow_tool(EXPERT_NAME);
+
     if let Some(web_search) = &tools.web_search {
-        agent.register_tool(WebSearchTool {
-            providers: vec![Box::new(SearxngProvider {
-                endpoint: web_search.searxng_endpoint.clone(),
-            })],
-        });
+        agent.register_tool(web_search_tool(web_search));
     }
 
     if let Some(firecrawl) = &tools.firecrawl {
-        if let Some(api_key) = firecrawl.read_api_key() {
-            agent.register_tool(FirecrawlTool {
-                api_key,
-                api_url: firecrawl.api_url().to_string(),
-            });
+        if let Some(tool) = firecrawl_tool(firecrawl) {
+            agent.register_tool(tool);
         }
     }
+}
+
+fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+
+    if let Some(web_search) = &tools.web_search {
+        let tool = web_search_tool(web_search);
+        registry.allow_tool(tool.name());
+        registry.register(tool);
+    }
+
+    if let Some(firecrawl) = &tools.firecrawl {
+        if let Some(tool) = firecrawl_tool(firecrawl) {
+            registry.allow_tool(tool.name());
+            registry.register(tool);
+        }
+    }
+
+    registry
+}
+
+fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
+    WebSearchTool {
+        providers: vec![Box::new(SearxngProvider {
+            endpoint: web_search.searxng_endpoint.clone(),
+        })],
+    }
+}
+
+fn firecrawl_tool(firecrawl: &Firecrawl) -> Option<FirecrawlTool> {
+    firecrawl.read_api_key().map(|api_key| FirecrawlTool {
+        api_key,
+        api_url: firecrawl.api_url().to_string(),
+    })
 }
 
 async fn run_agent_turn(
@@ -862,6 +893,52 @@ mod tests {
 
         let names: Vec<_> = agent
             .tool_definitions()
+            .into_iter()
+            .map(|tool| tool.function.name)
+            .collect();
+
+        assert!(names.contains(&"expert".to_string()));
+        assert!(names.contains(&"web_search".to_string()));
+        assert!(names.contains(&"firecrawl".to_string()));
+    }
+
+    #[test]
+    fn expert_is_registered_without_optional_web_tools() {
+        let agent = BaseAgent::new(
+            "default".to_string(),
+            Arc::new(AgentConfig {
+                model_registry: ModelRegistry::new(),
+                max_iterations: 0,
+            }),
+            "System prompt".to_string(),
+            Vec::new(),
+        );
+
+        configure_agent_tools(&agent, &Tools::default());
+
+        let names: Vec<_> = agent
+            .tool_definitions()
+            .into_iter()
+            .map(|tool| tool.function.name)
+            .collect();
+
+        assert_eq!(names, vec!["expert".to_string()]);
+    }
+
+    #[test]
+    fn configured_web_tools_are_registered_on_expert() {
+        let registry = expert_tool_registry(&Tools {
+            web_search: Some(WebSearch {
+                searxng_endpoint: "https://search.example.com".to_string(),
+            }),
+            firecrawl: Some(Firecrawl {
+                api_key: Some("fc-test".to_string()),
+                api_url: Some("https://firecrawl.example.com".to_string()),
+            }),
+        });
+
+        let names: Vec<_> = registry
+            .definitions()
             .into_iter()
             .map(|tool| tool.function.name)
             .collect();
