@@ -110,15 +110,76 @@ pub async fn login(
         .await
         .map_err(|_| AuthError::Internal)?;
 
-    let Some((user_id, password_hash)) = users.into_iter().next() else {
+    match users.into_iter().next() {
+        Some((user_id, password_hash)) if !password_hash.is_empty() => {
+            // Local user: in-app auth takes precedence, never falls through to LDAP.
+            if !verify_password(&request.password, &password_hash) {
+                return Err(AuthError::Unauthorized);
+            }
+            let resp = create_session(&state, user_id).await?;
+            Ok((
+                [(header::SET_COOKIE, session_cookie(&resp.token))],
+                Json(resp),
+            ))
+        }
+        row => {
+            // No local password: try LDAP. `row` carries the existing user_id if the
+            // account was previously created by LDAP (empty hash sentinel).
+            let existing_id = row.map(|(id, _)| id);
+            ldap_login(&state, &request, existing_id).await
+        }
+    }
+}
+
+async fn ldap_login(
+    state: &ServerState,
+    request: &AuthRequest,
+    existing_id: Option<Uuid>,
+) -> Result<([(HeaderName, String); 1], Json<AuthResponse>), AuthError> {
+    let Some(ldap_cfg) = state.config.server.as_ref().and_then(|s| s.ldap.as_ref()) else {
         return Err(AuthError::Unauthorized);
     };
 
-    if !verify_password(&request.password, &password_hash) {
+    // Strict allowlist to prevent DN injection via the username.
+    if !request
+        .username
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
         return Err(AuthError::Unauthorized);
     }
 
-    let resp = create_session(&state, user_id).await?;
+    let dn = ldap_cfg
+        .user_dn_template
+        .replace("{username}", &request.username);
+
+    let (conn, mut ldap) = ldap3::LdapConnAsync::new(&ldap_cfg.url)
+        .await
+        .map_err(|_| AuthError::Unauthorized)?;
+    ldap3::drive!(conn);
+
+    ldap.simple_bind(&dn, &request.password)
+        .await
+        .map_err(|_| AuthError::Unauthorized)?
+        .success()
+        .map_err(|_| AuthError::Unauthorized)?;
+
+    // Bind succeeded. Find or create the local shadow record (empty hash sentinel).
+    let user_id = if let Some(id) = existing_id {
+        id
+    } else {
+        let id = Uuid::now_v7();
+        users::insert()
+            .id(id)
+            .username(request.username.as_str())
+            .password_hash("")
+            .execute(&state.db)
+            .await
+            .map_err(|_| AuthError::Internal)?;
+        id
+    };
+
+    let resp = create_session(state, user_id).await?;
     Ok((
         [(header::SET_COOKIE, session_cookie(&resp.token))],
         Json(resp),

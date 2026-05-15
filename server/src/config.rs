@@ -31,9 +31,17 @@ pub struct Model {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct Ldap {
+    pub url: String,
+    /// DN template for binding, e.g. "uid={username},ou=users,dc=example,dc=com"
+    pub user_dn_template: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Server {
     pub db_path: Option<String>,
     pub listen_addr: Option<String>,
+    pub ldap: Option<Ldap>,
 }
 
 impl Config {
@@ -84,6 +92,7 @@ mod tests {
             server: Some(Server {
                 db_path: Some("/tmp/friday-test.db".to_string()),
                 listen_addr: Some("127.0.0.1:4000".to_string()),
+                ldap: None,
             }),
         };
 
