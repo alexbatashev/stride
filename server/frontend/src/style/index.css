@@ -1,66 +1,111 @@
-@import './reset.css';
+@import "./reset.css";
 
 html {
-	font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-	line-height: 1.5;
-	color: var(--foreground);
-	background: var(--background);
+    font-family: "Noto Sans", sans-serif;
+    font-optical-sizing: auto;
+    font-weight: 400;
+    font-style: normal;
+    font-variation-settings: "wdth" 100;
+    line-height: 1.5;
+    color: var(--foreground);
+    background: var(--background);
+    width: 100%;
+    height: 100%;
 }
 
 :root {
-	--background: #ffffff;
-	--foreground: #09090b;
-	--card: #ffffff;
-	--card-foreground: #18181b;
-	--primary: #18181b;
-	--primary-foreground: #fafafa;
-	--primary-hover: #27272a;
-	--secondary: #f4f4f5;
-	--secondary-foreground: #18181b;
-	--secondary-hover: #e4e4e7;
-	--muted: #f4f4f5;
-	--muted-foreground: #71717a;
-	--accent: #f4f4f5;
-	--accent-foreground: #18181b;
-	--border: #e4e4e7;
-	--input: #e4e4e7;
-	--input-disabled: rgb(244 244 245 / 50%);
-	--ring: #18181b;
-	--ring-shadow: rgb(24 24 27 / 12%);
-	--destructive: #dc2626;
-	--destructive-muted: rgb(220 38 38 / 10%);
-	--destructive-hover: rgb(220 38 38 / 20%);
-	--destructive-ring: rgb(220 38 38 / 40%);
-	--destructive-shadow: rgb(220 38 38 / 20%);
-	color-scheme: light;
+    --background: #ffffff;
+    --foreground: #09090b;
+    --card: #ffffff;
+    --card-foreground: #18181b;
+    --primary: #18181b;
+    --primary-foreground: #fafafa;
+    --primary-hover: #27272a;
+    --secondary: #f4f4f5;
+    --secondary-foreground: #18181b;
+    --secondary-hover: #e4e4e7;
+    --muted: #f4f4f5;
+    --muted-foreground: #71717a;
+    --accent: #f4f4f5;
+    --accent-foreground: #18181b;
+    --border: #e4e4e7;
+    --input: #e4e4e7;
+    --input-disabled: rgb(244 244 245 / 50%);
+    --ring: #18181b;
+    --ring-shadow: rgb(24 24 27 / 12%);
+    --destructive: #dc2626;
+    --destructive-muted: rgb(220 38 38 / 10%);
+    --destructive-hover: rgb(220 38 38 / 20%);
+    --destructive-ring: rgb(220 38 38 / 40%);
+    --destructive-shadow: rgb(220 38 38 / 20%);
+    color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-	:root {
-		--background: #121212;
-		--foreground: #e5e5e5;
-		--card: #1f1f1f;
-		--card-foreground: #e5e5e5;
-		--primary: #3a3a3a;
-		--primary-foreground: #f4f4f5;
-		--primary-hover: #454545;
-		--secondary: #242424;
-		--secondary-foreground: #fafafa;
-		--secondary-hover: #303030;
-		--muted: #1a1a1a;
-		--muted-foreground: #a3a3a3;
-		--accent: #2a2a2a;
-		--accent-foreground: #fafafa;
-		--border: #303030;
-		--input: #3a3a3a;
-		--input-disabled: rgb(58 58 58 / 55%);
-		--ring: #a3a3a3;
-		--ring-shadow: rgb(255 255 255 / 10%);
-		--destructive: #f87171;
-		--destructive-muted: rgb(248 113 113 / 14%);
-		--destructive-hover: rgb(248 113 113 / 22%);
-		--destructive-ring: rgb(248 113 113 / 40%);
-		--destructive-shadow: rgb(248 113 113 / 24%);
-		color-scheme: dark;
-	}
+    :root {
+        --background: #121212;
+        --foreground: #e5e5e5;
+        --card: #1f1f1f;
+        --card-foreground: #e5e5e5;
+        --primary: #3a3a3a;
+        --primary-foreground: #f4f4f5;
+        --primary-hover: #454545;
+        --secondary: #242424;
+        --secondary-foreground: #fafafa;
+        --secondary-hover: #303030;
+        --muted: #1a1a1a;
+        --muted-foreground: #a3a3a3;
+        --accent: #2a2a2a;
+        --accent-foreground: #fafafa;
+        --border: #303030;
+        --input: #3a3a3a;
+        --input-disabled: rgb(58 58 58 / 55%);
+        --ring: #a3a3a3;
+        --ring-shadow: rgb(255 255 255 / 10%);
+        --destructive: #f87171;
+        --destructive-muted: rgb(248 113 113 / 14%);
+        --destructive-hover: rgb(248 113 113 / 22%);
+        --destructive-ring: rgb(248 113 113 / 40%);
+        --destructive-shadow: rgb(248 113 113 / 24%);
+        color-scheme: dark;
+    }
+}
+
+body {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+}
+
+nav {
+    min-width: 180px;
+    max-width: 300px;
+    background-color: red;
+    height: 100%;
+}
+
+main {
+    height: 100%;
+    width: 100%;
+    max-height: 100%;
+    background-color: blue;
+    flex-direction: column;
+    align-items: stretch;
+    display: flex;
+}
+
+header {
+    height: 48px;
+    background-color: green;
+    width: 100%;
+}
+
+.content {
+    flex: 1;
+    width: 100%;
+    background-color: yellow;
+    overflow: auto;
 }
