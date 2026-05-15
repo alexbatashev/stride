@@ -5,13 +5,7 @@
  */
 
 import { LitElement, css, html } from "lit";
-import {
-  customElement,
-  state,
-  property,
-  eventOptions,
-  query,
-} from "lit/decorators.js";
+import { customElement, state, property } from "lit/decorators.js";
 import {
   CHEVRON_DOWN,
   CHEVRON_RIGHT,
@@ -21,39 +15,212 @@ import {
 
 type SidebarStatus = "open" | "collapsed" | "hidden";
 
+const SIDEBAR_TOGGLE_EVENT = "app-sidebar-toggle";
+const SIDEBAR_STATE_EVENT = "app-sidebar-state";
+const MOBILE_QUERY = "(max-width: 767px)";
+const SIDEBAR_WIDTH = "260px";
+const SIDEBAR_COLLAPSED_WIDTH = "48px";
+
 @customElement("app-sidebar")
 export class AppSidebar extends LitElement {
   @state()
   status: SidebarStatus = "open";
 
+  private mediaQuery?: MediaQueryList;
+  private originalParentStyle?: {
+    display: string;
+    minWidth: string;
+    maxWidth: string;
+    width: string;
+    position: string;
+    inset: string;
+    zIndex: string;
+  };
+
+  private readonly toggleSidebar = () => {
+    if (this.isMobile()) {
+      this.status = this.status === "open" ? "hidden" : "open";
+    } else {
+      this.status = this.status === "collapsed" ? "open" : "collapsed";
+    }
+  };
+
+  private readonly syncToViewport = () => {
+    this.status = this.isMobile() ? "hidden" : "open";
+  };
+
   static styles = css`
     :host {
-      width: 100%;
-      height: 100%;
+      background: var(--sidebar-bg, var(--secondary));
+      border-right: 1px solid var(--sidebar-border, var(--border));
+      box-sizing: border-box;
       display: flex;
       flex-direction: column;
       align-items: stretch;
+      height: 100%;
+      overflow: hidden;
+      position: relative;
+      transition: width 180ms ease;
+      width: 100%;
     }
+
+    :host([status="collapsed"]) {
+      width: 48px;
+    }
+
+    :host([status="hidden"]) {
+      display: none;
+    }
+
+    .scrim {
+      border: 0;
+      display: none;
+      padding: 0;
+    }
+
     .header {
       height: 48px;
       width: 100%;
+      flex: 0 0 auto;
     }
 
     .main {
       flex: 1;
+      overflow: auto;
+      padding: 8px 0;
       width: 100%;
     }
 
     .footer {
       height: 64px;
+      flex: 0 0 auto;
       width: 100%;
+    }
+
+    :host([status="collapsed"]) .header,
+    :host([status="collapsed"]) .footer,
+    :host([status="collapsed"]) ::slotted(app-sidebar-group) {
+      display: none;
+    }
+
+    @media (max-width: 767px) {
+      :host {
+        box-shadow: 0 18px 48px rgb(0 0 0 / 22%);
+        max-width: 320px;
+        width: min(84vw, 320px);
+      }
+
+      .scrim {
+        background: rgb(0 0 0 / 36%);
+        display: block;
+        inset: 0;
+        position: fixed;
+        z-index: -1;
+      }
     }
   `;
 
+  connectedCallback() {
+    super.connectedCallback();
+    this.mediaQuery = window.matchMedia(MOBILE_QUERY);
+    this.mediaQuery.addEventListener("change", this.syncToViewport);
+    window.addEventListener(SIDEBAR_TOGGLE_EVENT, this.toggleSidebar);
+    this.syncToViewport();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener(SIDEBAR_TOGGLE_EVENT, this.toggleSidebar);
+    this.mediaQuery?.removeEventListener("change", this.syncToViewport);
+    this.restoreParentStyle();
+    super.disconnectedCallback();
+  }
+
+  protected updated() {
+    this.setAttribute("status", this.status);
+    this.syncSlottedItems();
+    this.syncParentStyle();
+    window.dispatchEvent(
+      new CustomEvent(SIDEBAR_STATE_EVENT, { detail: { status: this.status } }),
+    );
+  }
+
+  private isMobile() {
+    return this.mediaQuery?.matches ?? window.matchMedia(MOBILE_QUERY).matches;
+  }
+
+  private syncSlottedItems() {
+    const collapsed = this.status === "collapsed";
+
+    for (const item of this.querySelectorAll("app-sidebar-nav-item")) {
+      item.toggleAttribute("collapsed", collapsed);
+    }
+  }
+
+  private syncParentStyle() {
+    const parent = this.parentElement;
+    if (!parent) {
+      return;
+    }
+
+    if (!this.originalParentStyle) {
+      this.originalParentStyle = {
+        display: parent.style.display,
+        minWidth: parent.style.minWidth,
+        maxWidth: parent.style.maxWidth,
+        width: parent.style.width,
+        position: parent.style.position,
+        inset: parent.style.inset,
+        zIndex: parent.style.zIndex,
+      };
+    }
+
+    if (this.status === "hidden") {
+      parent.style.display = "none";
+      return;
+    }
+
+    parent.style.display = this.originalParentStyle.display || "block";
+    parent.style.width =
+      this.status === "collapsed" ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH;
+    parent.style.minWidth = parent.style.width;
+    parent.style.maxWidth = parent.style.width;
+
+    if (this.isMobile()) {
+      parent.style.position = "fixed";
+      parent.style.inset = "0 auto 0 0";
+      parent.style.zIndex = "50";
+    } else {
+      parent.style.position = this.originalParentStyle.position;
+      parent.style.inset = this.originalParentStyle.inset;
+      parent.style.zIndex = this.originalParentStyle.zIndex;
+    }
+  }
+
+  private restoreParentStyle() {
+    const parent = this.parentElement;
+    if (!parent || !this.originalParentStyle) {
+      return;
+    }
+
+    parent.style.display = this.originalParentStyle.display;
+    parent.style.minWidth = this.originalParentStyle.minWidth;
+    parent.style.maxWidth = this.originalParentStyle.maxWidth;
+    parent.style.width = this.originalParentStyle.width;
+    parent.style.position = this.originalParentStyle.position;
+    parent.style.inset = this.originalParentStyle.inset;
+    parent.style.zIndex = this.originalParentStyle.zIndex;
+  }
+
   render() {
-    return html`<div class="header"></div>
+    return html`<button
+        class="scrim"
+        type="button"
+        aria-label="Close sidebar"
+        @click=${this.toggleSidebar}
+      ></button>
+      <div class="header"></div>
       <div class="main">
-        <slot></slot>
+        <slot @slotchange=${this.syncSlottedItems}></slot>
       </div>
       <div class="footer"></div>`;
   }
@@ -67,8 +234,14 @@ export class AppSidebarNavItem extends LitElement {
   @property({ type: Boolean, reflect: true })
   active: boolean = false;
 
+  @property({ type: Boolean, reflect: true })
+  collapsed: boolean = false;
+
   @state()
   private hasIcon: boolean = false;
+
+  @state()
+  private labelText: string = "";
 
   static styles = css`
     :host {
@@ -144,6 +317,50 @@ export class AppSidebarNavItem extends LitElement {
       overflow: hidden;
       text-overflow: ellipsis;
     }
+
+    :host([collapsed]) {
+      padding: 2px 4px;
+    }
+
+    :host([collapsed]) a {
+      height: 40px;
+      justify-content: center;
+      padding: 0;
+    }
+
+    :host([collapsed]) .label {
+      display: none;
+    }
+
+    :host([collapsed]) .icon {
+      flex-basis: 32px;
+      height: 32px;
+      width: 32px;
+    }
+
+    :host([collapsed]) .icon ::slotted(*) {
+      height: 32px;
+      width: 32px;
+    }
+
+    @media (max-width: 767px) {
+      a {
+        font-size: 16px;
+        height: 44px;
+        padding: 0 12px;
+      }
+
+      .icon {
+        flex-basis: 20px;
+        height: 20px;
+        width: 20px;
+      }
+
+      .icon ::slotted(*) {
+        height: 20px;
+        width: 20px;
+      }
+    }
   `;
 
   private onIconSlotChange(event: Event) {
@@ -170,15 +387,26 @@ export class AppSidebarNavItem extends LitElement {
     }
   }
 
+  private onLabelSlotChange(event: Event) {
+    const slot = event.target as HTMLSlotElement;
+    this.labelText = slot
+      .assignedNodes({ flatten: true })
+      .map((node) => node.textContent?.trim() ?? "")
+      .filter(Boolean)
+      .join(" ");
+  }
+
   render() {
     return html`<a
       href="${this.target}"
       aria-current=${this.active ? "page" : "false"}
+      aria-label=${this.labelText}
+      title=${this.collapsed ? this.labelText : ""}
     >
       <span class="icon" ?hidden=${!this.hasIcon}
         ><slot name="icon" @slotchange=${this.onIconSlotChange}></slot
       ></span>
-      <span class="label"><slot></slot></span>
+      <span class="label"><slot @slotchange=${this.onLabelSlotChange}></slot></span>
     </a>`;
   }
 }
@@ -186,7 +414,12 @@ export class AppSidebarNavItem extends LitElement {
 @customElement("app-sidebar-toggle")
 export class AppSidebarToggle extends LitElement {
   @state()
-  is_closed: boolean = false;
+  private isClosed: boolean = false;
+
+  private readonly onSidebarState = (event: Event) => {
+    const state = event as CustomEvent<{ status: SidebarStatus }>;
+    this.isClosed = state.detail.status !== "open";
+  };
 
   static styles = css`
     :host {
@@ -196,9 +429,28 @@ export class AppSidebarToggle extends LitElement {
     }
   `;
 
+  connectedCallback() {
+    super.connectedCallback();
+    this.isClosed = window.matchMedia(MOBILE_QUERY).matches;
+    window.addEventListener(SIDEBAR_STATE_EVENT, this.onSidebarState);
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener(SIDEBAR_STATE_EVENT, this.onSidebarState);
+    super.disconnectedCallback();
+  }
+
+  private toggle() {
+    window.dispatchEvent(new CustomEvent(SIDEBAR_TOGGLE_EVENT));
+  }
+
   render() {
-    return html`<app-button variant="ghost" size="icon-xs"
-      >${this.is_closed ? PANEL_LEFT_OPEN : PANEL_LEFT_CLOSE}</app-button
+    return html`<app-button
+      variant="ghost"
+      size="icon-xs"
+      title=${this.isClosed ? "Open sidebar" : "Close sidebar"}
+      @click=${this.toggle}
+      >${this.isClosed ? PANEL_LEFT_OPEN : PANEL_LEFT_CLOSE}</app-button
     >`;
   }
 }
@@ -328,6 +580,24 @@ export class AppSidebarGroup extends LitElement {
       background: var(--sidebar-accent, var(--accent));
       color: var(--sidebar-accent-fg, var(--accent-foreground));
     }
+
+    @media (max-width: 767px) {
+      button {
+        font-size: 16px;
+        height: 44px;
+        padding: 0 12px;
+      }
+
+      ul {
+        padding-left: 8px;
+      }
+
+      ::slotted(a) {
+        font-size: 16px;
+        height: 44px;
+        padding: 0 12px;
+      }
+    }
   `;
 
   private toggle() {
@@ -408,6 +678,14 @@ export class AppSidebarGroupItem extends LitElement {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    @media (max-width: 767px) {
+      a {
+        font-size: 16px;
+        height: 44px;
+        padding: 0 12px;
+      }
     }
   `;
 
