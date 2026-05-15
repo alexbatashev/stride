@@ -115,31 +115,14 @@ export class AppPromptInput extends LitElement {
 
 	static styles = css`
 		:host {
-			--prompt-bg: #212121;
-			--prompt-border: #333333;
-			--prompt-fg: #d4d4d4;
-			--prompt-muted: #747474;
-			--prompt-control-bg: #252525;
-			--prompt-control-border: #343434;
-			--prompt-control-fg: #bdbdbd;
-			--prompt-control-hover-bg: #2d2d2d;
-			--prompt-badge-bg: #10233d;
-			--prompt-badge-fg: #4da3ff;
-			--prompt-ring: rgb(255 255 255 / 7%);
-			--prompt-send-bg: #333333;
-			--prompt-send-fg: #777777;
-			--prompt-send-ready-bg: #f4f4f5;
-			--prompt-send-ready-fg: #18181b;
-			--prompt-shadow: none;
-
 			display: block;
 		}
 
 		form {
-			background: var(--prompt-bg);
-			border: 1px solid var(--prompt-border);
+			background: var(--prompt-bg, #212121);
+			border: 1px solid var(--prompt-border, #333333);
 			border-radius: 28px;
-			box-shadow: var(--prompt-shadow);
+			box-shadow: var(--prompt-shadow, none);
 			box-sizing: border-box;
 			display: grid;
 			gap: 34px;
@@ -150,14 +133,14 @@ export class AppPromptInput extends LitElement {
 		}
 
 		form:focus-within {
-			border-color: #3c3c3c;
-			box-shadow: 0 0 0 3px var(--prompt-ring);
+			border-color: var(--prompt-focus-border, #3c3c3c);
+			box-shadow: 0 0 0 3px var(--prompt-ring, rgb(255 255 255 / 7%));
 		}
 
 		textarea {
 			background: transparent;
 			border: 0;
-			color: var(--prompt-fg);
+			color: var(--prompt-fg, #d4d4d4);
 			font: inherit;
 			font-size: 1.25rem;
 			line-height: 1.5;
@@ -172,7 +155,7 @@ export class AppPromptInput extends LitElement {
 		}
 
 		textarea::placeholder {
-			color: var(--prompt-muted);
+			color: var(--prompt-muted, #747474);
 		}
 
 		textarea:disabled {
@@ -221,8 +204,8 @@ export class AppPromptInput extends LitElement {
 
 		.tool-button {
 			background: transparent;
-			border: 1px solid var(--prompt-control-border);
-			color: var(--prompt-control-fg);
+			border: 1px solid var(--prompt-control-border, #343434);
+			color: var(--prompt-control-fg, #bdbdbd);
 			cursor: pointer;
 			font: inherit;
 			font-size: 0.95rem;
@@ -239,14 +222,14 @@ export class AppPromptInput extends LitElement {
 		}
 
 		.tool-button:hover {
-			background: var(--prompt-control-hover-bg);
-			color: #e4e4e7;
+			background: var(--prompt-control-hover-bg, #2d2d2d);
+			color: var(--prompt-control-hover-fg, #e4e4e7);
 		}
 
 		.badge {
-			background: var(--prompt-badge-bg);
+			background: var(--prompt-badge-bg, #10233d);
 			border-radius: 8px;
-			color: var(--prompt-badge-fg);
+			color: var(--prompt-badge-fg, #4da3ff);
 			font-weight: 600;
 			margin-left: 2px;
 			padding: 2px 6px;
@@ -255,7 +238,7 @@ export class AppPromptInput extends LitElement {
 		.mic {
 			background: transparent;
 			border: 0;
-			color: var(--prompt-control-fg);
+			color: var(--prompt-control-fg, #bdbdbd);
 			cursor: pointer;
 			height: 42px;
 			padding: 0;
@@ -264,22 +247,22 @@ export class AppPromptInput extends LitElement {
 
 		.mic:hover {
 			background: transparent;
-			color: #e4e4e7;
+			color: var(--prompt-control-hover-fg, #e4e4e7);
 		}
 
 		.send {
-			background: var(--prompt-send-bg);
-			border: 1px solid var(--prompt-send-bg);
-			color: var(--prompt-send-fg);
+			background: var(--prompt-send-bg, #333333);
+			border: 1px solid var(--prompt-send-bg, #333333);
+			color: var(--prompt-send-fg, #777777);
 			cursor: pointer;
 			height: 42px;
 			width: 42px;
 		}
 
 		.send:not(:disabled) {
-			background: var(--prompt-send-ready-bg);
-			border-color: var(--prompt-send-ready-bg);
-			color: var(--prompt-send-ready-fg);
+			background: var(--prompt-send-ready-bg, #f4f4f5);
+			border-color: var(--prompt-send-ready-bg, #f4f4f5);
+			color: var(--prompt-send-ready-fg, #18181b);
 		}
 
 		.send:hover:not(:disabled) {
@@ -288,7 +271,7 @@ export class AppPromptInput extends LitElement {
 
 		.tool-button:focus-visible,
 		.send:focus-visible {
-			box-shadow: 0 0 0 3px var(--prompt-ring);
+			box-shadow: 0 0 0 3px var(--prompt-ring, rgb(255 255 255 / 7%));
 		}
 
 		.send:disabled {
