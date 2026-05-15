@@ -36,6 +36,34 @@ pub struct MessageResponse {
     thinking: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct ThreadPageData {
+    thread_id: String,
+    current_title: String,
+    running: bool,
+    threads: Vec<ThreadTemplateData>,
+    messages: Vec<MessageTemplateData>,
+}
+
+#[derive(Serialize)]
+struct ThreadTemplateData {
+    id: String,
+    title: String,
+    active: bool,
+}
+
+#[derive(Serialize)]
+struct MessageTemplateData {
+    id: String,
+    seq: u64,
+    role: &'static str,
+    message_type: &'static str,
+    tool_name: Option<&'static str>,
+    content: String,
+    thinking: Option<String>,
+    has_thinking: bool,
+}
+
 #[derive(Deserialize)]
 pub struct SendMessageRequest {
     content: String,
@@ -132,6 +160,76 @@ pub async fn list_threads(
     headers: HeaderMap,
 ) -> Result<Json<Vec<ThreadResponse>>, ThreadApiError> {
     let owner = auth::authenticated_user(&state, &headers)?;
+    Ok(Json(thread_summaries(&state, owner).await?))
+}
+
+pub async fn thread_page_data(
+    state: &ServerState,
+    headers: &HeaderMap,
+    thread_id: Option<Uuid>,
+) -> Result<ThreadPageData, ThreadApiError> {
+    let owner = auth::authenticated_user(state, headers)?;
+    let threads = thread_summaries(state, owner).await?;
+    let current_title = thread_id
+        .and_then(|id| {
+            threads
+                .iter()
+                .find(|thread| thread.id == id.to_string())
+                .map(|thread| thread.title.clone())
+        })
+        .unwrap_or_else(|| "New thread".to_string());
+
+    let (messages, running) = if let Some(thread_id) = thread_id {
+        require_thread_owner_for_user(state, owner, thread_id).await?;
+        (
+            thread_messages(state, thread_id).await?,
+            matches!(
+                state.runner.status(thread_id).await.map_err(pool_error)?,
+                ThreadStatus::Running { .. }
+            ),
+        )
+    } else {
+        (Vec::new(), false)
+    };
+
+    Ok(ThreadPageData {
+        thread_id: thread_id.map(|id| id.to_string()).unwrap_or_default(),
+        current_title,
+        running,
+        threads: threads
+            .into_iter()
+            .map(|thread| ThreadTemplateData {
+                active: thread_id
+                    .map(|id| thread.id == id.to_string())
+                    .unwrap_or(false),
+                id: thread.id,
+                title: thread.title,
+            })
+            .collect(),
+        messages: messages
+            .into_iter()
+            .map(|message| {
+                let (message_type, tool_name) = message_template_type(message.role);
+                let has_thinking = message.thinking.is_some();
+                MessageTemplateData {
+                    id: message.id,
+                    seq: message.seq,
+                    role: message.role,
+                    message_type,
+                    tool_name,
+                    content: message.content,
+                    thinking: message.thinking,
+                    has_thinking,
+                }
+            })
+            .collect(),
+    })
+}
+
+async fn thread_summaries(
+    state: &ServerState,
+    owner: Uuid,
+) -> Result<Vec<ThreadResponse>, ThreadApiError> {
     let result = state
         .db
         .query_with_params(
@@ -149,7 +247,7 @@ pub async fn list_threads(
         });
     }
 
-    Ok(Json(threads))
+    Ok(threads)
 }
 
 pub async fn create_thread(
@@ -183,6 +281,13 @@ pub async fn list_messages(
     Path(thread_id): Path<Uuid>,
 ) -> Result<Json<Vec<MessageResponse>>, ThreadApiError> {
     require_thread_owner(&state, &headers, thread_id).await?;
+    Ok(Json(thread_messages(&state, thread_id).await?))
+}
+
+async fn thread_messages(
+    state: &ServerState,
+    thread_id: Uuid,
+) -> Result<Vec<MessageResponse>, ThreadApiError> {
     let rows = messages::select()
         .where_(messages::parent_thread.eq(thread_id))
         .order_by_asc(messages::seq)
@@ -190,17 +295,16 @@ pub async fn list_messages(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
-    Ok(Json(
-        rows.into_iter()
-            .map(|row| MessageResponse {
-                id: row.id.to_string(),
-                seq: row.seq,
-                role: role_name(row.role),
-                content: row.content,
-                thinking: row.thinking,
-            })
-            .collect(),
-    ))
+    Ok(rows
+        .into_iter()
+        .map(|row| MessageResponse {
+            id: row.id.to_string(),
+            seq: row.seq,
+            role: role_name(row.role),
+            content: row.content,
+            thinking: row.thinking,
+        })
+        .collect())
 }
 
 pub async fn send_message(
@@ -256,6 +360,14 @@ async fn require_thread_owner(
     thread_id: Uuid,
 ) -> Result<(), ThreadApiError> {
     let owner = auth::authenticated_user(state, headers)?;
+    require_thread_owner_for_user(state, owner, thread_id).await
+}
+
+async fn require_thread_owner_for_user(
+    state: &ServerState,
+    owner: Uuid,
+    thread_id: Uuid,
+) -> Result<(), ThreadApiError> {
     let rows = threads::select_cols((threads::id,))
         .where_(threads::id.eq(thread_id).and(threads::owner.eq(owner)))
         .all(&state.db)
@@ -304,6 +416,14 @@ fn role_name(role: Role) -> &'static str {
         Role::Agent => "agent",
         Role::User => "user",
         Role::Tool => "tool",
+    }
+}
+
+fn message_template_type(role: &'static str) -> (&'static str, Option<&'static str>) {
+    match role {
+        "tool" => ("tool_output", Some("Tool output")),
+        "system" => ("agent", None),
+        _ => (role, None),
     }
 }
 

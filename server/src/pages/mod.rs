@@ -33,7 +33,7 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{{title}}</title>
-        <script type="importmap">{"imports": {"lit": "/static/lit.js"}}</script>
+        <script type="importmap">{"imports": {"lit": "/static/lit.js", "lit/decorators.js": "/static/lit-decorators.js"}}</script>
         <link rel="stylesheet" href="/static/common.css" />
         <script type="module" src="/static/api.js"></script>
         <script type="module" src="/static/components.js"></script>
@@ -50,7 +50,259 @@ const AUTH_TEMPLATE: &str = r#"<auth-form mode="{{mode}}"></auth-form>
     document.addEventListener('auth-mode-change', (e) => { window.location.href = '/auth/' + e.detail.mode; });
 </script>"#;
 
-const THREADS_TEMPLATE: &str = r#"<threads-page thread-id="{{thread_id}}"></threads-page>
+const THREADS_TEMPLATE: &str = r#"<style>
+    #threads-page {
+        background: var(--background);
+        color: var(--foreground);
+        display: block;
+        font-family:
+            ui-sans-serif,
+            system-ui,
+            -apple-system,
+            BlinkMacSystemFont,
+            "Segoe UI",
+            sans-serif;
+        min-height: 100svh;
+        width: 100%;
+    }
+
+    #threads-page app-sidebar-provider {
+        --sidebar-width: 17.5rem;
+        --sidebar-bg: var(--muted);
+        --sidebar-fg: var(--muted-foreground);
+        --sidebar-accent: var(--accent);
+        --sidebar-accent-fg: var(--accent-foreground);
+        --sidebar-border: var(--border);
+        background: var(--background);
+        display: grid;
+        grid-template-columns: auto 1fr;
+        min-height: 100svh;
+        width: 100%;
+    }
+
+    #threads-page .sidebar-header,
+    #threads-page .sidebar-footer {
+        padding: 8px;
+    }
+
+    #threads-page .sidebar-shell {
+        height: 100svh;
+    }
+
+    #threads-page .brand {
+        align-items: center;
+        display: flex;
+        gap: 10px;
+        margin-bottom: 10px;
+        padding: 4px;
+    }
+
+    #threads-page .mark {
+        align-items: center;
+        background: var(--primary);
+        border-radius: 8px;
+        color: var(--primary-foreground);
+        display: inline-flex;
+        font-size: 13px;
+        font-weight: 700;
+        height: 32px;
+        justify-content: center;
+        width: 32px;
+    }
+
+    #threads-page .brand strong {
+        color: var(--foreground);
+        font-size: 14px;
+        font-weight: 650;
+    }
+
+    #threads-page .thread-label {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    #threads-page .main {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        height: 100svh;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    #threads-page .topbar {
+        align-items: center;
+        backdrop-filter: blur(18px);
+        background: var(--topbar-bg);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 10px;
+        min-height: 52px;
+        padding: 0 clamp(14px, 2.4vw, 28px);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+
+    #threads-page .topbar h1 {
+        color: var(--card-foreground);
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    #threads-page .messages {
+        box-sizing: border-box;
+        margin: 0 auto;
+        max-width: 800px;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 32px clamp(18px, 4vw, 32px) 24px;
+        scrollbar-width: thin;
+        width: 100%;
+    }
+
+    #threads-page .empty {
+        align-content: center;
+        display: grid;
+        justify-items: center;
+        min-height: 100%;
+        padding-bottom: 96px;
+        text-align: center;
+    }
+
+    #threads-page .empty h2 {
+        color: var(--foreground);
+        font-size: clamp(28px, 4vw, 40px);
+        font-weight: 700;
+        line-height: 1.08;
+        margin: 0 0 12px;
+    }
+
+    #threads-page .empty p {
+        color: var(--muted-foreground);
+        font-size: 15px;
+        line-height: 1.5;
+        margin: 0;
+        max-width: 420px;
+    }
+
+    #threads-page .composer-wrap {
+        background: var(--surface-gradient);
+        padding: 18px clamp(14px, 4vw, 28px) 24px;
+        position: sticky;
+        bottom: 0;
+        z-index: 10;
+    }
+
+    #threads-page app-prompt-input {
+        margin: 0 auto;
+        max-width: 860px;
+        width: 100%;
+    }
+
+    #threads-page app-button.sidebar-action {
+        width: 100%;
+    }
+
+    #threads-page .error {
+        color: var(--destructive);
+        font-size: 13px;
+        margin: 10px auto 0;
+        max-width: 860px;
+    }
+
+    #threads-page .error:empty {
+        display: none;
+    }
+
+    @media (max-width: 760px) {
+        #threads-page app-sidebar-provider {
+            display: block;
+        }
+
+        #threads-page .main {
+            height: 100svh;
+        }
+
+        #threads-page .messages {
+            max-width: none;
+            padding: 20px 14px 18px;
+            width: 100%;
+        }
+
+        #threads-page .composer-wrap {
+            padding: 12px 10px 12px;
+        }
+    }
+</style>
+<div id="threads-page" data-thread-id="{{thread_id}}" data-running="{{running}}">
+    <app-sidebar-provider>
+        <div class="sidebar-shell">
+            <app-sidebar collapsible="offcanvas">
+                <div class="sidebar-header">
+                    <div class="brand">
+                        <span class="mark">F</span><strong>Friday</strong>
+                    </div>
+                    <app-button class="sidebar-action" variant="secondary" data-action="new-thread">New thread</app-button>
+                </div>
+                <app-sidebar-group title="Threads" data-thread-list>
+                    {{#each threads}}
+                        <app-sidebar-group-item target="/threads/{{id}}" {{#if active}}active{{/if}} data-thread-id="{{id}}">
+                            <span class="thread-label">{{title}}</span>
+                        </app-sidebar-group-item>
+                    {{/each}}
+                </app-sidebar-group>
+                <div class="sidebar-footer">
+                    <app-button class="sidebar-action" variant="secondary" data-action="logout">Log out</app-button>
+                </div>
+            </app-sidebar>
+        </div>
+        <app-sidebar-inset>
+            <section class="main">
+                <header class="topbar">
+                    <app-sidebar-toggle></app-sidebar-toggle>
+                    <h1 data-current-title>{{current_title}}</h1>
+                </header>
+                <main class="messages" data-messages>
+                    {{#if messages}}
+                        {{#each messages}}
+                            <app-message
+                                message_id="{{id}}"
+                                type="{{message_type}}"
+                                {{#if tool_name}}tool_name="{{tool_name}}"{{/if}}
+                                {{#if has_thinking}}with_thinking="true"{{/if}}
+                                data-message-id="{{id}}"
+                                data-seq="{{seq}}"
+                                data-role="{{role}}"
+                            >
+                                {{#if thinking}}<span slot="thinking" data-thinking>{{thinking}}</span>{{/if}}
+                                <span data-content>{{content}}</span>
+                            </app-message>
+                        {{/each}}
+                    {{else}}
+                        <div class="empty" data-empty>
+                            <h2>What are we working on?</h2>
+                            <p>Start a thread and Friday will keep the context here.</p>
+                        </div>
+                    {{/if}}
+                </main>
+                <footer class="composer-wrap">
+                    <app-prompt-input
+                        data-prompt
+                        placeholder="{{#if thread_id}}Message Friday{{else}}Ask Friday anything{{/if}}"
+                        {{#if running}}disabled{{/if}}
+                    ></app-prompt-input>
+                    <div class="error" data-error></div>
+                </footer>
+            </section>
+        </app-sidebar-inset>
+    </app-sidebar-provider>
+</div>
 <script type="module">
     document.addEventListener('navigate', (e) => {
         window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;
