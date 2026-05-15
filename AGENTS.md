@@ -30,9 +30,11 @@
    should answer "Why?" not "What?". Conserve your token budget and avoid any
    kind of duplication. Code must explain itself without additions. While thinking
    or reasoning, speak like a caveman, skip articles and other unnecessary noise.
+7. Use conventional commits v1.0.0 spec for commit titles and descriptions.
 
 ## Working with code
 
 - `cargo build`: build Rust code
 - `cargo test`: run Rust tests
 - `cargo fmt`: automatically format Rust code
+- `pnpm build`: build TypeScript projects
