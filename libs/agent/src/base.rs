@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 
 use async_stream::stream;
@@ -11,6 +11,7 @@ use serde_json::Value;
 use serde_json::json;
 use thiserror::Error;
 
+use crate::tools::search::{SearchEntry, SearchTool};
 use crate::{Tool, ToolRegistry};
 
 pub const DEFAULT_MODEL: &str = "default";
@@ -65,6 +66,8 @@ struct BaseAgentInner {
     tool_display_names: HashMap<usize, String>,
     config: Arc<AgentConfig>,
     model: String,
+    search_slot: Arc<Mutex<Vec<llm::Tool>>>,
+    searchable_entries: Arc<Mutex<Vec<SearchEntry>>>,
 }
 
 #[derive(Default)]
@@ -121,11 +124,34 @@ impl BaseAgent {
             tool_display_names: HashMap::new(),
             config,
             model,
+            search_slot: Arc::new(Mutex::new(Vec::new())),
+            searchable_entries: Arc::new(Mutex::new(Vec::new())),
         })))
     }
 
     pub fn register_tool(&self, tool: impl Tool + 'static) {
         self.0.borrow_mut().tool_registry.register(tool);
+    }
+
+    /// Register a tool that is hidden from the LLM by default. The LLM can
+    /// discover it via `search_tools` and use it for one turn.
+    pub fn register_searchable_tool(&self, tool: impl Tool + 'static) {
+        let mut lock = self.0.borrow_mut();
+        let entry = SearchEntry {
+            name: tool.name().to_string(),
+            description: tool.definition().function.description.clone(),
+            definition: tool.definition(),
+        };
+        lock.searchable_entries.lock().unwrap().push(entry);
+        lock.tool_registry.register_searchable(tool);
+
+        if lock.tool_registry.get("search_tools").is_none() {
+            let search_tool = SearchTool {
+                entries: lock.searchable_entries.clone(),
+                slot: lock.search_slot.clone(),
+            };
+            lock.tool_registry.register(search_tool);
+        }
     }
 
     pub fn allow_tool(&self, name: &str) {
@@ -177,11 +203,18 @@ impl BaseAgent {
             ..Default::default()
         });
 
-        let tools = self.0.borrow().tool_registry.definitions();
         let agent = self.0.clone();
 
         Box::pin(stream! {
             for _ in 0..max_iterations {
+                let tools = {
+                    let lock = agent.borrow();
+                    let mut t = lock.tool_registry.definitions();
+                    let extra: Vec<_> = lock.search_slot.lock().unwrap().drain(..).collect();
+                    t.extend(extra);
+                    t
+                };
+
                 {
                     agent.borrow_mut().thread.push(Message {
                         role: llm::Role::Assistant,
@@ -677,5 +710,122 @@ mod tests {
             },
         );
         registry
+    }
+
+    fn named_tool_call_chunk(name: &str, arguments: &str) -> StreamResponseChunk {
+        StreamResponseChunk {
+            id: "chunk".to_string(),
+            object: "mock.stream".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            system_fingerprint: None,
+            choices: vec![CompletionChoice {
+                message: None,
+                text: None,
+                index: 0,
+                delta: Some(Delta {
+                    content: None,
+                    thinking: None,
+                    tool_calls: Some(vec![ToolCallChunk {
+                        index: Some(0),
+                        id: Some("call_1".to_string()),
+                        function: Some(ToolCallFunction {
+                            name: Some(name.to_string()),
+                            arguments: Some(arguments.to_string()),
+                        }),
+                    }]),
+                }),
+                logprobs: None,
+                tool_calls: None,
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+        }
+    }
+
+    struct EchoTool;
+
+    #[async_trait(?Send)]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+
+        fn readable_name(&self) -> &str {
+            "Echo"
+        }
+
+        fn definition(&self) -> llm::Tool {
+            llm::Tool {
+                r#type: llm::ToolType::Function,
+                function: Function {
+                    description: "Echo back the input message.".to_string(),
+                    name: self.name().to_string(),
+                    parameters: Some(FunctionParameters {
+                        param_type: "object".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            }
+        }
+
+        async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
+            json!({ "echoed": args })
+        }
+    }
+
+    #[test]
+    fn search_tools_injects_found_tools_for_one_turn() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                // Iteration 1: LLM calls search_tools
+                vec![named_tool_call_chunk("search_tools", r#"{"query":"echo"}"#)],
+                // Iteration 2: LLM uses the found echo tool
+                vec![named_tool_call_chunk("echo", r#"{"msg":"hello"}"#)],
+                // Iteration 3: LLM returns text
+                vec![text_chunk("done")],
+            ]);
+
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 50,
+                }),
+                String::new(),
+                vec![],
+            );
+            agent.register_searchable_tool(EchoTool);
+
+            let stream = agent.make_turn("go".to_string()).await;
+            pin_mut!(stream);
+            while stream.next().await.is_some() {}
+
+            let requests = mock.stream_requests();
+            assert_eq!(requests.len(), 3);
+
+            let tool_names = |req: &llm::CompletionRequest| -> Vec<String> {
+                req.tools
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|t| t.function.name.clone())
+                    .collect()
+            };
+
+            // Iteration 1: only search_tools visible
+            let names1 = tool_names(&requests[0]);
+            assert!(names1.contains(&"search_tools".to_string()));
+            assert!(!names1.contains(&"echo".to_string()));
+
+            // Iteration 2: echo injected for this turn
+            let names2 = tool_names(&requests[1]);
+            assert!(names2.contains(&"search_tools".to_string()));
+            assert!(names2.contains(&"echo".to_string()));
+
+            // Iteration 3: echo gone again
+            let names3 = tool_names(&requests[2]);
+            assert!(names3.contains(&"search_tools".to_string()));
+            assert!(!names3.contains(&"echo".to_string()));
+        });
     }
 }
