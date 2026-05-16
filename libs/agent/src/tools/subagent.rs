@@ -93,6 +93,9 @@ impl Tool for SubAgentTool {
                 Ok(AgentResponseChunk::Approval { approved, .. }) => {
                     let _ = approved.send(false);
                 }
+                Ok(AgentResponseChunk::Quiz { answered, .. }) => {
+                    let _ = answered.send(vec![]);
+                }
                 Err(error) => return json!({ "success": false, "error": error.to_string() }),
             }
         }

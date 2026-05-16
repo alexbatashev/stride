@@ -2,9 +2,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use llm::Tool as LlmTool;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::AgentConfig;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct QuizQuestion {
+    pub question: String,
+    /// Suggested answer options; empty means free-form answer expected.
+    pub options: Vec<String>,
+}
 
 #[async_trait(?Send)]
 pub trait Tool: Send + Sync {
@@ -32,5 +40,12 @@ pub trait Tool: Send + Sync {
     /// Returns true if arguments don't require additional approval from user
     fn are_safe_args(&self, _args: &Value) -> bool {
         true
+    }
+
+    /// If this tool requires interactive user input, return the questions to ask.
+    /// When Some is returned, the base agent yields AgentResponseChunk::Quiz instead
+    /// of calling execute(), and the user's answers become the tool result.
+    fn quiz_questions(&self, _args: &Value) -> Option<Vec<QuizQuestion>> {
+        None
     }
 }

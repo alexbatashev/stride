@@ -12,7 +12,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::tools::search::{SearchEntry, SearchTool};
-use crate::{Tool, ToolRegistry};
+use crate::{QuizQuestion, Tool, ToolRegistry};
 
 pub const DEFAULT_MODEL: &str = "default";
 
@@ -38,6 +38,11 @@ pub enum AgentResponseChunk {
         tool_name: String,
         message: String,
         approved: oneshot::Sender<bool>,
+    },
+    Quiz {
+        tool_name: String,
+        questions: Vec<QuizQuestion>,
+        answered: oneshot::Sender<Vec<String>>,
     },
 }
 
@@ -280,6 +285,24 @@ impl BaseAgent {
                     let (result, readable_name) = match tool {
                         Some(tool) => {
                             let readable_name = tool.readable_name().to_string();
+
+                            if let Some(questions) = tool.quiz_questions(&args) {
+                                let (answered, response) = oneshot::channel();
+                                yield Ok(AgentResponseChunk::Quiz {
+                                    tool_name: readable_name.clone(),
+                                    questions: questions.clone(),
+                                    answered,
+                                });
+                                let answers = response.await.unwrap_or_default();
+                                let result = json!({
+                                    "answers": questions.iter().zip(answers.iter()).map(|(q, a)| {
+                                        json!({ "question": q.question, "answer": a })
+                                    }).collect::<Vec<_>>()
+                                });
+                                append_tool_result(&agent, id, result, readable_name);
+                                continue;
+                            }
+
                             let needs_approval = {
                                 let lock = agent.borrow();
                                 lock.tool_registry.needs_approval(&name, &args)
@@ -572,7 +595,9 @@ mod tests {
                     assert_eq!(message, r#"Approve approval_tool with {"value":1}"#);
                     approved.send(true).unwrap();
                 }
-                AgentResponseChunk::Chunk(_) => panic!("expected approval"),
+                AgentResponseChunk::Chunk(_) | AgentResponseChunk::Quiz { .. } => {
+                    panic!("expected approval")
+                }
             }
 
             assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -613,7 +638,9 @@ mod tests {
 
             match stream.next().await.unwrap().unwrap() {
                 AgentResponseChunk::Approval { approved, .. } => approved.send(false).unwrap(),
-                AgentResponseChunk::Chunk(_) => panic!("expected approval"),
+                AgentResponseChunk::Chunk(_) | AgentResponseChunk::Quiz { .. } => {
+                    panic!("expected approval")
+                }
             }
 
             while stream.next().await.is_some() {}
