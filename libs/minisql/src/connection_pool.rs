@@ -20,8 +20,7 @@ pub enum Backend {
 
 impl ConnectionPool {
     pub fn new(url: &str) -> Result<Self, Box<dyn StdError + Send + Sync>> {
-        let backend = if url.starts_with("sqlite:") {
-            let path = &url[7..]; // Skip "sqlite:"
+        let backend = if let Some(path) = url.strip_prefix("sqlite:") {
             let sqlite_backend = SqliteBackend::new(path)?;
             Backend::Sqlite(sqlite_backend)
         } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
@@ -91,7 +90,7 @@ impl ConnectionPool {
             }
 
             for r in m.get_raw_queries() {
-                self.query(&r).await?;
+                self.query(r).await?;
             }
 
             self.query_with_params(

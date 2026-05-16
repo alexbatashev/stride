@@ -53,7 +53,7 @@ impl IntoValue for String {
         Value::Text(self)
     }
 }
-impl<'a> IntoValue for &'a str {
+impl IntoValue for &str {
     fn into_value(self) -> Value {
         Value::Text(self.to_string())
     }
@@ -108,13 +108,13 @@ impl<T: IntoValue> ColumnInput<T> for T {
     }
 }
 
-impl<'a> ColumnInput<String> for &'a str {
+impl ColumnInput<String> for &str {
     fn into_value(self) -> Value {
         IntoValue::into_value(self)
     }
 }
 
-impl<'a> ColumnInput<Option<String>> for Option<&'a str> {
+impl ColumnInput<Option<String>> for Option<&str> {
     fn into_value(self) -> Value {
         match self {
             Some(s) => IntoValue::into_value(s),
@@ -250,10 +250,6 @@ impl<Tab> Expr<Tab> {
         Expr::Or(Box::new(self), Box::new(other), PhantomData)
     }
 
-    pub fn not(self) -> Expr<Tab> {
-        Expr::Not(Box::new(self), PhantomData)
-    }
-
     fn to_sql(&self, out_sql: &mut String, out_params: &mut Vec<Value>) {
         match self {
             Expr::Compare {
@@ -286,7 +282,7 @@ impl<Tab> Expr<Tab> {
                 out_sql.push(')');
             }
             Expr::True(_) => {
-                out_sql.push_str("1");
+                out_sql.push('1');
             }
             Expr::IsNull { column, .. } => {
                 out_sql.push('(');
@@ -299,6 +295,13 @@ impl<Tab> Expr<Tab> {
                 out_sql.push_str(" IS NOT NULL)");
             }
         }
+    }
+}
+
+impl<Tab> std::ops::Not for Expr<Tab> {
+    type Output = Expr<Tab>;
+    fn not(self) -> Expr<Tab> {
+        Expr::Not(Box::new(self), PhantomData)
     }
 }
 
@@ -449,24 +452,6 @@ impl<Tab, C: SelectList<Tab>> SelectCols<Tab, C> {
     pub fn names_slice(&self) -> &[&'static str] {
         &self.names
     }
-}
-
-macro_rules! impl_select_list_tuple {
-    ($($name:ident : $idx:tt),+) => {
-        impl<Tab, $($name,)+> SelectList<Tab> for ($(Column<$name, Tab>,)+)
-        where $( $name: FromValue, )+
-        {
-            type Out = ($($name,)+);
-            fn columns() -> &'static [&'static str] {
-                &[$( Self::$idx.0.name ),+]
-            }
-            fn decode(row: &DbRow) -> Result<Self::Out, DecodeError> {
-                Ok((
-                    $( row.decode::<$name>(Self::$idx.0.name)?, )+
-                ))
-            }
-        }
-    };
 }
 
 // We can't refer to tuple fields in a const context easily. Provide direct impls for 1..=4
