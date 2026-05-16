@@ -1,3 +1,4 @@
+pub mod arxiv;
 pub mod expert;
 pub mod explorer;
 pub mod file;

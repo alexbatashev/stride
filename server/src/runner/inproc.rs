@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use friday_agent::{
     AgentConfig, AgentResponseChunk, BaseAgent, Tool, ToolRegistry,
     tools::{
+        arxiv::ArxivProvider,
         expert::{EXPERT_NAME, make_expert},
         firecrawl::FirecrawlTool,
         web_search::{SearxngProvider, WebSearchTool},
@@ -488,11 +489,16 @@ fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
 }
 
 fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
-    WebSearchTool {
-        providers: vec![Box::new(SearxngProvider {
+    let mut providers: Vec<Box<dyn friday_agent::tools::web_search::SearchProvider>> =
+        vec![Box::new(SearxngProvider {
             endpoint: web_search.searxng_endpoint.clone(),
-        })],
+        })];
+
+    if web_search.include_arxiv == Some(true) {
+        providers.push(Box::new(ArxivProvider));
     }
+
+    WebSearchTool { providers }
 }
 
 fn firecrawl_tool(firecrawl: &Firecrawl) -> Option<FirecrawlTool> {
@@ -896,6 +902,7 @@ mod tests {
             &Tools {
                 web_search: Some(WebSearch {
                     searxng_endpoint: "https://search.example.com".to_string(),
+                    include_arxiv: None,
                 }),
                 firecrawl: Some(Firecrawl {
                     api_key: Some("fc-test".to_string()),
@@ -943,6 +950,7 @@ mod tests {
         let registry = expert_tool_registry(&Tools {
             web_search: Some(WebSearch {
                 searxng_endpoint: "https://search.example.com".to_string(),
+                include_arxiv: None,
             }),
             firecrawl: Some(Firecrawl {
                 api_key: Some("fc-test".to_string()),
