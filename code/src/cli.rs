@@ -39,7 +39,7 @@ pub async fn cli_main() -> anyhow::Result<()> {
 
     let db = ConnectionPool::new(&format!("sqlite://{}", db_path)).unwrap();
 
-    let (term_input, term_output, terminal) = Terminal::new();
+    let (mut term_input, term_output, terminal) = Terminal::new();
 
     let local = tokio::task::LocalSet::new();
     local
