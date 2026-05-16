@@ -1,3 +1,5 @@
+#![allow(non_upper_case_globals)]
+
 use minisql::{ConnectionPool, Migration, migrations};
 use uuid::Uuid;
 

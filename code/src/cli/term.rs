@@ -119,11 +119,11 @@ impl Terminal {
 
                     if let Some(widget) = self.overlay_widget.as_mut() {
                         widget.handle_key(event);
-                        if let Some(rx) = self.overlay_done_rx.as_mut() {
-                            if rx.try_recv().is_ok() {
-                                self.overlay_widget = None;
-                                self.overlay_done_rx = None;
-                            }
+                        if let Some(rx) = self.overlay_done_rx.as_mut()
+                            && rx.try_recv().is_ok()
+                        {
+                            self.overlay_widget = None;
+                            self.overlay_done_rx = None;
                         }
                     } else {
                         self.prompt.handle_event(event);

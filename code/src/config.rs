@@ -43,6 +43,6 @@ impl Provider {
     pub fn read_token(&self, name: &str) -> Option<String> {
         self.token
             .clone()
-            .or_else(|| env::var(&format!("FRIDAY_{}_API_KEY", name.to_ascii_uppercase())).ok())
+            .or_else(|| env::var(format!("FRIDAY_{}_API_KEY", name.to_ascii_uppercase())).ok())
     }
 }

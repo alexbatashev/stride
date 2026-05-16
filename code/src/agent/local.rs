@@ -5,7 +5,7 @@ use friday_agent::{
     tools::{explorer::make_explorer, file::ReadFileTool, glob::GlobTool, patch::PatchTool},
 };
 use futures::{Stream, StreamExt, stream};
-use llm::{Anthropic, Ollama, OpenAI};
+use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::{ConnectionPool, Value};
 use uuid::Uuid;
 
@@ -150,10 +150,10 @@ fn create_model_registry(config: &Config) -> ModelRegistry {
 
     for (name, m) in &config.models {
         let p = config.providers.get(&m.provider).unwrap();
-        let api = match p.kind {
-            config::Kind::OpenAI => OpenAI::new(&p.url),
-            config::Kind::Anthropic => Anthropic::new(&p.url),
-            config::Kind::Ollama => Ollama::new(&p.url),
+        let api: API = match p.kind {
+            config::Kind::OpenAI => OpenAI::new(&p.url).into(),
+            config::Kind::Anthropic => Anthropic::new(&p.url).into(),
+            config::Kind::Ollama => Ollama::new(&p.url).into(),
         };
         let entry = ModelRegEntry {
             api,
@@ -181,21 +181,6 @@ fn register_default_tools(agent: &mut BaseAgent) {
 }
 
 impl CodeAgent for LocalAgent {
-    fn get_messages(&self) -> Vec<super::Message> {
-        self.agent
-            .thread()
-            .into_iter()
-            .filter_map(|message| match message.role {
-                llm::Role::System => None,
-                llm::Role::Assistant => Some(super::Message::Agent {
-                    text: message.content,
-                }),
-                llm::Role::User => Some(super::Message::User(message.content)),
-                llm::Role::Tool => Some(super::Message::ToolOutput(message.content)),
-            })
-            .collect()
-    }
-
     async fn make_turn(
         &self,
         message: &str,
@@ -233,7 +218,7 @@ impl CodeAgent for LocalAgent {
                             seq
                         };
 
-                        if let Err(err) = messages::insert()
+                        messages::insert()
                             .id(id)
                             .parent_thread(thread_id)
                             .seq(seq)
@@ -242,10 +227,7 @@ impl CodeAgent for LocalAgent {
                             .thinking(Option::<&str>::None)
                             .execute(&db)
                             .await
-                            .map_err(db_error)
-                        {
-                            return Err(err);
-                        }
+                            .map_err(db_error)?;
 
                         let mut assistant = assistant_state.borrow_mut();
                         assistant.id = Some(id);
@@ -283,11 +265,7 @@ impl CodeAgent for LocalAgent {
                     };
 
                     if let Some(id) = id {
-                        if let Err(err) =
-                            update_message(&db, id, &content, thinking.as_deref()).await
-                        {
-                            return Err(err);
-                        }
+                        update_message(&db, id, &content, thinking.as_deref()).await?;
                     }
 
                     if chunk

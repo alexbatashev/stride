@@ -1,0 +1,26 @@
+name: Post-commit
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  checks: write
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    uses: ./.github/workflows/_build-test.yml
+    with:
+      os: ${{ matrix.os }}
+    permissions:
+      checks: write
+      contents: read

@@ -461,10 +461,10 @@ fn configure_agent_tools(agent: &BaseAgent, tools: &Tools) {
         agent.register_tool(web_search_tool(web_search));
     }
 
-    if let Some(firecrawl) = &tools.firecrawl {
-        if let Some(tool) = firecrawl_tool(firecrawl) {
-            agent.register_tool(tool);
-        }
+    if let Some(firecrawl) = &tools.firecrawl
+        && let Some(tool) = firecrawl_tool(firecrawl)
+    {
+        agent.register_tool(tool);
     }
 }
 
@@ -477,11 +477,11 @@ fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
         registry.register(tool);
     }
 
-    if let Some(firecrawl) = &tools.firecrawl {
-        if let Some(tool) = firecrawl_tool(firecrawl) {
-            registry.allow_tool(tool.name());
-            registry.register(tool);
-        }
+    if let Some(firecrawl) = &tools.firecrawl
+        && let Some(tool) = firecrawl_tool(firecrawl)
+    {
+        registry.allow_tool(tool.name());
+        registry.register(tool);
     }
 
     registry
@@ -560,6 +560,9 @@ async fn run_agent_turn(
                         },
                     );
                 });
+            }
+            Ok(AgentResponseChunk::Quiz { answered, .. }) => {
+                let _ = answered.send(vec![]);
             }
             Err(error) => {
                 fail_run(&state, thread_id, run_id, error.to_string());

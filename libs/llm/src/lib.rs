@@ -146,9 +146,9 @@ pub enum Error {
     Unknown,
 }
 
-impl Into<axum::Error> for Error {
-    fn into(self) -> axum::Error {
-        axum::Error::new(self)
+impl From<Error> for axum::Error {
+    fn from(val: Error) -> axum::Error {
+        axum::Error::new(val)
     }
 }
 

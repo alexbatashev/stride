@@ -1,5 +1,5 @@
 use crate::{
-    API, Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk,
+    Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk,
 };
 
 use async_stream::stream;
@@ -28,10 +28,7 @@ mod tests {
     use super::*;
 
     fn openai(base_url: &str) -> OpenAI {
-        match OpenAI::new(base_url) {
-            API::OpenAI(api) => api,
-            _ => unreachable!(),
-        }
+        OpenAI::new(base_url)
     }
 
     #[test]
@@ -62,10 +59,10 @@ struct ModelListResponse {
 }
 
 impl OpenAI {
-    pub fn new(base_url: &str) -> API {
-        API::OpenAI(OpenAI {
+    pub fn new(base_url: &str) -> Self {
+        OpenAI {
             base_url: base_url.to_string(),
-        })
+        }
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -81,7 +78,7 @@ impl OpenAI {
     pub async fn list_models(&self, token: &str) -> Result<Vec<ModelDesc>, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&self.endpoint("/v1/models"))
+            .uri(self.endpoint("/v1/models"))
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
@@ -114,7 +111,7 @@ impl OpenAI {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&self.endpoint("/v1/embeddings"))
+            .uri(self.endpoint("/v1/embeddings"))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(body)))
@@ -131,7 +128,7 @@ impl OpenAI {
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&self.endpoint(&format!("/v1/models/{}", model)))
+            .uri(self.endpoint(&format!("/v1/models/{}", model)))
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
@@ -161,7 +158,7 @@ impl OpenAI {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!("{}{}", base, path))
+            .uri(format!("{}{}", base, path))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(body)))
@@ -198,7 +195,7 @@ impl OpenAI {
 
         let req = match Request::builder()
             .method("POST")
-            .uri(&format!("{}{}", base, path))
+            .uri(format!("{}{}", base, path))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(req_body)))

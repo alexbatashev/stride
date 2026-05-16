@@ -23,7 +23,7 @@ impl AsyncTlsStream {
             .to_owned();
         let config = make_config();
         let tls_conn = ClientConnection::new(config.clone(), server_name)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         // FIXME: mio docs say I need to wait for a (writable) event and check TcpStream::take_err?
 

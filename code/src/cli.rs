@@ -87,6 +87,10 @@ pub async fn cli_main() -> anyhow::Result<()> {
                                             term_output.print(&format!("\n{err}\n"), Some(Color::Red));
                                             true
                                         }
+                                        Some(Ok(AgentResponseChunk::Quiz { answered, .. })) => {
+                                            let _ = answered.send(vec![]);
+                                            false
+                                        }
                                         None => true,
                                     }
                                 }
