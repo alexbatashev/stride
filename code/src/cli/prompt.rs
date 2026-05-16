@@ -102,18 +102,14 @@ impl Prompt {
                     state.cursor = idx;
                 }
             }
-            KeyCode::Right => {
-                if state.cursor < state.current_prompt.len() {
-                    let ch = state.current_prompt[state.cursor..].chars().next().unwrap();
-                    state.cursor += ch.len_utf8();
-                }
+            KeyCode::Right if state.cursor < state.current_prompt.len() => {
+                let ch = state.current_prompt[state.cursor..].chars().next().unwrap();
+                state.cursor += ch.len_utf8();
             }
-            KeyCode::Enter => {
-                if state.spinner_started.is_none() {
-                    let submitted = std::mem::take(&mut state.current_prompt);
-                    state.cursor = 0;
-                    self.submitted_tx.send(submitted).unwrap();
-                }
+            KeyCode::Enter if state.spinner_started.is_none() => {
+                let submitted = std::mem::take(&mut state.current_prompt);
+                state.cursor = 0;
+                self.submitted_tx.send(submitted).unwrap();
             }
             _ => {}
         }
