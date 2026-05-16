@@ -1,0 +1,45 @@
+[providers.openai]
+kind = "OpenAI"
+url = "https://api.openai.com/v1"
+token = "sk-..."
+
+[providers.anthropic]
+kind = "Anthropic"
+url = "https://api.anthropic.com/v1"
+token = "sk-ant-..."
+
+[providers.ollama]
+kind = "Ollama"
+url = "http://localhost:11434/v1"
+
+[models.gpt_4_1]
+slug = "gpt-4.1"
+provider = "openai"
+thinking = true
+
+[models.claude_sonnet_4]
+slug = "claude-sonnet-4-20250514"
+provider = "anthropic"
+thinking = true
+
+[models.llama]
+slug = "llama3.2"
+provider = "ollama"
+thinking = false
+
+[server]
+db_path = "/tmp/server.db"
+listen_addr = "0.0.0.0:3000"
+
+[server.ldap]
+url = "ldap://localhost:389"
+user_dn_template = "uid={username},ou=users,dc=example,dc=com"
+
+[tools.web_search]
+searxng_endpoint = "https://search.example.com"
+include_arxiv = true
+include_pubmed = true
+
+[tools.firecrawl]
+api_key = "fc-..."
+api_url = "https://api.firecrawl.dev"

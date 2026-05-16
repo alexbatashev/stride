@@ -162,4 +162,14 @@ mod tests {
         assert_eq!(firecrawl.read_api_key().unwrap(), "fc-test");
         assert_eq!(firecrawl.api_url(), "https://firecrawl.example.com");
     }
+
+    #[test]
+    fn example_config_loads() {
+        let cfg: Config = toml::from_str(include_str!("../config.toml.example")).unwrap();
+
+        assert!(cfg.providers.contains_key("openai"));
+        assert!(cfg.models.contains_key("gpt_4_1"));
+        assert!(cfg.server.unwrap().ldap.is_some());
+        assert!(cfg.tools.unwrap().web_search.is_some());
+    }
 }
