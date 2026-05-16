@@ -19,7 +19,6 @@ struct Migrations {
 }
 
 struct Migration {
-    name: Ident,
     tables: Vec<Table>,
     raw_sql: Vec<LitStr>,
 }
@@ -64,7 +63,7 @@ impl Parse for Migrations {
 
 impl Parse for Migration {
     fn parse(input: ParseStream) -> Result<Self> {
-        let name: Ident = input.parse()?;
+        let _name: Ident = input.parse()?;
         let content;
         braced!(content in input);
 
@@ -90,11 +89,7 @@ impl Parse for Migration {
             }
         }
 
-        Ok(Migration {
-            name,
-            tables,
-            raw_sql,
-        })
+        Ok(Migration { tables, raw_sql })
     }
 }
 
