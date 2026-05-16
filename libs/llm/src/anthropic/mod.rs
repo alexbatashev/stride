@@ -5,7 +5,7 @@ use std::pin::Pin;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 
-use crate::{API, Completion, CompletionRequest, Error, ModelDesc, StreamResponseChunk};
+use crate::{Completion, CompletionRequest, Error, ModelDesc, StreamResponseChunk};
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -27,19 +27,16 @@ impl std::fmt::Debug for Anthropic {
 }
 
 impl Anthropic {
-    pub fn new(base_url: &str) -> API {
-        API::Anthropic(Anthropic {
+    pub fn new(base_url: &str) -> Self {
+        Anthropic {
             base_url: base_url.to_string(),
-        })
+        }
     }
 
     pub async fn list_models(&self, token: &str) -> Result<Vec<ModelDesc>, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&format!(
-                "{}/v1/models",
-                self.base_url.trim_end_matches('/')
-            ))
+            .uri(format!("{}/v1/models", self.base_url.trim_end_matches('/')))
             .header("x-api-key", token)
             .header("anthropic-version", "2023-06-01")
             .body(Full::new(Bytes::new()))
@@ -58,7 +55,7 @@ impl Anthropic {
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&format!(
+            .uri(format!(
                 "{}/v1/models/{}",
                 self.base_url.trim_end_matches('/'),
                 model
@@ -89,7 +86,7 @@ impl Anthropic {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!(
+            .uri(format!(
                 "{}/v1/messages",
                 self.base_url.trim_end_matches('/')
             ))
@@ -126,7 +123,7 @@ impl Anthropic {
 
         let req = match Request::builder()
             .method("POST")
-            .uri(&format!(
+            .uri(format!(
                 "{}/v1/messages",
                 self.base_url.trim_end_matches('/')
             ))

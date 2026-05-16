@@ -52,7 +52,7 @@ pub struct AgentConfig {
     pub max_iterations: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ModelRegistry {
     models: HashMap<String, ModelRegEntry>,
 }
@@ -84,9 +84,7 @@ struct PartialToolCall {
 
 impl ModelRegistry {
     pub fn new() -> Self {
-        Self {
-            models: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn add_model(&mut self, name: &str, entry: ModelRegEntry) {

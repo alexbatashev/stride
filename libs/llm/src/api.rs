@@ -77,3 +77,21 @@ impl API {
         }
     }
 }
+
+impl From<Anthropic> for API {
+    fn from(val: Anthropic) -> API {
+        API::Anthropic(val)
+    }
+}
+
+impl From<Ollama> for API {
+    fn from(val: Ollama) -> API {
+        API::Ollama(val)
+    }
+}
+
+impl From<OpenAI> for API {
+    fn from(val: OpenAI) -> API {
+        API::OpenAI(val)
+    }
+}

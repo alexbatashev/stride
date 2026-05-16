@@ -53,13 +53,11 @@ impl Tool for GlobTool {
 
         let mut entries = vec![];
 
-        for entry in glob::glob(&args.pattern).unwrap() {
-            if let Ok(path) = entry {
-                entries.push(GlobResult {
-                    filename: path.to_str().unwrap().to_string(),
-                    size: path.metadata().unwrap().len(),
-                })
-            }
+        for path in glob::glob(&args.pattern).unwrap().flatten() {
+            entries.push(GlobResult {
+                filename: path.to_str().unwrap().to_string(),
+                size: path.metadata().unwrap().len(),
+            })
         }
 
         serde_json::to_value(entries).unwrap()

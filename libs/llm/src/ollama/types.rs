@@ -37,10 +37,10 @@ pub struct OllamaMessageResponse {
     pub eval_count: Option<u32>,
 }
 
-impl Into<ModelDesc> for OllamaModel {
-    fn into(self) -> ModelDesc {
+impl From<OllamaModel> for ModelDesc {
+    fn from(val: OllamaModel) -> ModelDesc {
         ModelDesc {
-            id: self.model,
+            id: val.model,
             ..Default::default()
         }
     }
@@ -65,22 +65,22 @@ impl<'a> From<&'a CompletionRequest> for OllamaChatRequest<'a> {
     }
 }
 
-impl Into<Completion> for OllamaMessageResponse {
-    fn into(self) -> Completion {
-        let prompt_tokens = self.prompt_eval_count.unwrap_or_default();
-        let completion_tokens = self.eval_count.unwrap_or_default();
+impl From<OllamaMessageResponse> for Completion {
+    fn from(val: OllamaMessageResponse) -> Completion {
+        let prompt_tokens = val.prompt_eval_count.unwrap_or_default();
+        let completion_tokens = val.eval_count.unwrap_or_default();
         Completion {
             id: Uuid::now_v7().into(),
             created: 0,
-            model: self.model,
+            model: val.model,
             choices: vec![CompletionChoice {
-                message: Some(self.message),
+                message: Some(val.message),
                 text: None,
                 index: 0,
                 delta: None,
                 logprobs: None,
                 tool_calls: None,
-                finish_reason: self.done_reason,
+                finish_reason: val.done_reason,
             }],
             usage: Usage {
                 prompt_tokens,
@@ -91,45 +91,45 @@ impl Into<Completion> for OllamaMessageResponse {
     }
 }
 
-impl Into<StreamResponseChunk> for OllamaMessageResponse {
-    fn into(self) -> StreamResponseChunk {
+impl From<OllamaMessageResponse> for StreamResponseChunk {
+    fn from(val: OllamaMessageResponse) -> StreamResponseChunk {
         StreamResponseChunk {
             id: Uuid::now_v7().into(),
             object: "completion".to_string(),
             created: 0,
-            model: self.model.clone(),
+            model: val.model.clone(),
             system_fingerprint: None,
             choices: vec![CompletionChoice {
-                message: Some(self.message.clone()),
+                message: Some(val.message.clone()),
                 text: None,
                 index: 0,
                 delta: Some(Delta {
-                    content: Some(self.message.content.clone()),
-                    thinking: self.message.thinking.clone(),
+                    content: Some(val.message.content.clone()),
+                    thinking: val.message.thinking.clone(),
                     tool_calls: None,
                 }),
                 logprobs: None,
                 tool_calls: None,
-                finish_reason: self.done_reason.clone(),
+                finish_reason: val.done_reason.clone(),
             }],
         }
     }
 }
 
-impl Into<EmbeddingResponse> for OllamaEmbeddingsResponse {
-    fn into(mut self) -> EmbeddingResponse {
+impl From<OllamaEmbeddingsResponse> for EmbeddingResponse {
+    fn from(mut val: OllamaEmbeddingsResponse) -> EmbeddingResponse {
         EmbeddingResponse {
             object: "object".to_string(),
-            model: self.model,
+            model: val.model,
             data: EmbeddingData {
                 object: "list".to_string(),
                 index: 0,
-                embedding: std::mem::replace(&mut self.embeddings[0], vec![]),
+                embedding: std::mem::take(&mut val.embeddings[0]),
             },
             usage: Usage {
-                prompt_tokens: self.prompt_eval_count,
+                prompt_tokens: val.prompt_eval_count,
                 completion_tokens: 0,
-                total_tokens: self.prompt_eval_count,
+                total_tokens: val.prompt_eval_count,
             },
         }
     }

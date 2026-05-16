@@ -83,10 +83,8 @@ impl Tool for SubAgentTool {
             match chunk {
                 Ok(AgentResponseChunk::Chunk(chunk)) => {
                     for choice in chunk.choices {
-                        if let Some(delta) = choice.delta {
-                            if let Some(delta_content) = delta.content {
-                                content.push_str(&delta_content);
-                            }
+                        if let Some(delta_content) = choice.delta.and_then(|d| d.content) {
+                            content.push_str(&delta_content);
                         }
                     }
                 }

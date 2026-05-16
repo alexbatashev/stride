@@ -1,7 +1,7 @@
 mod types;
 
 use crate::{
-    API, Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, ModelList,
+    Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, ModelList,
     StreamResponseChunk,
 };
 use bytes::Bytes;
@@ -29,16 +29,16 @@ impl std::fmt::Debug for Ollama {
 }
 
 impl Ollama {
-    pub fn new(base_url: &str) -> API {
-        API::Ollama(Ollama {
+    pub fn new(base_url: &str) -> Self {
+        Ollama {
             base_url: base_url.to_string(),
-        })
+        }
     }
 
     pub async fn list_models(&self, _token: &str) -> Result<Vec<ModelDesc>, Error> {
         let req = Request::builder()
             .method("GET")
-            .uri(&format!("{}/api/tags", self.base_url))
+            .uri(format!("{}/api/tags", self.base_url))
             .body(Full::new(Bytes::new()))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
         let (status, res_body) = tinynet::send_request(req).await?;
@@ -66,7 +66,7 @@ impl Ollama {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!("{}/api/show", self.base_url))
+            .uri(format!("{}/api/show", self.base_url))
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
@@ -97,7 +97,7 @@ impl Ollama {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!("{}/api/embed", self.base_url))
+            .uri(format!("{}/api/embed", self.base_url))
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
@@ -122,7 +122,7 @@ impl Ollama {
 
         let req = Request::builder()
             .method("POST")
-            .uri(&format!("{}/api/chat", self.base_url))
+            .uri(format!("{}/api/chat", self.base_url))
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;
@@ -154,7 +154,7 @@ impl Ollama {
 
         let req = match Request::builder()
             .method("POST")
-            .uri(&format!("{}/api/chat", self.base_url))
+            .uri(format!("{}/api/chat", self.base_url))
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))

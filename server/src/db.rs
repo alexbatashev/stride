@@ -67,9 +67,9 @@ impl SqlLikeType for Role {
     }
 }
 
-impl Into<Value> for Role {
-    fn into(self) -> Value {
-        match self {
+impl From<Role> for Value {
+    fn from(val: Role) -> Value {
+        match val {
             Role::System => Value::Text("system".to_string()),
             Role::Agent => Value::Text("agent".to_string()),
             Role::User => Value::Text("user".to_string()),

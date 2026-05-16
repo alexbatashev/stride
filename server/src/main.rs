@@ -16,7 +16,7 @@ use axum::{
 use clap::Parser;
 use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
 use handlebars::Handlebars;
-use llm::{Anthropic, Ollama, OpenAI};
+use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::ConnectionPool;
 use tower_http::services::ServeDir;
 
@@ -107,10 +107,10 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
         let Some(provider) = config.providers.get(&model.provider) else {
             continue;
         };
-        let api = match provider.kind {
-            config::Kind::OpenAI => OpenAI::new(&provider.url),
-            config::Kind::Anthropic => Anthropic::new(&provider.url),
-            config::Kind::Ollama => Ollama::new(&provider.url),
+        let api: API = match provider.kind {
+            config::Kind::OpenAI => OpenAI::new(&provider.url).into(),
+            config::Kind::Anthropic => Anthropic::new(&provider.url).into(),
+            config::Kind::Ollama => Ollama::new(&provider.url).into(),
         };
         registry.add_model(
             name,
@@ -125,27 +125,26 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
         );
     }
 
-    if !config.models.contains_key(DEFAULT_MODEL) {
-        if let Some((_, model)) = config.models.iter().next() {
-            if let Some(provider) = config.providers.get(&model.provider) {
-                let api = match provider.kind {
-                    config::Kind::OpenAI => OpenAI::new(&provider.url),
-                    config::Kind::Anthropic => Anthropic::new(&provider.url),
-                    config::Kind::Ollama => Ollama::new(&provider.url),
-                };
-                registry.add_model(
-                    DEFAULT_MODEL,
-                    ModelRegEntry {
-                        api,
-                        token: provider
-                            .read_token(&model.provider)
-                            .unwrap_or("-".to_string()),
-                        model_name: model.slug.clone(),
-                        thinking: model.thinking.unwrap_or(true),
-                    },
-                );
-            }
-        }
+    if !config.models.contains_key(DEFAULT_MODEL)
+        && let Some((_, model)) = config.models.iter().next()
+        && let Some(provider) = config.providers.get(&model.provider)
+    {
+        let api: API = match provider.kind {
+            config::Kind::OpenAI => OpenAI::new(&provider.url).into(),
+            config::Kind::Anthropic => Anthropic::new(&provider.url).into(),
+            config::Kind::Ollama => Ollama::new(&provider.url).into(),
+        };
+        registry.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api,
+                token: provider
+                    .read_token(&model.provider)
+                    .unwrap_or("-".to_string()),
+                model_name: model.slug.clone(),
+                thinking: model.thinking.unwrap_or(true),
+            },
+        );
     }
 
     registry

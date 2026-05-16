@@ -112,8 +112,14 @@ impl Mock {
     }
 }
 
-impl Into<API> for Mock {
-    fn into(self) -> API {
-        API::Mock(self)
+impl Default for Mock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<Mock> for API {
+    fn from(val: Mock) -> API {
+        API::Mock(val)
     }
 }

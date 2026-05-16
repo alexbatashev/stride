@@ -132,26 +132,26 @@ impl CompletionRequest {
     }
 }
 
-impl Into<Tool> for Function {
-    fn into(self) -> Tool {
+impl From<Function> for Tool {
+    fn from(val: Function) -> Tool {
         Tool {
             r#type: ToolType::Function,
-            function: self,
+            function: val,
         }
     }
 }
 
-impl Into<ToolChoice> for UnnamedToolChoice {
-    fn into(self) -> ToolChoice {
-        ToolChoice::Unnamed(self)
+impl From<UnnamedToolChoice> for ToolChoice {
+    fn from(val: UnnamedToolChoice) -> ToolChoice {
+        ToolChoice::Unnamed(val)
     }
 }
 
-impl Into<ToolChoice> for FunctionRef {
-    fn into(self) -> ToolChoice {
+impl From<FunctionRef> for ToolChoice {
+    fn from(val: FunctionRef) -> ToolChoice {
         ToolChoice::Named {
             r#type: "function".to_string(),
-            function: self,
+            function: val,
         }
     }
 }
