@@ -39,7 +39,7 @@ pub async fn cli_main() -> anyhow::Result<()> {
 
     let db = ConnectionPool::new(&format!("sqlite://{}", db_path)).unwrap();
 
-    let (mut term_input, term_output, terminal) = Terminal::new();
+    let (term_input, term_output, terminal) = Terminal::new();
 
     let local = tokio::task::LocalSet::new();
     local
@@ -86,6 +86,10 @@ pub async fn cli_main() -> anyhow::Result<()> {
                                         Some(Err(err)) => {
                                             term_output.print(&format!("\n{err}\n"), Some(Color::Red));
                                             true
+                                        }
+                                        Some(Ok(AgentResponseChunk::Quiz { answered, .. })) => {
+                                            let _ = answered.send(vec![]);
+                                            false
                                         }
                                         None => true,
                                     }

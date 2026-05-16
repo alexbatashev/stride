@@ -5,7 +5,7 @@ use friday_agent::{
     tools::{explorer::make_explorer, file::ReadFileTool, glob::GlobTool, patch::PatchTool},
 };
 use futures::{Stream, StreamExt, stream};
-use llm::{Anthropic, Ollama, OpenAI};
+use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::{ConnectionPool, Value};
 use uuid::Uuid;
 
