@@ -12,6 +12,7 @@ fn main() {
 
     let status = Command::new("pnpm")
         .args(["install", "--frozen-lockfile"])
+        .env("CI", "true")
         .current_dir(&frontend)
         .status()
         .expect("pnpm install failed");
