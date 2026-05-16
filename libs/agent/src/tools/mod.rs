@@ -4,6 +4,7 @@ pub mod file;
 pub mod firecrawl;
 pub mod glob;
 pub mod patch;
+pub mod quiz;
 pub mod search;
 pub mod shell;
 pub mod subagent;
