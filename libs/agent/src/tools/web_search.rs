@@ -16,6 +16,7 @@ pub struct SearchResult {
 
 #[async_trait(?Send)]
 pub trait SearchProvider: Send + Sync {
+    fn categories(&self) -> &[&str];
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String>;
 }
 
@@ -37,6 +38,10 @@ struct SearxngResponse {
 
 #[async_trait(?Send)]
 impl SearchProvider for SearxngProvider {
+    fn categories(&self) -> &[&str] {
+        &["generic"]
+    }
+
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
         let url = format!(
             "{}/search?q={}&format=json",
@@ -109,6 +114,8 @@ struct WebSearchParams {
     query: String,
     /// Maximum number of results to return. Defaults to 10.
     limit: Option<u32>,
+    /// Provider category filter. One of: "all", "generic", "academic". Defaults to "all".
+    category: Option<String>,
 }
 
 #[async_trait(?Send)]
@@ -141,10 +148,14 @@ impl Tool for WebSearchTool {
         };
 
         let limit = params.limit.unwrap_or(10) as usize;
+        let category = params.category.as_deref().unwrap_or("all");
         let mut seen_urls = std::collections::HashSet::new();
         let mut results = Vec::new();
 
         for provider in &self.providers {
+            if category != "all" && !provider.categories().contains(&category) {
+                continue;
+            }
             if let Ok(items) = provider.search(&params.query, limit).await {
                 for item in items {
                     if seen_urls.insert(item.url.clone()) {
@@ -170,10 +181,15 @@ mod tests {
 
     struct MockProvider {
         results: Vec<(String, String, String)>,
+        cat: &'static str,
     }
 
     #[async_trait(?Send)]
     impl SearchProvider for MockProvider {
+        fn categories(&self) -> &[&str] {
+            std::slice::from_ref(&self.cat)
+        }
+
         async fn search(&self, _query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
             Ok(self
                 .results
@@ -204,6 +220,7 @@ mod tests {
                     "https://example.com".to_string(),
                     "An example site".to_string(),
                 )],
+                cat: "generic",
             })],
         };
 
@@ -229,6 +246,7 @@ mod tests {
                         )
                     })
                     .collect(),
+                cat: "generic",
             })],
         };
 
@@ -250,6 +268,7 @@ mod tests {
                         "https://example.com/a".to_string(),
                         String::new(),
                     )],
+                    cat: "generic",
                 }),
                 Box::new(MockProvider {
                     results: vec![
@@ -264,6 +283,7 @@ mod tests {
                             String::new(),
                         ),
                     ],
+                    cat: "generic",
                 }),
             ],
         };
@@ -275,6 +295,40 @@ mod tests {
         assert_eq!(result["results"].as_array().unwrap().len(), 2);
         assert_eq!(result["results"][0]["url"], "https://example.com/a");
         assert_eq!(result["results"][1]["url"], "https://example.com/b");
+    }
+
+    #[test]
+    fn filters_by_category() {
+        let tool = WebSearchTool {
+            providers: vec![
+                Box::new(MockProvider {
+                    results: vec![(
+                        "Generic".to_string(),
+                        "https://example.com/g".to_string(),
+                        String::new(),
+                    )],
+                    cat: "generic",
+                }),
+                Box::new(MockProvider {
+                    results: vec![(
+                        "Academic".to_string(),
+                        "https://example.com/a".to_string(),
+                        String::new(),
+                    )],
+                    cat: "academic",
+                }),
+            ],
+        };
+
+        let result = futures::executor::block_on(tool.execute(
+            make_config(),
+            json!({"query": "test", "category": "academic"}),
+        ));
+
+        assert_eq!(result["success"], true);
+        let results = result["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "Academic");
     }
 
     #[test]
