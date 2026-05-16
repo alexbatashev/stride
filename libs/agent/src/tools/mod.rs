@@ -5,6 +5,7 @@ pub mod file;
 pub mod firecrawl;
 pub mod glob;
 pub mod patch;
+pub mod pubmed;
 pub mod quiz;
 pub mod search;
 pub mod shell;

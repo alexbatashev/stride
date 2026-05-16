@@ -13,6 +13,7 @@ use friday_agent::{
         arxiv::ArxivProvider,
         expert::{EXPERT_NAME, make_expert},
         firecrawl::FirecrawlTool,
+        pubmed::PubmedProvider,
         web_search::{SearxngProvider, WebSearchTool},
     },
 };
@@ -496,6 +497,10 @@ fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
 
     if web_search.include_arxiv == Some(true) {
         providers.push(Box::new(ArxivProvider));
+    }
+
+    if web_search.include_pubmed == Some(true) {
+        providers.push(Box::new(PubmedProvider));
     }
 
     WebSearchTool { providers }

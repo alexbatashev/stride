@@ -55,6 +55,7 @@ pub struct Tools {
 pub struct WebSearch {
     pub searxng_endpoint: String,
     pub include_arxiv: Option<bool>,
+    pub include_pubmed: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
