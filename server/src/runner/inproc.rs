@@ -908,6 +908,7 @@ mod tests {
                 web_search: Some(WebSearch {
                     searxng_endpoint: "https://search.example.com".to_string(),
                     include_arxiv: None,
+                    include_pubmed: None,
                 }),
                 firecrawl: Some(Firecrawl {
                     api_key: Some("fc-test".to_string()),
@@ -956,6 +957,7 @@ mod tests {
             web_search: Some(WebSearch {
                 searxng_endpoint: "https://search.example.com".to_string(),
                 include_arxiv: None,
+                include_pubmed: None,
             }),
             firecrawl: Some(Firecrawl {
                 api_key: Some("fc-test".to_string()),
