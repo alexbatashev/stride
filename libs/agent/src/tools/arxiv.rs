@@ -23,6 +23,10 @@ pub struct ArxivProvider;
 
 #[async_trait(?Send)]
 impl SearchProvider for ArxivProvider {
+    fn category(&self) -> &str {
+        "academic"
+    }
+
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
         let url = format!(
             "https://searchthearxiv.com/search?query={}",

@@ -20,6 +20,10 @@ pub struct PubmedProvider;
 
 #[async_trait(?Send)]
 impl SearchProvider for PubmedProvider {
+    fn category(&self) -> &str {
+        "academic"
+    }
+
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
         let search_url = format!(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term={}&retmax={}&retmode=json",
