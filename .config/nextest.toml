@@ -1,0 +1,8 @@
+[profile.ci]
+fail-fast = false
+status-level = "all"
+final-status-level = "all"
+
+[profile.ci.junit]
+path = "junit.xml"
+report-name = "Friday CI"
