@@ -340,7 +340,7 @@ mod tests {
         http::{Request, StatusCode, header},
     };
     use handlebars::Handlebars;
-    use std::collections::HashMap;
+    use std::{collections::HashMap, path::PathBuf};
     use tower::ServiceExt;
 
     use super::*;
@@ -364,18 +364,21 @@ mod tests {
 
         let templates = Handlebars::new();
 
-        let app = app(Arc::new(ServerState {
-            config: Config {
-                providers: HashMap::new(),
-                models: HashMap::new(),
-                server: None,
-                tools: None,
-            },
-            db: db.clone(),
-            jwt_secret: "test-secret".to_string(),
-            runner,
-            templates,
-        }));
+        let app = app(
+            Arc::new(ServerState {
+                config: Config {
+                    providers: HashMap::new(),
+                    models: HashMap::new(),
+                    server: None,
+                    tools: None,
+                },
+                db: db.clone(),
+                jwt_secret: "test-secret".to_string(),
+                runner,
+                templates,
+            }),
+            PathBuf::from(crate::DEFAULT_STATIC_DIR),
+        );
 
         let response = app
             .clone()

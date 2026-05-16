@@ -22,6 +22,8 @@ use tower_http::services::ServeDir;
 
 use crate::{pages::get_templates, runner::AgentPool};
 
+const DEFAULT_STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/frontend/dist");
+
 struct ServerState {
     #[allow(dead_code)]
     pub(crate) config: config::Config,
@@ -35,6 +37,8 @@ struct ServerState {
 struct Args {
     #[arg(short = 'c')]
     config_path: PathBuf,
+    #[arg(long)]
+    static_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -67,7 +71,10 @@ async fn main() -> anyhow::Result<()> {
         templates,
     });
 
-    let app = app(state);
+    let static_dir = args
+        .static_dir
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATIC_DIR));
+    let app = app(state, static_dir);
 
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     axum::serve(listener, app).await?;
@@ -75,9 +82,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn app(state: Arc<ServerState>) -> Router {
-    let static_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/frontend/dist");
-
+fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
     Router::new()
         .route("/api/register", post(api::auth::register))
         .route("/api/login", post(api::auth::login))
