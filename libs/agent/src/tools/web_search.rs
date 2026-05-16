@@ -16,7 +16,7 @@ pub struct SearchResult {
 
 #[async_trait(?Send)]
 pub trait SearchProvider: Send + Sync {
-    fn category(&self) -> &str;
+    fn categories(&self) -> &[&str];
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String>;
 }
 
@@ -38,8 +38,8 @@ struct SearxngResponse {
 
 #[async_trait(?Send)]
 impl SearchProvider for SearxngProvider {
-    fn category(&self) -> &str {
-        "generic"
+    fn categories(&self) -> &[&str] {
+        &["generic"]
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -153,7 +153,7 @@ impl Tool for WebSearchTool {
         let mut results = Vec::new();
 
         for provider in &self.providers {
-            if category != "all" && provider.category() != category {
+            if category != "all" && !provider.categories().contains(&category) {
                 continue;
             }
             if let Ok(items) = provider.search(&params.query, limit).await {
@@ -186,8 +186,8 @@ mod tests {
 
     #[async_trait(?Send)]
     impl SearchProvider for MockProvider {
-        fn category(&self) -> &str {
-            self.cat
+        fn categories(&self) -> &[&str] {
+            std::slice::from_ref(&self.cat)
         }
 
         async fn search(&self, _query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {

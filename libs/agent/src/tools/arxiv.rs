@@ -23,8 +23,8 @@ pub struct ArxivProvider;
 
 #[async_trait(?Send)]
 impl SearchProvider for ArxivProvider {
-    fn category(&self) -> &str {
-        "academic"
+    fn categories(&self) -> &[&str] {
+        &["academic"]
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {

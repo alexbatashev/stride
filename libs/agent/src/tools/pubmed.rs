@@ -20,8 +20,8 @@ pub struct PubmedProvider;
 
 #[async_trait(?Send)]
 impl SearchProvider for PubmedProvider {
-    fn category(&self) -> &str {
-        "academic"
+    fn categories(&self) -> &[&str] {
+        &["academic"]
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
