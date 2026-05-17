@@ -267,10 +267,14 @@ impl BaseAgent {
                 }
 
                 for (id, name, arguments) in tool_calls {
+                    tracing::info!(tool = %name, arguments = %arguments, "tool call requested");
+
                     let args = match serde_json::from_str::<Value>(&arguments) {
                         Ok(args) => args,
                         Err(err) => {
-                            append_tool_result(&agent, id, json!({ "error": err.to_string() }), "tool error".to_string());
+                            let result = json!({ "error": err.to_string() });
+                            log_tool_error(&name, &result);
+                            append_tool_result(&agent, id, result, "tool error".to_string());
                             continue;
                         }
                     };
@@ -297,6 +301,7 @@ impl BaseAgent {
                                         json!({ "question": q.question, "answer": a })
                                     }).collect::<Vec<_>>()
                                 });
+                                log_tool_result(&name, &result);
                                 append_tool_result(&agent, id, result, readable_name);
                                 continue;
                             }
@@ -312,17 +317,15 @@ impl BaseAgent {
                                 yield Ok(AgentResponseChunk::Approval { tool_name: readable_name.clone(), message, approved });
 
                                 if !response.await.unwrap_or(false) {
-                                    append_tool_result(
-                                        &agent,
-                                        id,
-                                        json!({ "error": "tool execution denied by user" }),
-                                        readable_name,
-                                    );
+                                    let result = json!({ "error": "tool execution denied by user" });
+                                    log_tool_error(&name, &result);
+                                    append_tool_result(&agent, id, result, readable_name);
                                     continue;
                                 }
                             }
 
-                            (tool.execute(config.clone(), args).await, readable_name)
+                            let result = tool.execute(config.clone(), args).await;
+                            (result, readable_name)
                         }
                         None => (
                             json!({ "error": format!("unknown tool: {}", name) }),
@@ -330,6 +333,7 @@ impl BaseAgent {
                         ),
                     };
 
+                    log_tool_result(&name, &result);
                     append_tool_result(&agent, id, result, readable_name);
                 }
             }
@@ -338,6 +342,20 @@ impl BaseAgent {
                 "reached maximum tool iteration limit ({max_iterations})"
             )));
         })
+    }
+}
+
+fn log_tool_error(name: &str, result: &Value) {
+    if let Some(error) = result.get("error") {
+        tracing::error!(tool = %name, error = %error, "tool call failed");
+    }
+}
+
+fn log_tool_result(name: &str, result: &Value) {
+    if result.get("error").is_some() {
+        log_tool_error(name, result);
+    } else {
+        tracing::info!(tool = %name, "tool call finished");
     }
 }
 

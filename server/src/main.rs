@@ -18,7 +18,12 @@ use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
 use handlebars::Handlebars;
 use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::ConnectionPool;
-use tower_http::services::ServeDir;
+use tower_http::{
+    services::ServeDir,
+    trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+};
+use tracing::Level;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{pages::get_templates, runner::AgentPool};
 
@@ -43,6 +48,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    init_tracing();
+
     let args = Args::parse();
     let config = config::Config::load(&args.config_path)?;
     let jwt_secret = std::env::var("FRIDAY_JWT_SECRET")
@@ -77,9 +84,19 @@ async fn main() -> anyhow::Result<()> {
     let app = app(state, static_dir);
 
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
+    tracing::info!(addr = %listener.local_addr()?, "server listening");
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer())
+        .init();
 }
 
 fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
@@ -102,6 +119,12 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/threads/{id}", get(pages::agent::thread))
         .route("/", get(root))
         .nest_service("/static", ServeDir::new(static_dir))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_request(DefaultOnRequest::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
         .with_state(state)
 }
 
