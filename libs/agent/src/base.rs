@@ -34,6 +34,16 @@ impl From<llm::Error> for AgentError {
 
 pub enum AgentResponseChunk {
     Chunk(StreamResponseChunk),
+    ToolStarted {
+        tool_call_id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolFinished {
+        tool_call_id: String,
+        name: String,
+        result: String,
+    },
     Approval {
         tool_name: String,
         message: String,
@@ -269,19 +279,34 @@ impl BaseAgent {
                 for (id, name, arguments) in tool_calls {
                     tracing::info!(tool = %name, arguments = %arguments, "tool call requested");
 
+                    let tool = {
+                        let lock = agent.borrow();
+                        lock.tool_registry.get(&name)
+                    };
+                    let readable_name = tool
+                        .as_ref()
+                        .map(|tool| tool.readable_name().to_string())
+                        .unwrap_or_else(|| name.clone());
+
+                    yield Ok(AgentResponseChunk::ToolStarted {
+                        tool_call_id: id.clone(),
+                        name: readable_name.clone(),
+                        arguments: arguments.clone(),
+                    });
+
                     let args = match serde_json::from_str::<Value>(&arguments) {
                         Ok(args) => args,
                         Err(err) => {
                             let result = json!({ "error": err.to_string() });
                             log_tool_error(&name, &result);
-                            append_tool_result(&agent, id, result, "tool error".to_string());
+                            let content = append_tool_result(&agent, id.clone(), result, "tool error".to_string());
+                            yield Ok(AgentResponseChunk::ToolFinished {
+                                tool_call_id: id,
+                                name: readable_name,
+                                result: content,
+                            });
                             continue;
                         }
-                    };
-
-                    let tool = {
-                        let lock = agent.borrow();
-                        lock.tool_registry.get(&name)
                     };
 
                     let (result, readable_name) = match tool {
@@ -302,7 +327,12 @@ impl BaseAgent {
                                     }).collect::<Vec<_>>()
                                 });
                                 log_tool_result(&name, &result);
-                                append_tool_result(&agent, id, result, readable_name);
+                                let content = append_tool_result(&agent, id.clone(), result, readable_name.clone());
+                                yield Ok(AgentResponseChunk::ToolFinished {
+                                    tool_call_id: id,
+                                    name: readable_name,
+                                    result: content,
+                                });
                                 continue;
                             }
 
@@ -319,7 +349,12 @@ impl BaseAgent {
                                 if !response.await.unwrap_or(false) {
                                     let result = json!({ "error": "tool execution denied by user" });
                                     log_tool_error(&name, &result);
-                                    append_tool_result(&agent, id, result, readable_name);
+                                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone());
+                                    yield Ok(AgentResponseChunk::ToolFinished {
+                                        tool_call_id: id,
+                                        name: readable_name,
+                                        result: content,
+                                    });
                                     continue;
                                 }
                             }
@@ -334,7 +369,12 @@ impl BaseAgent {
                     };
 
                     log_tool_result(&name, &result);
-                    append_tool_result(&agent, id, result, readable_name);
+                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone());
+                    yield Ok(AgentResponseChunk::ToolFinished {
+                        tool_call_id: id,
+                        name: readable_name,
+                        result: content,
+                    });
                 }
             }
 
@@ -379,6 +419,25 @@ fn append_chunk(
     let message = lock.thread.last_mut().unwrap();
 
     for choice in &chunk.choices {
+        if let Some(choice_message) = &choice.message {
+            if !choice_message.content.is_empty() {
+                message.content.push_str(&choice_message.content);
+            }
+
+            if let Some(thinking) = &choice_message.thinking
+                && !thinking.is_empty()
+            {
+                message
+                    .thinking
+                    .get_or_insert_with(String::new)
+                    .push_str(thinking);
+            }
+
+            if let Some(chunks) = &choice_message.tool_calls {
+                append_tool_call_chunks(tool_calls, chunks);
+            }
+        }
+
         if let Some(content) = &choice.text {
             message.content.push_str(content);
         }
@@ -396,23 +455,30 @@ fn append_chunk(
             }
 
             if let Some(chunks) = &delta.tool_calls {
-                for chunk in chunks {
-                    let index = chunk.index.unwrap_or(0);
-                    let call = tool_calls.entry(index).or_default();
+                append_tool_call_chunks(tool_calls, chunks);
+            }
+        }
+    }
+}
 
-                    if let Some(id) = &chunk.id {
-                        call.id.push_str(id);
-                    }
+fn append_tool_call_chunks(
+    tool_calls: &mut BTreeMap<usize, PartialToolCall>,
+    chunks: &[ToolCallChunk],
+) {
+    for chunk in chunks {
+        let index = chunk.index.unwrap_or(0);
+        let call = tool_calls.entry(index).or_default();
 
-                    if let Some(function) = &chunk.function {
-                        if let Some(name) = &function.name {
-                            call.name.push_str(name);
-                        }
-                        if let Some(arguments) = &function.arguments {
-                            call.arguments.push_str(arguments);
-                        }
-                    }
-                }
+        if let Some(id) = &chunk.id {
+            call.id.push_str(id);
+        }
+
+        if let Some(function) = &chunk.function {
+            if let Some(name) = &function.name {
+                call.name.push_str(name);
+            }
+            if let Some(arguments) = &function.arguments {
+                call.arguments.push_str(arguments);
             }
         }
     }
@@ -456,19 +522,20 @@ fn append_tool_result(
     id: String,
     result: Value,
     readable_name: String,
-) {
+) -> String {
     let content =
         serde_json::to_string(&result).unwrap_or_else(|err| format!(r#"{{"error":"{}"}}"#, err));
 
     let mut lock = agent.borrow_mut();
     lock.thread.push(Message {
         role: llm::Role::Tool,
-        content,
+        content: content.clone(),
         tool_call_id: Some(id),
         ..Default::default()
     });
     let idx = lock.thread.len() - 1;
     lock.tool_display_names.insert(idx, readable_name);
+    content
 }
 
 #[cfg(test)]
@@ -603,6 +670,10 @@ mod tests {
                 stream.next().await.unwrap().unwrap(),
                 AgentResponseChunk::Chunk(_)
             ));
+            assert!(matches!(
+                stream.next().await.unwrap().unwrap(),
+                AgentResponseChunk::ToolStarted { .. }
+            ));
 
             match stream.next().await.unwrap().unwrap() {
                 AgentResponseChunk::Approval {
@@ -611,7 +682,10 @@ mod tests {
                     assert_eq!(message, r#"Approve approval_tool with {"value":1}"#);
                     approved.send(true).unwrap();
                 }
-                AgentResponseChunk::Chunk(_) | AgentResponseChunk::Quiz { .. } => {
+                AgentResponseChunk::Chunk(_)
+                | AgentResponseChunk::Quiz { .. }
+                | AgentResponseChunk::ToolStarted { .. }
+                | AgentResponseChunk::ToolFinished { .. } => {
                     panic!("expected approval")
                 }
             }
@@ -651,10 +725,14 @@ mod tests {
             pin_mut!(stream);
 
             stream.next().await.unwrap().unwrap();
+            stream.next().await.unwrap().unwrap();
 
             match stream.next().await.unwrap().unwrap() {
                 AgentResponseChunk::Approval { approved, .. } => approved.send(false).unwrap(),
-                AgentResponseChunk::Chunk(_) | AgentResponseChunk::Quiz { .. } => {
+                AgentResponseChunk::Chunk(_)
+                | AgentResponseChunk::Quiz { .. }
+                | AgentResponseChunk::ToolStarted { .. }
+                | AgentResponseChunk::ToolFinished { .. } => {
                     panic!("expected approval")
                 }
             }

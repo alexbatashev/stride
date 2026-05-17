@@ -105,7 +105,10 @@ fn quiz_yields_questions_and_returns_answers() {
         // First chunk is the tool call delta
         stream.next().await.unwrap().unwrap();
 
-        // Second chunk should be the Quiz event
+        // Second chunk announces the tool call
+        stream.next().await.unwrap().unwrap();
+
+        // Third chunk should be the Quiz event
         match stream.next().await.unwrap().unwrap() {
             AgentResponseChunk::Quiz {
                 questions,

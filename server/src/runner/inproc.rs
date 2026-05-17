@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -103,6 +103,14 @@ struct AssistantMessageState {
     seq: Option<u64>,
     content: String,
     thinking: Option<String>,
+    tool_calls: BTreeMap<usize, PartialToolCall>,
+}
+
+#[derive(Default)]
+struct PartialToolCall {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 impl InProcessAgentPool {
@@ -339,6 +347,8 @@ async fn handle_send(
         .role(Role::User)
         .content(request.content.as_str())
         .thinking(Option::<&str>::None)
+        .tool_calls(Option::<&str>::None)
+        .tool_call_id(Option::<&str>::None)
         .execute(&db)
         .await
         .map_err(db_error)
@@ -543,6 +553,7 @@ async fn run_agent_turn(
         seq: None,
         content: String::new(),
         thinking: None,
+        tool_calls: BTreeMap::new(),
     };
 
     while let Some(item) = stream.next().await {
@@ -555,6 +566,38 @@ async fn run_agent_turn(
                     restore_agent(&state, thread_id, agent);
                     return;
                 }
+            }
+            Ok(AgentResponseChunk::ToolStarted { name, .. }) => {
+                with_runner(&state, thread_id, |runner| {
+                    emit(
+                        runner,
+                        thread_id,
+                        Some(run_id),
+                        AgentEventKind::ToolStarted { name },
+                    );
+                });
+            }
+            Ok(AgentResponseChunk::ToolFinished {
+                tool_call_id,
+                name,
+                result,
+            }) => {
+                if let Err(error) =
+                    persist_tool_message(&state, thread_id, &tool_call_id, &result).await
+                {
+                    fail_run(&state, thread_id, run_id, error.to_string());
+                    restore_agent(&state, thread_id, agent);
+                    return;
+                }
+
+                with_runner(&state, thread_id, |runner| {
+                    emit(
+                        runner,
+                        thread_id,
+                        Some(run_id),
+                        AgentEventKind::ToolFinished { name },
+                    );
+                });
             }
             Ok(AgentResponseChunk::Approval {
                 message, approved, ..
@@ -599,39 +642,33 @@ async fn handle_agent_chunk(
     assistant: &mut AssistantMessageState,
     chunk: llm::StreamResponseChunk,
 ) -> Result<(), AgentPoolError> {
-    ensure_assistant_message(state, thread_id, assistant).await?;
+    let mut has_message_delta = false;
 
     for choice in &chunk.choices {
-        if let Some(content) = &choice.text {
-            assistant.content.push_str(content);
-            with_runner(state, thread_id, |runner| {
-                emit(
-                    runner,
-                    thread_id,
-                    Some(run_id),
-                    AgentEventKind::AgentDelta {
-                        content: content.clone(),
-                    },
-                );
-            });
-        }
-
-        if let Some(delta) = &choice.delta {
-            if let Some(content) = &delta.content {
-                assistant.content.push_str(content);
+        if let Some(message) = &choice.message {
+            if !message.content.is_empty() {
+                ensure_assistant_message(state, thread_id, assistant).await?;
+                has_message_delta = true;
+                assistant.content.push_str(&message.content);
                 with_runner(state, thread_id, |runner| {
                     emit(
                         runner,
                         thread_id,
                         Some(run_id),
                         AgentEventKind::AgentDelta {
-                            content: content.clone(),
+                            content: message.content.clone(),
                         },
                     );
                 });
             }
 
-            if let Some(thinking) = &delta.thinking {
+            if let Some(thinking) = message
+                .thinking
+                .as_ref()
+                .filter(|thinking| !thinking.is_empty())
+            {
+                ensure_assistant_message(state, thread_id, assistant).await?;
+                has_message_delta = true;
                 assistant
                     .thinking
                     .get_or_insert_with(String::new)
@@ -647,21 +684,105 @@ async fn handle_agent_chunk(
                     );
                 });
             }
+
+            if let Some(chunks) = message
+                .tool_calls
+                .as_ref()
+                .filter(|chunks| has_tool_call_data(chunks))
+            {
+                ensure_assistant_message(state, thread_id, assistant).await?;
+                has_message_delta = true;
+                append_tool_call_chunks(&mut assistant.tool_calls, chunks);
+            }
+        }
+
+        if let Some(content) = choice.text.as_ref().filter(|content| !content.is_empty()) {
+            ensure_assistant_message(state, thread_id, assistant).await?;
+            has_message_delta = true;
+            assistant.content.push_str(content);
+            with_runner(state, thread_id, |runner| {
+                emit(
+                    runner,
+                    thread_id,
+                    Some(run_id),
+                    AgentEventKind::AgentDelta {
+                        content: content.clone(),
+                    },
+                );
+            });
+        }
+
+        if let Some(delta) = &choice.delta {
+            if let Some(content) = delta.content.as_ref().filter(|content| !content.is_empty()) {
+                ensure_assistant_message(state, thread_id, assistant).await?;
+                has_message_delta = true;
+                assistant.content.push_str(content);
+                with_runner(state, thread_id, |runner| {
+                    emit(
+                        runner,
+                        thread_id,
+                        Some(run_id),
+                        AgentEventKind::AgentDelta {
+                            content: content.clone(),
+                        },
+                    );
+                });
+            }
+
+            if let Some(thinking) = delta
+                .thinking
+                .as_ref()
+                .filter(|thinking| !thinking.is_empty())
+            {
+                ensure_assistant_message(state, thread_id, assistant).await?;
+                has_message_delta = true;
+                assistant
+                    .thinking
+                    .get_or_insert_with(String::new)
+                    .push_str(thinking);
+                with_runner(state, thread_id, |runner| {
+                    emit(
+                        runner,
+                        thread_id,
+                        Some(run_id),
+                        AgentEventKind::ThinkingDelta {
+                            thinking: thinking.clone(),
+                        },
+                    );
+                });
+            }
+
+            if let Some(chunks) = delta
+                .tool_calls
+                .as_ref()
+                .filter(|chunks| has_tool_call_data(chunks))
+            {
+                ensure_assistant_message(state, thread_id, assistant).await?;
+                has_message_delta = true;
+                append_tool_call_chunks(&mut assistant.tool_calls, chunks);
+            }
         }
     }
 
-    if let Some(id) = assistant.id {
+    if has_message_delta && let Some(id) = assistant.id {
         let db = state.borrow().db.clone();
-        update_message(&db, id, &assistant.content, assistant.thinking.as_deref()).await?;
-    }
+        update_message(
+            &db,
+            id,
+            &assistant.content,
+            assistant.thinking.as_deref(),
+            None,
+        )
+        .await?;
 
-    with_runner(state, thread_id, |runner| {
-        runner.in_progress = Some(PartialAgentMessage {
-            run_id,
-            content: assistant.content.clone(),
-            thinking: assistant.thinking.clone(),
+        with_runner(state, thread_id, |runner| {
+            runner.in_progress = Some(PartialAgentMessage {
+                run_id,
+                content: assistant.content.clone(),
+                thinking: assistant.thinking.clone(),
+            });
         });
-    });
+    }
 
     if chunk
         .choices
@@ -669,6 +790,17 @@ async fn handle_agent_chunk(
         .any(|choice| choice.finish_reason.is_some())
     {
         if let (Some(message_id), Some(seq)) = (assistant.id, assistant.seq) {
+            let tool_calls = serialize_tool_calls(&assistant.tool_calls)?;
+            let db = state.borrow().db.clone();
+            update_message(
+                &db,
+                message_id,
+                &assistant.content,
+                assistant.thinking.as_deref(),
+                tool_calls.as_deref(),
+            )
+            .await?;
+
             with_runner(state, thread_id, |runner| {
                 emit(
                     runner,
@@ -683,9 +815,71 @@ async fn handle_agent_chunk(
         assistant.seq = None;
         assistant.content.clear();
         assistant.thinking = None;
+        assistant.tool_calls.clear();
     }
 
     Ok(())
+}
+
+fn has_tool_call_data(chunks: &[llm::ToolCallChunk]) -> bool {
+    chunks.iter().any(|chunk| {
+        chunk.id.as_ref().is_some_and(|id| !id.is_empty())
+            || chunk.function.as_ref().is_some_and(|function| {
+                function.name.as_ref().is_some_and(|name| !name.is_empty())
+                    || function
+                        .arguments
+                        .as_ref()
+                        .is_some_and(|arguments| !arguments.is_empty())
+            })
+    })
+}
+
+fn append_tool_call_chunks(
+    tool_calls: &mut BTreeMap<usize, PartialToolCall>,
+    chunks: &[llm::ToolCallChunk],
+) {
+    for chunk in chunks {
+        let index = chunk.index.unwrap_or(0);
+        let call = tool_calls.entry(index).or_default();
+
+        if let Some(id) = &chunk.id {
+            call.id.push_str(id);
+        }
+
+        if let Some(function) = &chunk.function {
+            if let Some(name) = &function.name {
+                call.name.push_str(name);
+            }
+            if let Some(arguments) = &function.arguments {
+                call.arguments.push_str(arguments);
+            }
+        }
+    }
+}
+
+fn serialize_tool_calls(
+    tool_calls: &BTreeMap<usize, PartialToolCall>,
+) -> Result<Option<String>, AgentPoolError> {
+    let calls: Vec<_> = tool_calls
+        .values()
+        .filter(|call| !call.name.is_empty())
+        .map(|call| llm::ToolCallChunk {
+            index: None,
+            id: Some(call.id.clone()),
+            function: Some(llm::ToolCallFunction {
+                name: Some(call.name.clone()),
+                arguments: Some(call.arguments.clone()),
+            }),
+        })
+        .collect();
+
+    if calls.is_empty() {
+        return Ok(None);
+    }
+
+    serde_json::to_string(&calls)
+        .map(Some)
+        .map_err(|error| AgentPoolError::Internal(anyhow::anyhow!(error)))
 }
 
 async fn ensure_assistant_message(
@@ -708,6 +902,8 @@ async fn ensure_assistant_message(
         .role(Role::Agent)
         .content("")
         .thinking(Option::<&str>::None)
+        .tool_calls(Option::<&str>::None)
+        .tool_call_id(Option::<&str>::None)
         .execute(&db)
         .await
         .map_err(db_error)?;
@@ -716,6 +912,33 @@ async fn ensure_assistant_message(
     assistant.seq = Some(seq);
     assistant.content.clear();
     assistant.thinking = None;
+    assistant.tool_calls.clear();
+
+    Ok(())
+}
+
+async fn persist_tool_message(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    tool_call_id: &str,
+    content: &str,
+) -> Result<(), AgentPoolError> {
+    let id = Uuid::now_v7();
+    let seq = next_message_seq(state, thread_id)?;
+    let db = state.borrow().db.clone();
+
+    messages::insert()
+        .id(id)
+        .parent_thread(thread_id)
+        .seq(seq)
+        .role(Role::Tool)
+        .content(content)
+        .thinking(Option::<&str>::None)
+        .tool_calls(Option::<&str>::None)
+        .tool_call_id(Some(tool_call_id))
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
 
     Ok(())
 }
@@ -808,7 +1031,7 @@ async fn load_thread(
 ) -> Result<(Vec<llm::Message>, u64), AgentPoolError> {
     let result = db
         .query_with_params(
-            "SELECT seq, role, content, thinking FROM messages WHERE parent_thread = ? ORDER BY seq ASC",
+            "SELECT seq, role, content, thinking, tool_calls, tool_call_id FROM messages WHERE parent_thread = ? ORDER BY seq ASC",
             vec![Value::Uuid(thread_id)],
         )
         .await
@@ -846,6 +1069,17 @@ async fn load_thread(
                 Some(Value::Text(thinking)) => Some(thinking.clone()),
                 _ => None,
             },
+            tool_calls: match row.get("tool_calls") {
+                Some(Value::Text(tool_calls)) => Some(
+                    serde_json::from_str(tool_calls)
+                        .map_err(|error| AgentPoolError::Internal(anyhow::anyhow!(error)))?,
+                ),
+                _ => None,
+            },
+            tool_call_id: match row.get("tool_call_id") {
+                Some(Value::Text(tool_call_id)) => Some(tool_call_id.clone()),
+                _ => None,
+            },
             ..Default::default()
         });
 
@@ -860,12 +1094,16 @@ async fn update_message(
     id: Uuid,
     content: &str,
     thinking: Option<&str>,
+    tool_calls: Option<&str>,
 ) -> Result<(), AgentPoolError> {
     db.query_with_params(
-        "UPDATE messages SET content = ?, thinking = ? WHERE id = ?",
+        "UPDATE messages SET content = ?, thinking = ?, tool_calls = ? WHERE id = ?",
         vec![
             Value::Text(content.to_string()),
             thinking
+                .map(|s| Value::Text(s.to_string()))
+                .unwrap_or(Value::Null),
+            tool_calls
                 .map(|s| Value::Text(s.to_string()))
                 .unwrap_or(Value::Null),
             Value::Uuid(id),
@@ -885,7 +1123,7 @@ fn db_error(err: Box<dyn std::error::Error + Send + Sync>) -> AgentPoolError {
 mod tests {
     use crate::config::{Firecrawl, WebSearch};
     use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
-    use llm::{CompletionChoice, Delta, StreamResponseChunk};
+    use llm::{CompletionChoice, Delta, StreamResponseChunk, ToolCallChunk, ToolCallFunction};
 
     use super::*;
     use crate::db::{self, threads, users};
@@ -1075,6 +1313,279 @@ mod tests {
         assert_eq!(rows[1].get_text("content"), Some("pong"));
     }
 
+    #[tokio::test]
+    async fn send_persists_tool_calls_and_outputs() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![
+                        vec![tool_call_chunk("call-1", "missing_tool", r#"{"value":1}"#)],
+                        vec![text_chunk("done")],
+                    ])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+
+        let pool = InProcessAgentPool::with_idle_ttl(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+            "System prompt".to_string(),
+            Duration::from_secs(60),
+        );
+
+        let mut subscription = pool.subscribe(thread_id, None).await.unwrap();
+        pool.send(
+            thread_id,
+            AgentRequest {
+                content: "run tool".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut saw_tool_started = false;
+        let mut saw_tool_finished = false;
+        let mut saw_finished = false;
+        for _ in 0..12 {
+            let event = tokio::time::timeout(Duration::from_secs(2), subscription.events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+
+            match event.kind {
+                AgentEventKind::ToolStarted { name } if name == "missing_tool" => {
+                    saw_tool_started = true;
+                }
+                AgentEventKind::ToolFinished { name } if name == "missing_tool" => {
+                    saw_tool_finished = true;
+                }
+                AgentEventKind::RunFinished => {
+                    saw_finished = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_tool_started);
+        assert!(saw_tool_finished);
+        assert!(saw_finished);
+
+        let rows = db
+            .query_with_params(
+                "SELECT role, content, tool_calls, tool_call_id FROM messages WHERE parent_thread = ? ORDER BY seq ASC",
+                vec![Value::Uuid(thread_id)],
+            )
+            .await
+            .unwrap();
+        let rows = rows.rows();
+
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[1].get_text("role"), Some("agent"));
+        assert_eq!(rows[1].get_text("content"), Some(""));
+        assert!(rows[1].get_text("tool_calls").is_some());
+        assert_eq!(rows[2].get_text("role"), Some("tool"));
+        assert_eq!(rows[2].get_text("tool_call_id"), Some("call-1"));
+        assert!(
+            rows[2]
+                .get_text("content")
+                .unwrap()
+                .contains("unknown tool")
+        );
+        assert_eq!(rows[3].get_text("role"), Some("agent"));
+        assert_eq!(rows[3].get_text("content"), Some("done"));
+
+        let (thread, _) = load_thread(&db, thread_id).await.unwrap();
+        assert_eq!(thread[1].tool_calls.as_ref().unwrap().len(), 1);
+        assert_eq!(thread[2].tool_call_id.as_deref(), Some("call-1"));
+    }
+
+    #[tokio::test]
+    async fn send_ignores_empty_stream_deltas() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![vec![empty_delta_chunk(), text_chunk("pong")]])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+
+        let pool = InProcessAgentPool::with_idle_ttl(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+            "System prompt".to_string(),
+            Duration::from_secs(60),
+        );
+
+        pool.send(
+            thread_id,
+            AgentRequest {
+                content: "ping".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        while pool.status(thread_id).await.unwrap() != ThreadStatus::Idle {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let rows = db
+            .query_with_params(
+                "SELECT role, content, thinking, tool_calls, tool_call_id FROM messages WHERE parent_thread = ? ORDER BY seq ASC",
+                vec![Value::Uuid(thread_id)],
+            )
+            .await
+            .unwrap();
+        let rows = rows.rows();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get_text("role"), Some("user"));
+        assert_eq!(rows[1].get_text("role"), Some("agent"));
+        assert_eq!(rows[1].get_text("content"), Some("pong"));
+        assert!(matches!(rows[1].get("thinking"), Some(Value::Null) | None));
+        assert!(matches!(
+            rows[1].get("tool_calls"),
+            Some(Value::Null) | None
+        ));
+        assert!(matches!(
+            rows[1].get("tool_call_id"),
+            Some(Value::Null) | None
+        ));
+    }
+
+    #[tokio::test]
+    async fn send_persists_full_choice_messages() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![vec![message_chunk("think", "pong")]])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+
+        let pool = InProcessAgentPool::with_idle_ttl(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+            "System prompt".to_string(),
+            Duration::from_secs(60),
+        );
+
+        pool.send(
+            thread_id,
+            AgentRequest {
+                content: "ping".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        while pool.status(thread_id).await.unwrap() != ThreadStatus::Idle {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let rows = db
+            .query_with_params(
+                "SELECT role, content, thinking FROM messages WHERE parent_thread = ? ORDER BY seq ASC",
+                vec![Value::Uuid(thread_id)],
+            )
+            .await
+            .unwrap();
+        let rows = rows.rows();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].get_text("role"), Some("agent"));
+        assert_eq!(rows[1].get_text("content"), Some("pong"));
+        assert_eq!(rows[1].get_text("thinking"), Some("think"));
+    }
+
     fn text_chunk(content: &str) -> StreamResponseChunk {
         StreamResponseChunk {
             id: "mock-stream-id".to_string(),
@@ -1094,6 +1605,83 @@ mod tests {
                 logprobs: None,
                 tool_calls: None,
                 finish_reason: Some("stop".to_string()),
+            }],
+        }
+    }
+
+    fn empty_delta_chunk() -> StreamResponseChunk {
+        StreamResponseChunk {
+            id: "mock-stream-id".to_string(),
+            object: "mock.stream".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            system_fingerprint: None,
+            choices: vec![CompletionChoice {
+                message: None,
+                text: None,
+                index: 0,
+                delta: Some(Delta {
+                    content: Some(String::new()),
+                    thinking: Some(String::new()),
+                    tool_calls: None,
+                }),
+                logprobs: None,
+                tool_calls: None,
+                finish_reason: None,
+            }],
+        }
+    }
+
+    fn message_chunk(thinking: &str, content: &str) -> StreamResponseChunk {
+        StreamResponseChunk {
+            id: "mock-stream-id".to_string(),
+            object: "mock.stream".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            system_fingerprint: None,
+            choices: vec![CompletionChoice {
+                message: Some(llm::Message {
+                    role: llm::Role::Assistant,
+                    content: content.to_string(),
+                    thinking: Some(thinking.to_string()),
+                    ..Default::default()
+                }),
+                text: None,
+                index: 0,
+                delta: None,
+                logprobs: None,
+                tool_calls: None,
+                finish_reason: Some("stop".to_string()),
+            }],
+        }
+    }
+
+    fn tool_call_chunk(id: &str, name: &str, arguments: &str) -> StreamResponseChunk {
+        StreamResponseChunk {
+            id: "mock-stream-id".to_string(),
+            object: "mock.stream".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            system_fingerprint: None,
+            choices: vec![CompletionChoice {
+                message: None,
+                text: None,
+                index: 0,
+                delta: Some(Delta {
+                    content: None,
+                    thinking: None,
+                    tool_calls: Some(vec![ToolCallChunk {
+                        index: Some(0),
+                        id: Some(id.to_string()),
+                        function: Some(ToolCallFunction {
+                            name: Some(name.to_string()),
+                            arguments: Some(arguments.to_string()),
+                        }),
+                    }]),
+                }),
+                logprobs: None,
+                tool_calls: None,
+                finish_reason: Some("tool_calls".to_string()),
             }],
         }
     }

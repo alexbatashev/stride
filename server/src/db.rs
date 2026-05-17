@@ -43,6 +43,8 @@ migrations! {
             role: Role,
             content: String,
             thinking: Option<String>,
+            tool_calls: Option<String>,
+            tool_call_id: Option<String>,
 
             foreign_key(parent_thread -> threads.id);
         }

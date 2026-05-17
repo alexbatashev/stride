@@ -218,38 +218,51 @@ where
     }
 
     let mut body = res.into_body();
+    let mut conn = Some(conn);
     let s = async_stream::stream! {
         loop {
             let next_frame_fut = body.frame().fuse();
             futures::pin_mut!(next_frame_fut);
 
-            match futures::future::select(next_frame_fut, conn.as_mut()).await {
-                Either::Left((frame_opt, _)) => {
-                    match frame_opt {
-                        Some(Ok(frame)) => {
-                            if let Ok(data) = frame.into_data() {
-                                yield Ok(data);
+            if let Some(conn_fut) = conn.as_mut() {
+                match futures::future::select(next_frame_fut, conn_fut.as_mut()).await {
+                    Either::Left((frame_opt, _)) => {
+                        match frame_opt {
+                            Some(Ok(frame)) => {
+                                if let Ok(data) = frame.into_data() {
+                                    yield Ok(data);
+                                }
                             }
+                            Some(Err(err)) => {
+                                yield Err(Error::RequestError(err.to_string()));
+                                return;
+                            }
+                            None => return,
                         }
-                        Some(Err(err)) => {
+                    }
+                    Either::Right((conn_res, _)) => match conn_res {
+                        Ok(()) => {
+                            conn = None;
+                        }
+                        Err(err) => {
                             yield Err(Error::RequestError(err.to_string()));
                             return;
                         }
-                        None => return,
-                    }
+                    },
                 }
-                Either::Right((conn_res, _)) => match conn_res {
-                    Ok(()) => {
-                        yield Err(Error::RequestError(
-                            "connection closed before stream completed".to_string(),
-                        ));
-                        return;
+            } else {
+                match next_frame_fut.await {
+                    Some(Ok(frame)) => {
+                        if let Ok(data) = frame.into_data() {
+                            yield Ok(data);
+                        }
                     }
-                    Err(err) => {
+                    Some(Err(err)) => {
                         yield Err(Error::RequestError(err.to_string()));
                         return;
                     }
-                },
+                    None => return,
+                }
             }
         }
     };

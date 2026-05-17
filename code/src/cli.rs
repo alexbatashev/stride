@@ -91,6 +91,7 @@ pub async fn cli_main() -> anyhow::Result<()> {
                                             let _ = answered.send(vec![]);
                                             false
                                         }
+                                        Some(Ok(AgentResponseChunk::ToolStarted { .. } | AgentResponseChunk::ToolFinished { .. })) => false,
                                         None => true,
                                     }
                                 }

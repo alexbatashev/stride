@@ -34,6 +34,7 @@ pub struct MessageResponse {
     role: &'static str,
     content: String,
     thinking: Option<String>,
+    tool_call_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -58,7 +59,7 @@ struct MessageTemplateData {
     seq: u64,
     role: &'static str,
     message_type: &'static str,
-    tool_name: Option<&'static str>,
+    tool_name: Option<String>,
     content: String,
     thinking: Option<String>,
     has_thinking: bool,
@@ -209,7 +210,7 @@ pub async fn thread_page_data(
         messages: messages
             .into_iter()
             .map(|message| {
-                let (message_type, tool_name) = message_template_type(message.role);
+                let (message_type, tool_name) = message_template_type(&message);
                 let has_thinking = message.thinking.is_some();
                 MessageTemplateData {
                     id: message.id,
@@ -303,6 +304,13 @@ async fn thread_messages(
             role: role_name(row.role),
             content: row.content,
             thinking: row.thinking,
+            tool_call_name: tool_call_name(row.tool_calls.as_deref()),
+        })
+        .filter(|message| {
+            message.role != "agent"
+                || !message.content.is_empty()
+                || message.thinking.is_some()
+                || message.tool_call_name.is_some()
         })
         .collect())
 }
@@ -419,12 +427,24 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
-fn message_template_type(role: &'static str) -> (&'static str, Option<&'static str>) {
-    match role {
-        "tool" => ("tool_output", Some("Tool output")),
-        "system" => ("agent", None),
-        _ => (role, None),
+fn message_template_type(message: &MessageResponse) -> (&'static str, Option<String>) {
+    if let Some(name) = &message.tool_call_name {
+        return ("tool_call", Some(name.clone()));
     }
+
+    match message.role {
+        "tool" => ("tool_output", Some("Tool output".to_string())),
+        "system" => ("agent", None),
+        _ => (message.role, None),
+    }
+}
+
+fn tool_call_name(tool_calls: Option<&str>) -> Option<String> {
+    let calls: Vec<llm::ToolCallChunk> = serde_json::from_str(tool_calls?).ok()?;
+    calls
+        .first()
+        .and_then(|call| call.function.as_ref())
+        .and_then(|function| function.name.clone())
 }
 
 fn uuid_value(value: Option<&Value>) -> Result<Uuid, ThreadApiError> {

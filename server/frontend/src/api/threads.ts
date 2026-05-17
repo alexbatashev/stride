@@ -11,6 +11,7 @@ export type ThreadMessage = {
 	role: 'system' | 'agent' | 'user' | 'tool';
 	content: string;
 	thinking: string | null;
+	tool_call_name: string | null;
 };
 
 export type SendMessageResponse = {

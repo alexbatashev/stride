@@ -26,6 +26,7 @@ class ThreadsPageHydrator {
 	private error = "";
 	private events: EventSource | null = null;
 	private pendingAssistant = "";
+	private refreshSeq = 0;
 	private readonly messagesEl: HTMLElement;
 	private readonly titleEl: HTMLElement;
 	private readonly promptEl: HTMLElement & {
@@ -106,6 +107,7 @@ class ThreadsPageHydrator {
 			thinking:
 				element.querySelector<HTMLElement>("[data-thinking]")?.textContent ??
 				null,
+			tool_call_name: element.getAttribute("tool_name"),
 		}));
 	}
 
@@ -171,10 +173,20 @@ class ThreadsPageHydrator {
 			this.upsertPendingAssistant(event.kind.thinking);
 		}
 
-		if (
-			event.kind.type === "RunFinished" ||
-			event.kind.type === "AgentMessageCommitted"
-		) {
+		if (event.kind.type === "AgentMessageCommitted") {
+			void this.refreshAfterRun();
+		}
+
+		if (event.kind.type === "ToolStarted") {
+			this.running = true;
+			this.syncComposer();
+		}
+
+		if (event.kind.type === "ToolFinished") {
+			void this.refreshAfterRun();
+		}
+
+		if (event.kind.type === "RunFinished") {
 			this.running = false;
 			this.syncComposer();
 			void this.refreshAfterRun();
@@ -203,6 +215,7 @@ class ThreadsPageHydrator {
 			role: "agent",
 			content: this.pendingAssistant,
 			thinking: thinking ?? null,
+			tool_call_name: null,
 			pending: true,
 		};
 		this.messages.push(message);
@@ -214,10 +227,17 @@ class ThreadsPageHydrator {
 			return;
 		}
 
+		const refreshSeq = ++this.refreshSeq;
 		this.pendingAssistant = "";
-		this.messages = await listMessages(this.threadId);
+		const messages = await listMessages(this.threadId);
+		const threads = await listThreads();
+		if (refreshSeq !== this.refreshSeq) {
+			return;
+		}
+
+		this.messages = messages;
 		this.renderMessages();
-		this.threads = await listThreads();
+		this.threads = threads;
 		this.renderThreads();
 		this.syncTitle();
 	}
@@ -273,6 +293,7 @@ class ThreadsPageHydrator {
 			role: "user",
 			content,
 			thinking: null,
+			tool_call_name: null,
 			pending: true,
 		};
 		this.messages.push(message);
@@ -408,7 +429,7 @@ class ThreadsPageHydrator {
 			with_thinking: boolean;
 			text: string;
 		};
-		const messageType = this.messageType(message.role);
+		const messageType = this.messageType(message);
 		element.message_id = message.id;
 		element.type = messageType.type;
 		element.dataset.messageId = message.id;
@@ -453,14 +474,17 @@ class ThreadsPageHydrator {
 		return empty;
 	}
 
-	private messageType(role: ThreadMessage["role"]) {
-		if (role === "tool") {
+	private messageType(message: ThreadMessage) {
+		if (message.tool_call_name) {
+			return { type: "tool_call", toolName: message.tool_call_name };
+		}
+		if (message.role === "tool") {
 			return { type: "tool_output", toolName: "Tool output" };
 		}
-		if (role === "system") {
+		if (message.role === "system") {
 			return { type: "agent" };
 		}
-		return { type: role };
+		return { type: message.role };
 	}
 
 	private syncTitle() {

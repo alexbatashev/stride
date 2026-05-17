@@ -61,7 +61,15 @@ export class AppMessage extends LitElement {
   }
 
   getToolCall() {
-    return html`<p>Called tool ${this.tool_name}</p>`;
+    return html`
+      ${this.with_thinking
+        ? html`<app-spoiler title="Thinking"
+            ><slot name="thinking"></slot
+          ></app-spoiler>`
+        : null}
+      <p>Called tool ${this.tool_name}</p>
+      ${this.text ? html`<auto-markdown .text="${this.text}"></auto-markdown>` : null}
+    `;
   }
 
   getToolOutput() {

@@ -94,6 +94,10 @@ impl Tool for SubAgentTool {
                 Ok(AgentResponseChunk::Quiz { answered, .. }) => {
                     let _ = answered.send(vec![]);
                 }
+                Ok(
+                    AgentResponseChunk::ToolStarted { .. }
+                    | AgentResponseChunk::ToolFinished { .. },
+                ) => {}
                 Err(error) => return json!({ "success": false, "error": error.to_string() }),
             }
         }
