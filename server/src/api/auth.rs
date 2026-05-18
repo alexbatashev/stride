@@ -262,23 +262,35 @@ async fn create_session(state: &ServerState, user_id: Uuid) -> Result<AuthRespon
     Ok(AuthResponse { token })
 }
 
-pub(crate) fn verify_token(jwt_secret: &str, token: &str) -> Result<(), ()> {
-    decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(jwt_secret.as_bytes()),
-        &Validation::default(),
-    )
-    .map(|_| ())
-    .map_err(|_| ())
-}
-
-pub(crate) fn authenticated_user(
+pub(crate) async fn authenticated_user(
     state: &ServerState,
     headers: &HeaderMap,
 ) -> Result<Uuid, AuthError> {
     let token = auth_token(headers)?;
     let claims = decode_token(state, token)?;
-    Uuid::parse_str(&claims.sub).map_err(|_| AuthError::Unauthorized)
+    let user_id = Uuid::parse_str(&claims.sub).map_err(|_| AuthError::Unauthorized)?;
+    let session_id = Uuid::parse_str(&claims.sid).map_err(|_| AuthError::Unauthorized)?;
+
+    let rows = state
+        .db
+        .query_with_params(
+            "SELECT users.id FROM sessions \
+             INNER JOIN users ON users.id = sessions.user_id \
+             WHERE sessions.id = ? AND sessions.user_id = ? AND sessions.expires_at > ?",
+            vec![
+                Value::Uuid(session_id),
+                Value::Uuid(user_id),
+                Value::Integer(now() as i64),
+            ],
+        )
+        .await
+        .map_err(|_| AuthError::Internal)?;
+
+    if rows.rows().is_empty() {
+        Err(AuthError::Unauthorized)
+    } else {
+        Ok(user_id)
+    }
 }
 
 fn session_cookie(token: &str) -> String {
@@ -408,6 +420,9 @@ mod tests {
         let active_sessions = sessions::select().all(&db).await.unwrap();
         assert!(active_sessions.is_empty());
 
+        let response = app.clone().oneshot(threads_request(&token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
         let response = app
             .clone()
             .oneshot(json_request(
@@ -419,6 +434,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         let response = app
+            .clone()
             .oneshot(json_request(
                 "/api/login",
                 r#"{"username":"alice","password":"secret"}"#,
@@ -426,7 +442,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(!response_token(response).await.is_empty());
+        let token = response_token(response).await;
+        assert!(!token.is_empty());
+
+        db.query_with_params(
+            "DELETE FROM users WHERE username = ?",
+            vec![Value::Text("alice".to_string())],
+        )
+        .await
+        .unwrap();
+
+        let response = app.oneshot(threads_request(&token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     fn json_request(uri: &str, body: &'static str) -> Request<Body> {
@@ -452,6 +479,13 @@ mod tests {
 
     fn logout_request(token: &str) -> Request<Body> {
         Request::post("/api/logout")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn threads_request(token: &str) -> Request<Body> {
+        Request::get("/api/threads")
             .header(header::AUTHORIZATION, format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()

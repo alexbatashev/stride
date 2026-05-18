@@ -160,7 +160,7 @@ pub async fn list_threads(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ThreadResponse>>, ThreadApiError> {
-    let owner = auth::authenticated_user(&state, &headers)?;
+    let owner = auth::authenticated_user(&state, &headers).await?;
     Ok(Json(thread_summaries(&state, owner).await?))
 }
 
@@ -169,7 +169,7 @@ pub async fn thread_page_data(
     headers: &HeaderMap,
     thread_id: Option<Uuid>,
 ) -> Result<ThreadPageData, ThreadApiError> {
-    let owner = auth::authenticated_user(state, headers)?;
+    let owner = auth::authenticated_user(state, headers).await?;
     let threads = thread_summaries(state, owner).await?;
     let current_title = thread_id
         .and_then(|id| {
@@ -256,7 +256,7 @@ pub async fn create_thread(
     headers: HeaderMap,
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
-    let owner = auth::authenticated_user(&state, &headers)?;
+    let owner = auth::authenticated_user(&state, &headers).await?;
     let content = normalize_content(request.content)?;
     let thread_id = Uuid::now_v7();
     let title = title_from_content(&content);
@@ -367,7 +367,7 @@ async fn require_thread_owner(
     headers: &HeaderMap,
     thread_id: Uuid,
 ) -> Result<(), ThreadApiError> {
-    let owner = auth::authenticated_user(state, headers)?;
+    let owner = auth::authenticated_user(state, headers).await?;
     require_thread_owner_for_user(state, owner, thread_id).await
 }
 

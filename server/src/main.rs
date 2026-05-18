@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::Arc};
 use axum::{
     Router,
     extract::State,
-    http::{HeaderMap, header},
+    http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -179,7 +179,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
 }
 
 async fn root(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    let path = if is_authenticated(&state, &headers) {
+    let path = if is_authenticated(&state, &headers).await {
         "/threads"
     } else {
         "/auth/login"
@@ -187,15 +187,6 @@ async fn root(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Resp
     Redirect::to(path).into_response()
 }
 
-fn is_authenticated(state: &ServerState, headers: &HeaderMap) -> bool {
-    headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies
-                .split(';')
-                .find_map(|part| part.trim().strip_prefix("token="))
-        })
-        .map(|token| api::auth::verify_token(&state.jwt_secret, token).is_ok())
-        .unwrap_or(false)
+async fn is_authenticated(state: &ServerState, headers: &HeaderMap) -> bool {
+    api::auth::authenticated_user(state, headers).await.is_ok()
 }
