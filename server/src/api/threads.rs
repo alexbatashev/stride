@@ -1,15 +1,14 @@
-use std::{convert::Infallible, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-    response::{
-        IntoResponse, Response, Sse,
-        sse::{Event, KeepAlive},
+    extract::{
+        Path, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
-use futures::{StreamExt, stream};
 use minisql::Value;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -18,7 +17,10 @@ use crate::{
     ServerState,
     api::auth::{self, AuthError},
     db::{Role, messages, threads},
-    runner::{AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadStatus},
+    runner::{
+        AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadStatus,
+        ThreadSubscription,
+    },
 };
 
 #[derive(Serialize)]
@@ -332,34 +334,52 @@ pub async fn send_message(
 }
 
 pub async fn events(
+    ws: WebSocketUpgrade,
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
-) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ThreadApiError> {
+) -> Result<Response, ThreadApiError> {
     require_thread_owner(&state, &headers, thread_id).await?;
     let subscription = state
         .runner
         .subscribe(thread_id, None)
         .await
         .map_err(pool_error)?;
-    let snapshot = snapshot_event(&subscription);
-    let events = subscription.events;
 
-    let live = stream::unfold(events, |mut events| async move {
-        loop {
-            match events.recv().await {
-                Ok(event) => {
-                    let data = serde_json::to_string(&event_response(event)).ok()?;
-                    return Some((Ok(Event::default().data(data)), events));
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, subscription)))
+}
+
+async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
+    let snapshot = snapshot_event(&subscription);
+    if socket.send(Message::Text(snapshot.into())).await.is_err() {
+        return;
+    }
+
+    let mut events = subscription.events;
+    loop {
+        tokio::select! {
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+            event = events.recv() => {
+                match event {
+                    Ok(event) => {
+                        let Ok(data) = serde_json::to_string(&event_response(event)) else {
+                            break;
+                        };
+                        if socket.send(Message::Text(data.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
         }
-    });
-    let stream = stream::once(async move { Ok(Event::default().data(snapshot)) }).chain(live);
-
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    }
 }
 
 async fn require_thread_owner(

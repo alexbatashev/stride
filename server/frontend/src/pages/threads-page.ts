@@ -24,7 +24,7 @@ class ThreadsPageHydrator {
 	private draft = "";
 	private running: boolean;
 	private error = "";
-	private events: EventSource | null = null;
+	private events: WebSocket | null = null;
 	private pendingAssistant = "";
 	private refreshSeq = 0;
 	private readonly messagesEl: HTMLElement;
@@ -126,9 +126,10 @@ class ThreadsPageHydrator {
 
 	private openEvents(threadId: string) {
 		this.closeEvents();
-		this.events = new EventSource(`/api/threads/${threadId}/events`);
+		const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+		this.events = new WebSocket(`${protocol}//${location.host}/api/threads/${threadId}/events`);
 		this.events.onmessage = (event) =>
-			this.applyEvent(JSON.parse(event.data) as ThreadEvent);
+			this.applyEvent(JSON.parse(event.data as string) as ThreadEvent);
 		this.events.onerror = () => {
 			this.setError("Live updates disconnected.");
 		};
