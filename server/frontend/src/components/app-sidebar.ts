@@ -218,11 +218,15 @@ export class AppSidebar extends LitElement {
         aria-label="Close sidebar"
         @click=${this.toggleSidebar}
       ></button>
-      <div class="header"></div>
+      <div class="header">
+        <slot name="header"></slot>
+      </div>
       <div class="main">
         <slot @slotchange=${this.syncSlottedItems}></slot>
       </div>
-      <div class="footer"></div>`;
+      <div class="footer">
+        <slot name="footer"></slot>
+      </div>`;
   }
 }
 
@@ -406,7 +410,9 @@ export class AppSidebarNavItem extends LitElement {
       <span class="icon" ?hidden=${!this.hasIcon}
         ><slot name="icon" @slotchange=${this.onIconSlotChange}></slot
       ></span>
-      <span class="label"><slot @slotchange=${this.onLabelSlotChange}></slot></span>
+      <span class="label"
+        ><slot @slotchange=${this.onLabelSlotChange}></slot
+      ></span>
     </a>`;
   }
 }
@@ -612,7 +618,9 @@ export class AppSidebarGroup extends LitElement {
         @click=${this.toggle}
       >
         <span class="title">${this.title}</span>
-        <span class="chevron">${this.is_open ? CHEVRON_DOWN : CHEVRON_RIGHT}</span>
+        <span class="chevron"
+          >${this.is_open ? CHEVRON_DOWN : CHEVRON_RIGHT}</span
+        >
       </button>
       <ul ?hidden=${!this.is_open}>
         <slot></slot>

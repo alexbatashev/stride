@@ -8,6 +8,7 @@ pub fn get_templates() -> anyhow::Result<Handlebars<'static>> {
     let mut hb = Handlebars::new();
     hb.register_template_string("base", BASE_TEMPLATE)?;
     hb.register_template_string("auth", AUTH_TEMPLATE)?;
+    hb.register_template_string("sidebar", SIDEBAR_PARTIAL)?;
     hb.register_template_string("threads", THREADS_TEMPLATE)?;
     Ok(hb)
 }
@@ -37,6 +38,19 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         <link rel="stylesheet" href="/static/common.css" />
         <script type="module" src="/static/api.js"></script>
         <script type="module" src="/static/components.js"></script>
+        <script type="module">
+            import { render } from "lit";
+            import {
+                BOT_MESSAGE_SQUARE,
+                WORKFLOW,
+            } from "/static/components.js";
+
+            render(
+                BOT_MESSAGE_SQUARE,
+                document.querySelector("\#new-task-icon"),
+            );
+            render(WORKFLOW, document.querySelector("\#workflow-icon"));
+        </script>
         {{{page_script}}}
     </head>
     <body>
@@ -50,11 +64,35 @@ const AUTH_TEMPLATE: &str = r#"<auth-form mode="{{mode}}"></auth-form>
     document.addEventListener('auth-mode-change', (e) => { window.location.href = '/auth/' + e.detail.mode; });
 </script>"#;
 
+const SIDEBAR_PARTIAL: &str = r#"<nav>
+    <app-sidebar>
+        <div slot="header" class="brand">
+            <span class="mark">F</span><strong>Friday</strong>
+        </div>
+        <app-sidebar-nav-item target="/thread">
+            <span id="new-task-icon" slot="icon"></span>
+            New task
+        </app-sidebar-nav-item>
+        <app-sidebar-nav-item target="/thread">
+            <span id="workflow-icon" slot="icon"></span>
+            Automations
+        </app-sidebar-nav-item>
+        <app-sidebar-group title="Threads" data-thread-list>
+            {{#each threads}}
+                <app-sidebar-group-item target="/threads/{{id}}" {{#if active}}active{{/if}} data-thread-id="{{id}}">
+                    <span class="thread-label">{{title}}</span>
+                </app-sidebar-group-item>
+            {{/each}}
+        </app-sidebar-group>
+        <app-button slot="footer" class="sidebar-action" variant="secondary" data-action="logout">Log out</app-button>
+    </app-sidebar>
+</nav>"#;
+
 const THREADS_TEMPLATE: &str = r#"<style>
     #threads-page {
         background: var(--background);
         color: var(--foreground);
-        display: block;
+        display: flex;
         font-family:
             ui-sans-serif,
             system-ui,
@@ -62,31 +100,18 @@ const THREADS_TEMPLATE: &str = r#"<style>
             BlinkMacSystemFont,
             "Segoe UI",
             sans-serif;
-        min-height: 100svh;
+        height: 100svh;
+        overflow: hidden;
         width: 100%;
     }
 
-    #threads-page app-sidebar-provider {
-        --sidebar-width: 17.5rem;
-        --sidebar-bg: var(--muted);
-        --sidebar-fg: var(--muted-foreground);
-        --sidebar-accent: var(--accent);
-        --sidebar-accent-fg: var(--accent-foreground);
-        --sidebar-border: var(--border);
-        background: var(--background);
-        display: grid;
-        grid-template-columns: auto 1fr;
-        min-height: 100svh;
-        width: 100%;
+    #threads-page > nav {
+        height: 100svh;
     }
 
     #threads-page .sidebar-header,
     #threads-page .sidebar-footer {
         padding: 8px;
-    }
-
-    #threads-page .sidebar-shell {
-        height: 100svh;
     }
 
     #threads-page .brand {
@@ -123,11 +148,13 @@ const THREADS_TEMPLATE: &str = r#"<style>
         white-space: nowrap;
     }
 
-    #threads-page .main {
+    #threads-page main {
         display: grid;
+        flex: 1;
         grid-template-rows: auto 1fr auto;
         height: 100svh;
         min-height: 0;
+        min-width: 0;
         overflow: hidden;
     }
 
@@ -193,9 +220,9 @@ const THREADS_TEMPLATE: &str = r#"<style>
 
     #threads-page .composer-wrap {
         background: var(--surface-gradient);
+        bottom: 0;
         padding: 18px clamp(14px, 4vw, 28px) 24px;
         position: sticky;
-        bottom: 0;
         z-index: 10;
     }
 
@@ -205,7 +232,7 @@ const THREADS_TEMPLATE: &str = r#"<style>
         width: 100%;
     }
 
-    #threads-page app-button.sidebar-action {
+    #threads-page .sidebar-action {
         width: 100%;
     }
 
@@ -221,11 +248,14 @@ const THREADS_TEMPLATE: &str = r#"<style>
     }
 
     @media (max-width: 760px) {
-        #threads-page app-sidebar-provider {
+        #threads-page {
             display: block;
+            height: auto;
+            min-height: 100svh;
+            overflow: visible;
         }
 
-        #threads-page .main {
+        #threads-page main {
             height: 100svh;
         }
 
@@ -241,67 +271,44 @@ const THREADS_TEMPLATE: &str = r#"<style>
     }
 </style>
 <div id="threads-page" data-thread-id="{{thread_id}}" data-running="{{running}}">
-    <app-sidebar-provider>
-        <div class="sidebar-shell">
-            <app-sidebar collapsible="offcanvas">
-                <div class="sidebar-header">
-                    <div class="brand">
-                        <span class="mark">F</span><strong>Friday</strong>
-                    </div>
-                    <app-button class="sidebar-action" variant="secondary" data-action="new-thread">New thread</app-button>
+    {{> sidebar}}
+    <main>
+        <header class="topbar">
+            <app-sidebar-toggle></app-sidebar-toggle>
+            <h1 data-current-title>{{current_title}}</h1>
+        </header>
+        <section class="messages" data-messages>
+            {{#if messages}}
+                {{#each messages}}
+                    <app-message
+                        message_id="{{id}}"
+                        type="{{message_type}}"
+                        {{#if tool_name}}tool_name="{{tool_name}}"{{/if}}
+                        {{#if has_thinking}}with_thinking="true"{{/if}}
+                        data-message-id="{{id}}"
+                        data-seq="{{seq}}"
+                        data-role="{{role}}"
+                    >
+                        {{#if thinking}}<span slot="thinking" data-thinking>{{thinking}}</span>{{/if}}
+                        <span data-content>{{content}}</span>
+                    </app-message>
+                {{/each}}
+            {{else}}
+                <div class="empty" data-empty>
+                    <h2>What are we working on?</h2>
+                    <p>Start a thread and Friday will keep the context here.</p>
                 </div>
-                <app-sidebar-group title="Threads" data-thread-list>
-                    {{#each threads}}
-                        <app-sidebar-group-item target="/threads/{{id}}" {{#if active}}active{{/if}} data-thread-id="{{id}}">
-                            <span class="thread-label">{{title}}</span>
-                        </app-sidebar-group-item>
-                    {{/each}}
-                </app-sidebar-group>
-                <div class="sidebar-footer">
-                    <app-button class="sidebar-action" variant="secondary" data-action="logout">Log out</app-button>
-                </div>
-            </app-sidebar>
-        </div>
-        <app-sidebar-inset>
-            <section class="main">
-                <header class="topbar">
-                    <app-sidebar-toggle></app-sidebar-toggle>
-                    <h1 data-current-title>{{current_title}}</h1>
-                </header>
-                <main class="messages" data-messages>
-                    {{#if messages}}
-                        {{#each messages}}
-                            <app-message
-                                message_id="{{id}}"
-                                type="{{message_type}}"
-                                {{#if tool_name}}tool_name="{{tool_name}}"{{/if}}
-                                {{#if has_thinking}}with_thinking="true"{{/if}}
-                                data-message-id="{{id}}"
-                                data-seq="{{seq}}"
-                                data-role="{{role}}"
-                            >
-                                {{#if thinking}}<span slot="thinking" data-thinking>{{thinking}}</span>{{/if}}
-                                <span data-content>{{content}}</span>
-                            </app-message>
-                        {{/each}}
-                    {{else}}
-                        <div class="empty" data-empty>
-                            <h2>What are we working on?</h2>
-                            <p>Start a thread and Friday will keep the context here.</p>
-                        </div>
-                    {{/if}}
-                </main>
-                <footer class="composer-wrap">
-                    <app-prompt-input
-                        data-prompt
-                        placeholder="{{#if thread_id}}Message Friday{{else}}Ask Friday anything{{/if}}"
-                        {{#if running}}disabled{{/if}}
-                    ></app-prompt-input>
-                    <div class="error" data-error></div>
-                </footer>
-            </section>
-        </app-sidebar-inset>
-    </app-sidebar-provider>
+            {{/if}}
+        </section>
+        <footer class="composer-wrap">
+            <app-prompt-input
+                data-prompt
+                placeholder="{{#if thread_id}}Message Friday{{else}}Ask Friday anything{{/if}}"
+                {{#if running}}disabled{{/if}}
+            ></app-prompt-input>
+            <div class="error" data-error></div>
+        </footer>
+    </main>
 </div>
 <script type="module">
     document.addEventListener('navigate', (e) => {
