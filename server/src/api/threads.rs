@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{
-        Path, State,
+        Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
@@ -72,6 +72,11 @@ pub struct SendMessageRequest {
     content: String,
 }
 
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    after: Option<u64>,
+}
+
 #[derive(Serialize)]
 pub struct SendMessageResponse {
     thread_id: String,
@@ -129,6 +134,7 @@ enum EventKindResponse {
     RunFailed {
         error: String,
     },
+    RunCancelled,
 }
 
 #[derive(Debug)]
@@ -338,21 +344,45 @@ pub async fn events(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
+    Query(query): Query<EventsQuery>,
 ) -> Result<Response, ThreadApiError> {
     require_thread_owner(&state, &headers, thread_id).await?;
     let subscription = state
         .runner
-        .subscribe(thread_id, None)
+        .subscribe(thread_id, query.after)
         .await
         .map_err(pool_error)?;
 
     Ok(ws.on_upgrade(move |socket| handle_ws(socket, subscription)))
 }
 
+pub async fn cancel(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+) -> Result<StatusCode, ThreadApiError> {
+    require_thread_owner(&state, &headers, thread_id).await?;
+    state
+        .runner
+        .cancel_run(thread_id)
+        .await
+        .map_err(pool_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
     let snapshot = snapshot_event(&subscription);
     if socket.send(Message::Text(snapshot.into())).await.is_err() {
         return;
+    }
+
+    for event in subscription.replay {
+        let Ok(data) = serde_json::to_string(&event_response(event)) else {
+            return;
+        };
+        if socket.send(Message::Text(data.into())).await.is_err() {
+            return;
+        }
     }
 
     let mut events = subscription.events;
@@ -522,6 +552,7 @@ fn event_response(event: AgentEvent) -> EventResponse {
             },
             AgentEventKind::RunFinished => EventKindResponse::RunFinished,
             AgentEventKind::RunFailed { error } => EventKindResponse::RunFailed { error },
+            AgentEventKind::RunCancelled => EventKindResponse::RunCancelled,
         },
     }
 }

@@ -3,6 +3,7 @@ import {
 	ThreadEvent,
 	ThreadMessage,
 	ThreadSummary,
+	cancelRun,
 	createThread,
 	listMessages,
 	listThreads,
@@ -27,11 +28,13 @@ class ThreadsPageHydrator {
 	private events: WebSocket | null = null;
 	private pendingAssistant = "";
 	private refreshSeq = 0;
+	private lastEventSeq = 0;
 	private readonly messagesEl: HTMLElement;
 	private readonly titleEl: HTMLElement;
 	private readonly promptEl: HTMLElement & {
 		value: string;
 		disabled: boolean;
+		running: boolean;
 		placeholder: string;
 	};
 	private readonly errorEl: HTMLElement;
@@ -81,6 +84,7 @@ class ThreadsPageHydrator {
 		this.promptEl.addEventListener("prompt-submit", (event) =>
 			this.onPromptSubmit(event as CustomEvent<{ value: string }>),
 		);
+		this.promptEl.addEventListener("prompt-stop", () => void this.onStop());
 		window.addEventListener("popstate", () => {
 			window.location.href = window.location.pathname;
 		});
@@ -124,26 +128,43 @@ class ThreadsPageHydrator {
 		return "agent";
 	}
 
-	private openEvents(threadId: string) {
+	private openEvents(threadId: string, after?: number) {
 		this.closeEvents();
 		const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		this.events = new WebSocket(`${protocol}//${location.host}/api/threads/${threadId}/events`);
-		this.events.onmessage = (event) =>
+		const suffix = after != null ? `?after=${after}` : '';
+		const socket = new WebSocket(`${protocol}//${location.host}/api/threads/${threadId}/events${suffix}`);
+		this.events = socket;
+		socket.onmessage = (event) => {
+			if (this.events !== socket) return;
 			this.applyEvent(JSON.parse(event.data as string) as ThreadEvent);
-		this.events.onerror = () => {
+		};
+		socket.onerror = () => {
+			if (this.events !== socket) return;
 			this.setError("Live updates disconnected.");
+		};
+		socket.onclose = () => {
+			if (this.events !== socket) return;
+			this.events = null;
+			setTimeout(() => {
+				if (this.threadId === threadId) {
+					this.openEvents(threadId, this.lastEventSeq > 0 ? this.lastEventSeq : undefined);
+				}
+			}, 2000);
 		};
 	}
 
 	private closeEvents() {
-		this.events?.close();
+		const socket = this.events;
 		this.events = null;
+		socket?.close();
 	}
 
 	private applyEvent(event: ThreadEvent) {
 		if (event.thread_id !== this.threadId) {
 			return;
 		}
+
+		this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
 
 		if (event.kind.type === "Snapshot") {
 			this.running = event.kind.status === "running";
@@ -197,6 +218,13 @@ class ThreadsPageHydrator {
 			this.running = false;
 			this.syncComposer();
 			this.setError(event.kind.error);
+		}
+
+		if (event.kind.type === "RunCancelled") {
+			this.running = false;
+			this.pendingAssistant = "";
+			this.syncComposer();
+			void this.refreshAfterRun();
 		}
 	}
 
@@ -303,6 +331,7 @@ class ThreadsPageHydrator {
 
 	private async loadThread(threadId: string) {
 		this.closeEvents();
+		this.lastEventSeq = 0;
 		this.pendingAssistant = "";
 		this.setError("");
 
@@ -324,6 +353,7 @@ class ThreadsPageHydrator {
 		this.draft = "";
 		this.running = false;
 		this.pendingAssistant = "";
+		this.lastEventSeq = 0;
 		this.renderMessages();
 		this.renderThreads();
 		this.syncTitle();
@@ -496,9 +526,18 @@ class ThreadsPageHydrator {
 
 	private syncComposer() {
 		this.promptEl.value = this.draft;
-		this.promptEl.disabled = this.running;
+		this.promptEl.running = this.running;
 		this.promptEl.placeholder = this.threadId ? "Message Friday" : "Ask Friday anything";
 		this.errorEl.textContent = this.error;
+	}
+
+	private async onStop() {
+		if (!this.threadId || !this.running) return;
+		try {
+			await cancelRun(this.threadId);
+		} catch {
+			// Ignore errors — the RunCancelled event will update state
+		}
 	}
 
 	private setError(error: string) {

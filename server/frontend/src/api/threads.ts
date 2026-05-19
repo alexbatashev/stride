@@ -38,7 +38,8 @@ export type ThreadEvent = {
 		| {type: 'ToolFinished'; name: string}
 		| {type: 'WaitingForApproval'; approval_id: string; message: string}
 		| {type: 'RunFinished'}
-		| {type: 'RunFailed'; error: string};
+		| {type: 'RunFailed'; error: string}
+		| {type: 'RunCancelled'};
 };
 
 export async function listThreads(): Promise<ThreadSummary[]> {
@@ -61,6 +62,10 @@ export async function sendMessage(threadId: string, content: string): Promise<Se
 		method: 'POST',
 		body: JSON.stringify({content})
 	});
+}
+
+export async function cancelRun(threadId: string): Promise<void> {
+	await request(`/api/threads/${threadId}/cancel`, {method: 'POST'});
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
