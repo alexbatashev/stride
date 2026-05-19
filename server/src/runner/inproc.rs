@@ -438,24 +438,18 @@ async fn handle_subscribe(
     };
 
     let replay = if let Some(after) = after {
-        if after < runner.last_event_seq {
-            match runner.event_history.front() {
-                // History trimmed past client's position — return best-effort empty replay.
-                None | Some(_)
-                    if runner
-                        .event_history
-                        .front()
-                        .map_or(false, |e| e.seq > after + 1) =>
-                {
-                    Vec::new()
-                }
-                _ => runner
-                    .event_history
-                    .iter()
-                    .filter(|e| e.seq > after)
-                    .cloned()
-                    .collect(),
-            }
+        if after < runner.last_event_seq
+            && !runner
+                .event_history
+                .front()
+                .is_some_and(|e| e.seq > after + 1)
+        {
+            runner
+                .event_history
+                .iter()
+                .filter(|e| e.seq > after)
+                .cloned()
+                .collect()
         } else {
             Vec::new()
         }
@@ -1188,7 +1182,6 @@ async fn load_thread(
                 Some(Value::Text(tool_call_id)) => Some(tool_call_id.clone()),
                 _ => None,
             },
-            ..Default::default()
         });
 
         next_seq = seq + 1;
