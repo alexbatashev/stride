@@ -4,6 +4,19 @@
  */
 import {LitElement, css, html} from 'lit';
 
+const STOP_ICON = html`
+	<svg
+		xmlns="http://www.w3.org/2000/svg"
+		width="16"
+		height="16"
+		viewBox="0 0 24 24"
+		fill="currentColor"
+		aria-hidden="true"
+	>
+		<rect x="4" y="4" width="16" height="16" rx="2"/>
+	</svg>
+`;
+
 const ARROW_UP_ICON = html`
 	<svg
 		xmlns="http://www.w3.org/2000/svg"
@@ -105,11 +118,13 @@ const MIC_ICON = html`
 export class AppPromptInput extends LitElement {
 	static properties = {
 		disabled: {type: Boolean},
+		running: {type: Boolean},
 		placeholder: {type: String},
 		value: {type: String}
 	};
 
 	disabled = false;
+	running = false;
 	placeholder = 'Send a message';
 	value = '';
 
@@ -280,6 +295,16 @@ export class AppPromptInput extends LitElement {
 			pointer-events: none;
 		}
 
+		.send.stop {
+			background: var(--prompt-send-ready-bg, #f4f4f5);
+			border-color: var(--prompt-send-ready-bg, #f4f4f5);
+			color: var(--prompt-send-ready-fg, #18181b);
+		}
+
+		.send.stop:hover {
+			opacity: 0.92;
+		}
+
 		.sr-only {
 			border: 0;
 			clip: rect(0, 0, 0, 0);
@@ -337,7 +362,7 @@ export class AppPromptInput extends LitElement {
 					.value=${this.value}
 					placeholder=${this.placeholder}
 					rows="2"
-					?disabled=${this.disabled}
+					?disabled=${this.disabled || this.running}
 					@input=${this.onInput}
 					@keydown=${this.onKeydown}
 				></textarea>
@@ -357,10 +382,16 @@ export class AppPromptInput extends LitElement {
 						<slot name="right-actions">
 							<button class="tool-button icon mic" type="button" aria-label="Voice input">${MIC_ICON}</button>
 						</slot>
-						<button class="send" type="submit" ?disabled=${this.disabled || !this.value.trim()}>
-							${ARROW_UP_ICON}
-							<span class="sr-only">Send message</span>
-						</button>
+						${this.running
+							? html`<button class="send stop" type="button" @click=${this.onStop}>
+									${STOP_ICON}
+									<span class="sr-only">Stop</span>
+								</button>`
+							: html`<button class="send" type="submit" ?disabled=${this.disabled || !this.value.trim()}>
+									${ARROW_UP_ICON}
+									<span class="sr-only">Send message</span>
+								</button>`
+						}
 					</div>
 				</div>
 			</form>
@@ -385,6 +416,10 @@ export class AppPromptInput extends LitElement {
 
 		event.preventDefault();
 		this.submit();
+	}
+
+	private onStop() {
+		this.dispatchEvent(new CustomEvent('prompt-stop', {bubbles: true, composed: true}));
 	}
 
 	private onSubmit(event: SubmitEvent) {

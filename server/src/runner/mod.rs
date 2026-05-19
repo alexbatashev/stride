@@ -18,6 +18,8 @@ pub trait AgentPool: Send + Sync + 'static {
         after: Option<EventSeq>,
     ) -> Result<ThreadSubscription, AgentPoolError>;
 
+    async fn cancel_run(&self, thread_id: Uuid) -> Result<(), AgentPoolError>;
+
     async fn status(&self, thread_id: Uuid) -> Result<ThreadStatus, AgentPoolError>;
 
     async fn shutdown_thread(&self, thread_id: Uuid) -> Result<(), AgentPoolError>;
@@ -34,6 +36,7 @@ pub struct RunId(pub Uuid);
 pub struct ThreadSubscription {
     pub snapshot: ThreadSnapshot,
     pub events: broadcast::Receiver<AgentEvent>,
+    pub replay: Vec<AgentEvent>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +80,7 @@ pub enum AgentEventKind {
     WaitingForApproval { approval_id: Uuid, message: String },
     RunFinished,
     RunFailed { error: String },
+    RunCancelled,
 }
 
 #[derive(Debug)]
