@@ -439,10 +439,10 @@ async fn handle_subscribe(
 
     let replay = if let Some(after) = after {
         if after < runner.last_event_seq
-            && !runner
+            && runner
                 .event_history
                 .front()
-                .is_some_and(|e| e.seq > after + 1)
+                .is_none_or(|e| e.seq <= after + 1)
         {
             runner
                 .event_history
