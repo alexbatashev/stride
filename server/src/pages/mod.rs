@@ -69,11 +69,11 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
         <div slot="header" class="brand">
             <span class="mark">F</span><strong>Friday</strong>
         </div>
-        <app-sidebar-nav-item target="/thread">
+        <app-sidebar-nav-item target="/threads">
             <span id="new-task-icon" slot="icon"></span>
             New task
         </app-sidebar-nav-item>
-        <app-sidebar-nav-item target="/thread">
+        <app-sidebar-nav-item target="/threads">
             <span id="workflow-icon" slot="icon"></span>
             Automations
         </app-sidebar-nav-item>

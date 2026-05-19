@@ -47,6 +47,7 @@ struct Claims {
 pub(crate) enum AuthError {
     BadRequest,
     Unauthorized,
+    Forbidden,
     Conflict,
     Internal,
 }
@@ -56,6 +57,7 @@ impl IntoResponse for AuthError {
         let status = match self {
             AuthError::BadRequest => StatusCode::BAD_REQUEST,
             AuthError::Unauthorized => StatusCode::UNAUTHORIZED,
+            AuthError::Forbidden => StatusCode::FORBIDDEN,
             AuthError::Conflict => StatusCode::CONFLICT,
             AuthError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -68,6 +70,10 @@ pub async fn register(
     State(state): State<Arc<ServerState>>,
     Json(request): Json<AuthRequest>,
 ) -> Result<([(HeaderName, String); 1], Json<AuthResponse>), AuthError> {
+    if !state.config.allow_registration() {
+        return Err(AuthError::Forbidden);
+    }
+
     let request = normalize_request(request)?;
 
     let existing = users::select_cols((users::id,))
@@ -356,7 +362,10 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::{config::Config, runner::inproc::InProcessAgentPool};
+    use crate::{
+        config::{Config, Server},
+        runner::inproc::InProcessAgentPool,
+    };
     use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
     use minisql::ConnectionPool;
 
@@ -366,31 +375,7 @@ mod tests {
     async fn auth_flow_register_login_logout() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
-        let runner = Arc::new(InProcessAgentPool::new(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: mock_model_registry(),
-                max_iterations: 2,
-            }),
-        ));
-
-        let templates = Handlebars::new();
-
-        let app = app(
-            Arc::new(ServerState {
-                config: Config {
-                    providers: HashMap::new(),
-                    models: HashMap::new(),
-                    server: None,
-                    tools: None,
-                },
-                db: db.clone(),
-                jwt_secret: "test-secret".to_string(),
-                runner,
-                templates,
-            }),
-            PathBuf::from(crate::DEFAULT_STATIC_DIR),
-        );
+        let app = test_app(empty_config(), db.clone());
 
         let response = app
             .clone()
@@ -456,6 +441,35 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn register_returns_forbidden_when_registration_is_disabled() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let app = test_app(
+            Config {
+                server: Some(Server {
+                    db_path: None,
+                    listen_addr: None,
+                    allow_registration: Some(false),
+                    ldap: None,
+                }),
+                ..empty_config()
+            },
+            db,
+        );
+
+        let response = app
+            .oneshot(json_request(
+                "/api/register",
+                r#"{"username":"alice","password":"secret"}"#,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
     fn json_request(uri: &str, body: &'static str) -> Request<Body> {
         Request::post(uri)
             .header(header::CONTENT_TYPE, "application/json")
@@ -475,6 +489,36 @@ mod tests {
             },
         );
         registry
+    }
+
+    fn empty_config() -> Config {
+        Config {
+            providers: HashMap::new(),
+            models: HashMap::new(),
+            server: None,
+            tools: None,
+        }
+    }
+
+    fn test_app(config: Config, db: ConnectionPool) -> axum::Router {
+        let runner = Arc::new(InProcessAgentPool::new(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: mock_model_registry(),
+                max_iterations: 2,
+            }),
+        ));
+
+        app(
+            Arc::new(ServerState {
+                config,
+                db,
+                jwt_secret: "test-secret".to_string(),
+                runner,
+                templates: Handlebars::new(),
+            }),
+            PathBuf::from(crate::DEFAULT_STATIC_DIR),
+        )
     }
 
     fn logout_request(token: &str) -> Request<Body> {

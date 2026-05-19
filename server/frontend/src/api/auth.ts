@@ -61,6 +61,10 @@ function authErrorMessage(mode: AuthMode, status: number): string {
 		return 'Username or password is incorrect.';
 	}
 
+	if (status === 403) {
+		return mode === 'register' ? 'Registration is disabled.' : 'Could not sign in.';
+	}
+
 	if (status === 409) {
 		return mode === 'register' ? 'Username is already taken.' : 'Could not sign in.';
 	}

@@ -42,6 +42,7 @@ pub struct Ldap {
 pub struct Server {
     pub db_path: Option<String>,
     pub listen_addr: Option<String>,
+    pub allow_registration: Option<bool>,
     pub ldap: Option<Ldap>,
 }
 
@@ -90,6 +91,13 @@ impl Config {
             .and_then(|server| server.listen_addr.as_deref())
             .unwrap_or("0.0.0.0:3000")
     }
+
+    pub fn allow_registration(&self) -> bool {
+        self.server
+            .as_ref()
+            .and_then(|server| server.allow_registration)
+            .unwrap_or(true)
+    }
 }
 
 impl Provider {
@@ -126,6 +134,7 @@ mod tests {
             server: Some(Server {
                 db_path: Some("/tmp/friday-test.db".to_string()),
                 listen_addr: Some("127.0.0.1:4000".to_string()),
+                allow_registration: Some(false),
                 ldap: None,
             }),
             tools: None,
@@ -133,6 +142,19 @@ mod tests {
 
         assert_eq!(cfg.db_url(), "sqlite:///tmp/friday-test.db");
         assert_eq!(cfg.listen_addr(), "127.0.0.1:4000");
+        assert!(!cfg.allow_registration());
+    }
+
+    #[test]
+    fn registration_is_enabled_by_default() {
+        let cfg = Config {
+            providers: HashMap::new(),
+            models: HashMap::new(),
+            server: None,
+            tools: None,
+        };
+
+        assert!(cfg.allow_registration());
     }
 
     #[test]

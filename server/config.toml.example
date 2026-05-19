@@ -30,6 +30,7 @@ thinking = false
 [server]
 db_path = "/tmp/server.db"
 listen_addr = "0.0.0.0:3000"
+allow_registration = true
 
 [server.ldap]
 url = "ldap://localhost:389"
