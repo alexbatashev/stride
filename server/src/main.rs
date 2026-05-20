@@ -36,6 +36,7 @@ struct ServerState {
     pub(crate) db: ConnectionPool,
     pub(crate) jwt_secret: String,
     pub(crate) runner: Arc<dyn AgentPool>,
+    pub(crate) model_config: Arc<AgentConfig>,
     pub(crate) templates: Handlebars<'static>,
 }
 
@@ -62,12 +63,13 @@ async fn main() -> anyhow::Result<()> {
     let templates = get_templates()?;
     let listen_addr = config.listen_addr().to_string();
     let tools = config.tools.clone().unwrap_or_default();
+    let model_config = Arc::new(AgentConfig {
+        model_registry: create_model_registry(&config),
+        max_iterations: 90,
+    });
     let runner = Arc::new(runner::inproc::InProcessAgentPool::with_tool_config(
         db.clone(),
-        Arc::new(AgentConfig {
-            model_registry: create_model_registry(&config),
-            max_iterations: 90,
-        }),
+        model_config.clone(),
         tools,
     ));
 
@@ -76,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         jwt_secret,
         runner,
+        model_config,
         templates,
     });
 

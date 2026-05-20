@@ -13,6 +13,9 @@ use minisql::Value;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use friday_agent::DEFAULT_MODEL;
+use llm::{CompletionRequest, Message as LlmMessage, Role as LlmRole};
+
 use crate::{
     ServerState,
     api::auth::{self, AuthError},
@@ -277,11 +280,54 @@ pub async fn create_thread(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
-    let run_id = send_to_runner(&state, thread_id, content).await?;
+    let run_id = send_to_runner(&state, thread_id, content.clone()).await?;
+
+    let db = state.db.clone();
+    let model_config = state.model_config.clone();
+    tokio::spawn(async move {
+        if let Some(title) = generate_title(&model_config, &content).await {
+            let _ = db
+                .query_with_params(
+                    "UPDATE threads SET title = ? WHERE id = ?",
+                    vec![Value::Text(title), Value::Uuid(thread_id)],
+                )
+                .await;
+        }
+    });
+
     Ok(Json(SendMessageResponse {
         thread_id: thread_id.to_string(),
         run_id: run_id.0.to_string(),
     }))
+}
+
+async fn generate_title(
+    config: &std::sync::Arc<friday_agent::AgentConfig>,
+    content: &str,
+) -> Option<String> {
+    let model = config.model_registry.get_or_default(DEFAULT_MODEL);
+    let prompt = format!(
+        "Generate a concise title (5-8 words) for a conversation that starts with this message. Return only the title, no quotes or trailing punctuation.\n\nMessage: {content}"
+    );
+    let request = CompletionRequest::new(
+        &model.model_name,
+        &[LlmMessage {
+            role: LlmRole::User,
+            content: prompt,
+            ..Default::default()
+        }],
+    )
+    .max_tokens(32);
+
+    model
+        .api
+        .get_completion(&model.token, request)
+        .await
+        .ok()
+        .and_then(|c| c.choices.into_iter().next())
+        .and_then(|choice| choice.message)
+        .map(|msg| msg.content.trim().to_string())
+        .filter(|t| !t.is_empty())
 }
 
 pub async fn list_messages(
@@ -461,11 +507,12 @@ fn normalize_content(content: String) -> Result<String, ThreadApiError> {
 }
 
 fn title_from_content(content: &str) -> String {
-    let mut title = content.chars().take(64).collect::<String>();
+    let title: String = content.chars().take(64).collect();
     if title.len() < content.len() {
-        title.push_str("...");
+        format!("{title}...")
+    } else {
+        title
     }
-    title
 }
 
 fn role_name(role: Role) -> &'static str {
