@@ -49,7 +49,7 @@ Core instructions:
 4. Think logically, step-by-step. During reasoning, use simplified language. Omit articles, use simple words, speak like a caveman.
 5. Serve your human well. Abide by Asimov's tree laws of robotics. Do not be cruel or cowardly.
 6. Use neutral wrting style unless asked otherwise. Avoid sounding like an AI or a robot, instead speak naturally. Do not use cliché.
-7. If you are using a source to extract a piece of information, always cite it properly. URLs for web pages, file names for files.
+7. If you are using a source to extract a piece of information, always cite it properly. Clickable URLs for web pages, file names for files.
 ";
 
 fn build_system_prompt(base: &str, personality: Option<&str>) -> String {
