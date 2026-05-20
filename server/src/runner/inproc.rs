@@ -581,7 +581,10 @@ fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
         providers.push(Box::new(PubmedProvider));
     }
 
-    WebSearchTool { providers }
+    WebSearchTool {
+        providers,
+        ranker: Box::new(friday_agent::tools::web_search::InterleaveRanker),
+    }
 }
 
 fn firecrawl_tool(firecrawl: &Firecrawl) -> Option<FirecrawlTool> {
