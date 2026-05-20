@@ -506,6 +506,7 @@ fn finish_tool_calls(
             .map(|(id, name, arguments)| ToolCallChunk {
                 index: None,
                 id: Some(id.clone()),
+                call_type: Some("function".to_string()),
                 function: Some(ToolCallFunction {
                     name: Some(name.clone()),
                     arguments: Some(arguments.clone()),
@@ -771,6 +772,7 @@ mod tests {
                     tool_calls: Some(vec![ToolCallChunk {
                         index: Some(0),
                         id: Some("call_1".to_string()),
+                        call_type: None,
                         function: Some(ToolCallFunction {
                             name: Some("approval_tool".to_string()),
                             arguments: Some(arguments.to_string()),
@@ -850,6 +852,7 @@ mod tests {
                     tool_calls: Some(vec![ToolCallChunk {
                         index: Some(0),
                         id: Some("call_1".to_string()),
+                        call_type: None,
                         function: Some(ToolCallFunction {
                             name: Some(name.to_string()),
                             arguments: Some(arguments.to_string()),

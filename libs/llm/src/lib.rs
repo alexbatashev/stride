@@ -78,6 +78,8 @@ pub struct ToolCallChunk {
     pub index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub call_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function: Option<ToolCallFunction>,
 }
