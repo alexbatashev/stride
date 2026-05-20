@@ -54,19 +54,50 @@ impl SearchProvider for ArxivProvider {
 
         let resp: ArxivResponse = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
 
-        Ok(resp
+        let papers: Vec<(String, String, String)> = resp
             .papers
             .into_iter()
             .take(limit)
             .filter_map(|p| {
                 let id = p.id?;
-                Some(SearchResult {
-                    title: p.title.unwrap_or_default(),
-                    url: format!("https://arxiv.org/abs/{}", id),
-                    summary: p.abstract_text.unwrap_or_default(),
-                })
+                Some((
+                    id,
+                    p.title.unwrap_or_default(),
+                    p.abstract_text.unwrap_or_default(),
+                ))
+            })
+            .collect();
+
+        let urls =
+            futures::future::join_all(papers.iter().map(|(id, _, _)| resolve_url(id.clone())))
+                .await;
+
+        Ok(papers
+            .into_iter()
+            .zip(urls)
+            .map(|((_, title, summary), url)| SearchResult {
+                title,
+                url,
+                summary,
             })
             .collect())
+    }
+}
+
+async fn resolve_url(id: String) -> String {
+    let html_url = format!("https://arxiv.org/html/{}", id);
+    let req = Request::builder()
+        .method("HEAD")
+        .uri(&html_url)
+        .header(
+            "user-agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        )
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    match tinynet::send_request(req).await {
+        Ok((status, _)) if (200..300).contains(&(status as usize)) => html_url,
+        _ => format!("https://arxiv.org/pdf/{}", id),
     }
 }
 
