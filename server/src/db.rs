@@ -18,6 +18,7 @@ migrations! {
             id: Uuid [PrimaryKey],
             username: String [Unique],
             password_hash: String,
+            personality: Option<String>,
         }
 
         table sessions {

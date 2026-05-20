@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod pages;
 pub mod runner;
+mod tools;
 
 use std::{path::PathBuf, sync::Arc};
 
