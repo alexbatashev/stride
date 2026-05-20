@@ -269,6 +269,7 @@ mod tests {
                     tool_calls: Some(vec![ToolCallChunk {
                         index: Some(0),
                         id: Some("call_1".to_string()),
+                        call_type: None,
                         function: Some(ToolCallFunction {
                             name: Some("approval_tool".to_string()),
                             arguments: Some(arguments.to_string()),

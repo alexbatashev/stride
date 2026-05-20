@@ -38,6 +38,7 @@ fn tool_call_chunk(name: &str, arguments: &str) -> StreamResponseChunk {
                 tool_calls: Some(vec![ToolCallChunk {
                     index: Some(0),
                     id: Some("call_1".to_string()),
+                    call_type: None,
                     function: Some(ToolCallFunction {
                         name: Some(name.to_string()),
                         arguments: Some(arguments.to_string()),
