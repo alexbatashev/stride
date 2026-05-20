@@ -33,12 +33,13 @@ use crate::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
         RunId, ThreadSnapshot, ThreadStatus, ThreadSubscription,
     },
+    tools::personality::UpdatePersonalityTool,
 };
 
 const WORKER_THREADS: usize = 8;
 const EVENT_BUFFER: usize = 256;
 const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(300);
-const DEFAULT_SYSTEM_PROMPT: &str = "You are Friday, a semi-autonomous AI agent. Your task is to assist user with any requests.
+const BASE_SYSTEM_PROMPT: &str = "You are Friday, a semi-autonomous AI agent. Your task is to assist user with any requests.
 
 Core instructions:
 
@@ -50,6 +51,38 @@ Core instructions:
 6. Use neutral wrting style unless asked otherwise. Avoid sounding like an AI or a robot, instead speak naturally. Do not use cliché.
 7. If you are using a source to extract a piece of information, always cite it properly. URLs for web pages, file names for files.
 ";
+
+fn build_system_prompt(base: &str, personality: Option<&str>) -> String {
+    let date = current_date();
+    let mut prompt = base.to_string();
+    prompt.push_str(&format!("\nCurrent date: {date}"));
+    if let Some(p) = personality {
+        prompt.push_str(&format!("\n\n<user_personality>\n{p}\n</user_personality>"));
+    }
+    prompt
+}
+
+fn current_date() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let days = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 86400;
+    let days = days as u32;
+    // Hinnant's civil_from_days algorithm
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
 
 pub struct InProcessAgentPool {
     workers: Vec<WorkerHandle>,
@@ -122,11 +155,11 @@ struct PartialToolCall {
 
 impl InProcessAgentPool {
     pub fn new(db: ConnectionPool, config: Arc<AgentConfig>) -> Self {
-        Self::with_system_prompt(db, config, DEFAULT_SYSTEM_PROMPT.to_string())
+        Self::with_system_prompt(db, config, BASE_SYSTEM_PROMPT.to_string())
     }
 
     pub fn with_tool_config(db: ConnectionPool, config: Arc<AgentConfig>, tools: Tools) -> Self {
-        Self::with_system_prompt_and_tools(db, config, DEFAULT_SYSTEM_PROMPT.to_string(), tools)
+        Self::with_system_prompt_and_tools(db, config, BASE_SYSTEM_PROMPT.to_string(), tools)
     }
 
     pub fn with_system_prompt(
@@ -499,7 +532,7 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, tools, system_prompt) = {
+    let (db, config, tools, base_system_prompt) = {
         let state = state.borrow();
         (
             state.db.clone(),
@@ -510,9 +543,17 @@ async fn ensure_runner(
     };
 
     ensure_thread_exists(&db, thread_id).await?;
+    let user_id = thread_owner(&db, thread_id).await?;
+    let personality = load_personality(&db, user_id).await?;
+    let system_prompt = build_system_prompt(&base_system_prompt, personality.as_deref());
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
+    agent.register_tool(UpdatePersonalityTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("update_personality");
     let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
 
     state.borrow_mut().threads.insert(
@@ -1113,6 +1154,46 @@ fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
         matches!(runner.status, ThreadStatus::Running { .. })
             || now.duration_since(runner.last_used) < idle_ttl
     });
+}
+
+async fn thread_owner(db: &ConnectionPool, thread_id: Uuid) -> Result<Uuid, AgentPoolError> {
+    let result = db
+        .query_with_params(
+            "SELECT owner FROM threads WHERE id = ? LIMIT 1",
+            vec![Value::Uuid(thread_id)],
+        )
+        .await
+        .map_err(db_error)?;
+
+    result
+        .rows()
+        .first()
+        .and_then(|row| match row.get("owner") {
+            Some(Value::Uuid(id)) => Some(*id),
+            Some(Value::Blob(bytes)) if bytes.len() == 16 => Uuid::from_slice(bytes).ok(),
+            Some(Value::Text(s)) => Uuid::parse_str(s).ok(),
+            _ => None,
+        })
+        .ok_or_else(|| AgentPoolError::Internal(anyhow::anyhow!("thread owner not found")))
+}
+
+async fn load_personality(
+    db: &ConnectionPool,
+    user_id: Uuid,
+) -> Result<Option<String>, AgentPoolError> {
+    let result = db
+        .query_with_params(
+            "SELECT personality FROM users WHERE id = ? LIMIT 1",
+            vec![Value::Uuid(user_id)],
+        )
+        .await
+        .map_err(db_error)?;
+
+    Ok(result
+        .rows()
+        .first()
+        .and_then(|row| row.get_text("personality"))
+        .map(|s| s.to_string()))
 }
 
 async fn ensure_thread_exists(db: &ConnectionPool, thread_id: Uuid) -> Result<(), AgentPoolError> {
