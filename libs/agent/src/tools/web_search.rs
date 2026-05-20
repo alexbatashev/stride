@@ -104,8 +104,34 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
+pub trait ResultRanker: Send + Sync {
+    fn rank(&self, provider_results: Vec<Vec<SearchResult>>) -> Vec<SearchResult>;
+}
+
+pub struct InterleaveRanker;
+
+impl ResultRanker for InterleaveRanker {
+    fn rank(&self, provider_results: Vec<Vec<SearchResult>>) -> Vec<SearchResult> {
+        let max_len = provider_results.iter().map(|v| v.len()).max().unwrap_or(0);
+        let mut iters: Vec<_> = provider_results
+            .into_iter()
+            .map(|v| v.into_iter())
+            .collect();
+        let mut out = Vec::new();
+        for _ in 0..max_len {
+            for iter in &mut iters {
+                if let Some(item) = iter.next() {
+                    out.push(item);
+                }
+            }
+        }
+        out
+    }
+}
+
 pub struct WebSearchTool {
     pub providers: Vec<Box<dyn SearchProvider>>,
+    pub ranker: Box<dyn ResultRanker>,
 }
 
 #[derive(ToolDesc)]
@@ -149,24 +175,22 @@ impl Tool for WebSearchTool {
 
         let limit = params.limit.unwrap_or(10) as usize;
         let category = params.category.as_deref().unwrap_or("all");
-        let mut seen_urls = std::collections::HashSet::new();
-        let mut results = Vec::new();
 
+        let mut provider_results = Vec::new();
         for provider in &self.providers {
             if category != "all" && !provider.categories().contains(&category) {
                 continue;
             }
             if let Ok(items) = provider.search(&params.query, limit).await {
-                for item in items {
-                    if seen_urls.insert(item.url.clone()) {
-                        results.push(item);
-                    }
-                }
+                provider_results.push(items);
             }
         }
 
-        let items: Vec<Value> = results
+        let ranked = self.ranker.rank(provider_results);
+        let mut seen_urls = std::collections::HashSet::new();
+        let items: Vec<Value> = ranked
             .into_iter()
+            .filter(|r| seen_urls.insert(r.url.clone()))
             .take(limit)
             .map(|r| json!({"title": r.title, "url": r.url, "summary": r.summary}))
             .collect();
@@ -222,6 +246,7 @@ mod tests {
                 )],
                 cat: "generic",
             })],
+            ranker: Box::new(InterleaveRanker),
         };
 
         let result =
@@ -248,6 +273,7 @@ mod tests {
                     .collect(),
                 cat: "generic",
             })],
+            ranker: Box::new(InterleaveRanker),
         };
 
         let result = futures::executor::block_on(
@@ -286,6 +312,7 @@ mod tests {
                     cat: "generic",
                 }),
             ],
+            ranker: Box::new(InterleaveRanker),
         };
 
         let result =
@@ -318,6 +345,7 @@ mod tests {
                     cat: "academic",
                 }),
             ],
+            ranker: Box::new(InterleaveRanker),
         };
 
         let result = futures::executor::block_on(tool.execute(
@@ -329,6 +357,63 @@ mod tests {
         let results = result["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["title"], "Academic");
+    }
+
+    #[test]
+    fn interleave_ranker_zips_providers() {
+        let tool = WebSearchTool {
+            providers: vec![
+                Box::new(MockProvider {
+                    results: vec![
+                        (
+                            "A1".to_string(),
+                            "https://example.com/a1".to_string(),
+                            String::new(),
+                        ),
+                        (
+                            "A2".to_string(),
+                            "https://example.com/a2".to_string(),
+                            String::new(),
+                        ),
+                        (
+                            "A3".to_string(),
+                            "https://example.com/a3".to_string(),
+                            String::new(),
+                        ),
+                    ],
+                    cat: "generic",
+                }),
+                Box::new(MockProvider {
+                    results: vec![
+                        (
+                            "B1".to_string(),
+                            "https://example.com/b1".to_string(),
+                            String::new(),
+                        ),
+                        (
+                            "B2".to_string(),
+                            "https://example.com/b2".to_string(),
+                            String::new(),
+                        ),
+                    ],
+                    cat: "generic",
+                }),
+            ],
+            ranker: Box::new(InterleaveRanker),
+        };
+
+        let result = futures::executor::block_on(
+            tool.execute(make_config(), json!({"query": "test", "limit": 5})),
+        );
+
+        assert_eq!(result["success"], true);
+        let results = result["results"].as_array().unwrap();
+        assert_eq!(results.len(), 5);
+        assert_eq!(results[0]["title"], "A1");
+        assert_eq!(results[1]["title"], "B1");
+        assert_eq!(results[2]["title"], "A2");
+        assert_eq!(results[3]["title"], "B2");
+        assert_eq!(results[4]["title"], "A3");
     }
 
     #[test]
