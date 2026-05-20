@@ -501,13 +501,11 @@ mod tests {
     }
 
     fn test_app(config: Config, db: ConnectionPool) -> axum::Router {
-        let runner = Arc::new(InProcessAgentPool::new(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: mock_model_registry(),
-                max_iterations: 2,
-            }),
-        ));
+        let model_config = Arc::new(AgentConfig {
+            model_registry: mock_model_registry(),
+            max_iterations: 2,
+        });
+        let runner = Arc::new(InProcessAgentPool::new(db.clone(), model_config.clone()));
 
         app(
             Arc::new(ServerState {
@@ -515,6 +513,7 @@ mod tests {
                 db,
                 jwt_secret: "test-secret".to_string(),
                 runner,
+                model_config,
                 templates: Handlebars::new(),
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
