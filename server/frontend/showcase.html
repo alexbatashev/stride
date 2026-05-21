@@ -57,7 +57,31 @@
         </nav>
         <main>
             <header><app-sidebar-toggle></app-sidebar-toggle></header>
-            <section class="content"></section>
+            <section class="content">
+                <app-message
+                    message_id="1"
+                    type="user"
+                    <!--{{#if tool_name}}tool_name="{{tool_name}}"{{/if}}
+                    {{#if has_thinking}}with_thinking="true"{{/if}}-->
+                    data-message-id="1"
+                    data-seq="0"
+                    data-role="user"
+                >
+                    <span data-content>What can you do?</span>
+                </app-message>
+                <app-message
+                    message_id="1"
+                    type="agent"
+                    tool_name="My cool tool"
+                    with_thinking="true"
+                    data-message-id="1"
+                    data-seq="0"
+                    data-role="agent"
+                >
+                    <span slot="thinking" data-thinking>User asked a question...</span>
+                    <span data-content>Anything!</span>
+                </app-message>
+            </section>
             <app-prompt-input style="margin: 8px"></app-prompt-input>
         </main>
     </body>

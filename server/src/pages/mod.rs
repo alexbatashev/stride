@@ -185,7 +185,7 @@ const THREADS_TEMPLATE: &str = r#"<style>
     #threads-page .messages {
         box-sizing: border-box;
         margin: 0 auto;
-        max-width: 800px;
+        max-width: 100%;
         min-height: 0;
         overflow-y: auto;
         padding: 32px clamp(18px, 4vw, 32px) 24px;
@@ -260,8 +260,8 @@ const THREADS_TEMPLATE: &str = r#"<style>
         }
 
         #threads-page .messages {
-            max-width: none;
-            padding: 20px 14px 18px;
+            max-width: 100%;
+            padding: 8px;
             width: 100%;
         }
 

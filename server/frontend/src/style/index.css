@@ -38,7 +38,10 @@ html {
     --destructive-hover: rgb(220 38 38 / 20%);
     --destructive-ring: rgb(220 38 38 / 40%);
     --destructive-shadow: rgb(220 38 38 / 20%);
-    --surface-gradient: linear-gradient(rgb(255 255 255 / 0), var(--background) 28px);
+    --surface-gradient: linear-gradient(
+        rgb(255 255 255 / 0),
+        var(--background) 28px
+    );
     --topbar-bg: rgb(255 255 255 / 84%);
     --message-user-bg: #18181b;
     --message-user-fg: #fafafa;
@@ -91,7 +94,10 @@ html {
         --destructive-hover: rgb(248 113 113 / 22%);
         --destructive-ring: rgb(248 113 113 / 40%);
         --destructive-shadow: rgb(248 113 113 / 24%);
-        --surface-gradient: linear-gradient(rgb(18 18 18 / 0), var(--background) 28px);
+        --surface-gradient: linear-gradient(
+            rgb(18 18 18 / 0),
+            var(--background) 28px
+        );
         --topbar-bg: rgb(18 18 18 / 84%);
         --message-user-bg: #2f2f2f;
         --message-user-fg: #f4f4f5;
@@ -140,4 +146,6 @@ header {
     flex: 1;
     width: 100%;
     overflow: auto;
+    display: flex;
+    flex-direction: column;
 }
