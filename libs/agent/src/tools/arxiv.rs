@@ -33,25 +33,7 @@ impl SearchProvider for ArxivProvider {
             percent_encode(query),
         );
 
-        let req = Request::builder()
-            .method("GET")
-            .uri(&url)
-            .header(
-                "user-agent",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-            )
-            .header("x-requested-with", "XMLHttpRequest")
-            .body(Empty::<Bytes>::new())
-            .map_err(|e| e.to_string())?;
-
-        let (status, body) = tinynet::send_request(req)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !(200..300).contains(&(status as usize)) {
-            return Err(format!("HTTP {}", status));
-        }
-
+        let body = get_body(&url).await?;
         let resp: ArxivResponse = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
 
         let papers: Vec<(String, String, String)> = resp
@@ -86,19 +68,37 @@ impl SearchProvider for ArxivProvider {
 
 async fn resolve_url(id: String) -> String {
     let html_url = format!("https://arxiv.org/html/{}", id);
-    let req = Request::builder()
-        .method("HEAD")
-        .uri(&html_url)
-        .header(
-            "user-agent",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-        )
+    let req = arxiv_request("HEAD", &html_url)
         .body(Empty::<Bytes>::new())
         .unwrap();
     match tinynet::send_request(req).await {
-        Ok((status, _)) if (200..300).contains(&(status as usize)) => html_url,
+        Ok((status, _)) if (200..300).contains(&status) => html_url,
         _ => format!("https://arxiv.org/pdf/{}", id),
     }
+}
+
+async fn get_body(url: &str) -> Result<Bytes, String> {
+    let req = arxiv_request("GET", url)
+        .header("x-requested-with", "XMLHttpRequest")
+        .body(Empty::<Bytes>::new())
+        .map_err(|e| e.to_string())?;
+
+    let (status, body) = tinynet::send_request(req)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {}", status));
+    }
+
+    Ok(body)
+}
+
+fn arxiv_request(method: &'static str, url: &str) -> hyper::http::request::Builder {
+    Request::builder().method(method).uri(url).header(
+        "user-agent",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    )
 }
 
 fn percent_encode(s: &str) -> String {

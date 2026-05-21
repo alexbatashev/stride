@@ -48,6 +48,7 @@ impl SearchProvider for SearxngProvider {
             self.endpoint.trim_end_matches('/'),
             percent_encode(query),
         );
+        tracing::debug!(url = %url, limit, "searxng search request");
 
         let req = Request::builder()
             .method("GET")
@@ -58,12 +59,21 @@ impl SearchProvider for SearxngProvider {
         let (status, body) = tinynet::send_request(req)
             .await
             .map_err(|e| e.to_string())?;
+        tracing::debug!(
+            status,
+            body_bytes = body.len(),
+            "searxng search response received"
+        );
 
         if !(200..300).contains(&(status as usize)) {
             return Err(format!("HTTP {}", status));
         }
 
         let resp: SearxngResponse = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+        tracing::debug!(
+            result_count = resp.results.len(),
+            "searxng search response parsed"
+        );
 
         Ok(resp
             .results
@@ -175,14 +185,43 @@ impl Tool for WebSearchTool {
 
         let limit = params.limit.unwrap_or(10) as usize;
         let category = params.category.as_deref().unwrap_or("all");
+        tracing::debug!(
+            query = %params.query,
+            limit,
+            category,
+            providers = self.providers.len(),
+            "web_search request"
+        );
 
         let mut provider_results = Vec::new();
-        for provider in &self.providers {
+        for (provider_index, provider) in self.providers.iter().enumerate() {
             if category != "all" && !provider.categories().contains(&category) {
+                tracing::debug!(
+                    provider_index,
+                    provider_categories = ?provider.categories(),
+                    category,
+                    "web_search provider skipped by category"
+                );
                 continue;
             }
-            if let Ok(items) = provider.search(&params.query, limit).await {
-                provider_results.push(items);
+            match provider.search(&params.query, limit).await {
+                Ok(items) => {
+                    tracing::debug!(
+                        provider_index,
+                        provider_categories = ?provider.categories(),
+                        result_count = items.len(),
+                        "web_search provider returned results"
+                    );
+                    provider_results.push(items);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        provider_index,
+                        provider_categories = ?provider.categories(),
+                        error = %error,
+                        "web_search provider failed"
+                    );
+                }
             }
         }
 
@@ -194,6 +233,7 @@ impl Tool for WebSearchTool {
             .take(limit)
             .map(|r| json!({"title": r.title, "url": r.url, "summary": r.summary}))
             .collect();
+        tracing::debug!(result_count = items.len(), "web_search response");
 
         json!({"success": true, "results": items})
     }

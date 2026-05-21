@@ -141,14 +141,21 @@ where
     futures::pin_mut!(request_fut);
     futures::pin_mut!(conn);
 
-    match futures::future::select(request_fut, conn).await {
-        Either::Left((req_res, _)) => req_res,
-        Either::Right((conn_res, _)) => match conn_res {
-            Ok(()) => Err(Error::RequestError(
-                "connection closed before response completed".to_string(),
-            )),
-            Err(err) => Err(Error::RequestError(err.to_string())),
-        },
+    let mut conn_closed = false;
+    loop {
+        if conn_closed {
+            return request_fut.await;
+        }
+
+        match futures::future::select(request_fut.as_mut(), conn.as_mut()).await {
+            Either::Left((req_res, _)) => return req_res,
+            Either::Right((conn_res, _)) => match conn_res {
+                Ok(()) => {
+                    conn_closed = true;
+                }
+                Err(err) => return Err(Error::RequestError(err.to_string())),
+            },
+        }
     }
 }
 

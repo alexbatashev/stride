@@ -31,20 +31,7 @@ impl SearchProvider for PubmedProvider {
             limit,
         );
 
-        let req = Request::builder()
-            .method("GET")
-            .uri(&search_url)
-            .body(Empty::<Bytes>::new())
-            .map_err(|e| e.to_string())?;
-
-        let (status, body) = tinynet::send_request(req)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !(200..300).contains(&(status as usize)) {
-            return Err(format!("HTTP {}", status));
-        }
-
+        let body = get_body(&search_url).await?;
         let resp: EsearchResponse = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
         let ids = resp.esearchresult.idlist;
 
@@ -57,23 +44,28 @@ impl SearchProvider for PubmedProvider {
             ids.join(","),
         );
 
-        let req = Request::builder()
-            .method("GET")
-            .uri(&fetch_url)
-            .body(Empty::<Bytes>::new())
-            .map_err(|e| e.to_string())?;
-
-        let (status, body) = tinynet::send_request(req)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !(200..300).contains(&(status as usize)) {
-            return Err(format!("HTTP {}", status));
-        }
-
+        let body = get_body(&fetch_url).await?;
         let xml = std::str::from_utf8(&body).map_err(|e| e.to_string())?;
         Ok(parse_articles(xml))
     }
+}
+
+async fn get_body(url: &str) -> Result<Bytes, String> {
+    let req = Request::builder()
+        .method("GET")
+        .uri(url)
+        .body(Empty::<Bytes>::new())
+        .map_err(|e| e.to_string())?;
+
+    let (status, body) = tinynet::send_request(req)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {}", status));
+    }
+
+    Ok(body)
 }
 
 fn parse_articles(xml: &str) -> Vec<SearchResult> {
