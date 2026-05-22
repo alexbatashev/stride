@@ -1,5 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { CHEVRON_DOWN, CHEVRON_RIGHT } from "./icons";
 
 @customElement("app-spoiler")
 export class AppSpoiler extends LitElement {
@@ -20,18 +21,28 @@ export class AppSpoiler extends LitElement {
       padding: 0;
     }
 
-    .arrow {
-      display: inline-block;
-      transform-origin: center;
-      transition: transform 120ms ease;
+    .chevron {
+      align-items: center;
+      display: inline-flex;
+      flex: 0 0 1em;
+      height: 1em;
+      justify-content: center;
+      width: 1em;
     }
 
-    .arrow[data-open="true"] {
-      transform: rotate(90deg);
+    .chevron svg {
+      height: 1em;
+      width: 1em;
     }
 
     .content {
       margin-top: 8px;
+      margin-bottom: 16px;
+    }
+
+    .title {
+      font-weight: bold;
+      font-size: 0.95rem;
     }
   `;
 
@@ -51,11 +62,15 @@ export class AppSpoiler extends LitElement {
         aria-expanded=${this.visible ? "true" : "false"}
         @click=${this.toggle}
       >
-        <span>${this.title}</span>
-        <span class="arrow" data-open=${this.visible ? "true" : "false"} aria-hidden="true">></span>
+        <span class="title">${this.title}</span>
+        <span class="chevron" aria-hidden="true"
+          >${this.visible ? CHEVRON_DOWN : CHEVRON_RIGHT}</span
+        >
       </button>
       ${this.visible
-        ? html`<div class="content">${this.content || html`<slot></slot>`}</div>`
+        ? html`<div class="content">
+            ${this.content || html`<slot></slot>`}
+          </div>`
         : null}
     `;
   }
