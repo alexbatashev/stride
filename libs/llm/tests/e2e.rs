@@ -119,7 +119,7 @@ async fn list_models(
     State(state): State<Arc<TestServerState>>,
     headers: HeaderMap,
 ) -> Response<Body> {
-    if let Err(res) = validate_auth(&state, &headers) {
+    if let Some(res) = auth_error(&state, &headers) {
         return res;
     }
 
@@ -136,7 +136,7 @@ async fn get_model(
     Path(model): Path<String>,
     headers: HeaderMap,
 ) -> Response<Body> {
-    if let Err(res) = validate_auth(&state, &headers) {
+    if let Some(res) = auth_error(&state, &headers) {
         return res;
     }
 
@@ -169,7 +169,7 @@ async fn chat_completion(
     headers: HeaderMap,
     body: Body,
 ) -> Response<Body> {
-    if let Err(res) = validate_auth(&state, &headers) {
+    if let Some(res) = auth_error(&state, &headers) {
         return res;
     }
 
@@ -196,14 +196,14 @@ async fn chat_completion(
     }
 }
 
-fn validate_auth(state: &TestServerState, headers: &HeaderMap) -> Result<(), Response<Body>> {
+fn auth_error(state: &TestServerState, headers: &HeaderMap) -> Option<Response<Body>> {
     let expected = format!("Bearer {}", state.client_token);
     match headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
     {
-        Some(actual) if actual == expected => Ok(()),
-        _ => Err(text_response(
+        Some(actual) if actual == expected => None,
+        _ => Some(text_response(
             StatusCode::UNAUTHORIZED,
             "invalid bearer token",
         )),
@@ -450,10 +450,10 @@ async fn openai_client_works_through_e2e_server() {
                 Err(err) => panic!("stream completion failed: {err:?}"),
             };
             for choice in chunk.choices {
-                if let Some(delta) = choice.delta {
-                    if let Some(delta_content) = delta.content {
-                        content.push_str(&delta_content);
-                    }
+                if let Some(delta) = choice.delta
+                    && let Some(delta_content) = delta.content
+                {
+                    content.push_str(&delta_content);
                 }
                 saw_finish |= choice.finish_reason.is_some();
             }
