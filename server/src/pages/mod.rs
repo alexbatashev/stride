@@ -1,7 +1,7 @@
 pub mod agent;
 pub mod auth;
 
-use handlebars::Handlebars;
+use handlebars::{Handlebars, html_escape};
 use serde_json::Value;
 
 pub fn get_templates() -> anyhow::Result<Handlebars<'static>> {
@@ -21,9 +21,28 @@ pub fn render_page(
     data: &Value,
 ) -> String {
     let body = hb.render(template, data).unwrap();
+    let body_attrs = if template == "threads" {
+        let thread_id = data
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let running = data
+            .get("running")
+            .and_then(Value::as_bool)
+            .unwrap_or_default();
+        let thread_id = html_escape(thread_id);
+        format!(r#"id="threads-page" data-thread-id="{thread_id}" data-running="{running}""#)
+    } else {
+        String::new()
+    };
     hb.render(
         "base",
-        &serde_json::json!({"title": title, "page_script": page_script, "body": body}),
+        &serde_json::json!({
+            "title": title,
+            "page_script": page_script,
+            "body": body,
+            "body_attrs": body_attrs,
+        }),
     )
     .unwrap()
 }
@@ -53,7 +72,7 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         </script>
         {{{page_script}}}
     </head>
-    <body>
+    <body{{#if body_attrs}} {{{body_attrs}}}{{/if}}>
         {{{body}}}
     </body>
 </html>"#;
@@ -69,7 +88,7 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
         <div slot="header" class="brand">
             <span class="mark">F</span><strong>Friday</strong>
         </div>
-        <app-sidebar-nav-item target="/threads">
+        <app-sidebar-nav-item target="/threads" data-action="new-thread">
             <span id="new-task-icon" slot="icon"></span>
             New task
         </app-sidebar-nav-item>
@@ -89,15 +108,6 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
 </nav>"#;
 
 const THREADS_TEMPLATE: &str = r#"<style>
-    #threads-page > nav {
-        height: 100svh;
-    }
-
-    #threads-page .sidebar-header,
-    #threads-page .sidebar-footer {
-        padding: 8px;
-    }
-
     #threads-page .brand {
         align-items: center;
         display: flex;
@@ -132,30 +142,6 @@ const THREADS_TEMPLATE: &str = r#"<style>
         white-space: nowrap;
     }
 
-    #threads-page .topbar {
-        align-items: center;
-        backdrop-filter: blur(18px);
-        background: var(--topbar-bg);
-        border-bottom: 1px solid var(--border);
-        display: flex;
-        gap: 10px;
-        min-height: 52px;
-        padding: 0 clamp(14px, 2.4vw, 28px);
-        position: sticky;
-        top: 0;
-        z-index: 10;
-    }
-
-    #threads-page .topbar h1 {
-        color: var(--card-foreground);
-        font-size: 14px;
-        font-weight: 600;
-        margin: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
     #threads-page .empty {
         align-content: center;
         display: grid;
@@ -181,6 +167,11 @@ const THREADS_TEMPLATE: &str = r#"<style>
         max-width: 420px;
     }
 
+    #threads-page .sidebar-action {
+        margin: 8px;
+        width: calc(100% - 16px);
+    }
+
     #threads-page .error {
         color: var(--destructive);
         font-size: 13px;
@@ -194,17 +185,18 @@ const THREADS_TEMPLATE: &str = r#"<style>
 </style>
 {{> sidebar}}
 <main>
-    <header class="topbar">
+    <header>
         <app-sidebar-toggle></app-sidebar-toggle>
+        <span data-current-title hidden>{{current_title}}</span>
     </header>
-    <section class="content" data-messages>
-        <div class="wrapper">
+    <section class="content">
+        <div class="wrapper" data-messages>
             {{#if messages}}
                 {{#each messages}}
                     <app-message
                         message_id="{{id}}"
                         type="{{message_type}}"
-                        {{#if tool_name}}tool_name="{{tool_name}}"{{/if}}
+                        {{#if tool_name}}tool_names="{{tool_name}}"{{/if}}
                         {{#if has_thinking}}with_thinking="true"{{/if}}
                         data-message-id="{{id}}"
                         data-seq="{{seq}}"
@@ -235,3 +227,57 @@ const THREADS_TEMPLATE: &str = r#"<style>
         window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;
     });
 </script>"#;
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{get_templates, render_page};
+
+    #[test]
+    fn threads_page_matches_showcase_shell_without_extra_layout_wrapper() {
+        let hb = get_templates().unwrap();
+        let html = render_page(
+            &hb,
+            "Threads",
+            "",
+            "threads",
+            &json!({
+                "thread_id": "thread-1",
+                "current_title": "Current thread",
+                "running": true,
+                "threads": [
+                    {"id": "thread-1", "title": "Current thread", "active": true}
+                ],
+                "messages": [
+                    {
+                        "id": "message-1",
+                        "message_type": "agent",
+                        "tool_name": "Tool output",
+                        "has_thinking": false,
+                        "seq": 1,
+                        "role": "tool",
+                        "content": "done"
+                    }
+                ]
+            }),
+        );
+
+        assert!(
+            html.contains(
+                r#"<body id="threads-page" data-thread-id="thread-1" data-running="true">"#
+            )
+        );
+        assert!(!html.contains(r#"{{> sidebar}}"#));
+        assert!(html.contains(r#"<nav>"#));
+        assert!(html.contains(r#"<main>"#));
+        assert!(html.contains(r#"<header>"#));
+        assert!(html.contains(r#"<section class="content">"#));
+        assert!(html.contains(r#"<div class="wrapper" data-messages>"#));
+        assert!(html.contains(r#"data-current-title hidden"#));
+        assert!(html.contains(r#"tool_names="Tool output""#));
+        assert!(!html.contains(r#"tool_name="Tool output""#));
+        assert!(!html.contains(r#"<div id="threads-page""#));
+        assert!(!html.contains(r#"class="topbar""#));
+    }
+}

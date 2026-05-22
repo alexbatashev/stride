@@ -226,14 +226,19 @@ export class AutoMarkdown extends LitElement {
     table {
       border-collapse: collapse;
       font-size: 0.95em;
-      white-space: nowrap;
+      width: max-content;
+      max-width: 100%;
     }
 
     th,
     td {
       border: 1px solid var(--border, #d0d0d0);
+      max-width: 32rem;
+      overflow-wrap: anywhere;
       padding: 0.4em 0.75em;
       text-align: left;
+      vertical-align: top;
+      white-space: normal;
     }
 
     th {

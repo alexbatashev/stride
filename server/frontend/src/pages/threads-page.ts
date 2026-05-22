@@ -102,17 +102,24 @@ class ThreadsPageHydrator {
 	private readMessages(): ViewMessage[] {
 		return Array.from(
 			this.messagesEl.querySelectorAll<HTMLElement>("app-message[data-role]"),
-		).map((element) => ({
-			id: element.dataset.messageId ?? "",
-			seq: Number(element.dataset.seq ?? 0),
-			role: this.readRole(element.dataset.role),
-			content:
-				element.querySelector<HTMLElement>("[data-content]")?.textContent ?? "",
-			thinking:
-				element.querySelector<HTMLElement>("[data-thinking]")?.textContent ??
-				null,
-			tool_call_name: element.getAttribute("tool_name"),
-		}));
+		).map((element) => {
+			const toolNames = element.getAttribute("tool_names");
+
+			return {
+				id: element.dataset.messageId ?? "",
+				seq: Number(element.dataset.seq ?? 0),
+				role: this.readRole(element.dataset.role),
+				content:
+					element.querySelector<HTMLElement>("[data-content]")?.textContent ?? "",
+				thinking:
+					element.querySelector<HTMLElement>("[data-thinking]")?.textContent ??
+					null,
+				tool_call_name: toolNames
+					?.split(",")
+					.map((name) => name.trim())
+					.find(Boolean) ?? null,
+			};
+		});
 	}
 
 	private readRole(role: string | undefined): ThreadMessage["role"] {
@@ -456,7 +463,7 @@ class ThreadsPageHydrator {
 		const element = document.createElement("app-message") as HTMLElement & {
 			message_id: string;
 			type: string;
-			tool_name?: string;
+			tool_names: string[];
 			with_thinking: boolean;
 			text: string;
 		};
@@ -467,7 +474,8 @@ class ThreadsPageHydrator {
 		element.dataset.seq = String(message.seq);
 		element.dataset.role = message.role;
 		if (messageType.toolName) {
-			element.tool_name = messageType.toolName;
+			element.tool_names = [messageType.toolName];
+			element.setAttribute("tool_names", messageType.toolName);
 		}
 		if (message.thinking) {
 			element.with_thinking = true;
@@ -507,7 +515,7 @@ class ThreadsPageHydrator {
 
 	private messageType(message: ThreadMessage) {
 		if (message.tool_call_name) {
-			return { type: "tool_call", toolName: message.tool_call_name };
+			return { type: "agent", toolName: message.tool_call_name };
 		}
 		if (message.role === "tool") {
 			return { type: "tool_output", toolName: "Tool output" };

@@ -49,7 +49,9 @@ export class AppMessage extends LitElement {
       padding: 24px;
     }
 
-    .agent {
+    .tool-call {
+      font-size: 0.95rem;
+      font-weight: bold;
     }
   `;
 
@@ -93,7 +95,7 @@ export class AppMessage extends LitElement {
         ${repeat(
           this.tool_names,
           (item) => item,
-          (item, _) => html` <p>Called tool ${item}</p>`,
+          (item, _) => html` <p class="tool-call">Called tool ${item}</p>`,
         )}
       </div>
     `;
