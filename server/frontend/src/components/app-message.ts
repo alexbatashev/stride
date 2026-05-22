@@ -14,10 +14,17 @@ export class AppMessage extends LitElement {
   @property()
   type: MessageType = "user";
 
-  @property()
+  @property({
+    attribute: "tool_names",
+    converter: {
+      fromAttribute(value) {
+        return value ? value.split(",").map((item) => item.trim()) : [];
+      },
+    },
+  })
   tool_names: Array<string> = new Array();
 
-  @property()
+  @property({ type: Boolean })
   with_thinking: boolean = false;
 
   @property()

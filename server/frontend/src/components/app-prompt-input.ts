@@ -20,7 +20,12 @@ export class AppPromptInput extends LitElement {
 
   static styles = css`
     :host {
-      display: block;
+      display: inline-block;
+      max-width: 960px;
+      width: 100%;
+      height: fit-content;
+      max-height: 250px;
+      padding: 8px;
     }
 
     form {
@@ -47,8 +52,8 @@ export class AppPromptInput extends LitElement {
       border: 0;
       color: var(--prompt-fg, #d4d4d4);
       font: inherit;
-      font-size: 1.25rem;
-      line-height: 1.5;
+      font-size: 1rem;
+      line-height: 1.2;
       max-height: 220px;
       min-height: 48px;
       min-width: 0;
@@ -270,13 +275,6 @@ export class AppPromptInput extends LitElement {
             </button>
           </div>
           <div class="right-actions">
-            <button
-              class="tool-button icon mic"
-              type="button"
-              aria-label="Voice input"
-            >
-              ${MIC}
-            </button>
             ${this.running
               ? html`<button
                   class="send stop"
