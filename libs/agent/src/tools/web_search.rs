@@ -150,7 +150,10 @@ struct WebSearchParams {
     query: String,
     /// Maximum number of results to return. Defaults to 10.
     limit: Option<u32>,
-    /// Provider category filter. One of: "all", "generic", "academic". Defaults to "all".
+    /// Provider category filter. One of:
+    /// - "generic" - use this category for all-purpose searches
+    /// - "academic" - use this category for reviewd research paper search
+    /// Defaults to "generic".
     category: Option<String>,
 }
 
@@ -184,7 +187,7 @@ impl Tool for WebSearchTool {
         };
 
         let limit = params.limit.unwrap_or(10) as usize;
-        let category = params.category.as_deref().unwrap_or("all");
+        let category = params.category.as_deref().unwrap_or("generic");
         tracing::debug!(
             query = %params.query,
             limit,
@@ -195,7 +198,7 @@ impl Tool for WebSearchTool {
 
         let mut provider_results = Vec::new();
         for (provider_index, provider) in self.providers.iter().enumerate() {
-            if category != "all" && !provider.categories().contains(&category) {
+            if !provider.categories().contains(&category) {
                 tracing::debug!(
                     provider_index,
                     provider_categories = ?provider.categories(),
