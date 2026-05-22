@@ -89,22 +89,6 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
 </nav>"#;
 
 const THREADS_TEMPLATE: &str = r#"<style>
-    #threads-page {
-        background: var(--background);
-        color: var(--foreground);
-        display: flex;
-        font-family:
-            ui-sans-serif,
-            system-ui,
-            -apple-system,
-            BlinkMacSystemFont,
-            "Segoe UI",
-            sans-serif;
-        height: 100svh;
-        overflow: hidden;
-        width: 100%;
-    }
-
     #threads-page > nav {
         height: 100svh;
     }
@@ -148,16 +132,6 @@ const THREADS_TEMPLATE: &str = r#"<style>
         white-space: nowrap;
     }
 
-    #threads-page main {
-        display: grid;
-        flex: 1;
-        grid-template-rows: auto 1fr auto;
-        height: 100svh;
-        min-height: 0;
-        min-width: 0;
-        overflow: hidden;
-    }
-
     #threads-page .topbar {
         align-items: center;
         backdrop-filter: blur(18px);
@@ -180,17 +154,6 @@ const THREADS_TEMPLATE: &str = r#"<style>
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-    }
-
-    #threads-page .messages {
-        box-sizing: border-box;
-        margin: 0 auto;
-        max-width: 100%;
-        min-height: 0;
-        overflow-y: auto;
-        padding: 32px clamp(18px, 4vw, 32px) 24px;
-        scrollbar-width: thin;
-        width: 100%;
     }
 
     #threads-page .empty {
@@ -218,24 +181,6 @@ const THREADS_TEMPLATE: &str = r#"<style>
         max-width: 420px;
     }
 
-    #threads-page .composer-wrap {
-        background: var(--surface-gradient);
-        bottom: 0;
-        padding: 18px clamp(14px, 4vw, 28px) 24px;
-        position: sticky;
-        z-index: 10;
-    }
-
-    #threads-page app-prompt-input {
-        margin: 0 auto;
-        max-width: 860px;
-        width: 100%;
-    }
-
-    #threads-page .sidebar-action {
-        width: 100%;
-    }
-
     #threads-page .error {
         color: var(--destructive);
         font-size: 13px;
@@ -246,38 +191,14 @@ const THREADS_TEMPLATE: &str = r#"<style>
     #threads-page .error:empty {
         display: none;
     }
-
-    @media (max-width: 760px) {
-        #threads-page {
-            display: block;
-            height: auto;
-            min-height: 100svh;
-            overflow: visible;
-        }
-
-        #threads-page main {
-            height: 100svh;
-        }
-
-        #threads-page .messages {
-            max-width: 100%;
-            padding: 8px;
-            width: 100%;
-        }
-
-        #threads-page .composer-wrap {
-            padding: 12px 10px 12px;
-        }
-    }
 </style>
-<div id="threads-page" data-thread-id="{{thread_id}}" data-running="{{running}}">
-    {{> sidebar}}
-    <main>
-        <header class="topbar">
-            <app-sidebar-toggle></app-sidebar-toggle>
-            <h1 data-current-title>{{current_title}}</h1>
-        </header>
-        <section class="messages" data-messages>
+{{> sidebar}}
+<main>
+    <header class="topbar">
+        <app-sidebar-toggle></app-sidebar-toggle>
+    </header>
+    <section class="content" data-messages>
+        <div class="wrapper">
             {{#if messages}}
                 {{#each messages}}
                     <app-message
@@ -299,17 +220,16 @@ const THREADS_TEMPLATE: &str = r#"<style>
                     <p>Start a thread and Friday will keep the context here.</p>
                 </div>
             {{/if}}
-        </section>
-        <footer class="composer-wrap">
-            <app-prompt-input
-                data-prompt
-                placeholder="{{#if thread_id}}Message Friday{{else}}Ask Friday anything{{/if}}"
-                {{#if running}}disabled{{/if}}
-            ></app-prompt-input>
-            <div class="error" data-error></div>
-        </footer>
-    </main>
-</div>
+        </div>
+    </section>
+    <app-prompt-input
+        style="margin: auto"
+        data-prompt
+        placeholder="{{#if thread_id}}Message Friday{{else}}Ask Friday anything{{/if}}"
+        {{#if running}}disabled{{/if}}
+    ></app-prompt-input>
+    <div class="error" data-error></div>
+</main>
 <script type="module">
     document.addEventListener('navigate', (e) => {
         window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;
