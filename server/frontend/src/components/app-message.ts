@@ -2,6 +2,7 @@ import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import "./app-spoiler.js";
 import "./auto-markdown.js";
+import { repeat } from "lit/directives/repeat.js";
 
 type MessageType = "agent" | "user" | "tool_call" | "tool_output";
 
@@ -13,27 +14,44 @@ export class AppMessage extends LitElement {
   @property()
   type: MessageType = "user";
 
-  @property()
-  tool_name?: string;
+  @property({
+    attribute: "tool_names",
+    converter: {
+      fromAttribute(value) {
+        return value ? value.split(",").map((item) => item.trim()) : [];
+      },
+    },
+  })
+  tool_names: Array<string> = new Array();
 
-  @property()
+  @property({ type: Boolean })
   with_thinking: boolean = false;
 
   @property()
   text: string = "";
 
   static styles = css`
+    :host {
+      width: 100%;
+      display: block;
+    }
+
     .bubble {
       display: block;
-      margin: 8px;
-      padding: 24px;
-      max-width: 100%;
-      min-width: 60px;
     }
 
     .user {
       border-radius: 24px;
       background: var(--secondary, "#fefefe");
+      max-width: 800px;
+      width: fit-content;
+      float: right;
+      padding: 24px;
+    }
+
+    .tool-call {
+      font-size: 0.95rem;
+      font-weight: bold;
     }
   `;
 
@@ -53,42 +71,32 @@ export class AppMessage extends LitElement {
       case "agent":
       case "user":
         return this.getMessage();
-      case "tool_call":
-        return this.getToolCall();
       case "tool_output":
         return this.getToolOutput();
     }
   }
 
-  getToolCall() {
-    return html`
-      ${this.with_thinking
-        ? html`<app-spoiler title="Thinking"
-            ><slot name="thinking"></slot
-          ></app-spoiler>`
-        : null}
-      <p>Called tool ${this.tool_name}</p>
-      ${this.text ? html`<auto-markdown .text="${this.text}"></auto-markdown>` : null}
-    `;
-  }
-
   getToolOutput() {
-    return html` <app-spoiler title="${this.tool_name}">
+    return html` <app-spoiler title="${this.tool_names[0]}">
       <slot></slot>
     </app-spoiler>`;
   }
 
   getMessage() {
     return html`
-      ${this.with_thinking
-        ? html`<app-spoiler title="Thinking"
-            ><slot name="thinking"></slot
-          ></app-spoiler>`
-        : null}
       <div class="bubble ${this.type}">
-        ${this.type === "agent"
-          ? html`<auto-markdown .text="${this.text}"></auto-markdown>`
-          : this.text}
+        ${this.with_thinking
+          ? html`<app-spoiler title="Thinking"
+              ><slot name="thinking"></slot
+            ></app-spoiler>`
+          : null}
+        <auto-markdown .text="${this.text}"></auto-markdown>
+
+        ${repeat(
+          this.tool_names,
+          (item) => item,
+          (item, _) => html` <p class="tool-call">Called tool ${item}</p>`,
+        )}
       </div>
     `;
   }

@@ -1,7 +1,7 @@
 pub mod agent;
 pub mod auth;
 
-use handlebars::Handlebars;
+use handlebars::{Handlebars, html_escape};
 use serde_json::Value;
 
 pub fn get_templates() -> anyhow::Result<Handlebars<'static>> {
@@ -21,9 +21,28 @@ pub fn render_page(
     data: &Value,
 ) -> String {
     let body = hb.render(template, data).unwrap();
+    let body_attrs = if template == "threads" {
+        let thread_id = data
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let running = data
+            .get("running")
+            .and_then(Value::as_bool)
+            .unwrap_or_default();
+        let thread_id = html_escape(thread_id);
+        format!(r#"id="threads-page" data-thread-id="{thread_id}" data-running="{running}""#)
+    } else {
+        String::new()
+    };
     hb.render(
         "base",
-        &serde_json::json!({"title": title, "page_script": page_script, "body": body}),
+        &serde_json::json!({
+            "title": title,
+            "page_script": page_script,
+            "body": body,
+            "body_attrs": body_attrs,
+        }),
     )
     .unwrap()
 }
@@ -34,7 +53,7 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{{title}}</title>
-        <script type="importmap">{"imports": {"lit": "/static/lit.js", "lit/decorators.js": "/static/lit-decorators.js"}}</script>
+        <script type="importmap">{"imports": {"lit": "/static/lit.js"}}</script>
         <link rel="stylesheet" href="/static/common.css" />
         <script type="module" src="/static/api.js"></script>
         <script type="module" src="/static/components.js"></script>
@@ -53,7 +72,7 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         </script>
         {{{page_script}}}
     </head>
-    <body>
+    <body{{#if body_attrs}} {{{body_attrs}}}{{/if}}>
         {{{body}}}
     </body>
 </html>"#;
@@ -69,7 +88,7 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
         <div slot="header" class="brand">
             <span class="mark">F</span><strong>Friday</strong>
         </div>
-        <app-sidebar-nav-item target="/threads">
+        <app-sidebar-nav-item target="/threads" data-action="new-thread">
             <span id="new-task-icon" slot="icon"></span>
             New task
         </app-sidebar-nav-item>
@@ -89,31 +108,6 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
 </nav>"#;
 
 const THREADS_TEMPLATE: &str = r#"<style>
-    #threads-page {
-        background: var(--background);
-        color: var(--foreground);
-        display: flex;
-        font-family:
-            ui-sans-serif,
-            system-ui,
-            -apple-system,
-            BlinkMacSystemFont,
-            "Segoe UI",
-            sans-serif;
-        height: 100svh;
-        overflow: hidden;
-        width: 100%;
-    }
-
-    #threads-page > nav {
-        height: 100svh;
-    }
-
-    #threads-page .sidebar-header,
-    #threads-page .sidebar-footer {
-        padding: 8px;
-    }
-
     #threads-page .brand {
         align-items: center;
         display: flex;
@@ -148,51 +142,6 @@ const THREADS_TEMPLATE: &str = r#"<style>
         white-space: nowrap;
     }
 
-    #threads-page main {
-        display: grid;
-        flex: 1;
-        grid-template-rows: auto 1fr auto;
-        height: 100svh;
-        min-height: 0;
-        min-width: 0;
-        overflow: hidden;
-    }
-
-    #threads-page .topbar {
-        align-items: center;
-        backdrop-filter: blur(18px);
-        background: var(--topbar-bg);
-        border-bottom: 1px solid var(--border);
-        display: flex;
-        gap: 10px;
-        min-height: 52px;
-        padding: 0 clamp(14px, 2.4vw, 28px);
-        position: sticky;
-        top: 0;
-        z-index: 10;
-    }
-
-    #threads-page .topbar h1 {
-        color: var(--card-foreground);
-        font-size: 14px;
-        font-weight: 600;
-        margin: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    #threads-page .messages {
-        box-sizing: border-box;
-        margin: 0 auto;
-        max-width: 800px;
-        min-height: 0;
-        overflow-y: auto;
-        padding: 32px clamp(18px, 4vw, 32px) 24px;
-        scrollbar-width: thin;
-        width: 100%;
-    }
-
     #threads-page .empty {
         align-content: center;
         display: grid;
@@ -218,22 +167,9 @@ const THREADS_TEMPLATE: &str = r#"<style>
         max-width: 420px;
     }
 
-    #threads-page .composer-wrap {
-        background: var(--surface-gradient);
-        bottom: 0;
-        padding: 18px clamp(14px, 4vw, 28px) 24px;
-        position: sticky;
-        z-index: 10;
-    }
-
-    #threads-page app-prompt-input {
-        margin: 0 auto;
-        max-width: 860px;
-        width: 100%;
-    }
-
     #threads-page .sidebar-action {
-        width: 100%;
+        margin: 8px;
+        width: calc(100% - 16px);
     }
 
     #threads-page .error {
@@ -246,44 +182,21 @@ const THREADS_TEMPLATE: &str = r#"<style>
     #threads-page .error:empty {
         display: none;
     }
-
-    @media (max-width: 760px) {
-        #threads-page {
-            display: block;
-            height: auto;
-            min-height: 100svh;
-            overflow: visible;
-        }
-
-        #threads-page main {
-            height: 100svh;
-        }
-
-        #threads-page .messages {
-            max-width: none;
-            padding: 20px 14px 18px;
-            width: 100%;
-        }
-
-        #threads-page .composer-wrap {
-            padding: 12px 10px 12px;
-        }
-    }
 </style>
-<div id="threads-page" data-thread-id="{{thread_id}}" data-running="{{running}}">
-    {{> sidebar}}
-    <main>
-        <header class="topbar">
-            <app-sidebar-toggle></app-sidebar-toggle>
-            <h1 data-current-title>{{current_title}}</h1>
-        </header>
-        <section class="messages" data-messages>
+{{> sidebar}}
+<main>
+    <header>
+        <app-sidebar-toggle></app-sidebar-toggle>
+        <span data-current-title hidden>{{current_title}}</span>
+    </header>
+    <section class="content">
+        <div class="wrapper" data-messages>
             {{#if messages}}
                 {{#each messages}}
                     <app-message
                         message_id="{{id}}"
                         type="{{message_type}}"
-                        {{#if tool_name}}tool_name="{{tool_name}}"{{/if}}
+                        {{#if tool_name}}tool_names="{{tool_name}}"{{/if}}
                         {{#if has_thinking}}with_thinking="true"{{/if}}
                         data-message-id="{{id}}"
                         data-seq="{{seq}}"
@@ -299,19 +212,72 @@ const THREADS_TEMPLATE: &str = r#"<style>
                     <p>Start a thread and Friday will keep the context here.</p>
                 </div>
             {{/if}}
-        </section>
-        <footer class="composer-wrap">
-            <app-prompt-input
-                data-prompt
-                placeholder="{{#if thread_id}}Message Friday{{else}}Ask Friday anything{{/if}}"
-                {{#if running}}disabled{{/if}}
-            ></app-prompt-input>
-            <div class="error" data-error></div>
-        </footer>
-    </main>
-</div>
+        </div>
+    </section>
+    <app-prompt-input
+        style="margin: auto"
+        data-prompt
+        placeholder="{{#if thread_id}}Message Friday{{else}}Ask Friday anything{{/if}}"
+        {{#if running}}disabled{{/if}}
+    ></app-prompt-input>
+    <div class="error" data-error></div>
+</main>
 <script type="module">
     document.addEventListener('navigate', (e) => {
         window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;
     });
 </script>"#;
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{get_templates, render_page};
+
+    #[test]
+    fn threads_page_matches_showcase_shell_without_extra_layout_wrapper() {
+        let hb = get_templates().unwrap();
+        let html = render_page(
+            &hb,
+            "Threads",
+            "",
+            "threads",
+            &json!({
+                "thread_id": "thread-1",
+                "current_title": "Current thread",
+                "running": true,
+                "threads": [
+                    {"id": "thread-1", "title": "Current thread", "active": true}
+                ],
+                "messages": [
+                    {
+                        "id": "message-1",
+                        "message_type": "agent",
+                        "tool_name": "Tool output",
+                        "has_thinking": false,
+                        "seq": 1,
+                        "role": "tool",
+                        "content": "done"
+                    }
+                ]
+            }),
+        );
+
+        assert!(
+            html.contains(
+                r#"<body id="threads-page" data-thread-id="thread-1" data-running="true">"#
+            )
+        );
+        assert!(!html.contains(r#"{{> sidebar}}"#));
+        assert!(html.contains(r#"<nav>"#));
+        assert!(html.contains(r#"<main>"#));
+        assert!(html.contains(r#"<header>"#));
+        assert!(html.contains(r#"<section class="content">"#));
+        assert!(html.contains(r#"<div class="wrapper" data-messages>"#));
+        assert!(html.contains(r#"data-current-title hidden"#));
+        assert!(html.contains(r#"tool_names="Tool output""#));
+        assert!(!html.contains(r#"tool_name="Tool output""#));
+        assert!(!html.contains(r#"<div id="threads-page""#));
+        assert!(!html.contains(r#"class="topbar""#));
+    }
+}

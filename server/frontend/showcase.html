@@ -7,8 +7,7 @@
         <script type="importmap">
             {
                 "imports": {
-                    "lit": "/static/lit.js",
-                    "lit/decorators.js": "/static/lit-decorators.js"
+                    "lit": "/static/lit.js"
                 }
             }
         </script>
@@ -57,8 +56,182 @@
         </nav>
         <main>
             <header><app-sidebar-toggle></app-sidebar-toggle></header>
-            <section class="content"></section>
-            <app-prompt-input style="margin: 8px"></app-prompt-input>
+            <section class="content">
+                <div class="wrapper">
+                    <app-message
+                        message_id="1"
+                        type="user"
+                        data-message-id="1"
+                        data-seq="0"
+                        data-role="user"
+                    >
+                        <span data-content>What can you do?</span>
+                    </app-message>
+                    <app-message
+                        message_id="2"
+                        type="agent"
+                        tool_names="My cool tool"
+                        with_thinking="true"
+                        data-message-id="2"
+                        data-seq="1"
+                        data-role="agent"
+                    >
+                        <span slot="thinking" data-thinking
+                            >User asked a question...</span
+                        >
+                        <span data-content>
+                            Lorem ipsum dolor sit amet consectetur adipiscing
+                            elit. Quisque faucibus ex sapien vitae pellentesque
+                            sem placerat. In id cursus mi pretium tellus duis
+                            convallis. Tempus leo eu aenean sed diam urna
+                            tempor. Pulvinar vivamus fringilla lacus nec metus
+                            bibendum egestas. Iaculis massa nisl malesuada
+                            lacinia integer nunc posuere. Ut hendrerit semper
+                            vel class aptent taciti sociosqu. Ad litora torquent
+                            per conubia nostra inceptos himenaeos. Lorem ipsum
+                            dolor sit amet consectetur adipiscing elit. Quisque
+                            faucibus ex sapien vitae pellentesque sem placerat.
+                            In id cursus mi pretium tellus duis convallis.
+                            Tempus leo eu aenean sed diam urna tempor. Pulvinar
+                            vivamus fringilla lacus nec metus bibendum egestas.
+                            Iaculis massa nisl malesuada lacinia integer nunc
+                            posuere. Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos. Lorem ipsum dolor sit amet
+                            consectetur adipiscing elit. Quisque faucibus ex
+                            sapien vitae pellentesque sem placerat. In id cursus
+                            mi pretium tellus duis convallis. Tempus leo eu
+                            aenean sed diam urna tempor. Pulvinar vivamus
+                            fringilla lacus nec metus bibendum egestas. Iaculis
+                            massa nisl malesuada lacinia integer nunc posuere.
+                            Ut hendrerit semper vel class aptent taciti
+                            sociosqu. Ad litora torquent per conubia nostra
+                            inceptos himenaeos.
+                        </span>
+                    </app-message>
+                    <app-message
+                        message_id="3"
+                        type="tool_output"
+                        tool_names="My cool tool"
+                        data-message-id="3"
+                        data-seq="2"
+                        data-role="tool"
+                    >
+                        <span data-content
+                            >Tool returned a showcase result.</span
+                        >
+                    </app-message>
+                </div>
+            </section>
+            <app-prompt-input style="margin: auto"></app-prompt-input>
         </main>
     </body>
 </html>

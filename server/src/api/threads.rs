@@ -526,7 +526,7 @@ fn role_name(role: Role) -> &'static str {
 
 fn message_template_type(message: &MessageResponse) -> (&'static str, Option<String>) {
     if let Some(name) = &message.tool_call_name {
-        return ("tool_call", Some(name.clone()));
+        return ("agent", Some(name.clone()));
     }
 
     match message.role {
