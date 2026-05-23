@@ -30,7 +30,7 @@ class ThreadsPageHydrator {
 	private threads: ThreadSummary[];
 	private projects: ProjectSummary[];
 	private currentProjectId: string | null = null;
-	private messages: ViewMessage[];
+	private messages: ViewMessage[] = [];
 	private draft = "";
 	private running: boolean;
 	private error = "";
@@ -141,7 +141,6 @@ class ThreadsPageHydrator {
 					?.split(",")
 					.map((name) => name.trim())
 					.find(Boolean) ?? null,
-				project_id: null,
 			};
 		});
 	}
@@ -276,7 +275,6 @@ class ThreadsPageHydrator {
 			content: this.pendingAssistant,
 			thinking: thinking ?? null,
 			tool_call_name: null,
-			project_id: null,
 			pending: true,
 		};
 		this.messages.push(message);
@@ -361,7 +359,6 @@ class ThreadsPageHydrator {
 			content,
 			thinking: null,
 			tool_call_name: null,
-			project_id: null,
 			pending: true,
 		};
 		this.messages.push(message);
