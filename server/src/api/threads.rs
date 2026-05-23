@@ -18,8 +18,11 @@ use llm::{CompletionRequest, Message as LlmMessage, Role as LlmRole};
 
 use crate::{
     ServerState,
-    api::auth::{self, AuthError},
-    db::{Role, messages, threads},
+    api::{
+        auth::{self, AuthError},
+        projects::ProjectResponse,
+    },
+    db::{Role, messages, projects, threads},
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadStatus,
         ThreadSubscription,
@@ -30,6 +33,7 @@ use crate::{
 pub struct ThreadResponse {
     id: String,
     title: String,
+    project_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -47,14 +51,23 @@ pub struct ThreadPageData {
     thread_id: String,
     current_title: String,
     running: bool,
-    threads: Vec<ThreadTemplateData>,
+    projects: Vec<ProjectTemplateData>,
+    ungrouped_threads: Vec<ThreadTemplateData>,
     messages: Vec<MessageTemplateData>,
 }
 
 #[derive(Serialize)]
+struct ProjectTemplateData {
+    id: String,
+    title: String,
+    threads: Vec<ThreadTemplateData>,
+}
+
+#[derive(Serialize, Clone)]
 struct ThreadTemplateData {
     id: String,
     title: String,
+    project_id: Option<String>,
     active: bool,
 }
 
@@ -73,6 +86,7 @@ struct MessageTemplateData {
 #[derive(Deserialize)]
 pub struct SendMessageRequest {
     content: String,
+    project_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -181,10 +195,12 @@ pub async fn thread_page_data(
     thread_id: Option<Uuid>,
 ) -> Result<ThreadPageData, ThreadApiError> {
     let owner = auth::authenticated_user(state, headers).await?;
-    let threads = thread_summaries(state, owner).await?;
+    let all_threads = thread_summaries(state, owner).await?;
+    let all_projects = project_summaries(state, owner).await?;
+
     let current_title = thread_id
         .and_then(|id| {
-            threads
+            all_threads
                 .iter()
                 .find(|thread| thread.id == id.to_string())
                 .map(|thread| thread.title.clone())
@@ -204,20 +220,42 @@ pub async fn thread_page_data(
         (Vec::new(), false)
     };
 
+    let thread_template_data: Vec<ThreadTemplateData> = all_threads
+        .iter()
+        .map(|thread| ThreadTemplateData {
+            active: thread_id
+                .map(|id| thread.id == id.to_string())
+                .unwrap_or(false),
+            id: thread.id.clone(),
+            title: thread.title.clone(),
+            project_id: thread.project_id.clone(),
+        })
+        .collect();
+
+    let projects = all_projects
+        .into_iter()
+        .map(|project| ProjectTemplateData {
+            threads: thread_template_data
+                .iter()
+                .filter(|t| t.project_id.as_deref() == Some(&project.id))
+                .cloned()
+                .collect(),
+            id: project.id,
+            title: project.title,
+        })
+        .collect();
+
+    let ungrouped_threads = thread_template_data
+        .into_iter()
+        .filter(|t| t.project_id.is_none())
+        .collect();
+
     Ok(ThreadPageData {
         thread_id: thread_id.map(|id| id.to_string()).unwrap_or_default(),
         current_title,
         running,
-        threads: threads
-            .into_iter()
-            .map(|thread| ThreadTemplateData {
-                active: thread_id
-                    .map(|id| thread.id == id.to_string())
-                    .unwrap_or(false),
-                id: thread.id,
-                title: thread.title,
-            })
-            .collect(),
+        projects,
+        ungrouped_threads,
         messages: messages
             .into_iter()
             .map(|message| {
@@ -245,7 +283,7 @@ async fn thread_summaries(
     let result = state
         .db
         .query_with_params(
-            "SELECT id, title FROM threads WHERE owner = ? ORDER BY id DESC",
+            "SELECT id, title, project_id FROM threads WHERE owner = ? ORDER BY id DESC",
             vec![Value::Uuid(owner)],
         )
         .await
@@ -253,13 +291,41 @@ async fn thread_summaries(
 
     let mut threads = Vec::new();
     for row in result.rows() {
+        let project_id = match row.get("project_id") {
+            Some(Value::Uuid(id)) => Some(id.to_string()),
+            Some(Value::Blob(bytes)) if bytes.len() == 16 => {
+                Uuid::from_slice(bytes).ok().map(|id| id.to_string())
+            }
+            _ => None,
+        };
         threads.push(ThreadResponse {
             id: uuid_value(row.get("id"))?.to_string(),
             title: row.get_text("title").unwrap_or("Untitled").to_string(),
+            project_id,
         });
     }
 
     Ok(threads)
+}
+
+async fn project_summaries(
+    state: &ServerState,
+    owner: Uuid,
+) -> Result<Vec<ProjectResponse>, ThreadApiError> {
+    let rows = projects::select()
+        .where_(projects::owner.eq(owner))
+        .order_by_desc(projects::id)
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ProjectResponse {
+            id: r.id.to_string(),
+            title: r.title,
+        })
+        .collect())
 }
 
 pub async fn create_thread(
@@ -269,13 +335,18 @@ pub async fn create_thread(
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
     let content = normalize_content(request.content)?;
+    let project_id = request.project_id;
     let thread_id = Uuid::now_v7();
     let title = title_from_content(&content);
 
-    threads::insert()
+    let mut insert = threads::insert()
         .id(thread_id)
         .owner(owner)
-        .title(title.as_str())
+        .title(title.as_str());
+    if let Some(pid) = project_id {
+        insert = insert.project_id(pid);
+    }
+    insert
         .execute(&state.db)
         .await
         .map_err(|_| ThreadApiError::Internal)?;

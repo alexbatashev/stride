@@ -29,12 +29,22 @@ migrations! {
             foreign_key(user_id -> users.id);
         }
 
-        table threads {
+        table projects {
             id: Uuid [PrimaryKey],
             owner: Uuid,
             title: String,
 
             foreign_key(owner -> users.id);
+        }
+
+        table threads {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            title: String,
+            project_id: Option<Uuid>,
+
+            foreign_key(owner -> users.id);
+            foreign_key(project_id -> projects.id);
         }
 
         table messages {
@@ -49,6 +59,7 @@ migrations! {
 
             foreign_key(parent_thread -> threads.id);
         }
+
     }
 }
 

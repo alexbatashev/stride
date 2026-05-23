@@ -96,14 +96,30 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
             <span id="workflow-icon" slot="icon"></span>
             Automations
         </app-sidebar-nav-item>
-        <app-sidebar-group title="Threads" data-thread-list>
-            {{#each threads}}
-                <app-sidebar-group-item target="/threads/{{id}}" {{#if active}}active{{/if}} data-thread-id="{{id}}">
-                    <span class="thread-label">{{title}}</span>
-                </app-sidebar-group-item>
+        <div data-sidebar-list>
+            {{#each projects}}
+                <app-sidebar-group title="{{title}}" data-project-id="{{id}}">
+                    {{#each threads}}
+                        <app-sidebar-group-item target="/threads/{{id}}" {{#if active}}active{{/if}} data-thread-id="{{id}}">
+                            <span class="thread-label">{{title}}</span>
+                        </app-sidebar-group-item>
+                    {{/each}}
+                </app-sidebar-group>
             {{/each}}
-        </app-sidebar-group>
-        <app-button slot="footer" class="sidebar-action" variant="secondary" data-action="logout">Log out</app-button>
+            {{#if ungrouped_threads}}
+                <app-sidebar-group title="Threads">
+                    {{#each ungrouped_threads}}
+                        <app-sidebar-group-item target="/threads/{{id}}" {{#if active}}active{{/if}} data-thread-id="{{id}}">
+                            <span class="thread-label">{{title}}</span>
+                        </app-sidebar-group-item>
+                    {{/each}}
+                </app-sidebar-group>
+            {{/if}}
+        </div>
+        <div slot="footer" class="sidebar-footer">
+            <app-button class="sidebar-action" variant="ghost" data-action="new-project">+ New project</app-button>
+            <app-button class="sidebar-action" variant="secondary" data-action="logout">Log out</app-button>
+        </div>
     </app-sidebar>
 </nav>"#;
 
@@ -167,9 +183,17 @@ const THREADS_TEMPLATE: &str = r#"<style>
         max-width: 420px;
     }
 
+    #threads-page .sidebar-footer {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
     #threads-page .sidebar-action {
-        margin: 8px;
-        width: calc(100% - 16px);
+        width: 100%;
     }
 
     #threads-page .error {
@@ -181,6 +205,29 @@ const THREADS_TEMPLATE: &str = r#"<style>
 
     #threads-page .error:empty {
         display: none;
+    }
+
+    #threads-page .project-actions {
+        display: none;
+        gap: 2px;
+        margin-left: auto;
+    }
+
+    #threads-page .project-action-btn {
+        background: transparent;
+        border: 0;
+        border-radius: 4px;
+        color: var(--muted-foreground);
+        cursor: pointer;
+        font-size: 12px;
+        height: 20px;
+        line-height: 1;
+        padding: 0 4px;
+    }
+
+    #threads-page .project-action-btn:hover {
+        background: var(--accent);
+        color: var(--accent-foreground);
     }
 </style>
 {{> sidebar}}
@@ -246,9 +293,14 @@ mod tests {
                 "thread_id": "thread-1",
                 "current_title": "Current thread",
                 "running": true,
-                "threads": [
-                    {"id": "thread-1", "title": "Current thread", "active": true}
+                "projects": [
+                    {
+                        "id": "project-1",
+                        "title": "My Project",
+                        "threads": [{"id": "thread-1", "title": "Current thread", "active": true}]
+                    }
                 ],
+                "ungrouped_threads": [],
                 "messages": [
                     {
                         "id": "message-1",

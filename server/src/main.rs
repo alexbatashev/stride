@@ -12,7 +12,7 @@ use axum::{
     extract::State,
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use clap::Parser;
 use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
@@ -108,6 +108,14 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/api/register", post(api::auth::register))
         .route("/api/login", post(api::auth::login))
         .route("/api/logout", post(api::auth::logout))
+        .route(
+            "/api/projects",
+            get(api::projects::list).post(api::projects::create),
+        )
+        .route(
+            "/api/projects/{id}",
+            patch(api::projects::rename).delete(api::projects::delete),
+        )
         .route(
             "/api/threads",
             get(api::threads::list_threads).post(api::threads::create_thread),

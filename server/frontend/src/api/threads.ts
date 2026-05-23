@@ -3,6 +3,7 @@ import {readToken} from './auth.js';
 export type ThreadSummary = {
 	id: string;
 	title: string;
+	project_id: string | null;
 };
 
 export type ThreadMessage = {
@@ -46,10 +47,10 @@ export async function listThreads(): Promise<ThreadSummary[]> {
 	return request('/api/threads');
 }
 
-export async function createThread(content: string): Promise<SendMessageResponse> {
+export async function createThread(content: string, projectId?: string): Promise<SendMessageResponse> {
 	return request('/api/threads', {
 		method: 'POST',
-		body: JSON.stringify({content})
+		body: JSON.stringify({content, project_id: projectId ?? null})
 	});
 }
 
