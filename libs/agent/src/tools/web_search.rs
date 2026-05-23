@@ -153,6 +153,7 @@ struct WebSearchParams {
     /// Provider category filter. One of:
     /// - "generic" - use this category for all-purpose searches
     /// - "academic" - use this category for reviewd research paper search
+    ///
     /// Defaults to "generic".
     category: Option<String>,
 }
