@@ -60,6 +60,17 @@ migrations! {
             foreign_key(parent_thread -> threads.id);
         }
 
+        table skills {
+            id: Uuid [PrimaryKey],
+            name: String [Unique],
+            title: String,
+            description: String,
+            content: String,
+            owner: Option<Uuid>,
+
+            foreign_key(owner -> users.id);
+        }
+
     }
 }
 

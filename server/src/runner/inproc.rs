@@ -33,7 +33,10 @@ use crate::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
         RunId, ThreadSnapshot, ThreadStatus, ThreadSubscription,
     },
-    tools::personality::UpdatePersonalityTool,
+    tools::{
+        personality::UpdatePersonalityTool,
+        skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
+    },
 };
 
 const WORKER_THREADS: usize = 8;
@@ -554,6 +557,21 @@ async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("update_personality");
+    agent.register_tool(SearchSkillsTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("search_skills");
+    agent.register_tool(LoadSkillTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("load_skill");
+    agent.register_tool(CreateSkillTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("create_skill");
     let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
 
     state.borrow_mut().threads.insert(
