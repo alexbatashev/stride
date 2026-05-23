@@ -53,6 +53,22 @@ export class AppMessage extends LitElement {
       font-size: 0.95rem;
       font-weight: bold;
     }
+
+    @media print {
+      .user {
+        float: none;
+        max-width: 100%;
+        border-radius: 0;
+        background: transparent;
+        padding: 0 0 0 14px;
+        border-left: 3px solid #999;
+      }
+
+      app-spoiler,
+      .tool-call {
+        display: none;
+      }
+    }
   `;
 
   connectedCallback() {

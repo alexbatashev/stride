@@ -157,3 +157,33 @@ header {
     max-width: 960px;
     width: 100%;
 }
+
+@media print {
+    nav,
+    header,
+    app-prompt-input,
+    .error {
+        display: none !important;
+    }
+
+    body {
+        display: block;
+        height: auto;
+    }
+
+    main {
+        display: block;
+        height: auto;
+        max-height: none;
+    }
+
+    .content {
+        overflow: visible;
+        padding: 0;
+    }
+
+    .content > .wrapper {
+        max-width: 100%;
+        gap: 16px;
+    }
+}
