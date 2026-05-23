@@ -1,5 +1,12 @@
 import { logout } from "../api/auth.js";
 import {
+	ProjectSummary,
+	createProject,
+	deleteProject,
+	listProjects,
+	renameProject,
+} from "../api/projects.js";
+import {
 	ThreadEvent,
 	ThreadMessage,
 	ThreadSummary,
@@ -21,6 +28,8 @@ const root = document.querySelector<HTMLElement>("#threads-page");
 class ThreadsPageHydrator {
 	private threadId: string;
 	private threads: ThreadSummary[];
+	private projects: ProjectSummary[];
+	private currentProjectId: string | null = null;
 	private messages: ViewMessage[];
 	private draft = "";
 	private running: boolean;
@@ -38,7 +47,7 @@ class ThreadsPageHydrator {
 		placeholder: string;
 	};
 	private readonly errorEl: HTMLElement;
-	private readonly threadListEl: HTMLElement;
+	private readonly sidebarListEl: HTMLElement;
 
 	constructor(private readonly root: HTMLElement) {
 		this.threadId = root.dataset.threadId ?? "";
@@ -47,9 +56,10 @@ class ThreadsPageHydrator {
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");
 		this.errorEl = this.mustQuery("[data-error]");
-		this.threadListEl = this.mustQuery("[data-thread-list]");
+		this.sidebarListEl = this.mustQuery("[data-sidebar-list]");
 		this.threads = this.readThreads();
-		this.messages = this.readMessages();
+		this.projects = this.readProjects();
+		this.currentProjectId = this.threads.find((t) => t.id === this.threadId)?.project_id ?? null;
 
 		this.bindEvents();
 		this.syncComposer();
@@ -75,8 +85,11 @@ class ThreadsPageHydrator {
 		this.root
 			.querySelector<HTMLElement>('[data-action="logout"]')
 			?.addEventListener("click", () => void this.onLogout());
-		this.threadListEl.addEventListener("click", (event) =>
-			this.onThreadClick(event),
+		this.root
+			.querySelector<HTMLElement>('[data-action="new-project"]')
+			?.addEventListener("click", () => void this.onNewProject());
+		this.sidebarListEl.addEventListener("click", (event) =>
+			this.onSidebarClick(event),
 		);
 		this.promptEl.addEventListener("value-change", (event) =>
 			this.onDraft(event as CustomEvent<{ value: string }>),
@@ -92,10 +105,20 @@ class ThreadsPageHydrator {
 
 	private readThreads(): ThreadSummary[] {
 		return Array.from(
-			this.threadListEl.querySelectorAll<HTMLElement>("[data-thread-id]"),
+			this.sidebarListEl.querySelectorAll<HTMLElement>("[data-thread-id]"),
 		).map((element) => ({
 			id: element.dataset.threadId ?? "",
 			title: element.textContent?.trim() ?? "Untitled",
+			project_id: element.dataset.projectId ?? null,
+		}));
+	}
+
+	private readProjects(): ProjectSummary[] {
+		return Array.from(
+			this.sidebarListEl.querySelectorAll<HTMLElement>("[data-project-id]"),
+		).map((element) => ({
+			id: element.getAttribute("data-project-id") ?? "",
+			title: element.getAttribute("title") ?? element.textContent?.trim() ?? "",
 		}));
 	}
 
@@ -118,6 +141,7 @@ class ThreadsPageHydrator {
 					?.split(",")
 					.map((name) => name.trim())
 					.find(Boolean) ?? null,
+				project_id: null,
 			};
 		});
 	}
@@ -252,6 +276,7 @@ class ThreadsPageHydrator {
 			content: this.pendingAssistant,
 			thinking: thinking ?? null,
 			tool_call_name: null,
+			project_id: null,
 			pending: true,
 		};
 		this.messages.push(message);
@@ -265,8 +290,11 @@ class ThreadsPageHydrator {
 
 		const refreshSeq = ++this.refreshSeq;
 		this.pendingAssistant = "";
-		const messages = await listMessages(this.threadId);
-		const threads = await listThreads();
+		const [messages, threads, projects] = await Promise.all([
+			listMessages(this.threadId),
+			listThreads(),
+			listProjects(),
+		]);
 		if (refreshSeq !== this.refreshSeq) {
 			return;
 		}
@@ -274,7 +302,8 @@ class ThreadsPageHydrator {
 		this.messages = messages;
 		this.renderMessages();
 		this.threads = threads;
-		this.renderThreads();
+		this.projects = projects;
+		this.renderSidebar();
 		this.syncTitle();
 	}
 
@@ -307,12 +336,14 @@ class ThreadsPageHydrator {
 			if (this.threadId) {
 				await sendMessage(this.threadId, content);
 			} else {
-				const response = await createThread(content);
+				const response = await createThread(content, this.currentProjectId ?? undefined);
 				this.threadId = response.thread_id;
 				this.root.dataset.threadId = this.threadId;
 				history.pushState(null, "", `/threads/${response.thread_id}`);
-				this.threads = await listThreads();
-				this.renderThreads();
+				const [threads, projects] = await Promise.all([listThreads(), listProjects()]);
+				this.threads = threads;
+				this.projects = projects;
+				this.renderSidebar();
 				await this.loadThread(this.threadId);
 			}
 		} catch (error) {
@@ -330,6 +361,7 @@ class ThreadsPageHydrator {
 			content,
 			thinking: null,
 			tool_call_name: null,
+			project_id: null,
 			pending: true,
 		};
 		this.messages.push(message);
@@ -355,6 +387,7 @@ class ThreadsPageHydrator {
 	private startNew() {
 		this.closeEvents();
 		this.threadId = "";
+		this.currentProjectId = null;
 		this.root.dataset.threadId = "";
 		this.messages = [];
 		this.draft = "";
@@ -362,13 +395,13 @@ class ThreadsPageHydrator {
 		this.pendingAssistant = "";
 		this.lastEventSeq = 0;
 		this.renderMessages();
-		this.renderThreads();
+		this.renderSidebar();
 		this.syncTitle();
 		this.syncComposer();
 		history.pushState(null, "", "/threads");
 	}
 
-	private onThreadClick(event: Event) {
+	private onSidebarClick(event: Event) {
 		const item = (event.target as Element).closest<HTMLElement>(
 			"[data-thread-id]",
 		);
@@ -384,7 +417,8 @@ class ThreadsPageHydrator {
 
 		this.threadId = id;
 		this.root.dataset.threadId = id;
-		this.renderThreads();
+		this.currentProjectId = this.threads.find((t) => t.id === id)?.project_id ?? null;
+		this.renderSidebar();
 		history.pushState(null, "", `/threads/${id}`);
 		void this.loadThread(id);
 	}
@@ -394,10 +428,139 @@ class ThreadsPageHydrator {
 		this.navigate("/login");
 	}
 
-	private renderThreads() {
-		this.threadListEl.replaceChildren(
-			...this.threads.map((thread) => this.createThreadElement(thread)),
-		);
+	private async onNewProject() {
+		const title = this.promptProjectTitle();
+		if (!title) return;
+
+		try {
+			const project = await createProject(title);
+			this.projects = [project, ...this.projects];
+			this.renderSidebar();
+		} catch {
+			this.setError("Failed to create project.");
+		}
+	}
+
+	private promptProjectTitle(existing?: string): string | null {
+		const input = window.prompt("Project name:", existing ?? "");
+		if (input === null) return null;
+		const trimmed = input.trim();
+		return trimmed.length > 0 ? trimmed : null;
+	}
+
+	private async onRenameProject(projectId: string, currentTitle: string) {
+		const title = this.promptProjectTitle(currentTitle);
+		if (!title || title === currentTitle) return;
+
+		try {
+			const updated = await renameProject(projectId, title);
+			const idx = this.projects.findIndex((p) => p.id === projectId);
+			if (idx >= 0) this.projects[idx] = updated;
+			this.renderSidebar();
+		} catch {
+			this.setError("Failed to rename project.");
+		}
+	}
+
+	private async onDeleteProject(projectId: string) {
+		if (!window.confirm("Delete this project? Threads will be kept but unlinked.")) return;
+
+		try {
+			await deleteProject(projectId);
+			this.projects = this.projects.filter((p) => p.id !== projectId);
+			this.threads = this.threads.map((t) =>
+				t.project_id === projectId ? { ...t, project_id: null } : t,
+			);
+			if (this.currentProjectId === projectId) {
+				this.currentProjectId = null;
+			}
+			this.renderSidebar();
+		} catch {
+			this.setError("Failed to delete project.");
+		}
+	}
+
+	private renderSidebar() {
+		const grouped = new Map<string, ThreadSummary[]>();
+		const ungrouped: ThreadSummary[] = [];
+
+		for (const project of this.projects) {
+			grouped.set(project.id, []);
+		}
+		for (const thread of this.threads) {
+			if (thread.project_id && grouped.has(thread.project_id)) {
+				grouped.get(thread.project_id)!.push(thread);
+			} else {
+				ungrouped.push(thread);
+			}
+		}
+
+		const children: HTMLElement[] = [];
+
+		for (const project of this.projects) {
+			const group = this.createProjectGroup(project, grouped.get(project.id) ?? []);
+			children.push(group);
+		}
+
+		if (ungrouped.length > 0) {
+			const group = this.createThreadGroup("Threads", ungrouped);
+			children.push(group);
+		}
+
+		this.sidebarListEl.replaceChildren(...children);
+	}
+
+	private createProjectGroup(project: ProjectSummary, threads: ThreadSummary[]): HTMLElement {
+		const group = document.createElement("app-sidebar-group") as HTMLElement & {
+			title: string;
+		};
+		group.title = project.title;
+		group.setAttribute("data-project-id", project.id);
+
+		const actions = document.createElement("span");
+		actions.className = "project-actions";
+
+		const renameBtn = document.createElement("button");
+		renameBtn.type = "button";
+		renameBtn.className = "project-action-btn";
+		renameBtn.title = "Rename";
+		renameBtn.textContent = "✎";
+		renameBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			void this.onRenameProject(project.id, project.title);
+		});
+
+		const deleteBtn = document.createElement("button");
+		deleteBtn.type = "button";
+		deleteBtn.className = "project-action-btn";
+		deleteBtn.title = "Delete";
+		deleteBtn.textContent = "✕";
+		deleteBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			void this.onDeleteProject(project.id);
+		});
+
+		actions.append(renameBtn, deleteBtn);
+		group.append(actions);
+
+		for (const thread of threads) {
+			group.append(this.createThreadElement(thread));
+		}
+
+		return group;
+	}
+
+	private createThreadGroup(title: string, threads: ThreadSummary[]): HTMLElement {
+		const group = document.createElement("app-sidebar-group") as HTMLElement & {
+			title: string;
+		};
+		group.title = title;
+
+		for (const thread of threads) {
+			group.append(this.createThreadElement(thread));
+		}
+
+		return group;
 	}
 
 	private createThreadElement(thread: ThreadSummary) {
@@ -407,6 +570,9 @@ class ThreadsPageHydrator {
 		};
 		item.setAttribute("target", `/threads/${thread.id}`);
 		item.dataset.threadId = thread.id;
+		if (thread.project_id) {
+			item.dataset.projectId = thread.project_id;
+		}
 		item.active = thread.id === this.threadId;
 		item.toggleAttribute("active", item.active);
 
