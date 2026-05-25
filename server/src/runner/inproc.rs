@@ -38,7 +38,7 @@ use crate::{
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
         vfs::{VfsListTool, VfsReadTool, VfsWriteTool},
     },
-    vfs::LocalFileProvider,
+    vfs::Vfs,
 };
 
 const WORKER_THREADS: usize = 8;
@@ -126,7 +126,7 @@ struct WorkerState {
     db: ConnectionPool,
     config: Arc<AgentConfig>,
     tools: Tools,
-    vfs: Option<Arc<LocalFileProvider>>,
+    vfs: Option<Arc<Vfs>>,
     system_prompt: String,
     idle_ttl: Duration,
     threads: HashMap<Uuid, ThreadRunner>,
@@ -172,7 +172,7 @@ impl InProcessAgentPool {
         db: ConnectionPool,
         config: Arc<AgentConfig>,
         tools: Tools,
-        vfs: Arc<LocalFileProvider>,
+        vfs: Arc<Vfs>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -196,7 +196,7 @@ impl InProcessAgentPool {
         config: Arc<AgentConfig>,
         system_prompt: String,
         tools: Tools,
-        vfs: Option<Arc<LocalFileProvider>>,
+        vfs: Option<Arc<Vfs>>,
     ) -> Self {
         Self::with_idle_ttl_and_tools(db, config, system_prompt, DEFAULT_IDLE_TTL, tools, vfs)
     }
@@ -216,7 +216,7 @@ impl InProcessAgentPool {
         system_prompt: String,
         idle_ttl: Duration,
         tools: Tools,
-        vfs: Option<Arc<LocalFileProvider>>,
+        vfs: Option<Arc<Vfs>>,
     ) -> Self {
         let workers = (0..WORKER_THREADS)
             .map(|idx| {
@@ -308,7 +308,7 @@ fn start_worker(
     system_prompt: String,
     idle_ttl: Duration,
     tools: Tools,
-    vfs: Option<Arc<LocalFileProvider>>,
+    vfs: Option<Arc<Vfs>>,
 ) -> WorkerHandle {
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -603,17 +603,17 @@ async fn ensure_runner(
             .await
             .map_err(AgentPoolError::Internal)?;
         agent.register_tool(VfsListTool {
-            provider: provider.clone(),
+            vfs: provider.clone(),
             workspace_id,
         });
         agent.allow_tool("vfs_list");
         agent.register_tool(VfsReadTool {
-            provider: provider.clone(),
+            vfs: provider.clone(),
             workspace_id,
         });
         agent.allow_tool("vfs_read");
         agent.register_tool(VfsWriteTool {
-            provider,
+            vfs: provider,
             workspace_id,
             owner: user_id,
         });

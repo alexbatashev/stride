@@ -81,9 +81,15 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|s| s.files.as_ref())
                 .and_then(|f| f.keep_versions)
                 .unwrap_or(10);
-            vfs::LocalFileProvider::new(db.clone(), l.base.clone().into(), keep)
+            let storage = vfs::LocalFileProvider::new(l.base.clone().into())?;
+            Ok(vfs::Vfs::new(
+                db.clone(),
+                vfs::AnyFileProvider::Local(storage),
+                keep,
+            ))
         })
-        .transpose()?
+        .transpose()
+        .map_err(|e: anyhow::Error| e)?
         .map(Arc::new);
 
     let runner: Arc<dyn runner::AgentPool> = if let Some(vfs) = vfs_provider {

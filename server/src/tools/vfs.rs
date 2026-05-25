@@ -6,20 +6,20 @@ use llm::{Function, Tool as LlmTool};
 use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
-use crate::vfs::{EntryKind, LocalFileProvider};
+use crate::vfs::{EntryKind, Vfs};
 
 pub struct VfsListTool {
-    pub provider: Arc<LocalFileProvider>,
+    pub vfs: Arc<Vfs>,
     pub workspace_id: Uuid,
 }
 
 pub struct VfsReadTool {
-    pub provider: Arc<LocalFileProvider>,
+    pub vfs: Arc<Vfs>,
     pub workspace_id: Uuid,
 }
 
 pub struct VfsWriteTool {
-    pub provider: Arc<LocalFileProvider>,
+    pub vfs: Arc<Vfs>,
     pub workspace_id: Uuid,
     pub owner: Uuid,
 }
@@ -90,7 +90,7 @@ impl Tool for VfsListTool {
             None => return json!({"error": "path must start with /~workspace"}),
         };
 
-        match self.provider.list(self.workspace_id, rel).await {
+        match self.vfs.list(self.workspace_id, rel).await {
             Ok(entries) => {
                 let list: Vec<JsonValue> = entries
                     .iter()
@@ -147,7 +147,7 @@ impl Tool for VfsReadTool {
             _ => return json!({"error": "path must point to a file inside /~workspace/"}),
         };
 
-        match self.provider.read(self.workspace_id, rel).await {
+        match self.vfs.read(self.workspace_id, rel).await {
             Ok(content) => json!({"content": content}),
             Err(e) => json!({"error": e.to_string()}),
         }
@@ -200,7 +200,7 @@ impl Tool for VfsWriteTool {
         };
 
         match self
-            .provider
+            .vfs
             .write(self.workspace_id, rel, &params.content, self.owner)
             .await
         {
