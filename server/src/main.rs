@@ -4,6 +4,7 @@ mod db;
 mod pages;
 pub mod runner;
 mod tools;
+mod vfs;
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -67,11 +68,38 @@ async fn main() -> anyhow::Result<()> {
         model_registry: create_model_registry(&config),
         max_iterations: 90,
     });
-    let runner = Arc::new(runner::inproc::InProcessAgentPool::with_tool_config(
-        db.clone(),
-        model_config.clone(),
-        tools,
-    ));
+    let vfs_provider = config
+        .server
+        .as_ref()
+        .and_then(|s| s.files.as_ref())
+        .and_then(|f| f.local.as_ref())
+        .filter(|l| l.enabled)
+        .map(|l| {
+            let keep = config
+                .server
+                .as_ref()
+                .and_then(|s| s.files.as_ref())
+                .and_then(|f| f.keep_versions)
+                .unwrap_or(10);
+            vfs::LocalFileProvider::new(db.clone(), l.base.clone().into(), keep)
+        })
+        .transpose()?
+        .map(Arc::new);
+
+    let runner: Arc<dyn runner::AgentPool> = if let Some(vfs) = vfs_provider {
+        Arc::new(runner::inproc::InProcessAgentPool::with_file_provider(
+            db.clone(),
+            model_config.clone(),
+            tools,
+            vfs,
+        ))
+    } else {
+        Arc::new(runner::inproc::InProcessAgentPool::with_tool_config(
+            db.clone(),
+            model_config.clone(),
+            tools,
+        ))
+    };
 
     let state = Arc::new(ServerState {
         config,

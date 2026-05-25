@@ -453,6 +453,7 @@ mod tests {
                     listen_addr: None,
                     allow_registration: Some(false),
                     ldap: None,
+                    files: None,
                 }),
                 ..empty_config()
             },

@@ -28,4 +28,5 @@ uuid = { version = "1.23.1", features = ["v7"] }
 friday-agent = { path = "../libs/agent" }
 
 [dev-dependencies]
+tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

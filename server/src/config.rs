@@ -44,6 +44,7 @@ pub struct Server {
     pub listen_addr: Option<String>,
     pub allow_registration: Option<bool>,
     pub ldap: Option<Ldap>,
+    pub files: Option<Files>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -63,6 +64,18 @@ pub struct WebSearch {
 pub struct Firecrawl {
     pub api_key: Option<String>,
     pub api_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Files {
+    pub keep_versions: Option<usize>,
+    pub local: Option<LocalFiles>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct LocalFiles {
+    pub enabled: bool,
+    pub base: String,
 }
 
 impl Config {
@@ -136,6 +149,7 @@ mod tests {
                 listen_addr: Some("127.0.0.1:4000".to_string()),
                 allow_registration: Some(false),
                 ldap: None,
+                files: None,
             }),
             tools: None,
         };

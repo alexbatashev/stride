@@ -12,6 +12,12 @@ pub enum Role {
     Tool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ObjectKind {
+    Directory,
+    File,
+}
+
 migrations! {
     schema {
         table users {
@@ -71,6 +77,37 @@ migrations! {
             foreign_key(owner -> users.id);
         }
 
+        table vfs_workspaces {
+            id: Uuid [PrimaryKey],
+            parent_thread: Option<Uuid>,
+            parent_project: Option<Uuid>,
+        }
+
+        table vfs_nodes {
+            id: Uuid [PrimaryKey],
+            name: String,
+            kind: ObjectKind,
+            parent_node: Option<Uuid>,
+            parent_workspace: Option<Uuid>,
+            owner: Uuid,
+            created_at: i64,
+            mime_type: Option<String>,
+
+            foreign_key(parent_node -> vfs_nodes.id);
+            foreign_key(parent_workspace -> vfs_workspaces.id);
+            foreign_key(owner -> users.id);
+        }
+
+        table vfs_objects {
+            id: Uuid [PrimaryKey],
+            version: i64,
+            location: String,
+            created_at: i64,
+            node: Uuid,
+            size: i64,
+
+            foreign_key(node -> vfs_nodes.id);
+        }
     }
 }
 
@@ -104,6 +141,37 @@ impl From<Role> for Value {
 }
 
 impl IntoValue for Role {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
+impl SqlLikeType for ObjectKind {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl FromValue for ObjectKind {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "dir" => Ok(ObjectKind::Directory),
+            Value::Text(s) if s == "file" => Ok(ObjectKind::File),
+            _ => Err(DecodeError("Invalid object kind".to_string())),
+        }
+    }
+}
+
+impl From<ObjectKind> for Value {
+    fn from(val: ObjectKind) -> Value {
+        match val {
+            ObjectKind::Directory => Value::Text("dir".to_string()),
+            ObjectKind::File => Value::Text("file".to_string()),
+        }
+    }
+}
+
+impl IntoValue for ObjectKind {
     fn into_value(self) -> Value {
         self.into()
     }
