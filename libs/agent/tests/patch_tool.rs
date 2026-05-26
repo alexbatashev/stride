@@ -3,7 +3,9 @@ use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_ID: AtomicU64 = AtomicU64::new(0);
 
 fn dummy_config() -> Arc<AgentConfig> {
     Arc::new(AgentConfig {
@@ -13,13 +15,8 @@ fn dummy_config() -> Arc<AgentConfig> {
 }
 
 fn temp_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "friday-agent-patch-test-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("friday-agent-patch-test-{}", id));
     fs::create_dir(&dir).unwrap();
     dir
 }
