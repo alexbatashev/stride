@@ -1,4 +1,4 @@
-import {LitElement, css, html, nothing} from "lit";
+import {LitElement, css, html} from "lit";
 import {
 	WorkspaceEntry,
 	createWorkspaceDirectory,
@@ -16,6 +16,8 @@ import {
 	UPLOAD,
 	X,
 } from "./icons.js";
+import "./app-data-table.js";
+import type {DataTableColumn} from "./app-data-table.js";
 
 export class AppFileManager extends LitElement {
 	static properties = {
@@ -37,6 +39,32 @@ export class AppFileManager extends LitElement {
 	private loading = false;
 	private error = "";
 	private loadedKey = "";
+	private readonly columns: DataTableColumn<WorkspaceEntry>[] = [
+		{
+			key: "name",
+			header: "Name",
+			render: (entry) => html`
+				<button class="cell-action" type="button" @click=${() => this.openEntry(entry)}>
+					<span class="cell-icon">${entry.kind === "directory" ? FOLDER : FILE}</span>
+					<span>${entry.name}</span>
+				</button>
+			`,
+		},
+		{
+			key: "size",
+			header: "Size",
+			width: "70px",
+			mobileHidden: true,
+			render: (entry) => (entry.kind === "directory" ? "" : this.formatSize(entry.size)),
+		},
+		{
+			key: "updated_at",
+			header: "Updated",
+			width: "96px",
+			mobileHidden: true,
+			render: (entry) => this.formatDate(entry.updated_at),
+		},
+	];
 
 	static styles = css`
 		:host {
@@ -120,8 +148,7 @@ export class AppFileManager extends LitElement {
 		}
 
 		.icon-button svg,
-		.action-button svg,
-		.entry-icon svg {
+		.action-button svg {
 			height: 16px;
 			width: 16px;
 		}
@@ -164,112 +191,13 @@ export class AppFileManager extends LitElement {
 			display: none;
 		}
 
-		.table-wrap {
-			flex: 1;
-			overflow: auto;
-		}
-
-		table {
-			border-collapse: collapse;
-			table-layout: fixed;
-			width: 100%;
-		}
-
-		th {
-			background: var(--background);
-			border-bottom: 1px solid var(--border);
-			color: var(--muted-foreground);
-			font-size: 11px;
-			font-weight: 600;
-			height: 32px;
-			position: sticky;
-			text-align: left;
-			top: 0;
-			z-index: 1;
-		}
-
-		td {
-			border-bottom: 1px solid var(--border);
-			color: var(--foreground);
-			font-size: 13px;
-			height: 42px;
-			overflow: hidden;
-			padding: 0 8px;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-		}
-
-		th:first-child,
-		td:first-child {
-			padding-left: 12px;
-			width: 34px;
-		}
-
-		th:nth-child(3),
-		td:nth-child(3) {
-			width: 70px;
-		}
-
-		th:nth-child(4),
-		td:nth-child(4) {
-			width: 96px;
-		}
-
-		tr:hover td {
-			background: var(--accent);
-		}
-
-		.name-button {
-			align-items: center;
-			background: transparent;
-			border: 0;
-			color: inherit;
-			cursor: pointer;
-			display: inline-flex;
-			font: inherit;
-			gap: 8px;
-			max-width: 100%;
-			min-width: 0;
-			padding: 0;
-			text-align: left;
-		}
-
-		.name-button span:last-child {
-			overflow: hidden;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-		}
-
-		.entry-icon {
-			align-items: center;
-			color: var(--muted-foreground);
-			display: inline-flex;
-			flex: 0 0 16px;
-			height: 16px;
-			justify-content: center;
-			width: 16px;
-		}
-
-		.empty {
-			align-content: center;
-			color: var(--muted-foreground);
-			display: grid;
-			font-size: 13px;
-			height: 100%;
-			justify-items: center;
-			padding: 24px;
-			text-align: center;
-		}
-
-		input[type="checkbox"] {
-			accent-color: var(--primary);
-			height: 14px;
-			margin: 0;
-			width: 14px;
-		}
-
 		input[type="file"] {
 			display: none;
+		}
+
+		app-data-table {
+			flex: 1;
+			min-height: 0;
 		}
 
 		@media (max-width: 767px) {
@@ -299,13 +227,6 @@ export class AppFileManager extends LitElement {
 
 			.toolbar {
 				overflow-x: auto;
-			}
-
-			th:nth-child(3),
-			td:nth-child(3),
-			th:nth-child(4),
-			td:nth-child(4) {
-				display: none;
 			}
 		}
 	`;
@@ -351,68 +272,26 @@ export class AppFileManager extends LitElement {
 					<span>/${this.path}</span>
 				</div>
 				<div class="error">${this.error}</div>
-				<div class="table-wrap">
-					${this.renderBody()}
-				</div>
+				${this.renderTable()}
 			</section>
 		`;
 	}
 
-	private renderBody() {
+	private renderTable() {
 		if (!this.threadId) {
-			return html`<div class="empty">Start a thread before managing files.</div>`;
+			return html`<app-data-table empty-text="Start a thread before managing files."></app-data-table>`;
 		}
 
-		if (this.loading && this.entries.length === 0) {
-			return html`<div class="empty">Loading files...</div>`;
-		}
-
-		if (this.entries.length === 0) {
-			return html`<div class="empty">No files here.</div>`;
-		}
-
-		const allSelected = this.entries.length > 0 && this.entries.every((entry) => this.selected.has(entry.path));
-
-		return html`
-			<table>
-				<thead>
-					<tr>
-						<th>
-							<input type="checkbox" aria-label="Select all files" .checked=${allSelected} @change=${this.toggleAll} />
-						</th>
-						<th>Name</th>
-						<th>Size</th>
-						<th>Updated</th>
-					</tr>
-				</thead>
-				<tbody>
-					${this.entries.map((entry) => this.renderRow(entry))}
-				</tbody>
-			</table>
-		`;
-	}
-
-	private renderRow(entry: WorkspaceEntry) {
-		return html`
-			<tr>
-				<td>
-					<input
-						type="checkbox"
-						aria-label=${`Select ${entry.name}`}
-						.checked=${this.selected.has(entry.path)}
-						@change=${(event: Event) => this.toggleEntry(entry, event)}
-					/>
-				</td>
-				<td>
-					<button class="name-button" type="button" @click=${() => this.openEntry(entry)}>
-						<span class="entry-icon">${entry.kind === "directory" ? FOLDER : FILE}</span>
-						<span>${entry.name}</span>
-					</button>
-				</td>
-				<td>${entry.kind === "directory" ? nothing : this.formatSize(entry.size)}</td>
-				<td>${this.formatDate(entry.updated_at)}</td>
-			</tr>
-		`;
+		return html`<app-data-table
+			.columns=${this.columns}
+			.getRowId=${(entry: WorkspaceEntry) => entry.path}
+			.loading=${this.loading}
+			.rows=${this.entries}
+			.selectedIds=${this.selected}
+			empty-text="No files here."
+			loading-text="Loading files..."
+			@selection-change=${this.onSelectionChange}
+		></app-data-table>`;
 	}
 
 	private async load(force = false) {
@@ -518,21 +397,8 @@ export class AppFileManager extends LitElement {
 		void this.load(true);
 	}
 
-	private toggleAll(event: Event) {
-		const checked = (event.target as HTMLInputElement).checked;
-		this.selected = checked ? new Set(this.entries.map((entry) => entry.path)) : new Set();
-		this.requestUpdate();
-	}
-
-	private toggleEntry(entry: WorkspaceEntry, event: Event) {
-		const selected = new Set(this.selected);
-		if ((event.target as HTMLInputElement).checked) {
-			selected.add(entry.path);
-		} else {
-			selected.delete(entry.path);
-		}
-		this.selected = selected;
-		this.requestUpdate();
+	private onSelectionChange(event: CustomEvent<{selectedIds: Set<string>}>) {
+		this.selected = event.detail.selectedIds;
 	}
 
 	private joinPath(name: string) {

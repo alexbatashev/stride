@@ -55,6 +55,8 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         <title>{{title}}</title>
         <script type="importmap">{"imports": {"lit": "/static/lit.js"}}</script>
         <link rel="stylesheet" href="/static/common.css" />
+        <link rel="modulepreload" href="/static/lit.js">
+        <link rel="modulepreload" href="/static/components.js">
         <script type="module" src="/static/api.js"></script>
         <script type="module" src="/static/components.js"></script>
         <script type="module">
