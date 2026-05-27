@@ -134,6 +134,20 @@ impl Vfs {
         content: &str,
         owner: Uuid,
     ) -> anyhow::Result<()> {
+        self.write_bytes(workspace_id, path, content.as_bytes(), None, owner)
+            .await
+    }
+
+    /// Writes raw bytes to `path` relative to workspace root.
+    /// Creates intermediate directories and file nodes as needed.
+    pub async fn write_bytes(
+        &self,
+        workspace_id: Uuid,
+        path: &str,
+        content: &[u8],
+        mime_type: Option<&str>,
+        owner: Uuid,
+    ) -> anyhow::Result<()> {
         let segments = split_path(path);
         if segments.is_empty() {
             bail!("path must include a file name");
@@ -145,14 +159,13 @@ impl Vfs {
         let node_id = match self.find_child(workspace_id, parent, file_name).await? {
             Some(id) => id,
             None => {
-                self.create_node(workspace_id, parent, file_name, "file", None, owner)
+                self.create_node(workspace_id, parent, file_name, "file", mime_type, owner)
                     .await?
             }
         };
 
-        let location = self.storage.store(content.as_bytes()).await?;
+        let location = self.storage.store(content).await?;
         let version = self.next_version(node_id).await?;
-        let size = content.len() as i64;
 
         self.db
             .query_with_params(
@@ -163,7 +176,7 @@ impl Vfs {
                     Value::Text(location),
                     Value::Integer(now_ms()),
                     Value::Uuid(node_id),
-                    Value::Integer(size),
+                    Value::Integer(content.len() as i64),
                 ],
             )
             .await

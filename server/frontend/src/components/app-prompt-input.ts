@@ -253,6 +253,12 @@ export class AppPromptInput extends LitElement {
   render() {
     return html`
       <form @submit=${this.onSubmit}>
+        <input
+          type="file"
+          multiple
+          style="display:none"
+          @change=${this.onFilesSelected}
+        />
         <textarea
           .value=${this.value}
           placeholder=${this.placeholder}
@@ -267,6 +273,7 @@ export class AppPromptInput extends LitElement {
               class="tool-button icon"
               type="button"
               aria-label="Add attachment"
+              @click=${this.onAttachClick}
             >
               ${PLUS}
             </button>
@@ -296,6 +303,24 @@ export class AppPromptInput extends LitElement {
         </div>
       </form>
     `;
+  }
+
+  private onAttachClick() {
+    (this.shadowRoot!.querySelector('input[type=file]') as HTMLInputElement).click();
+  }
+
+  private onFilesSelected(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = "";
+    if (files.length === 0) return;
+    this.dispatchEvent(
+      new CustomEvent("files-attach", {
+        bubbles: true,
+        composed: true,
+        detail: { files },
+      }),
+    );
   }
 
   private onInput(event: Event) {

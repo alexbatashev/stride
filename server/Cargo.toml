@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.102"
 async-trait = "0.1"
 argon2 = "0.5"
-axum = { version = "0.8.9", features = ["ws"] }
+axum = { version = "0.8.9", features = ["ws", "multipart"] }
 clap = { version = "4", features = ["derive"] }
 futures = "0.3.32"
 handlebars = "6.4.0"

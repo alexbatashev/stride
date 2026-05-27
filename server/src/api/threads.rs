@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{
-        Path, Query, State,
+        Multipart, Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
@@ -634,6 +634,93 @@ fn pool_error(error: AgentPoolError) -> ThreadApiError {
         | AgentPoolError::WorkerStopped
         | AgentPoolError::Internal(_) => ThreadApiError::Internal,
     }
+}
+
+#[derive(Serialize)]
+pub struct UploadedFile {
+    name: String,
+    path: String,
+    size: usize,
+}
+
+#[derive(Serialize)]
+pub struct UploadResponse {
+    files: Vec<UploadedFile>,
+}
+
+pub async fn upload_file(
+    State(state): State<Arc<ServerState>>,
+    Path(thread_id): Path<Uuid>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::Internal);
+    };
+
+    let owner = auth::authenticated_user(&state, &headers).await?;
+
+    let row = state
+        .db
+        .query_with_params(
+            "SELECT project_id FROM threads WHERE id = ? AND owner = ? LIMIT 1",
+            vec![Value::Uuid(thread_id), Value::Uuid(owner)],
+        )
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    if row.is_empty() {
+        return Err(ThreadApiError::NotFound);
+    }
+
+    let project_id = row.rows().first().and_then(|r| match r.get("project_id") {
+        Some(Value::Uuid(id)) => Some(*id),
+        Some(Value::Blob(b)) if b.len() == 16 => Uuid::from_slice(b).ok(),
+        Some(Value::Text(s)) => Uuid::parse_str(s).ok(),
+        _ => None,
+    });
+
+    let workspace_id = vfs
+        .get_or_create_workspace(thread_id, project_id, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    let mut uploaded = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| ThreadApiError::BadRequest)?
+    {
+        let name = field
+            .file_name()
+            .filter(|n| !n.is_empty())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "file".to_string());
+
+        let mime_type = field
+            .content_type()
+            .filter(|ct| !ct.is_empty())
+            .map(|ct| ct.to_string());
+
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|_| ThreadApiError::BadRequest)?;
+        let size = bytes.len();
+
+        vfs.write_bytes(workspace_id, &name, &bytes, mime_type.as_deref(), owner)
+            .await
+            .map_err(|_| ThreadApiError::Internal)?;
+
+        uploaded.push(UploadedFile {
+            path: format!("/~workspace/{name}"),
+            name,
+            size,
+        });
+    }
+
+    Ok(Json(UploadResponse { files: uploaded }))
 }
 
 fn event_response(event: AgentEvent) -> EventResponse {

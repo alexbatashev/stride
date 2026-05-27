@@ -516,6 +516,7 @@ mod tests {
                 runner,
                 model_config,
                 templates: Handlebars::new(),
+                vfs: None,
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
         )

@@ -1,5 +1,11 @@
 import {readToken} from './auth.js';
 
+export type UploadedFile = {
+	name: string;
+	path: string;
+	size: number;
+};
+
 export type ThreadSummary = {
 	id: string;
 	title: string;
@@ -67,6 +73,23 @@ export async function sendMessage(threadId: string, content: string): Promise<Se
 
 export async function cancelRun(threadId: string): Promise<void> {
 	await request(`/api/threads/${threadId}/cancel`, {method: 'POST'});
+}
+
+export async function uploadFiles(threadId: string, files: File[]): Promise<UploadedFile[]> {
+	const token = readToken();
+	const headers = new Headers();
+	headers.set('Accept', 'application/json');
+	if (token) headers.set('Authorization', `Bearer ${token}`);
+
+	const body = new FormData();
+	for (const file of files) {
+		body.append('file', file, file.name);
+	}
+
+	const response = await fetch(`/api/threads/${threadId}/files`, {method: 'POST', headers, body});
+	if (!response.ok) throw new Error(`${response.status}`);
+	const data = await response.json() as {files: UploadedFile[]};
+	return data.files;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

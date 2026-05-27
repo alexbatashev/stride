@@ -15,6 +15,7 @@ import {
 	listMessages,
 	listThreads,
 	sendMessage,
+	uploadFiles,
 } from "../api/threads.js";
 import "../components/app-button.js";
 import "../components/app-message.js";
@@ -98,6 +99,9 @@ class ThreadsPageHydrator {
 			this.onPromptSubmit(event as CustomEvent<{ value: string }>),
 		);
 		this.promptEl.addEventListener("prompt-stop", () => void this.onStop());
+		this.promptEl.addEventListener("files-attach", (event) =>
+			void this.onFilesAttach(event as CustomEvent<{files: File[]}>),
+		);
 		window.addEventListener("popstate", () => {
 			window.location.href = window.location.pathname;
 		});
@@ -709,6 +713,36 @@ class ThreadsPageHydrator {
 		} catch {
 			// Ignore errors — the RunCancelled event will update state
 		}
+	}
+
+	private async onFilesAttach(event: CustomEvent<{files: File[]}>) {
+		if (!this.threadId) {
+			this.flash("Start a thread before uploading files.");
+			return;
+		}
+
+		const {files} = event.detail;
+		const label = files.length === 1 ? files[0].name : `${files.length} files`;
+		this.flash(`Uploading ${label}…`);
+
+		try {
+			const uploaded = await uploadFiles(this.threadId, files);
+			const names = uploaded.map((f) => f.name).join(", ");
+			this.flash(`Uploaded: ${names}`);
+		} catch {
+			this.flash("Upload failed.");
+		}
+	}
+
+	private flash(message: string) {
+		this.error = message;
+		this.syncComposer();
+		setTimeout(() => {
+			if (this.error === message) {
+				this.error = "";
+				this.syncComposer();
+			}
+		}, 4000);
 	}
 
 	private setError(error: string) {
