@@ -16,7 +16,11 @@ fn dummy_config() -> Arc<AgentConfig> {
 
 fn temp_dir() -> PathBuf {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("friday-agent-patch-test-{}", id));
+    let dir = std::env::temp_dir().join(format!(
+        "friday-agent-patch-test-{}-{}",
+        std::process::id(),
+        id
+    ));
     fs::create_dir(&dir).unwrap();
     dir
 }
