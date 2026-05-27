@@ -100,6 +100,16 @@ impl Vfs {
 
     /// Reads UTF-8 content of a file at `path` relative to workspace root.
     pub async fn read(&self, workspace_id: Uuid, path: &str) -> anyhow::Result<String> {
+        let (bytes, _) = self.read_bytes(workspace_id, path).await?;
+        String::from_utf8(bytes).context("file is not valid UTF-8")
+    }
+
+    /// Reads raw bytes and mime type of a file at `path` relative to workspace root.
+    pub async fn read_bytes(
+        &self,
+        workspace_id: Uuid,
+        path: &str,
+    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
         let segments = split_path(path);
         if segments.is_empty() {
             bail!("path is a directory");
@@ -112,17 +122,34 @@ impl Vfs {
             .await?
             .ok_or_else(|| anyhow::anyhow!("file not found: {path}"))?;
 
-        let location = self
-            .latest_object_location(node_id)
-            .await?
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT n.mime_type, o.location FROM vfs_nodes n \
+                 JOIN vfs_objects o ON o.node = n.id \
+                 WHERE n.id = ? ORDER BY o.version DESC LIMIT 1",
+                vec![Value::Uuid(node_id)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        let row = rows
+            .rows()
+            .first()
             .ok_or_else(|| anyhow::anyhow!("file has no content: {path}"))?;
+        let mime_type = row.get_text("mime_type").map(|s| s.to_string());
+        let location = row
+            .get_text("location")
+            .ok_or_else(|| anyhow::anyhow!("missing location for: {path}"))?
+            .to_string();
 
         let bytes = self
             .storage
             .load(&location)
             .await
             .with_context(|| format!("load {location}"))?;
-        String::from_utf8(bytes).context("file is not valid UTF-8")
+
+        Ok((bytes, mime_type))
     }
 
     /// Writes UTF-8 content to `path` relative to workspace root.

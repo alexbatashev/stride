@@ -57,10 +57,19 @@ Core instructions:
 7. If you are using a source to extract a piece of information, always cite it properly. Clickable URLs for web pages, file names for files.
 ";
 
-fn build_system_prompt(base: &str, personality: Option<&str>) -> String {
+fn build_system_prompt(base: &str, personality: Option<&str>, thread_id: Option<Uuid>) -> String {
     let date = current_date();
     let mut prompt = base.to_string();
     prompt.push_str(&format!("\nCurrent date: {date}"));
+    if let Some(id) = thread_id {
+        prompt.push_str(&format!(
+            "\n\nFiles are downloadable via `/api/threads/{id}/files/<vfs-path>` \
+             where `<vfs-path>` is the file's VFS path with the leading `/` removed. \
+             Examples: \
+             `/~workspace/report.pdf` → `[report.pdf](/api/threads/{id}/files/~workspace/report.pdf)`, \
+             `/~workspace/data/results.csv` → `[results.csv](/api/threads/{id}/files/~workspace/data/results.csv)`."
+        ));
+    }
     if let Some(p) = personality {
         prompt.push_str(&format!("\n\n<user_personality>\n{p}\n</user_personality>"));
     }
@@ -573,7 +582,11 @@ async fn ensure_runner(
     let user_id = thread_owner(&db, thread_id).await?;
     let project_id = thread_project_id(&db, thread_id).await?;
     let personality = load_personality(&db, user_id).await?;
-    let system_prompt = build_system_prompt(&base_system_prompt, personality.as_deref());
+    let system_prompt = build_system_prompt(
+        &base_system_prompt,
+        personality.as_deref(),
+        vfs.as_ref().map(|_| thread_id),
+    );
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
