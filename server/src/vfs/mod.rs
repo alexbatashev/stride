@@ -411,20 +411,6 @@ impl Vfs {
         Ok(id)
     }
 
-    async fn latest_object_location(&self, node_id: Uuid) -> anyhow::Result<Option<String>> {
-        let rows = self
-            .db
-            .query_with_params(
-                "SELECT location FROM vfs_objects WHERE node = ? ORDER BY version DESC LIMIT 1",
-                vec![Value::Uuid(node_id)],
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        Ok(rows
-            .rows()
-            .first()
-            .and_then(|r| r.get_text("location").map(|s| s.to_string())))
-    }
 
     async fn next_version(&self, node_id: Uuid) -> anyhow::Result<i64> {
         let rows = self
@@ -519,7 +505,7 @@ mod tests {
         .await
         .unwrap();
 
-        let base = tempfile::tempdir().unwrap().into_path();
+        let base = tempfile::tempdir().unwrap().keep();
         let storage = AnyFileProvider::Local(LocalFileProvider::new(base).unwrap());
         let vfs = Vfs::new(db, storage, 3);
         (vfs, owner)
