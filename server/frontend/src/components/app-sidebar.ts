@@ -97,7 +97,6 @@ export class AppSidebar extends LitElement {
       width: 100%;
     }
 
-    :host([status="collapsed"]) .header,
     :host([status="collapsed"]) .footer,
     :host([status="collapsed"]) ::slotted(app-sidebar-group) {
       display: none;
@@ -419,6 +418,9 @@ export class AppSidebarNavItem extends LitElement {
 
 @customElement("app-sidebar-toggle")
 export class AppSidebarToggle extends LitElement {
+  @property()
+  brand: string = "";
+
   @state()
   private isClosed: boolean = false;
 
@@ -431,6 +433,42 @@ export class AppSidebarToggle extends LitElement {
     :host {
       display: inline-flex;
       height: 24px;
+      width: 24px;
+    }
+
+    :host([brand]) {
+      height: 32px;
+      width: 32px;
+    }
+
+    .brand-mark {
+      align-items: center;
+      background: var(--primary);
+      border-radius: 8px;
+      color: var(--primary-foreground);
+      display: inline-flex;
+      font-size: 13px;
+      font-weight: 700;
+      height: 32px;
+      justify-content: center;
+      width: 32px;
+    }
+
+    .hover-icon {
+      display: none;
+    }
+
+    :host([brand]:hover) .brand-mark,
+    :host([brand]:focus-within) .brand-mark {
+      display: none;
+    }
+
+    :host([brand]:hover) .hover-icon,
+    :host([brand]:focus-within) .hover-icon {
+      align-items: center;
+      display: inline-flex;
+      height: 24px;
+      justify-content: center;
       width: 24px;
     }
   `;
@@ -451,12 +489,20 @@ export class AppSidebarToggle extends LitElement {
   }
 
   render() {
+    const content =
+      this.brand && this.isClosed
+        ? html`<span class="brand-mark">${this.brand}</span>
+            <span class="hover-icon">${PANEL_LEFT_OPEN}</span>`
+        : this.isClosed
+          ? PANEL_LEFT_OPEN
+          : PANEL_LEFT_CLOSE;
+
     return html`<app-button
       variant="ghost"
-      size="icon-xs"
+      size=${this.brand ? "icon" : "icon-xs"}
       title=${this.isClosed ? "Open sidebar" : "Close sidebar"}
       @click=${this.toggle}
-      >${this.isClosed ? PANEL_LEFT_OPEN : PANEL_LEFT_CLOSE}</app-button
+      >${content}</app-button
     >`;
   }
 }

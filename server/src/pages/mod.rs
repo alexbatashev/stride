@@ -87,6 +87,7 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
     <app-sidebar>
         <div slot="header" class="brand">
             <span class="mark">F</span><strong>Friday</strong>
+            <app-sidebar-toggle class="sidebar-brand-toggle" brand="F"></app-sidebar-toggle>
         </div>
         <app-sidebar-nav-item target="/threads" data-action="new-thread">
             <span id="new-task-icon" slot="icon"></span>
@@ -147,8 +148,28 @@ const THREADS_TEMPLATE: &str = r#"<style>
 
     #threads-page .brand strong {
         color: var(--foreground);
+        flex: 1;
         font-size: 14px;
         font-weight: 650;
+        min-width: 0;
+    }
+
+    #threads-page .mobile-sidebar-toggle {
+        display: none;
+    }
+
+    #threads-page app-sidebar[status="collapsed"] .brand {
+        justify-content: center;
+        padding: 8px;
+    }
+
+    #threads-page app-sidebar[status="collapsed"] .brand .mark,
+    #threads-page app-sidebar[status="collapsed"] .brand strong {
+        display: none;
+    }
+
+    #threads-page app-sidebar[status="collapsed"] [data-sidebar-list] {
+        display: none;
     }
 
     #threads-page .thread-label {
@@ -229,11 +250,29 @@ const THREADS_TEMPLATE: &str = r#"<style>
         background: var(--accent);
         color: var(--accent-foreground);
     }
+
+    #threads-page > main > header {
+        display: none;
+    }
+
+    @media (max-width: 767px) {
+        #threads-page .mobile-sidebar-toggle {
+            display: inline-flex;
+        }
+
+        #threads-page .sidebar-brand-toggle {
+            display: none;
+        }
+
+        #threads-page > main > header {
+            display: flex;
+        }
+    }
 </style>
 {{> sidebar}}
 <main>
     <header>
-        <app-sidebar-toggle></app-sidebar-toggle>
+        <app-sidebar-toggle class="mobile-sidebar-toggle"></app-sidebar-toggle>
         <span data-current-title hidden>{{current_title}}</span>
     </header>
     <section class="content">
@@ -324,6 +363,12 @@ mod tests {
         assert!(html.contains(r#"<nav>"#));
         assert!(html.contains(r#"<main>"#));
         assert!(html.contains(r#"<header>"#));
+        assert!(html.contains(
+            r#"<app-sidebar-toggle class="sidebar-brand-toggle" brand="F"></app-sidebar-toggle>"#
+        ));
+        assert!(html.contains(
+            r#"<app-sidebar-toggle class="mobile-sidebar-toggle"></app-sidebar-toggle>"#
+        ));
         assert!(html.contains(r#"<section class="content">"#));
         assert!(html.contains(r#"<div class="wrapper" data-messages>"#));
         assert!(html.contains(r#"data-current-title hidden"#));

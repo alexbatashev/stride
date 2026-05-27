@@ -107,8 +107,8 @@ impl Table {
     }
 
     pub fn add<T: SqlLikeType, S: ToString>(mut self, name: S, tags: &[SqlTag]) -> Self {
-        let primary_key = tags.iter().find(|t| *t == &SqlTag::PrimaryKey).is_some();
-        let unique = tags.iter().find(|t| *t == &SqlTag::Unique).is_some();
+        let primary_key = tags.iter().any(|t| t == &SqlTag::PrimaryKey);
+        let unique = tags.iter().any(|t| t == &SqlTag::Unique);
 
         self.columns.push(Command::AddColumn {
             name: name.to_string(),
