@@ -411,7 +411,6 @@ impl Vfs {
         Ok(id)
     }
 
-
     async fn next_version(&self, node_id: Uuid) -> anyhow::Result<i64> {
         let rows = self
             .db
