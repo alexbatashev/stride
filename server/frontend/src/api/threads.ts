@@ -1,5 +1,11 @@
 import {readToken} from './auth.js';
 
+export type UploadedFile = {
+	name: string;
+	path: string;
+	size: number;
+};
+
 export type ThreadSummary = {
 	id: string;
 	title: string;
@@ -47,10 +53,10 @@ export async function listThreads(): Promise<ThreadSummary[]> {
 	return request('/api/threads');
 }
 
-export async function createThread(content: string, projectId?: string): Promise<SendMessageResponse> {
+export async function createThread(content: string, projectId?: string, filePaths?: string[]): Promise<SendMessageResponse> {
 	return request('/api/threads', {
 		method: 'POST',
-		body: JSON.stringify({content, project_id: projectId ?? null})
+		body: JSON.stringify({content, project_id: projectId ?? null, file_paths: filePaths ?? []})
 	});
 }
 
@@ -58,15 +64,32 @@ export async function listMessages(threadId: string): Promise<ThreadMessage[]> {
 	return request(`/api/threads/${threadId}/messages`);
 }
 
-export async function sendMessage(threadId: string, content: string): Promise<SendMessageResponse> {
+export async function sendMessage(threadId: string, content: string, filePaths?: string[]): Promise<SendMessageResponse> {
 	return request(`/api/threads/${threadId}/messages`, {
 		method: 'POST',
-		body: JSON.stringify({content})
+		body: JSON.stringify({content, file_paths: filePaths ?? []})
 	});
 }
 
 export async function cancelRun(threadId: string): Promise<void> {
 	await request(`/api/threads/${threadId}/cancel`, {method: 'POST'});
+}
+
+export async function uploadFiles(threadId: string, files: File[]): Promise<UploadedFile[]> {
+	const token = readToken();
+	const headers = new Headers();
+	headers.set('Accept', 'application/json');
+	if (token) headers.set('Authorization', `Bearer ${token}`);
+
+	const body = new FormData();
+	for (const file of files) {
+		body.append('file', file, file.name);
+	}
+
+	const response = await fetch(`/api/threads/${threadId}/files`, {method: 'POST', headers, body});
+	if (!response.ok) throw new Error(`${response.status}`);
+	const data = await response.json() as {files: UploadedFile[]};
+	return data.files;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

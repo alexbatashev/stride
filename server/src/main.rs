@@ -4,6 +4,7 @@ mod db;
 mod pages;
 pub mod runner;
 mod tools;
+mod vfs;
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -38,6 +39,7 @@ struct ServerState {
     pub(crate) runner: Arc<dyn AgentPool>,
     pub(crate) model_config: Arc<AgentConfig>,
     pub(crate) templates: Handlebars<'static>,
+    pub(crate) vfs: Option<Arc<vfs::Vfs>>,
 }
 
 #[derive(Debug, Parser)]
@@ -67,11 +69,44 @@ async fn main() -> anyhow::Result<()> {
         model_registry: create_model_registry(&config),
         max_iterations: 90,
     });
-    let runner = Arc::new(runner::inproc::InProcessAgentPool::with_tool_config(
-        db.clone(),
-        model_config.clone(),
-        tools,
-    ));
+    let vfs_provider = config
+        .server
+        .as_ref()
+        .and_then(|s| s.files.as_ref())
+        .and_then(|f| f.local.as_ref())
+        .filter(|l| l.enabled)
+        .map(|l| {
+            let keep = config
+                .server
+                .as_ref()
+                .and_then(|s| s.files.as_ref())
+                .and_then(|f| f.keep_versions)
+                .unwrap_or(10);
+            let storage = vfs::LocalFileProvider::new(l.base.clone().into())?;
+            Ok(vfs::Vfs::new(
+                db.clone(),
+                vfs::AnyFileProvider::Local(storage),
+                keep,
+            ))
+        })
+        .transpose()
+        .map_err(|e: anyhow::Error| e)?
+        .map(Arc::new);
+
+    let runner: Arc<dyn runner::AgentPool> = if let Some(ref vfs) = vfs_provider {
+        Arc::new(runner::inproc::InProcessAgentPool::with_file_provider(
+            db.clone(),
+            model_config.clone(),
+            tools,
+            vfs.clone(),
+        ))
+    } else {
+        Arc::new(runner::inproc::InProcessAgentPool::with_tool_config(
+            db.clone(),
+            model_config.clone(),
+            tools,
+        ))
+    };
 
     let state = Arc::new(ServerState {
         config,
@@ -80,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
         runner,
         model_config,
         templates,
+        vfs: vfs_provider,
     });
 
     let static_dir = args
@@ -126,6 +162,11 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         )
         .route("/api/threads/{id}/events", get(api::threads::events))
         .route("/api/threads/{id}/cancel", post(api::threads::cancel))
+        .route("/api/threads/{id}/files", post(api::threads::upload_file))
+        .route(
+            "/api/threads/{id}/files/{*path}",
+            get(api::threads::download_file),
+        )
         .route("/auth/login", get(pages::auth::login))
         .route("/auth/register", get(pages::auth::register))
         .route("/threads", get(pages::agent::new_thread))

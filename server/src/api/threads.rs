@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    body::Body,
     extract::{
-        Path, Query, State,
+        Multipart, Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use minisql::Value;
@@ -87,6 +88,8 @@ struct MessageTemplateData {
 pub struct SendMessageRequest {
     content: String,
     project_id: Option<Uuid>,
+    #[serde(default)]
+    file_paths: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -334,7 +337,7 @@ pub async fn create_thread(
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let content = normalize_content(request.content)?;
+    let content = normalize_content(build_content(request.content, request.file_paths))?;
     let project_id = request.project_id;
     let thread_id = Uuid::now_v7();
     let title = title_from_content(&content);
@@ -447,7 +450,7 @@ pub async fn send_message(
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     require_thread_owner(&state, &headers, thread_id).await?;
-    let content = normalize_content(request.content)?;
+    let content = normalize_content(build_content(request.content, request.file_paths))?;
     let run_id = send_to_runner(&state, thread_id, content).await?;
 
     Ok(Json(SendMessageResponse {
@@ -568,6 +571,18 @@ async fn send_to_runner(
         .map_err(pool_error)
 }
 
+fn build_content(content: String, file_paths: Vec<String>) -> String {
+    if file_paths.is_empty() {
+        return content;
+    }
+    let paths = file_paths
+        .iter()
+        .map(|p| format!("- {p}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{content}\n\nAttached files:\n{paths}")
+}
+
 fn normalize_content(content: String) -> Result<String, ThreadApiError> {
     let content = content.trim().to_string();
     if content.is_empty() {
@@ -634,6 +649,147 @@ fn pool_error(error: AgentPoolError) -> ThreadApiError {
         | AgentPoolError::WorkerStopped
         | AgentPoolError::Internal(_) => ThreadApiError::Internal,
     }
+}
+
+#[derive(Serialize)]
+pub struct UploadedFile {
+    name: String,
+    path: String,
+    size: usize,
+}
+
+#[derive(Serialize)]
+pub struct UploadResponse {
+    files: Vec<UploadedFile>,
+}
+
+pub async fn upload_file(
+    State(state): State<Arc<ServerState>>,
+    Path(thread_id): Path<Uuid>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::Internal);
+    };
+
+    let owner = auth::authenticated_user(&state, &headers).await?;
+
+    let row = state
+        .db
+        .query_with_params(
+            "SELECT project_id FROM threads WHERE id = ? AND owner = ? LIMIT 1",
+            vec![Value::Uuid(thread_id), Value::Uuid(owner)],
+        )
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    if row.is_empty() {
+        return Err(ThreadApiError::NotFound);
+    }
+
+    let project_id = row.rows().first().and_then(|r| match r.get("project_id") {
+        Some(Value::Uuid(id)) => Some(*id),
+        Some(Value::Blob(b)) if b.len() == 16 => Uuid::from_slice(b).ok(),
+        Some(Value::Text(s)) => Uuid::parse_str(s).ok(),
+        _ => None,
+    });
+
+    let workspace_id = vfs
+        .get_or_create_workspace(thread_id, project_id, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    let mut uploaded = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| ThreadApiError::BadRequest)?
+    {
+        let name = field
+            .file_name()
+            .filter(|n| !n.is_empty())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "file".to_string());
+
+        let mime_type = field
+            .content_type()
+            .filter(|ct| !ct.is_empty())
+            .map(|ct| ct.to_string());
+
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|_| ThreadApiError::BadRequest)?;
+        let size = bytes.len();
+
+        vfs.write_bytes(workspace_id, &name, &bytes, mime_type.as_deref(), owner)
+            .await
+            .map_err(|_| ThreadApiError::Internal)?;
+
+        uploaded.push(UploadedFile {
+            path: format!("/~workspace/{name}"),
+            name,
+            size,
+        });
+    }
+
+    Ok(Json(UploadResponse { files: uploaded }))
+}
+
+pub async fn download_file(
+    State(state): State<Arc<ServerState>>,
+    Path((thread_id, path)): Path<(Uuid, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::NotFound);
+    };
+
+    let owner = auth::authenticated_user(&state, &headers).await?;
+
+    let row = state
+        .db
+        .query_with_params(
+            "SELECT project_id FROM threads WHERE id = ? AND owner = ? LIMIT 1",
+            vec![Value::Uuid(thread_id), Value::Uuid(owner)],
+        )
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    if row.is_empty() {
+        return Err(ThreadApiError::NotFound);
+    }
+
+    let project_id = row.rows().first().and_then(|r| match r.get("project_id") {
+        Some(Value::Uuid(id)) => Some(*id),
+        Some(Value::Blob(b)) if b.len() == 16 => Uuid::from_slice(b).ok(),
+        Some(Value::Text(s)) => Uuid::parse_str(s).ok(),
+        _ => None,
+    });
+
+    let workspace_id = vfs
+        .get_or_create_workspace(thread_id, project_id, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    let (bytes, mime_type) = vfs
+        .read_bytes(workspace_id, &path)
+        .await
+        .map_err(|_| ThreadApiError::NotFound)?;
+
+    let content_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    let filename = path.split('/').next_back().unwrap_or(&path).to_string();
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(Body::from(bytes))
+        .map_err(|_| ThreadApiError::Internal)
 }
 
 fn event_response(event: AgentEvent) -> EventResponse {
@@ -708,5 +864,26 @@ mod tests {
         let value = Value::Blob(id.as_bytes().to_vec());
 
         assert_eq!(uuid_value(Some(&value)).unwrap(), id);
+    }
+
+    #[test]
+    fn build_content_appends_file_paths() {
+        let result = build_content(
+            "hello".to_string(),
+            vec![
+                "/~workspace/a.txt".to_string(),
+                "/~workspace/b.pdf".to_string(),
+            ],
+        );
+        assert_eq!(
+            result,
+            "hello\n\nAttached files:\n- /~workspace/a.txt\n- /~workspace/b.pdf"
+        );
+    }
+
+    #[test]
+    fn build_content_no_files_returns_original() {
+        let result = build_content("hello".to_string(), vec![]);
+        assert_eq!(result, "hello");
     }
 }

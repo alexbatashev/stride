@@ -15,6 +15,7 @@ import {
 	listMessages,
 	listThreads,
 	sendMessage,
+	uploadFiles,
 } from "../api/threads.js";
 import "../components/app-button.js";
 import "../components/app-message.js";
@@ -32,6 +33,7 @@ class ThreadsPageHydrator {
 	private currentProjectId: string | null = null;
 	private messages: ViewMessage[] = [];
 	private draft = "";
+	private attachedFiles: {name: string; path: string}[] = [];
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
@@ -98,6 +100,9 @@ class ThreadsPageHydrator {
 			this.onPromptSubmit(event as CustomEvent<{ value: string }>),
 		);
 		this.promptEl.addEventListener("prompt-stop", () => void this.onStop());
+		this.promptEl.addEventListener("files-attach", (event) =>
+			void this.onFilesAttach(event as CustomEvent<{files: File[]}>),
+		);
 		window.addEventListener("popstate", () => {
 			window.location.href = window.location.pathname;
 		});
@@ -324,7 +329,9 @@ class ThreadsPageHydrator {
 		}
 
 		const content = this.draft.trim();
+		const filePaths = this.attachedFiles.map((f) => f.path);
 		this.draft = "";
+		this.attachedFiles = [];
 		this.error = "";
 		this.running = true;
 		this.syncComposer();
@@ -332,9 +339,9 @@ class ThreadsPageHydrator {
 
 		try {
 			if (this.threadId) {
-				await sendMessage(this.threadId, content);
+				await sendMessage(this.threadId, content, filePaths);
 			} else {
-				const response = await createThread(content, this.currentProjectId ?? undefined);
+				const response = await createThread(content, this.currentProjectId ?? undefined, filePaths);
 				this.threadId = response.thread_id;
 				this.root.dataset.threadId = this.threadId;
 				history.pushState(null, "", `/threads/${response.thread_id}`);
@@ -369,6 +376,7 @@ class ThreadsPageHydrator {
 		this.closeEvents();
 		this.lastEventSeq = 0;
 		this.pendingAssistant = "";
+		this.attachedFiles = [];
 		this.setError("");
 
 		try {
@@ -388,6 +396,7 @@ class ThreadsPageHydrator {
 		this.root.dataset.threadId = "";
 		this.messages = [];
 		this.draft = "";
+		this.attachedFiles = [];
 		this.running = false;
 		this.pendingAssistant = "";
 		this.lastEventSeq = 0;
@@ -709,6 +718,39 @@ class ThreadsPageHydrator {
 		} catch {
 			// Ignore errors — the RunCancelled event will update state
 		}
+	}
+
+	private async onFilesAttach(event: CustomEvent<{files: File[]}>) {
+		if (!this.threadId) {
+			this.flash("Start a thread before uploading files.");
+			return;
+		}
+
+		const {files} = event.detail;
+		const label = files.length === 1 ? files[0].name : `${files.length} files`;
+		this.flash(`Uploading ${label}…`);
+
+		try {
+			const uploaded = await uploadFiles(this.threadId, files);
+			for (const f of uploaded) {
+				this.attachedFiles.push({name: f.name, path: f.path});
+			}
+			const count = this.attachedFiles.length;
+			this.flash(`${count} file${count === 1 ? "" : "s"} attached`);
+		} catch {
+			this.flash("Upload failed.");
+		}
+	}
+
+	private flash(message: string) {
+		this.error = message;
+		this.syncComposer();
+		setTimeout(() => {
+			if (this.error === message) {
+				this.error = "";
+				this.syncComposer();
+			}
+		}, 4000);
 	}
 
 	private setError(error: string) {

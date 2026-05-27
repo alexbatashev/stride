@@ -36,7 +36,9 @@ use crate::{
     tools::{
         personality::UpdatePersonalityTool,
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
+        vfs::{VfsListTool, VfsReadTool, VfsWriteTool},
     },
+    vfs::Vfs,
 };
 
 const WORKER_THREADS: usize = 8;
@@ -55,10 +57,19 @@ Core instructions:
 7. If you are using a source to extract a piece of information, always cite it properly. Clickable URLs for web pages, file names for files.
 ";
 
-fn build_system_prompt(base: &str, personality: Option<&str>) -> String {
+fn build_system_prompt(base: &str, personality: Option<&str>, thread_id: Option<Uuid>) -> String {
     let date = current_date();
     let mut prompt = base.to_string();
     prompt.push_str(&format!("\nCurrent date: {date}"));
+    if let Some(id) = thread_id {
+        prompt.push_str(&format!(
+            "\n\nFiles are downloadable via `/api/threads/{id}/files/<vfs-path>` \
+             where `<vfs-path>` is the file's VFS path with the leading `/` removed. \
+             Examples: \
+             `/~workspace/report.pdf` → `[report.pdf](/api/threads/{id}/files/~workspace/report.pdf)`, \
+             `/~workspace/data/results.csv` → `[results.csv](/api/threads/{id}/files/~workspace/data/results.csv)`."
+        ));
+    }
     if let Some(p) = personality {
         prompt.push_str(&format!("\n\n<user_personality>\n{p}\n</user_personality>"));
     }
@@ -124,6 +135,7 @@ struct WorkerState {
     db: ConnectionPool,
     config: Arc<AgentConfig>,
     tools: Tools,
+    vfs: Option<Arc<Vfs>>,
     system_prompt: String,
     idle_ttl: Duration,
     threads: HashMap<Uuid, ThreadRunner>,
@@ -162,7 +174,22 @@ impl InProcessAgentPool {
     }
 
     pub fn with_tool_config(db: ConnectionPool, config: Arc<AgentConfig>, tools: Tools) -> Self {
-        Self::with_system_prompt_and_tools(db, config, BASE_SYSTEM_PROMPT.to_string(), tools)
+        Self::with_system_prompt_and_tools(db, config, BASE_SYSTEM_PROMPT.to_string(), tools, None)
+    }
+
+    pub fn with_file_provider(
+        db: ConnectionPool,
+        config: Arc<AgentConfig>,
+        tools: Tools,
+        vfs: Arc<Vfs>,
+    ) -> Self {
+        Self::with_system_prompt_and_tools(
+            db,
+            config,
+            BASE_SYSTEM_PROMPT.to_string(),
+            tools,
+            Some(vfs),
+        )
     }
 
     pub fn with_system_prompt(
@@ -178,8 +205,9 @@ impl InProcessAgentPool {
         config: Arc<AgentConfig>,
         system_prompt: String,
         tools: Tools,
+        vfs: Option<Arc<Vfs>>,
     ) -> Self {
-        Self::with_idle_ttl_and_tools(db, config, system_prompt, DEFAULT_IDLE_TTL, tools)
+        Self::with_idle_ttl_and_tools(db, config, system_prompt, DEFAULT_IDLE_TTL, tools, vfs)
     }
 
     pub fn with_idle_ttl(
@@ -188,7 +216,7 @@ impl InProcessAgentPool {
         system_prompt: String,
         idle_ttl: Duration,
     ) -> Self {
-        Self::with_idle_ttl_and_tools(db, config, system_prompt, idle_ttl, Tools::default())
+        Self::with_idle_ttl_and_tools(db, config, system_prompt, idle_ttl, Tools::default(), None)
     }
 
     pub fn with_idle_ttl_and_tools(
@@ -197,6 +225,7 @@ impl InProcessAgentPool {
         system_prompt: String,
         idle_ttl: Duration,
         tools: Tools,
+        vfs: Option<Arc<Vfs>>,
     ) -> Self {
         let workers = (0..WORKER_THREADS)
             .map(|idx| {
@@ -207,6 +236,7 @@ impl InProcessAgentPool {
                     system_prompt.clone(),
                     idle_ttl,
                     tools.clone(),
+                    vfs.clone(),
                 )
             })
             .collect();
@@ -287,6 +317,7 @@ fn start_worker(
     system_prompt: String,
     idle_ttl: Duration,
     tools: Tools,
+    vfs: Option<Arc<Vfs>>,
 ) -> WorkerHandle {
     let (tx, rx) = mpsc::unbounded_channel();
 
@@ -302,6 +333,7 @@ fn start_worker(
                 db,
                 config,
                 tools,
+                vfs,
                 system_prompt,
                 idle_ttl,
                 threads: HashMap::new(),
@@ -535,20 +567,26 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, tools, base_system_prompt) = {
+    let (db, config, tools, vfs, base_system_prompt) = {
         let state = state.borrow();
         (
             state.db.clone(),
             state.config.clone(),
             state.tools.clone(),
+            state.vfs.clone(),
             state.system_prompt.clone(),
         )
     };
 
     ensure_thread_exists(&db, thread_id).await?;
     let user_id = thread_owner(&db, thread_id).await?;
+    let project_id = thread_project_id(&db, thread_id).await?;
     let personality = load_personality(&db, user_id).await?;
-    let system_prompt = build_system_prompt(&base_system_prompt, personality.as_deref());
+    let system_prompt = build_system_prompt(
+        &base_system_prompt,
+        personality.as_deref(),
+        vfs.as_ref().map(|_| thread_id),
+    );
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
@@ -572,6 +610,28 @@ async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("create_skill");
+    if let Some(provider) = vfs {
+        let workspace_id = provider
+            .get_or_create_workspace(thread_id, project_id, user_id)
+            .await
+            .map_err(AgentPoolError::Internal)?;
+        agent.register_tool(VfsListTool {
+            vfs: provider.clone(),
+            workspace_id,
+        });
+        agent.allow_tool("vfs_list");
+        agent.register_tool(VfsReadTool {
+            vfs: provider.clone(),
+            workspace_id,
+        });
+        agent.allow_tool("vfs_read");
+        agent.register_tool(VfsWriteTool {
+            vfs: provider,
+            workspace_id,
+            owner: user_id,
+        });
+        agent.allow_tool("vfs_write");
+    }
     let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
 
     state.borrow_mut().threads.insert(
@@ -1172,6 +1232,29 @@ fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
         matches!(runner.status, ThreadStatus::Running { .. })
             || now.duration_since(runner.last_used) < idle_ttl
     });
+}
+
+async fn thread_project_id(
+    db: &ConnectionPool,
+    thread_id: Uuid,
+) -> Result<Option<Uuid>, AgentPoolError> {
+    let result = db
+        .query_with_params(
+            "SELECT project_id FROM threads WHERE id = ? LIMIT 1",
+            vec![Value::Uuid(thread_id)],
+        )
+        .await
+        .map_err(db_error)?;
+
+    Ok(result
+        .rows()
+        .first()
+        .and_then(|row| match row.get("project_id") {
+            Some(Value::Uuid(id)) => Some(*id),
+            Some(Value::Blob(bytes)) if bytes.len() == 16 => Uuid::from_slice(bytes).ok(),
+            Some(Value::Text(s)) => Uuid::parse_str(s).ok(),
+            _ => None,
+        }))
 }
 
 async fn thread_owner(db: &ConnectionPool, thread_id: Uuid) -> Result<Uuid, AgentPoolError> {
