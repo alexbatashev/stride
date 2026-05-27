@@ -53,10 +53,10 @@ export async function listThreads(): Promise<ThreadSummary[]> {
 	return request('/api/threads');
 }
 
-export async function createThread(content: string, projectId?: string): Promise<SendMessageResponse> {
+export async function createThread(content: string, projectId?: string, filePaths?: string[]): Promise<SendMessageResponse> {
 	return request('/api/threads', {
 		method: 'POST',
-		body: JSON.stringify({content, project_id: projectId ?? null})
+		body: JSON.stringify({content, project_id: projectId ?? null, file_paths: filePaths ?? []})
 	});
 }
 
@@ -64,10 +64,10 @@ export async function listMessages(threadId: string): Promise<ThreadMessage[]> {
 	return request(`/api/threads/${threadId}/messages`);
 }
 
-export async function sendMessage(threadId: string, content: string): Promise<SendMessageResponse> {
+export async function sendMessage(threadId: string, content: string, filePaths?: string[]): Promise<SendMessageResponse> {
 	return request(`/api/threads/${threadId}/messages`, {
 		method: 'POST',
-		body: JSON.stringify({content})
+		body: JSON.stringify({content, file_paths: filePaths ?? []})
 	});
 }
 

@@ -33,6 +33,7 @@ class ThreadsPageHydrator {
 	private currentProjectId: string | null = null;
 	private messages: ViewMessage[] = [];
 	private draft = "";
+	private attachedFiles: {name: string; path: string}[] = [];
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
@@ -328,7 +329,9 @@ class ThreadsPageHydrator {
 		}
 
 		const content = this.draft.trim();
+		const filePaths = this.attachedFiles.map((f) => f.path);
 		this.draft = "";
+		this.attachedFiles = [];
 		this.error = "";
 		this.running = true;
 		this.syncComposer();
@@ -336,9 +339,9 @@ class ThreadsPageHydrator {
 
 		try {
 			if (this.threadId) {
-				await sendMessage(this.threadId, content);
+				await sendMessage(this.threadId, content, filePaths);
 			} else {
-				const response = await createThread(content, this.currentProjectId ?? undefined);
+				const response = await createThread(content, this.currentProjectId ?? undefined, filePaths);
 				this.threadId = response.thread_id;
 				this.root.dataset.threadId = this.threadId;
 				history.pushState(null, "", `/threads/${response.thread_id}`);
@@ -373,6 +376,7 @@ class ThreadsPageHydrator {
 		this.closeEvents();
 		this.lastEventSeq = 0;
 		this.pendingAssistant = "";
+		this.attachedFiles = [];
 		this.setError("");
 
 		try {
@@ -392,6 +396,7 @@ class ThreadsPageHydrator {
 		this.root.dataset.threadId = "";
 		this.messages = [];
 		this.draft = "";
+		this.attachedFiles = [];
 		this.running = false;
 		this.pendingAssistant = "";
 		this.lastEventSeq = 0;
@@ -727,8 +732,11 @@ class ThreadsPageHydrator {
 
 		try {
 			const uploaded = await uploadFiles(this.threadId, files);
-			const names = uploaded.map((f) => f.name).join(", ");
-			this.flash(`Uploaded: ${names}`);
+			for (const f of uploaded) {
+				this.attachedFiles.push({name: f.name, path: f.path});
+			}
+			const count = this.attachedFiles.length;
+			this.flash(`${count} file${count === 1 ? "" : "s"} attached`);
 		} catch {
 			this.flash("Upload failed.");
 		}

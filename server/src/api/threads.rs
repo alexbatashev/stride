@@ -87,6 +87,8 @@ struct MessageTemplateData {
 pub struct SendMessageRequest {
     content: String,
     project_id: Option<Uuid>,
+    #[serde(default)]
+    file_paths: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -334,7 +336,7 @@ pub async fn create_thread(
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let content = normalize_content(request.content)?;
+    let content = normalize_content(build_content(request.content, request.file_paths))?;
     let project_id = request.project_id;
     let thread_id = Uuid::now_v7();
     let title = title_from_content(&content);
@@ -447,7 +449,7 @@ pub async fn send_message(
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     require_thread_owner(&state, &headers, thread_id).await?;
-    let content = normalize_content(request.content)?;
+    let content = normalize_content(build_content(request.content, request.file_paths))?;
     let run_id = send_to_runner(&state, thread_id, content).await?;
 
     Ok(Json(SendMessageResponse {
@@ -566,6 +568,18 @@ async fn send_to_runner(
         .send(thread_id, AgentRequest { content })
         .await
         .map_err(pool_error)
+}
+
+fn build_content(content: String, file_paths: Vec<String>) -> String {
+    if file_paths.is_empty() {
+        return content;
+    }
+    let paths = file_paths
+        .iter()
+        .map(|p| format!("- {p}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{content}\n\nAttached files:\n{paths}")
 }
 
 fn normalize_content(content: String) -> Result<String, ThreadApiError> {
@@ -795,5 +809,26 @@ mod tests {
         let value = Value::Blob(id.as_bytes().to_vec());
 
         assert_eq!(uuid_value(Some(&value)).unwrap(), id);
+    }
+
+    #[test]
+    fn build_content_appends_file_paths() {
+        let result = build_content(
+            "hello".to_string(),
+            vec![
+                "/~workspace/a.txt".to_string(),
+                "/~workspace/b.pdf".to_string(),
+            ],
+        );
+        assert_eq!(
+            result,
+            "hello\n\nAttached files:\n- /~workspace/a.txt\n- /~workspace/b.pdf"
+        );
+    }
+
+    #[test]
+    fn build_content_no_files_returns_original() {
+        let result = build_content("hello".to_string(), vec![]);
+        assert_eq!(result, "hello");
     }
 }
