@@ -18,6 +18,7 @@ import {
 	uploadFiles,
 } from "../api/threads.js";
 import "../components/app-button.js";
+import "../components/app-file-manager.js";
 import "../components/app-message.js";
 import "../components/app-prompt-input.js";
 import "../components/app-sidebar.js";
@@ -50,6 +51,7 @@ class ThreadsPageHydrator {
 	};
 	private readonly errorEl: HTMLElement;
 	private readonly sidebarListEl: HTMLElement;
+	private readonly fileManagerEl: HTMLElement & {threadId: string; open: boolean};
 
 	constructor(private readonly root: HTMLElement) {
 		this.threadId = root.dataset.threadId ?? "";
@@ -59,6 +61,7 @@ class ThreadsPageHydrator {
 		this.promptEl = this.mustQuery("[data-prompt]");
 		this.errorEl = this.mustQuery("[data-error]");
 		this.sidebarListEl = this.mustQuery("[data-sidebar-list]");
+		this.fileManagerEl = this.mustQuery("[data-file-manager]");
 		this.threads = this.readThreads();
 		this.projects = this.readProjects();
 		this.currentProjectId = this.threads.find((t) => t.id === this.threadId)?.project_id ?? null;
@@ -90,6 +93,12 @@ class ThreadsPageHydrator {
 		this.root
 			.querySelector<HTMLElement>('[data-action="new-project"]')
 			?.addEventListener("click", () => void this.onNewProject());
+		this.root
+			.querySelectorAll<HTMLElement>('[data-action="files"]')
+			.forEach((button) => button.addEventListener("click", () => this.toggleFiles()));
+		this.fileManagerEl.addEventListener("files-close", () => {
+			this.fileManagerEl.open = false;
+		});
 		this.sidebarListEl.addEventListener("click", (event) =>
 			this.onSidebarClick(event),
 		);
@@ -344,6 +353,7 @@ class ThreadsPageHydrator {
 				const response = await createThread(content, this.currentProjectId ?? undefined, filePaths);
 				this.threadId = response.thread_id;
 				this.root.dataset.threadId = this.threadId;
+				this.fileManagerEl.threadId = this.threadId;
 				history.pushState(null, "", `/threads/${response.thread_id}`);
 				const [threads, projects] = await Promise.all([listThreads(), listProjects()]);
 				this.threads = threads;
@@ -392,6 +402,8 @@ class ThreadsPageHydrator {
 	private startNew() {
 		this.closeEvents();
 		this.threadId = "";
+		this.fileManagerEl.threadId = "";
+		this.fileManagerEl.open = false;
 		this.currentProjectId = null;
 		this.root.dataset.threadId = "";
 		this.messages = [];
@@ -423,6 +435,7 @@ class ThreadsPageHydrator {
 
 		this.threadId = id;
 		this.root.dataset.threadId = id;
+		this.fileManagerEl.threadId = id;
 		this.currentProjectId = this.threads.find((t) => t.id === id)?.project_id ?? null;
 		this.renderSidebar();
 		history.pushState(null, "", `/threads/${id}`);
@@ -709,6 +722,12 @@ class ThreadsPageHydrator {
 		this.promptEl.running = this.running;
 		this.promptEl.placeholder = this.threadId ? "Message Friday" : "Ask Friday anything";
 		this.errorEl.textContent = this.error;
+		this.fileManagerEl.threadId = this.threadId;
+	}
+
+	private toggleFiles() {
+		this.fileManagerEl.threadId = this.threadId;
+		this.fileManagerEl.open = !this.fileManagerEl.open;
 	}
 
 	private async onStop() {

@@ -6,6 +6,20 @@ export type UploadedFile = {
 	size: number;
 };
 
+export type WorkspaceEntry = {
+	name: string;
+	path: string;
+	kind: 'directory' | 'file';
+	size: number | null;
+	updated_at: number;
+	mime_type: string | null;
+};
+
+export type WorkspaceList = {
+	path: string;
+	entries: WorkspaceEntry[];
+};
+
 export type ThreadSummary = {
 	id: string;
 	title: string;
@@ -75,7 +89,32 @@ export async function cancelRun(threadId: string): Promise<void> {
 	await request(`/api/threads/${threadId}/cancel`, {method: 'POST'});
 }
 
-export async function uploadFiles(threadId: string, files: File[]): Promise<UploadedFile[]> {
+export async function listWorkspaceFiles(threadId: string, path = ''): Promise<WorkspaceList> {
+	return request(`/api/threads/${threadId}/files?path=${encodeURIComponent(path)}`);
+}
+
+export async function createWorkspaceDirectory(threadId: string, path: string): Promise<void> {
+	await request(`/api/threads/${threadId}/directories`, {
+		method: 'POST',
+		body: JSON.stringify({path})
+	});
+}
+
+export async function deleteWorkspaceEntry(threadId: string, path: string): Promise<void> {
+	await request(`/api/threads/${threadId}/files/${encodePath(path)}`, {method: 'DELETE'});
+}
+
+export async function downloadWorkspaceFile(threadId: string, path: string): Promise<Blob> {
+	const token = readToken();
+	const headers = new Headers();
+	if (token) headers.set('Authorization', `Bearer ${token}`);
+
+	const response = await fetch(`/api/threads/${threadId}/files/${encodePath(path)}`, {headers});
+	if (!response.ok) throw new Error(`${response.status}`);
+	return response.blob();
+}
+
+export async function uploadFiles(threadId: string, files: File[], path = ''): Promise<UploadedFile[]> {
 	const token = readToken();
 	const headers = new Headers();
 	headers.set('Accept', 'application/json');
@@ -86,10 +125,14 @@ export async function uploadFiles(threadId: string, files: File[]): Promise<Uplo
 		body.append('file', file, file.name);
 	}
 
-	const response = await fetch(`/api/threads/${threadId}/files`, {method: 'POST', headers, body});
+	const response = await fetch(`/api/threads/${threadId}/files?path=${encodeURIComponent(path)}`, {method: 'POST', headers, body});
 	if (!response.ok) throw new Error(`${response.status}`);
 	const data = await response.json() as {files: UploadedFile[]};
 	return data.files;
+}
+
+function encodePath(path: string): string {
+	return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -111,5 +154,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 		throw new Error(`${response.status}`);
 	}
 
-	return (await response.json()) as T;
+	if (response.status === 204) {
+		return undefined as T;
+	}
+
+	const text = await response.text();
+	return (text ? JSON.parse(text) : undefined) as T;
 }

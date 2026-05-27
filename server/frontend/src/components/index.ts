@@ -1,4 +1,5 @@
 import "./app-button.js";
+import "./app-file-manager.js";
 import "./app-prompt-input.js";
 import "./app-sidebar.js";
 import "./app-text-input.js";
