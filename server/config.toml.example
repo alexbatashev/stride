@@ -32,6 +32,13 @@ db_path = "/tmp/server.db"
 listen_addr = "0.0.0.0:3000"
 allow_registration = true
 
+[server.files]
+keep_versions = 10
+
+[server.files.local]
+enabled = true
+base = "/tmp/friday-files"
+
 [server.ldap]
 url = "ldap://localhost:389"
 user_dn_template = "uid={username},ou=users,dc=example,dc=com"
