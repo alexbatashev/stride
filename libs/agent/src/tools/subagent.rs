@@ -14,6 +14,8 @@ pub struct SubAgentTool {
     tool_registry: ToolRegistry,
     model: String,
     system_prompt: String,
+    requires_confirmation: bool,
+    confirmation_prompt: Option<String>,
 }
 
 #[derive(ToolDesc)]
@@ -38,7 +40,15 @@ impl SubAgentTool {
             tool_registry,
             model: model.to_string(),
             system_prompt: system_prompt.to_string(),
+            requires_confirmation: false,
+            confirmation_prompt: None,
         }
+    }
+
+    pub fn requiring_confirmation(mut self, prompt: &str) -> Self {
+        self.requires_confirmation = true;
+        self.confirmation_prompt = Some(prompt.to_string());
+        self
     }
 }
 
@@ -103,6 +113,16 @@ impl Tool for SubAgentTool {
         }
 
         json!({ "success": true, "content": content })
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        self.requires_confirmation
+    }
+
+    fn confirmation_prompt(&self, _args: &Value) -> String {
+        self.confirmation_prompt
+            .clone()
+            .unwrap_or_else(|| format!("Execute {}", self.name()))
     }
 }
 

@@ -41,6 +41,13 @@ pub struct VfsMarkdownToOfficeWordTool {
     pub owner: Uuid,
 }
 
+pub struct VfsPresentationXmlToPptxTool {
+    pub vfs: Arc<Vfs>,
+    pub workspace_id: Uuid,
+    pub owner: Uuid,
+    pub requires_confirmation: bool,
+}
+
 #[derive(ToolDesc)]
 struct VfsListParams {
     /// Absolute path to list. Use "/" to list the file root. "/~workspace/subdir" remains supported for compatibility.
@@ -80,6 +87,14 @@ struct VfsMarkdownToOfficeWordParams {
     /// Absolute path to write, e.g. "/reports/report.docx".
     path: String,
     /// Markdown content to convert into a DOCX document.
+    content: String,
+}
+
+#[derive(ToolDesc)]
+struct VfsPresentationXmlToPptxParams {
+    /// Absolute path to write, e.g. "/decks/strategy.pptx".
+    path: String,
+    /// Presentation XML to convert into a PPTX deck.
     content: String,
 }
 
@@ -406,6 +421,89 @@ impl Tool for VfsMarkdownToOfficeWordTool {
     }
 }
 
+#[async_trait(?Send)]
+impl Tool for VfsPresentationXmlToPptxTool {
+    fn name(&self) -> &str {
+        "vfs_presentation_xml_to_pptx"
+    }
+
+    fn readable_name(&self) -> &str {
+        "Write PowerPoint"
+    }
+
+    fn definition(&self) -> LlmTool {
+        LlmTool {
+            r#type: llm::ToolType::Function,
+            function: Function {
+                name: self.name().to_owned(),
+                description: "Convert Friday presentation XML to PPTX and write it to a file path such as /decks/strategy.pptx. The XML root is <presentation size=\"wide|standard\">. Slides support layout=\"title|section|title-content|two-column|blank\", <title>, <subtitle>, <text>, <bullets><item>...</item></bullets>, <image src=\"/path.png\" x=\"in\" y=\"in\" w=\"in\" h=\"in\"/>, <textbox x=\"in\" y=\"in\" w=\"in\" h=\"in\">...</textbox>, <notes>, and <columns><left>...</left><right>...</right></columns> for two-column scientific slides.".to_string(),
+                parameters: Some(VfsPresentationXmlToPptxParams::function_parameters()),
+            },
+        }
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        self.requires_confirmation
+    }
+
+    fn confirmation_prompt(&self, args: &JsonValue) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+        format!("Write PowerPoint presentation {path}")
+    }
+
+    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+        let params = match VfsPresentationXmlToPptxParams::decode(args) {
+            Ok(p) => p,
+            Err(e) => return json!({"error": e}),
+        };
+
+        let rel = match document_write_path(&params.path) {
+            Ok(p) => p,
+            Err(e) => return json!({"error": e}),
+        };
+        let mut assets = Vec::new();
+        for path in match fzilla::presentation_xml_image_paths(&params.content) {
+            Ok(paths) => paths,
+            Err(e) => return json!({"error": e.to_string()}),
+        } {
+            let rel = match strip_workspace_prefix(&path) {
+                Some(p) if !p.is_empty() => p,
+                _ => return json!({"error": format!("image path must point to a file: {path}")}),
+            };
+            let (data, mime_type) = match self.vfs.read_bytes(self.workspace_id, rel).await {
+                Ok(result) => result,
+                Err(e) => return json!({"error": e.to_string()}),
+            };
+            assets.push(fzilla::PresentationImageAsset {
+                path,
+                data,
+                mime_type,
+            });
+        }
+
+        let data = match fzilla::presentation_xml_to_pptx_with_assets(params.content, assets).await
+        {
+            Ok(data) => data,
+            Err(e) => return json!({"error": e.to_string()}),
+        };
+
+        match self
+            .vfs
+            .write_bytes(
+                self.workspace_id,
+                rel,
+                &data,
+                Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+                self.owner,
+            )
+            .await
+        {
+            Ok(()) => json!({"success": true, "path": params.path}),
+            Err(e) => json!({"error": e.to_string()}),
+        }
+    }
+}
+
 fn document_write_path(path: &str) -> Result<&str, String> {
     match strip_workspace_prefix(path) {
         Some(p) if !p.is_empty() => Ok(p),
@@ -512,5 +610,62 @@ mod tests {
             .unwrap();
         assert!(bytes.starts_with(b"%PDF-"));
         assert_eq!(mime_type.as_deref(), Some("application/pdf"));
+    }
+
+    #[tokio::test]
+    async fn presentation_xml_tool_writes_readable_pptx() {
+        let (vfs, workspace_id, owner, config) = setup().await;
+        vfs.write_bytes(
+            workspace_id,
+            "figures/chart.png",
+            &[137, 80, 78, 71, 13, 10, 26, 10],
+            Some("image/png"),
+            owner,
+        )
+        .await
+        .unwrap();
+
+        let write = VfsPresentationXmlToPptxTool {
+            vfs: vfs.clone(),
+            workspace_id,
+            owner,
+            requires_confirmation: false,
+        };
+        let read = VfsDocumentToMarkdownTool { vfs, workspace_id };
+
+        let result = write
+            .execute(
+                config.clone(),
+                json!({
+                    "path": "/decks/roadmap.pptx",
+                    "content": r#"<presentation size="wide"><slide layout="two-column"><title>Roadmap</title><columns><left><text>Next quarter</text><bullets><item>Documents</item><item>Presentations</item></bullets></left><right><image src="/figures/chart.png" w="3" h="2"/></right></columns><notes>Explain chart source.</notes></slide></presentation>"#,
+                }),
+            )
+            .await;
+        assert_eq!(result["success"], true);
+
+        let (bytes, mime_type) = read
+            .vfs
+            .read_bytes(workspace_id, "decks/roadmap.pptx")
+            .await
+            .unwrap();
+        assert!(
+            bytes
+                .windows(b"ppt/media/image1.png".len())
+                .any(|window| window == b"ppt/media/image1.png")
+        );
+        assert_eq!(
+            mime_type.as_deref(),
+            Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        );
+
+        let result = read
+            .execute(config, json!({"path": "/decks/roadmap.pptx"}))
+            .await;
+        let content = result["content"].as_str().unwrap();
+        assert!(content.contains("Roadmap"));
+        assert!(content.contains("Next quarter"));
+        assert!(content.contains("Documents"));
+        assert!(content.contains("Explain chart source"));
     }
 }
