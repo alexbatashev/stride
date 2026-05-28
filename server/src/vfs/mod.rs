@@ -12,6 +12,7 @@ pub struct DirEntry {
     pub name: String,
     pub kind: EntryKind,
     pub size: Option<i64>,
+    pub updated_at: i64,
     pub mime_type: Option<String>,
 }
 
@@ -98,6 +99,78 @@ impl Vfs {
         self.list_children(workspace_id, parent).await
     }
 
+    /// Creates a directory and any missing parent directories.
+    pub async fn create_dir(
+        &self,
+        workspace_id: Uuid,
+        path: &str,
+        owner: Uuid,
+    ) -> anyhow::Result<()> {
+        let segments = split_path(path);
+        if segments.is_empty() {
+            bail!("path must include a directory name");
+        }
+
+        self.ensure_dir_path(workspace_id, &segments, owner).await?;
+        Ok(())
+    }
+
+    /// Deletes a file or directory tree at `path` relative to workspace root.
+    pub async fn delete(&self, workspace_id: Uuid, path: &str) -> anyhow::Result<()> {
+        let segments = split_path(path);
+        if segments.is_empty() {
+            bail!("path must include a file or directory name");
+        }
+
+        let (dir_segs, name_part) = segments.split_at(segments.len() - 1);
+        let parent = self.resolve_dir(workspace_id, dir_segs).await?;
+        let node_id = self
+            .find_child(workspace_id, parent, name_part[0])
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("path not found: {path}"))?;
+
+        let mut node_ids = Vec::new();
+        self.collect_descendants(workspace_id, node_id, &mut node_ids)
+            .await?;
+
+        for id in &node_ids {
+            let rows = self
+                .db
+                .query_with_params(
+                    "SELECT id, location FROM vfs_objects WHERE node = ?",
+                    vec![Value::Uuid(*id)],
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+            for row in rows.rows() {
+                let Some(object_id) = uuid_from_row(row, "id") else {
+                    continue;
+                };
+                let location = row.get_text("location").map(|s| s.to_string());
+                self.db
+                    .query_with_params(
+                        "DELETE FROM vfs_objects WHERE id = ?",
+                        vec![Value::Uuid(object_id)],
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                if let Some(loc) = location {
+                    let _ = self.storage.delete(&loc).await;
+                }
+            }
+        }
+
+        for id in node_ids.into_iter().rev() {
+            self.db
+                .query_with_params("DELETE FROM vfs_nodes WHERE id = ?", vec![Value::Uuid(id)])
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
     /// Reads UTF-8 content of a file at `path` relative to workspace root.
     pub async fn read(&self, workspace_id: Uuid, path: &str) -> anyhow::Result<String> {
         let (bytes, _) = self.read_bytes(workspace_id, path).await?;
@@ -121,6 +194,9 @@ impl Vfs {
             .find_child(workspace_id, parent, file_part[0])
             .await?
             .ok_or_else(|| anyhow::anyhow!("file not found: {path}"))?;
+        if self.node_kind(node_id).await? != "file" {
+            bail!("path is a directory");
+        }
 
         let rows = self
             .db
@@ -184,7 +260,12 @@ impl Vfs {
 
         let parent = self.ensure_dir_path(workspace_id, dir_segs, owner).await?;
         let node_id = match self.find_child(workspace_id, parent, file_name).await? {
-            Some(id) => id,
+            Some(id) => {
+                if self.node_kind(id).await? != "file" {
+                    bail!("path is a directory");
+                }
+                id
+            }
             None => {
                 self.create_node(workspace_id, parent, file_name, "file", mime_type, owner)
                     .await?
@@ -286,6 +367,9 @@ impl Vfs {
                 .find_child(workspace_id, current, seg)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("directory not found: {seg}"))?;
+            if self.node_kind(child).await? != "dir" {
+                bail!("path is not a directory: {seg}");
+            }
             current = Some(child);
         }
         Ok(current)
@@ -327,18 +411,22 @@ impl Vfs {
     ) -> anyhow::Result<Vec<DirEntry>> {
         let (sql, params) = if let Some(pid) = parent {
             (
-                "SELECT n.name, n.kind, n.mime_type, MAX(o.size) as size \
-                 FROM vfs_nodes n LEFT JOIN vfs_objects o ON o.node = n.id \
+                "SELECT n.name, n.kind, n.mime_type, \
+                    (SELECT o.size FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1) as size, \
+                    COALESCE((SELECT o.created_at FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1), n.created_at) as updated_at \
+                 FROM vfs_nodes n \
                  WHERE n.parent_workspace = ? AND n.parent_node = ? \
-                 GROUP BY n.id ORDER BY n.name ASC",
+                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, n.name COLLATE NOCASE ASC",
                 vec![Value::Uuid(workspace_id), Value::Uuid(pid)],
             )
         } else {
             (
-                "SELECT n.name, n.kind, n.mime_type, MAX(o.size) as size \
-                 FROM vfs_nodes n LEFT JOIN vfs_objects o ON o.node = n.id \
+                "SELECT n.name, n.kind, n.mime_type, \
+                    (SELECT o.size FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1) as size, \
+                    COALESCE((SELECT o.created_at FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1), n.created_at) as updated_at \
+                 FROM vfs_nodes n \
                  WHERE n.parent_workspace = ? AND n.parent_node IS NULL AND n.name != '' \
-                 GROUP BY n.id ORDER BY n.name ASC",
+                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, n.name COLLATE NOCASE ASC",
                 vec![Value::Uuid(workspace_id)],
             )
         };
@@ -357,6 +445,7 @@ impl Vfs {
                     _ => EntryKind::File,
                 },
                 size: row.get_int("size"),
+                updated_at: row.get_int("updated_at").unwrap_or_default(),
                 mime_type: row.get_text("mime_type").map(|s| s.to_string()),
             })
             .collect())
@@ -371,7 +460,12 @@ impl Vfs {
         let mut current = None;
         for &seg in segments {
             let child = match self.find_child(workspace_id, current, seg).await? {
-                Some(id) => id,
+                Some(id) => {
+                    if self.node_kind(id).await? != "dir" {
+                        bail!("path is not a directory: {seg}");
+                    }
+                    id
+                }
                 None => {
                     self.create_node(workspace_id, current, seg, "dir", None, owner)
                         .await?
@@ -409,6 +503,47 @@ impl Vfs {
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(id)
+    }
+
+    async fn node_kind(&self, node_id: Uuid) -> anyhow::Result<String> {
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT kind FROM vfs_nodes WHERE id = ? LIMIT 1",
+                vec![Value::Uuid(node_id)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        rows.rows()
+            .first()
+            .and_then(|r| r.get_text("kind"))
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("node not found"))
+    }
+
+    async fn collect_descendants(
+        &self,
+        workspace_id: Uuid,
+        node_id: Uuid,
+        node_ids: &mut Vec<Uuid>,
+    ) -> anyhow::Result<()> {
+        node_ids.push(node_id);
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT id FROM vfs_nodes WHERE parent_workspace = ? AND parent_node = ?",
+                vec![Value::Uuid(workspace_id), Value::Uuid(node_id)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        for row in rows.rows() {
+            if let Some(child_id) = uuid_from_row(row, "id") {
+                Box::pin(self.collect_descendants(workspace_id, child_id, node_ids)).await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn next_version(&self, node_id: Uuid) -> anyhow::Result<i64> {
@@ -583,6 +718,39 @@ mod tests {
             .collect();
         assert!(names.contains(&"a.txt".to_string()));
         assert!(names.contains(&"subdir".to_string()));
+    }
+
+    #[tokio::test]
+    async fn create_dir_adds_empty_directory() {
+        let (vfs, owner) = setup_vfs().await;
+        let ws = vfs
+            .get_or_create_workspace(Uuid::now_v7(), None, owner)
+            .await
+            .unwrap();
+        vfs.create_dir(ws, "a/b", owner).await.unwrap();
+        let names: Vec<_> = vfs
+            .list(ws, "a")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["b".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_directory_tree() {
+        let (vfs, owner) = setup_vfs().await;
+        let ws = vfs
+            .get_or_create_workspace(Uuid::now_v7(), None, owner)
+            .await
+            .unwrap();
+        vfs.write(ws, "a/b/c.txt", "deep", owner).await.unwrap();
+        vfs.write(ws, "keep.txt", "keep", owner).await.unwrap();
+        vfs.delete(ws, "a").await.unwrap();
+
+        assert!(vfs.read(ws, "a/b/c.txt").await.is_err());
+        assert_eq!(vfs.read(ws, "keep.txt").await.unwrap(), "keep");
     }
 
     #[tokio::test]

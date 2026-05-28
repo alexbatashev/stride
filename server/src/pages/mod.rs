@@ -55,6 +55,8 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         <title>{{title}}</title>
         <script type="importmap">{"imports": {"lit": "/static/lit.js"}}</script>
         <link rel="stylesheet" href="/static/common.css" />
+        <link rel="modulepreload" href="/static/lit.js">
+        <link rel="modulepreload" href="/static/components.js">
         <script type="module" src="/static/api.js"></script>
         <script type="module" src="/static/components.js"></script>
         <script type="module">
@@ -252,7 +254,18 @@ const THREADS_TEMPLATE: &str = r#"<style>
     }
 
     #threads-page > main > header {
-        display: none;
+        border-bottom: 1px solid var(--border);
+        box-sizing: border-box;
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    #threads-page .toolbar-spacer {
+        flex: 1;
+    }
+
+    #threads-page .files-button {
+        min-width: 72px;
     }
 
     @media (max-width: 767px) {
@@ -265,7 +278,7 @@ const THREADS_TEMPLATE: &str = r#"<style>
         }
 
         #threads-page > main > header {
-            display: flex;
+            justify-content: space-between;
         }
     }
 </style>
@@ -273,6 +286,8 @@ const THREADS_TEMPLATE: &str = r#"<style>
 <main>
     <header>
         <app-sidebar-toggle class="mobile-sidebar-toggle"></app-sidebar-toggle>
+        <span class="toolbar-spacer"></span>
+        <app-button class="files-button" variant="ghost" size="sm" data-action="files">Files</app-button>
         <span data-current-title hidden>{{current_title}}</span>
     </header>
     <section class="content">
@@ -308,6 +323,7 @@ const THREADS_TEMPLATE: &str = r#"<style>
     ></app-prompt-input>
     <div class="error" data-error></div>
 </main>
+<app-file-manager data-file-manager thread-id="{{thread_id}}"></app-file-manager>
 <script type="module">
     document.addEventListener('navigate', (e) => {
         window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;

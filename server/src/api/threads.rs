@@ -663,9 +663,97 @@ pub struct UploadResponse {
     files: Vec<UploadedFile>,
 }
 
+#[derive(Deserialize)]
+pub struct FilesQuery {
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateDirectoryRequest {
+    path: String,
+}
+
+#[derive(Serialize)]
+pub struct WorkspaceEntry {
+    name: String,
+    path: String,
+    kind: &'static str,
+    size: Option<i64>,
+    updated_at: i64,
+    mime_type: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct WorkspaceListResponse {
+    path: String,
+    entries: Vec<WorkspaceEntry>,
+}
+
+pub async fn list_files(
+    State(state): State<Arc<ServerState>>,
+    Path(thread_id): Path<Uuid>,
+    Query(query): Query<FilesQuery>,
+    headers: HeaderMap,
+) -> Result<Json<WorkspaceListResponse>, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::NotFound);
+    };
+
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let workspace_id = thread_workspace_id(&state, thread_id, owner).await?;
+    let path = clean_workspace_path(query.path.as_deref());
+    let entries = vfs
+        .list(workspace_id, &path)
+        .await
+        .map_err(|_| ThreadApiError::NotFound)?
+        .into_iter()
+        .map(|entry| {
+            let entry_path = join_workspace_path(&path, &entry.name);
+            WorkspaceEntry {
+                name: entry.name,
+                path: entry_path,
+                kind: match entry.kind {
+                    crate::vfs::EntryKind::Directory => "directory",
+                    crate::vfs::EntryKind::File => "file",
+                },
+                size: entry.size,
+                updated_at: entry.updated_at,
+                mime_type: entry.mime_type,
+            }
+        })
+        .collect();
+
+    Ok(Json(WorkspaceListResponse { path, entries }))
+}
+
+pub async fn create_directory(
+    State(state): State<Arc<ServerState>>,
+    Path(thread_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<CreateDirectoryRequest>,
+) -> Result<StatusCode, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::NotFound);
+    };
+
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let workspace_id = thread_workspace_id(&state, thread_id, owner).await?;
+    let path = clean_workspace_path(Some(&request.path));
+    if path.is_empty() {
+        return Err(ThreadApiError::BadRequest);
+    }
+
+    vfs.create_dir(workspace_id, &path, owner)
+        .await
+        .map_err(|_| ThreadApiError::BadRequest)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn upload_file(
     State(state): State<Arc<ServerState>>,
     Path(thread_id): Path<Uuid>,
+    Query(query): Query<FilesQuery>,
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<UploadResponse>, ThreadApiError> {
@@ -674,31 +762,8 @@ pub async fn upload_file(
     };
 
     let owner = auth::authenticated_user(&state, &headers).await?;
-
-    let row = state
-        .db
-        .query_with_params(
-            "SELECT project_id FROM threads WHERE id = ? AND owner = ? LIMIT 1",
-            vec![Value::Uuid(thread_id), Value::Uuid(owner)],
-        )
-        .await
-        .map_err(|_| ThreadApiError::Internal)?;
-
-    if row.is_empty() {
-        return Err(ThreadApiError::NotFound);
-    }
-
-    let project_id = row.rows().first().and_then(|r| match r.get("project_id") {
-        Some(Value::Uuid(id)) => Some(*id),
-        Some(Value::Blob(b)) if b.len() == 16 => Uuid::from_slice(b).ok(),
-        Some(Value::Text(s)) => Uuid::parse_str(s).ok(),
-        _ => None,
-    });
-
-    let workspace_id = vfs
-        .get_or_create_workspace(thread_id, project_id, owner)
-        .await
-        .map_err(|_| ThreadApiError::Internal)?;
+    let workspace_id = thread_workspace_id(&state, thread_id, owner).await?;
+    let directory = clean_workspace_path(query.path.as_deref());
 
     let mut uploaded = Vec::new();
 
@@ -724,18 +789,43 @@ pub async fn upload_file(
             .map_err(|_| ThreadApiError::BadRequest)?;
         let size = bytes.len();
 
-        vfs.write_bytes(workspace_id, &name, &bytes, mime_type.as_deref(), owner)
+        let path = join_workspace_path(&directory, &name);
+
+        vfs.write_bytes(workspace_id, &path, &bytes, mime_type.as_deref(), owner)
             .await
             .map_err(|_| ThreadApiError::Internal)?;
 
         uploaded.push(UploadedFile {
-            path: format!("/~workspace/{name}"),
+            path: format!("/~workspace/{path}"),
             name,
             size,
         });
     }
 
     Ok(Json(UploadResponse { files: uploaded }))
+}
+
+pub async fn delete_file(
+    State(state): State<Arc<ServerState>>,
+    Path((thread_id, path)): Path<(Uuid, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::NotFound);
+    };
+
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let workspace_id = thread_workspace_id(&state, thread_id, owner).await?;
+    let path = clean_workspace_path(Some(&path));
+    if path.is_empty() {
+        return Err(ThreadApiError::BadRequest);
+    }
+
+    vfs.delete(workspace_id, &path)
+        .await
+        .map_err(|_| ThreadApiError::NotFound)?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn download_file(
@@ -748,6 +838,35 @@ pub async fn download_file(
     };
 
     let owner = auth::authenticated_user(&state, &headers).await?;
+    let workspace_id = thread_workspace_id(&state, thread_id, owner).await?;
+    let path = clean_workspace_path(Some(&path));
+
+    let (bytes, mime_type) = vfs
+        .read_bytes(workspace_id, &path)
+        .await
+        .map_err(|_| ThreadApiError::NotFound)?;
+
+    let content_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    let filename = path.split('/').next_back().unwrap_or(&path).to_string();
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(Body::from(bytes))
+        .map_err(|_| ThreadApiError::Internal)
+}
+
+async fn thread_workspace_id(
+    state: &ServerState,
+    thread_id: Uuid,
+    owner: Uuid,
+) -> Result<Uuid, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::NotFound);
+    };
 
     let row = state
         .db
@@ -769,27 +888,26 @@ pub async fn download_file(
         _ => None,
     });
 
-    let workspace_id = vfs
-        .get_or_create_workspace(thread_id, project_id, owner)
+    vfs.get_or_create_workspace(thread_id, project_id, owner)
         .await
-        .map_err(|_| ThreadApiError::Internal)?;
-
-    let (bytes, mime_type) = vfs
-        .read_bytes(workspace_id, &path)
-        .await
-        .map_err(|_| ThreadApiError::NotFound)?;
-
-    let content_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    let filename = path.split('/').next_back().unwrap_or(&path).to_string();
-
-    Response::builder()
-        .header(header::CONTENT_TYPE, content_type)
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{filename}\""),
-        )
-        .body(Body::from(bytes))
         .map_err(|_| ThreadApiError::Internal)
+}
+
+fn clean_workspace_path(path: Option<&str>) -> String {
+    path.unwrap_or_default()
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn join_workspace_path(parent: &str, name: &str) -> String {
+    let name = clean_workspace_path(Some(name));
+    if parent.is_empty() {
+        name
+    } else {
+        format!("{parent}/{name}")
+    }
 }
 
 fn event_response(event: AgentEvent) -> EventResponse {
