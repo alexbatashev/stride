@@ -1,9 +1,9 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
 
-// Bold before italic so ** is matched before *
+// Images before links so ![...] is not swallowed by link pattern; bold before italic so ** is matched before *
 const INLINE_RE =
-  /\*\*((?:(?!\*\*).)+?)\*\*|\*((?:(?!\*).)+?)\*|\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)/g;
+  /!\[([^\]]*)\]\(([^\s)]+)\)|\*\*((?:(?!\*\*).)+?)\*\*|\*((?:(?!\*).)+?)\*|\[([^\]]+)\]\(([^\s)]+)\)/g;
 
 function parseInline(text: string): Node[] {
   const nodes: Node[] = [];
@@ -15,17 +15,22 @@ function parseInline(text: string): Node[] {
       nodes.push(document.createTextNode(text.slice(last, idx)));
     }
     if (m[1] !== undefined) {
+      const img = document.createElement("img");
+      img.alt = m[1];
+      img.src = m[2];
+      nodes.push(img);
+    } else if (m[3] !== undefined) {
       const strong = document.createElement("strong");
-      strong.append(...parseInline(m[1]));
+      strong.append(...parseInline(m[3]));
       nodes.push(strong);
-    } else if (m[2] !== undefined) {
+    } else if (m[4] !== undefined) {
       const em = document.createElement("em");
-      em.append(...parseInline(m[2]));
+      em.append(...parseInline(m[4]));
       nodes.push(em);
     } else {
       const a = document.createElement("a");
-      a.href = m[4];
-      a.textContent = m[3];
+      a.href = m[6];
+      a.textContent = m[5];
       a.rel = "noopener noreferrer";
       a.target = "_blank";
       nodes.push(a);
