@@ -142,8 +142,10 @@ impl<'a> PdfRenderer<'a> {
             }
             NodeValue::Heading(heading) => {
                 let size = heading_size(heading.level);
-                let mut style = InlineStyle::default();
-                style.bold = true;
+                let style = InlineStyle {
+                    bold: true,
+                    ..Default::default()
+                };
                 let runs = inline_runs(node, style);
                 self = self.add_space(if heading.level == 1 { 2.0 } else { 4.0 });
                 self.render_runs(&runs, ctx.indent, size, size * 1.18, 8.0)
@@ -194,8 +196,7 @@ impl<'a> PdfRenderer<'a> {
         list_type: ListType,
         start: usize,
     ) -> Self {
-        let mut index = start.max(1);
-        for item in node.children() {
+        for (index, item) in (start.max(1)..).zip(node.children()) {
             self = self.ensure_line(BODY_LINE_HEIGHT);
             let marker = match list_type {
                 ListType::Bullet => "-".to_string(),
@@ -215,7 +216,6 @@ impl<'a> PdfRenderer<'a> {
                     indent: ctx.indent + 24.0,
                 },
             );
-            index += 1;
         }
         self.add_space(2.0)
     }
@@ -331,9 +331,11 @@ impl<'a> PdfRenderer<'a> {
 
     fn render_code_block(mut self, indent: f32, language: &str, source: &str) -> Self {
         if !language.trim().is_empty() {
-            let mut style = InlineStyle::default();
-            style.code = true;
-            style.bold = true;
+            let style = InlineStyle {
+                code: true,
+                bold: true,
+                ..Default::default()
+            };
             let runs = vec![InlineRun {
                 text: language.trim().to_string(),
                 style,
@@ -348,8 +350,10 @@ impl<'a> PdfRenderer<'a> {
             self.page =
                 self.page
                     .filled_rect(x - 4.0, self.y - 3.0, width + 8.0, 13.0, 0.96, 0.96, 0.94);
-            let mut style = InlineStyle::default();
-            style.code = true;
+            let style = InlineStyle {
+                code: true,
+                ..Default::default()
+            };
             let y = self.y;
             self = self.emit_text(x, y, line, style, 8.8);
             self.y -= 12.0;
