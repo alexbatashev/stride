@@ -36,7 +36,10 @@ use crate::{
     tools::{
         personality::UpdatePersonalityTool,
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
-        vfs::{VfsListTool, VfsReadTool, VfsWriteTool},
+        vfs::{
+            VfsDocumentToMarkdownTool, VfsListTool, VfsMarkdownToOfficeWordTool,
+            VfsMarkdownToPdfTool, VfsReadTool, VfsWriteTool,
+        },
     },
     vfs::Vfs,
 };
@@ -64,10 +67,11 @@ fn build_system_prompt(base: &str, personality: Option<&str>, thread_id: Option<
     if let Some(id) = thread_id {
         prompt.push_str(&format!(
             "\n\nFiles are downloadable via `/api/threads/{id}/files/<vfs-path>` \
-             where `<vfs-path>` is the file's VFS path with the leading `/` removed. \
+             where `<vfs-path>` is the file path with the leading `/` removed. \
              Examples: \
-             `/~workspace/report.pdf` → `[report.pdf](/api/threads/{id}/files/~workspace/report.pdf)`, \
-             `/~workspace/data/results.csv` → `[results.csv](/api/threads/{id}/files/~workspace/data/results.csv)`."
+             `/report.pdf` → `[report.pdf](/api/threads/{id}/files/report.pdf)`, \
+             `/data/results.csv` → `[results.csv](/api/threads/{id}/files/data/results.csv)`. \
+             The `/~workspace/` prefix is accepted for old file paths but is not required."
         ));
     }
     if let Some(p) = personality {
@@ -626,11 +630,28 @@ async fn ensure_runner(
         });
         agent.allow_tool("vfs_read");
         agent.register_tool(VfsWriteTool {
-            vfs: provider,
+            vfs: provider.clone(),
             workspace_id,
             owner: user_id,
         });
         agent.allow_tool("vfs_write");
+        agent.register_tool(VfsDocumentToMarkdownTool {
+            vfs: provider.clone(),
+            workspace_id,
+        });
+        agent.allow_tool("vfs_document_to_markdown");
+        agent.register_tool(VfsMarkdownToPdfTool {
+            vfs: provider.clone(),
+            workspace_id,
+            owner: user_id,
+        });
+        agent.allow_tool("vfs_markdown_to_pdf");
+        agent.register_tool(VfsMarkdownToOfficeWordTool {
+            vfs: provider,
+            workspace_id,
+            owner: user_id,
+        });
+        agent.allow_tool("vfs_markdown_to_office_word");
     }
     let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
 

@@ -264,6 +264,15 @@ impl Vfs {
                 if self.node_kind(id).await? != "file" {
                     bail!("path is a directory");
                 }
+                if let Some(mime) = mime_type {
+                    self.db
+                        .query_with_params(
+                            "UPDATE vfs_nodes SET mime_type = ? WHERE id = ?",
+                            vec![Value::Text(mime.to_string()), Value::Uuid(id)],
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                }
                 id
             }
             None => {
