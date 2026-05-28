@@ -22,7 +22,7 @@
 5. Keep code tidy. Remove imports/variables/functions that YOUR changes made
    unused. Don't remove pre-existing dead code unless asked. Every changed line
    should trace directly to the user's request. After all changes are done and
-   all tests are passing, run formatting routines.
+   all tests are passing, run formatting routines and linters. Fix all warnings.
 6. Make your answers short and simple and on task. Do not apologize, do not try
    to be polite, do not explain yourself unless explicitly asked. When writing
    code, avoid obvious commentary - do not explain what the code does. If needed,
@@ -37,4 +37,5 @@
 - `cargo build`: build Rust code
 - `cargo test`: run Rust tests
 - `cargo fmt`: automatically format Rust code
+- `cargo clippy`: Rust linter
 - `pnpm build`: build TypeScript projects

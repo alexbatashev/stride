@@ -9,3 +9,5 @@ comrak = { version = "0.52.0", default-features = false }
 pdf_oxide = "0.3.55"
 office_oxide = "0.1.2"
 futures = "0.3.32"
+quick-xml = "0.40.1"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
