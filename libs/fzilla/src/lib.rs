@@ -820,10 +820,8 @@ fn collect_image_paths(
 ) {
     for item in items {
         match item {
-            PresentationItem::Image { src, .. } => {
-                if seen.insert(src.clone()) {
-                    paths.push(src.clone());
-                }
+            PresentationItem::Image { src, .. } if seen.insert(src.clone()) => {
+                paths.push(src.clone());
             }
             PresentationItem::Columns { left, right } => {
                 collect_image_paths(left, seen, paths);
