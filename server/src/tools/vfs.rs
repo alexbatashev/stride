@@ -24,23 +24,62 @@ pub struct VfsWriteTool {
     pub owner: Uuid,
 }
 
+pub struct VfsDocumentToMarkdownTool {
+    pub vfs: Arc<Vfs>,
+    pub workspace_id: Uuid,
+}
+
+pub struct VfsMarkdownToPdfTool {
+    pub vfs: Arc<Vfs>,
+    pub workspace_id: Uuid,
+    pub owner: Uuid,
+}
+
+pub struct VfsMarkdownToOfficeWordTool {
+    pub vfs: Arc<Vfs>,
+    pub workspace_id: Uuid,
+    pub owner: Uuid,
+}
+
 #[derive(ToolDesc)]
 struct VfsListParams {
-    /// Absolute path to list. Use "/" to see top-level directories, "/~workspace" to list the workspace root, or "/~workspace/subdir" for subdirectories.
+    /// Absolute path to list. Use "/" to list the file root. "/~workspace/subdir" remains supported for compatibility.
     path: String,
 }
 
 #[derive(ToolDesc)]
 struct VfsReadParams {
-    /// Absolute path to the file, e.g. "/~workspace/notes.md".
+    /// Absolute path to the file, e.g. "/notes.md" or "/docs/notes.md".
     path: String,
 }
 
 #[derive(ToolDesc)]
 struct VfsWriteParams {
-    /// Absolute path to write, must start with "/~workspace/", e.g. "/~workspace/output.txt". Intermediate directories are created automatically.
+    /// Absolute path to write, e.g. "/output.txt" or "/docs/output.txt". Intermediate directories are created automatically.
     path: String,
     /// UTF-8 text content to write.
+    content: String,
+}
+
+#[derive(ToolDesc)]
+struct VfsDocumentToMarkdownParams {
+    /// Absolute path to a PDF, DOC, DOCX, PPT, PPTX, XLS, or XLSX file, e.g. "/reports/report.pdf".
+    path: String,
+}
+
+#[derive(ToolDesc)]
+struct VfsMarkdownToPdfParams {
+    /// Absolute path to write, e.g. "/reports/report.pdf".
+    path: String,
+    /// Markdown content to convert into a PDF document.
+    content: String,
+}
+
+#[derive(ToolDesc)]
+struct VfsMarkdownToOfficeWordParams {
+    /// Absolute path to write, e.g. "/reports/report.docx".
+    path: String,
+    /// Markdown content to convert into a DOCX document.
     content: String,
 }
 
@@ -66,7 +105,7 @@ impl Tool for VfsListTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "List files and directories at a given path. Use \"/\" to see the workspace entry, \"/~workspace\" to list the workspace root.".to_string(),
+                description: "List files and directories at a given path. Use \"/\" to list the file root. The /~workspace prefix is also accepted for compatibility.".to_string(),
                 parameters: Some(VfsListParams::function_parameters()),
             },
         }
@@ -78,16 +117,9 @@ impl Tool for VfsListTool {
             Err(e) => return json!({"error": e}),
         };
 
-        // special-case root: show ~workspace as the only entry
-        if params.path == "/" || params.path.is_empty() {
-            return json!({
-                "entries": [{"name": "~workspace", "kind": "directory"}]
-            });
-        }
-
         let rel = match strip_workspace_prefix(&params.path) {
             Some(p) => p,
-            None => return json!({"error": "path must start with /~workspace"}),
+            None => return json!({"error": "invalid path"}),
         };
 
         match self.vfs.list(self.workspace_id, rel).await {
@@ -130,7 +162,7 @@ impl Tool for VfsReadTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "Read the text content of a file in the workspace. Path must start with /~workspace/.".to_string(),
+                description: "Read the text content of a file. Use an absolute path such as /notes.md or /docs/notes.md.".to_string(),
                 parameters: Some(VfsReadParams::function_parameters()),
             },
         }
@@ -144,7 +176,7 @@ impl Tool for VfsReadTool {
 
         let rel = match strip_workspace_prefix(&params.path) {
             Some(p) if !p.is_empty() => p,
-            _ => return json!({"error": "path must point to a file inside /~workspace/"}),
+            _ => return json!({"error": "path must point to a file"}),
         };
 
         match self.vfs.read(self.workspace_id, rel).await {
@@ -169,7 +201,7 @@ impl Tool for VfsWriteTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "Write text content to a file in the workspace. Path must start with /~workspace/. Creates the file and any missing parent directories. Each write creates a new version; old versions beyond the configured limit are deleted.".to_string(),
+                description: "Write text content to a file. Creates the file and any missing parent directories. Each write creates a new version; old versions beyond the configured limit are deleted.".to_string(),
                 parameters: Some(VfsWriteParams::function_parameters()),
             },
         }
@@ -190,13 +222,9 @@ impl Tool for VfsWriteTool {
             Err(e) => return json!({"error": e}),
         };
 
-        if !params.path.contains("~workspace") {
-            return json!({"error": "write access is restricted to /~workspace/"});
-        }
-
         let rel = match strip_workspace_prefix(&params.path) {
             Some(p) if !p.is_empty() => p,
-            _ => return json!({"error": "path must point to a file inside /~workspace/"}),
+            _ => return json!({"error": "path must point to a file"}),
         };
 
         match self
@@ -207,5 +235,282 @@ impl Tool for VfsWriteTool {
             Ok(()) => json!({"success": true, "path": params.path}),
             Err(e) => json!({"error": e.to_string()}),
         }
+    }
+}
+
+#[async_trait(?Send)]
+impl Tool for VfsDocumentToMarkdownTool {
+    fn name(&self) -> &str {
+        "vfs_document_to_markdown"
+    }
+
+    fn readable_name(&self) -> &str {
+        "Read Document"
+    }
+
+    fn definition(&self) -> LlmTool {
+        LlmTool {
+            r#type: llm::ToolType::Function,
+            function: Function {
+                name: self.name().to_owned(),
+                description: "Read a PDF, Word, PowerPoint, or Excel file and convert it to Markdown. Use an absolute path such as /reports/file.pdf.".to_string(),
+                parameters: Some(VfsDocumentToMarkdownParams::function_parameters()),
+            },
+        }
+    }
+
+    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+        let params = match VfsDocumentToMarkdownParams::decode(args) {
+            Ok(p) => p,
+            Err(e) => return json!({"error": e}),
+        };
+
+        let rel = match strip_workspace_prefix(&params.path) {
+            Some(p) if !p.is_empty() => p,
+            _ => return json!({"error": "path must point to a file"}),
+        };
+
+        let data = match self.vfs.read_bytes(self.workspace_id, rel).await {
+            Ok((data, _)) => data,
+            Err(e) => return json!({"error": e.to_string()}),
+        };
+
+        match fzilla::convert_to_markdown(data).await {
+            Ok(content) => json!({"content": content}),
+            Err(e) => json!({"error": e.to_string()}),
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl Tool for VfsMarkdownToPdfTool {
+    fn name(&self) -> &str {
+        "vfs_markdown_to_pdf"
+    }
+
+    fn readable_name(&self) -> &str {
+        "Write PDF"
+    }
+
+    fn definition(&self) -> LlmTool {
+        LlmTool {
+            r#type: llm::ToolType::Function,
+            function: Function {
+                name: self.name().to_owned(),
+                description: "Convert Markdown to PDF and write it to a file path such as /reports/report.pdf.".to_string(),
+                parameters: Some(VfsMarkdownToPdfParams::function_parameters()),
+            },
+        }
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn confirmation_prompt(&self, args: &JsonValue) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+        format!("Write PDF {path}")
+    }
+
+    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+        let params = match VfsMarkdownToPdfParams::decode(args) {
+            Ok(p) => p,
+            Err(e) => return json!({"error": e}),
+        };
+
+        let rel = match document_write_path(&params.path) {
+            Ok(p) => p,
+            Err(e) => return json!({"error": e}),
+        };
+        let data = match fzilla::markdown_to_pdf(params.content).await {
+            Ok(data) => data,
+            Err(e) => return json!({"error": e.to_string()}),
+        };
+
+        match self
+            .vfs
+            .write_bytes(
+                self.workspace_id,
+                rel,
+                &data,
+                Some("application/pdf"),
+                self.owner,
+            )
+            .await
+        {
+            Ok(()) => json!({"success": true, "path": params.path}),
+            Err(e) => json!({"error": e.to_string()}),
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl Tool for VfsMarkdownToOfficeWordTool {
+    fn name(&self) -> &str {
+        "vfs_markdown_to_office_word"
+    }
+
+    fn readable_name(&self) -> &str {
+        "Write Word Document"
+    }
+
+    fn definition(&self) -> LlmTool {
+        LlmTool {
+            r#type: llm::ToolType::Function,
+            function: Function {
+                name: self.name().to_owned(),
+                description: "Convert Markdown to DOCX and write it to a file path such as /reports/report.docx.".to_string(),
+                parameters: Some(VfsMarkdownToOfficeWordParams::function_parameters()),
+            },
+        }
+    }
+
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    fn confirmation_prompt(&self, args: &JsonValue) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+        format!("Write Word document {path}")
+    }
+
+    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+        let params = match VfsMarkdownToOfficeWordParams::decode(args) {
+            Ok(p) => p,
+            Err(e) => return json!({"error": e}),
+        };
+
+        let rel = match document_write_path(&params.path) {
+            Ok(p) => p,
+            Err(e) => return json!({"error": e}),
+        };
+        let data = match fzilla::markdown_to_office_word(params.content).await {
+            Ok(data) => data,
+            Err(e) => return json!({"error": e.to_string()}),
+        };
+
+        match self
+            .vfs
+            .write_bytes(
+                self.workspace_id,
+                rel,
+                &data,
+                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                self.owner,
+            )
+            .await
+        {
+            Ok(()) => json!({"success": true, "path": params.path}),
+            Err(e) => json!({"error": e.to_string()}),
+        }
+    }
+}
+
+fn document_write_path(path: &str) -> Result<&str, String> {
+    match strip_workspace_prefix(path) {
+        Some(p) if !p.is_empty() => Ok(p),
+        _ => Err("path must point to a file".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use friday_agent::{AgentConfig, ModelRegistry, Tool};
+    use minisql::{ConnectionPool, Value};
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        db,
+        vfs::{AnyFileProvider, LocalFileProvider},
+    };
+
+    async fn setup() -> (Arc<Vfs>, Uuid, Uuid, Arc<AgentConfig>) {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        db.query_with_params(
+            "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
+            vec![
+                Value::Uuid(owner),
+                Value::Text("alice".to_string()),
+                Value::Text("hash".to_string()),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let base = tempfile::tempdir().unwrap().keep();
+        let storage = AnyFileProvider::Local(LocalFileProvider::new(base).unwrap());
+        let vfs = Arc::new(Vfs::new(db, storage, 3));
+        let workspace_id = vfs
+            .get_or_create_workspace(Uuid::now_v7(), None, owner)
+            .await
+            .unwrap();
+        let config = Arc::new(AgentConfig {
+            model_registry: ModelRegistry::default(),
+            max_iterations: 1,
+        });
+        (vfs, workspace_id, owner, config)
+    }
+
+    #[tokio::test]
+    async fn markdown_to_word_tool_writes_readable_document() {
+        let (vfs, workspace_id, owner, config) = setup().await;
+        let write = VfsMarkdownToOfficeWordTool {
+            vfs: vfs.clone(),
+            workspace_id,
+            owner,
+        };
+        let read = VfsDocumentToMarkdownTool { vfs, workspace_id };
+
+        let result = write
+            .execute(
+                config.clone(),
+                json!({
+                    "path": "/reports/report.docx",
+                    "content": "# Report\n\nHello **world**.",
+                }),
+            )
+            .await;
+        assert_eq!(result["success"], true);
+
+        let result = read
+            .execute(config, json!({"path": "/reports/report.docx"}))
+            .await;
+        let content = result["content"].as_str().unwrap();
+        assert!(content.contains("Report"));
+        assert!(content.contains("Hello"));
+    }
+
+    #[tokio::test]
+    async fn markdown_to_pdf_tool_writes_pdf_bytes() {
+        let (vfs, workspace_id, owner, config) = setup().await;
+        let write = VfsMarkdownToPdfTool {
+            vfs: vfs.clone(),
+            workspace_id,
+            owner,
+        };
+
+        let result = write
+            .execute(
+                config,
+                json!({
+                    "path": "/reports/report.pdf",
+                    "content": "# Report\n\nHello.",
+                }),
+            )
+            .await;
+        assert_eq!(result["success"], true);
+
+        let (bytes, mime_type) = vfs
+            .read_bytes(workspace_id, "reports/report.pdf")
+            .await
+            .unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        assert_eq!(mime_type.as_deref(), Some("application/pdf"));
     }
 }

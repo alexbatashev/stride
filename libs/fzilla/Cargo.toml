@@ -1,0 +1,10 @@
+[package]
+name = "fzilla"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+pdf_oxide = "0.3.55"
+office_oxide = "0.1.2"
+futures = "0.3.32"

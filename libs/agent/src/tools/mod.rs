@@ -3,6 +3,7 @@ pub mod expert;
 pub mod explorer;
 pub mod file;
 pub mod firecrawl;
+pub mod fzilla;
 pub mod glob;
 pub mod patch;
 pub mod pubmed;

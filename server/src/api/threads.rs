@@ -796,7 +796,7 @@ pub async fn upload_file(
             .map_err(|_| ThreadApiError::Internal)?;
 
         uploaded.push(UploadedFile {
-            path: format!("/~workspace/{path}"),
+            path: format!("/{path}"),
             name,
             size,
         });
@@ -894,8 +894,10 @@ async fn thread_workspace_id(
 }
 
 fn clean_workspace_path(path: Option<&str>) -> String {
-    path.unwrap_or_default()
-        .split('/')
+    let raw = path.unwrap_or_default().trim_start_matches('/');
+    let path = raw.strip_prefix("~workspace").unwrap_or(raw);
+
+    path.split('/')
         .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
         .collect::<Vec<_>>()
         .join("/")
@@ -1003,5 +1005,17 @@ mod tests {
     fn build_content_no_files_returns_original() {
         let result = build_content("hello".to_string(), vec![]);
         assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn clean_workspace_path_accepts_legacy_workspace_prefix() {
+        assert_eq!(
+            clean_workspace_path(Some("/~workspace/reports/a.pdf")),
+            "reports/a.pdf"
+        );
+        assert_eq!(
+            clean_workspace_path(Some("/reports/a.pdf")),
+            "reports/a.pdf"
+        );
     }
 }
