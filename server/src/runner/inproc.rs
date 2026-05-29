@@ -15,6 +15,7 @@ use friday_agent::{
         firecrawl::FirecrawlTool,
         pubmed::PubmedProvider,
         subagent::SubAgentTool,
+        uspto::UsptoProvider,
         web_search::{SearxngProvider, WebSearchTool},
     },
 };
@@ -826,6 +827,10 @@ fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
 
     if web_search.include_pubmed == Some(true) {
         providers.push(Box::new(PubmedProvider));
+    }
+
+    if web_search.include_uspto == Some(true) {
+        providers.push(Box::new(UsptoProvider));
     }
 
     WebSearchTool {
