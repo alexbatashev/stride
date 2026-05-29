@@ -64,45 +64,6 @@ where
     }
 }
 
-pub async fn send_request_full<T>(
-    req: Request<T>,
-) -> Result<(u16, hyper::header::HeaderMap, Bytes), Error>
-where
-    T: Body + Send + 'static,
-    T::Data: Send,
-    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-    let (host, is_https, addrs, req) = prepare_request(req)?;
-
-    if is_https {
-        let mut last_err = None;
-        for addr in addrs {
-            match AsyncTlsStream::connect(addr, &host) {
-                Ok(io) => return do_request_full(io, req).await,
-                Err(err) => last_err = Some(err),
-            }
-        }
-        Err(Error::RequestError(
-            last_err
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "failed to connect".to_string()),
-        ))
-    } else {
-        let mut last_err = None;
-        for addr in addrs {
-            match AsyncTcpStream::new(addr) {
-                Ok(io) => return do_request_full(io, req).await,
-                Err(err) => last_err = Some(err),
-            }
-        }
-        Err(Error::RequestError(
-            last_err
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "failed to connect".to_string()),
-        ))
-    }
-}
-
 pub async fn stream_request<T>(
     req: Request<T>,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + 'static>>
@@ -175,59 +136,6 @@ where
             .to_bytes();
 
         Ok((status, bytes))
-    };
-
-    futures::pin_mut!(request_fut);
-    futures::pin_mut!(conn);
-
-    let mut conn_closed = false;
-    loop {
-        if conn_closed {
-            return request_fut.await;
-        }
-
-        match futures::future::select(request_fut.as_mut(), conn.as_mut()).await {
-            Either::Left((req_res, _)) => return req_res,
-            Either::Right((conn_res, _)) => match conn_res {
-                Ok(()) => {
-                    conn_closed = true;
-                }
-                Err(err) => return Err(Error::RequestError(err.to_string())),
-            },
-        }
-    }
-}
-
-async fn do_request_full<Io, T>(
-    io: Io,
-    req: Request<T>,
-) -> Result<(u16, hyper::header::HeaderMap, Bytes), Error>
-where
-    Io: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
-    T: Body + Send + 'static,
-    T::Data: Send,
-    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| Error::RequestError(e.to_string()))?;
-
-    let request_fut = async move {
-        let res = sender
-            .send_request(req)
-            .await
-            .map_err(|e| Error::RequestError(e.to_string()))?;
-
-        let status = res.status().as_u16();
-        let headers = res.headers().clone();
-        let bytes = res
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| Error::RequestError(e.to_string()))?
-            .to_bytes();
-
-        Ok((status, headers, bytes))
     };
 
     futures::pin_mut!(request_fut);
