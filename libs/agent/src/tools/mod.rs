@@ -12,4 +12,5 @@ pub mod quiz;
 pub mod search;
 pub mod shell;
 pub mod subagent;
+pub mod uspto;
 pub mod web_search;
