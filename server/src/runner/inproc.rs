@@ -1567,6 +1567,7 @@ mod tests {
                     searxng_endpoint: "https://search.example.com".to_string(),
                     include_arxiv: None,
                     include_pubmed: None,
+                    include_uspto: None,
                 }),
                 firecrawl: Some(Firecrawl {
                     api_key: Some("fc-test".to_string()),
@@ -1616,6 +1617,7 @@ mod tests {
                 searxng_endpoint: "https://search.example.com".to_string(),
                 include_arxiv: None,
                 include_pubmed: None,
+                include_uspto: None,
             }),
             firecrawl: Some(Firecrawl {
                 api_key: Some("fc-test".to_string()),
