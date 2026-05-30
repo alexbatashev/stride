@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, VecDeque},
+    path::PathBuf,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -29,7 +30,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    config::{Firecrawl, Tools, WebSearch},
+    config::{Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
     db::{Role, messages},
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
@@ -37,6 +38,7 @@ use crate::{
     },
     tools::{
         personality::UpdatePersonalityTool,
+        python::VfsExecFileSystem,
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
         vfs::{
             VfsDocumentToMarkdownTool, VfsListTool, VfsMarkdownToOfficeWordTool,
@@ -663,11 +665,13 @@ async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("create_skill");
+    let mut python_workspace = None;
     if let Some(provider) = vfs {
         let workspace_id = provider
             .get_or_create_workspace(thread_id, project_id, user_id)
             .await
             .map_err(AgentPoolError::Internal)?;
+        python_workspace = Some((provider.clone(), workspace_id));
         agent.register_tool(VfsListTool {
             vfs: provider.clone(),
             workspace_id,
@@ -721,6 +725,13 @@ async fn ensure_runner(
         );
         agent.allow_tool("create_powerpoint_presentation");
     }
+    if let Some(tool) = python_tool(&tools, thread_id, python_workspace, user_id)
+        .await
+        .map_err(AgentPoolError::Internal)?
+    {
+        agent.register_tool(tool);
+        agent.allow_tool("python");
+    }
     let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
 
     state.borrow_mut().threads.insert(
@@ -754,6 +765,64 @@ fn configure_agent_tools(agent: &BaseAgent, tools: &Tools) {
     {
         agent.register_tool(tool);
     }
+}
+
+async fn python_tool(
+    tools: &Tools,
+    thread_id: Uuid,
+    workspace: Option<(Arc<Vfs>, Uuid)>,
+    user_id: Uuid,
+) -> anyhow::Result<Option<execenv::PythonTool>> {
+    let Some(python) = tools.python.as_ref() else {
+        return Ok(None);
+    };
+    if python.enabled == Some(false) {
+        return Ok(None);
+    }
+
+    let config = python_tool_config(python);
+    let cache_dir = config.cache_dir.clone();
+    let fs: Arc<dyn execenv::FileSystemBackend> = if let Some((vfs, workspace_id)) = workspace {
+        Arc::new(VfsExecFileSystem::new(
+            vfs,
+            workspace_id,
+            user_id,
+            cache_dir
+                .join("workspaces")
+                .join(thread_id.as_simple().to_string()),
+        ))
+    } else {
+        Arc::new(execenv::DirectOsFileSystem::new(
+            cache_dir
+                .join("workspaces")
+                .join(thread_id.as_simple().to_string()),
+        )?)
+    };
+
+    execenv::PythonTool::new(config, fs).await.map(Some)
+}
+
+pub(crate) fn python_tool_config(python: &Python) -> execenv::PythonToolConfig {
+    let mut config = execenv::PythonToolConfig::default();
+    if let Some(cache_dir) = python.cache_dir.as_ref() {
+        config.cache_dir = PathBuf::from(cache_dir);
+    }
+    config.backend = match python.backend.as_ref().unwrap_or(&PythonBackend::Eryx) {
+        PythonBackend::Mock => execenv::BackendKind::Mock,
+        PythonBackend::Eryx => execenv::BackendKind::Eryx,
+    };
+    config.threads = python.threads.unwrap_or(1);
+    config.preinit = python.preinit.unwrap_or(true);
+    config.limits = execenv::ExecutionLimits {
+        max_runtime: Duration::from_secs(python.max_runtime_seconds.unwrap_or(30)),
+        max_memory_bytes: python.max_memory_bytes.or(Some(128 * 1024 * 1024)),
+        max_cpu_fuel: python.max_cpu_fuel,
+    };
+    config.network = match python.network.as_ref().unwrap_or(&PythonNetwork::Blocked) {
+        PythonNetwork::Blocked => execenv::NetworkAccess::Blocked,
+        PythonNetwork::Allowed => execenv::NetworkAccess::Allowed,
+    };
+    config
 }
 
 fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
@@ -1573,6 +1642,7 @@ mod tests {
                     api_key: Some("fc-test".to_string()),
                     api_url: Some("https://firecrawl.example.com".to_string()),
                 }),
+                python: None,
             },
         );
 
@@ -1623,6 +1693,7 @@ mod tests {
                 api_key: Some("fc-test".to_string()),
                 api_url: Some("https://firecrawl.example.com".to_string()),
             }),
+            python: None,
         });
 
         let names: Vec<_> = registry

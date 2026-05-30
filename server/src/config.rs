@@ -51,6 +51,7 @@ pub struct Server {
 pub struct Tools {
     pub web_search: Option<WebSearch>,
     pub firecrawl: Option<Firecrawl>,
+    pub python: Option<Python>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -65,6 +66,31 @@ pub struct WebSearch {
 pub struct Firecrawl {
     pub api_key: Option<String>,
     pub api_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Python {
+    pub enabled: Option<bool>,
+    pub cache_dir: Option<String>,
+    pub backend: Option<PythonBackend>,
+    pub threads: Option<usize>,
+    pub preinit: Option<bool>,
+    pub max_runtime_seconds: Option<u64>,
+    pub max_memory_bytes: Option<u64>,
+    pub max_cpu_fuel: Option<u64>,
+    pub network: Option<PythonNetwork>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub enum PythonBackend {
+    Mock,
+    Eryx,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub enum PythonNetwork {
+    Blocked,
+    Allowed,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -198,6 +224,37 @@ mod tests {
         let firecrawl = tools.firecrawl.unwrap();
         assert_eq!(firecrawl.read_api_key().unwrap(), "fc-test");
         assert_eq!(firecrawl.api_url(), "https://firecrawl.example.com");
+    }
+
+    #[test]
+    fn python_tool_parameters_load_from_config() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [tools.python]
+            enabled = true
+            cache_dir = "/tmp/friday-execenv-test"
+            backend = "Eryx"
+            threads = 4
+            preinit = true
+            max_runtime_seconds = 15
+            max_memory_bytes = 67108864
+            max_cpu_fuel = 1000
+            network = "Blocked"
+            "#,
+        )
+        .unwrap();
+
+        let python = cfg.tools.unwrap().python.unwrap();
+        assert_eq!(python.cache_dir.unwrap(), "/tmp/friday-execenv-test");
+        assert!(matches!(python.backend.unwrap(), PythonBackend::Eryx));
+        assert_eq!(python.threads, Some(4));
+        assert_eq!(python.max_runtime_seconds, Some(15));
+        assert_eq!(python.max_memory_bytes, Some(67_108_864));
+        assert_eq!(python.max_cpu_fuel, Some(1000));
+        assert!(matches!(python.network.unwrap(), PythonNetwork::Blocked));
     }
 
     #[test]
