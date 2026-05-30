@@ -4,7 +4,7 @@ use http_body_util::Empty;
 use hyper::Request;
 use serde::Deserialize;
 
-use super::web_search::{SearchProvider, SearchResult};
+use super::{SearchProvider, SearchResult};
 
 #[derive(Deserialize)]
 struct EsearchResult {

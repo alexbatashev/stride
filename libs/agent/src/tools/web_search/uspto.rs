@@ -5,7 +5,7 @@ use hyper::Request;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::web_search::{SearchProvider, SearchResult};
+use super::{SearchProvider, SearchResult};
 
 const BASE_URL: &str = "https://ppubs.uspto.gov";
 

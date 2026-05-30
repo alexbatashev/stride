@@ -11,8 +11,8 @@ eryx = ["dep:eryx"]
 anyhow = "1.0.102"
 async-trait = "0.1"
 flate2 = "1.1"
-friday-agent = { path = "../../libs/agent" }
-llm = { path = "../../libs/llm" }
+friday-agent = { path = "../agent" }
+llm = { path = "../llm" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tar = "0.4"

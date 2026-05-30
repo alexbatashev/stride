@@ -1,4 +1,3 @@
-pub mod arxiv;
 pub mod calculator;
 pub mod expert;
 pub mod explorer;
@@ -7,10 +6,8 @@ pub mod firecrawl;
 pub mod fzilla;
 pub mod glob;
 pub mod patch;
-pub mod pubmed;
 pub mod quiz;
 pub mod search;
 pub mod shell;
 pub mod subagent;
-pub mod uspto;
 pub mod web_search;
