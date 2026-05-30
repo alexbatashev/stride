@@ -14,7 +14,11 @@ COPY server ./server
 
 RUN cargo build --release -p server
 
-FROM gcr.io/distroless/cc-debian12
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates liblzma5 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
