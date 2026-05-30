@@ -65,6 +65,14 @@ async fn main() -> anyhow::Result<()> {
     let templates = get_templates()?;
     let listen_addr = config.listen_addr().to_string();
     let tools = config.tools.clone().unwrap_or_default();
+    if let Some(python) = tools.python.as_ref()
+        && python.enabled.unwrap_or(true)
+    {
+        let python_config = runner::inproc::python_tool_config(python);
+        if matches!(python_config.backend, execenv::BackendKind::Eryx) {
+            execenv::prepare_eryx_runtime(python_config).await?;
+        }
+    }
     let model_config = Arc::new(AgentConfig {
         model_registry: create_model_registry(&config),
         max_iterations: 90,

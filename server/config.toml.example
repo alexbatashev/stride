@@ -51,3 +51,13 @@ include_pubmed = true
 [tools.firecrawl]
 api_key = "fc-..."
 api_url = "https://api.firecrawl.dev"
+
+[tools.python]
+enabled = true
+cache_dir = "/tmp/friday-execenv"
+backend = "Eryx"
+threads = 2
+preinit = true
+max_runtime_seconds = 30
+max_memory_bytes = 134217728
+network = "Blocked"
