@@ -60,6 +60,7 @@ struct WebSearchParams {
     /// Provider category filter. One of:
     /// - "generic" - use this category for all-purpose searches
     /// - "academic" - use this category for reviewd research paper search
+    /// - "patent" - use this category to perform full-text search in patent bureaus like USPTO
     ///
     /// Defaults to "generic".
     category: Option<String>,
@@ -105,6 +106,7 @@ impl Tool for WebSearchTool {
         );
 
         let mut provider_results = Vec::new();
+        let mut errors = Vec::new();
         for (provider_index, provider) in self.providers.iter().enumerate() {
             if !provider.categories().contains(&category) {
                 tracing::debug!(
@@ -132,6 +134,7 @@ impl Tool for WebSearchTool {
                         error = %error,
                         "web_search provider failed"
                     );
+                    errors.push(error);
                 }
             }
         }
@@ -146,7 +149,11 @@ impl Tool for WebSearchTool {
             .collect();
         tracing::debug!(result_count = items.len(), "web_search response");
 
-        json!({"success": true, "results": items})
+        if !items.is_empty() {
+            json!({"success": true, "results": items})
+        } else {
+            json!({"success": false, "errors": errors})
+        }
     }
 }
 

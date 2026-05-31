@@ -31,7 +31,7 @@ fn main() {
     let mut entries: Vec<_> = std::fs::read_dir(&icons_dir)
         .expect("failed to read icons dir")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "ts"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ts"))
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
@@ -41,9 +41,13 @@ fn main() {
         let status = Command::new("pnpm")
             .current_dir(&frontend)
             .args([
-                "exec", "argon", "compile",
+                "exec",
+                "argon",
+                "compile",
                 &format!("src/components/icons/{file_name}"),
-                "--rust", "--out-dir", &out_dir,
+                "--rust",
+                "--out-dir",
+                &out_dir,
             ])
             .status()
             .expect("argon compile failed");

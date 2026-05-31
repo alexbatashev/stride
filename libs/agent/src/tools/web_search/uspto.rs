@@ -34,7 +34,7 @@ pub struct UsptoProvider;
 #[async_trait(?Send)]
 impl SearchProvider for UsptoProvider {
     fn categories(&self) -> &[&str] {
-        &["academic"]
+        &["academic", "patent"]
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
