@@ -1,6 +1,7 @@
 mod api;
 mod config;
 mod db;
+mod icons;
 mod pages;
 pub mod runner;
 mod tools;

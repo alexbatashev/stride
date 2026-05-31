@@ -1,6 +1,5 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { CHEVRON_DOWN, CHEVRON_RIGHT } from "./icons";
 
 @customElement("app-spoiler")
 export class AppSpoiler extends LitElement {
@@ -30,7 +29,7 @@ export class AppSpoiler extends LitElement {
       width: 1em;
     }
 
-    .chevron svg {
+    .chevron > * {
       height: 1em;
       width: 1em;
     }
@@ -64,7 +63,7 @@ export class AppSpoiler extends LitElement {
       >
         <span class="title">${this.title}</span>
         <span class="chevron" aria-hidden="true"
-          >${this.visible ? CHEVRON_DOWN : CHEVRON_RIGHT}</span
+          >${this.visible ? html`<icon-chevron-down></icon-chevron-down>` : html`<icon-chevron-right></icon-chevron-right>`}</span
         >
       </button>
       ${this.visible

@@ -8,7 +8,16 @@ pub fn get_templates() -> anyhow::Result<Handlebars<'static>> {
     let mut hb = Handlebars::new();
     hb.register_template_string("base", BASE_TEMPLATE)?;
     hb.register_template_string("auth", AUTH_TEMPLATE)?;
-    hb.register_template_string("sidebar", SIDEBAR_PARTIAL)?;
+    let sidebar = SIDEBAR_PARTIAL
+        .replace(
+            "<!-- ICON:bot-message-square -->",
+            &crate::icons::bot_message_square::IconBotMessageSquare {}.render(),
+        )
+        .replace(
+            "<!-- ICON:workflow -->",
+            &crate::icons::workflow::IconWorkflow {}.render(),
+        );
+    hb.register_template_string("sidebar", &sidebar)?;
     hb.register_template_string("threads", THREADS_TEMPLATE)?;
     Ok(hb)
 }
@@ -57,21 +66,9 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         <link rel="stylesheet" href="/static/common.css" />
         <link rel="modulepreload" href="/static/lit.js">
         <link rel="modulepreload" href="/static/components.js">
+        <script type="module" src="/static/icons.js"></script>
         <script type="module" src="/static/api.js"></script>
         <script type="module" src="/static/components.js"></script>
-        <script type="module">
-            import { render } from "lit";
-            import {
-                BOT_MESSAGE_SQUARE,
-                WORKFLOW,
-            } from "/static/components.js";
-
-            render(
-                BOT_MESSAGE_SQUARE,
-                document.querySelector("\#new-task-icon"),
-            );
-            render(WORKFLOW, document.querySelector("\#workflow-icon"));
-        </script>
         {{{page_script}}}
     </head>
     <body{{#if body_attrs}} {{{body_attrs}}}{{/if}}>
@@ -92,11 +89,11 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
             <app-sidebar-toggle class="sidebar-brand-toggle" brand="F"></app-sidebar-toggle>
         </div>
         <app-sidebar-nav-item target="/threads" data-action="new-thread">
-            <span id="new-task-icon" slot="icon"></span>
+            <span slot="icon"><!-- ICON:bot-message-square --></span>
             New task
         </app-sidebar-nav-item>
         <app-sidebar-nav-item target="/threads">
-            <span id="workflow-icon" slot="icon"></span>
+            <span slot="icon"><!-- ICON:workflow --></span>
             Automations
         </app-sidebar-nav-item>
         <div data-sidebar-list>

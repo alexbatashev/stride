@@ -3,7 +3,6 @@
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
 import { LitElement, css, html } from "lit";
-import { ARROW_UP, MIC, PLUS, SETTINGS_HORIZONTAL, STOP } from "./icons";
 
 export class AppPromptInput extends LitElement {
   static properties = {
@@ -275,10 +274,10 @@ export class AppPromptInput extends LitElement {
               aria-label="Add attachment"
               @click=${this.onAttachClick}
             >
-              ${PLUS}
+              <icon-plus></icon-plus>
             </button>
             <button class="tool-button icon" type="button" aria-label="Tools">
-              ${SETTINGS_HORIZONTAL}
+              <icon-settings-horizontal></icon-settings-horizontal>
             </button>
           </div>
           <div class="right-actions">
@@ -288,7 +287,7 @@ export class AppPromptInput extends LitElement {
                   type="button"
                   @click=${this.onStop}
                 >
-                  ${STOP}
+                  <icon-stop></icon-stop>
                   <span class="sr-only">Stop</span>
                 </button>`
               : html`<button
@@ -296,7 +295,7 @@ export class AppPromptInput extends LitElement {
                   type="submit"
                   ?disabled=${this.disabled || !this.value.trim()}
                 >
-                  ${ARROW_UP}
+                  <icon-arrow-up></icon-arrow-up>
                   <span class="sr-only">Send message</span>
                 </button>`}
           </div>

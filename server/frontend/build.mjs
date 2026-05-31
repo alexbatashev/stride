@@ -1,5 +1,8 @@
 import * as esbuild from 'esbuild';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const litEntry = [
   "export { CSSResult, LitElement, ReactiveElement, _$LE, _$LH, adoptStyles, css, defaultConverter, getCompatibleStyle, html, isServer, mathml, noChange, notEqual, nothing, render, supportsAdoptingStyleSheets, svg, unsafeCSS } from 'lit';",
@@ -61,6 +64,23 @@ const litExternalPlugin = {
     }));
   },
 };
+
+// Compile icon components with argon and bundle into dist/icons.js
+const iconSrcDir = 'src/components/icons';
+const iconTmpDir = join(tmpdir(), 'friday-icons-js');
+mkdirSync('dist', { recursive: true });
+mkdirSync(iconTmpDir, { recursive: true });
+const argon = './node_modules/.bin/argon';
+for (const file of readdirSync(iconSrcDir).filter(f => f.endsWith('.ts')).sort()) {
+  const result = spawnSync(argon, ['compile', `${iconSrcDir}/${file}`, '--js', '--out-dir', iconTmpDir], { stdio: 'inherit' });
+  if (result.status !== 0) throw new Error(`argon --js failed for ${file}`);
+}
+const iconsJs = readdirSync(iconTmpDir)
+  .filter(f => f.endsWith('.js'))
+  .sort()
+  .map(f => readFileSync(join(iconTmpDir, f), 'utf8'))
+  .join('\n');
+writeFileSync('dist/icons.js', iconsJs);
 
 await Promise.all([
   esbuild.build({

@@ -7,15 +7,6 @@ import {
 	listWorkspaceFiles,
 	uploadFiles,
 } from "../api/threads.js";
-import {
-	CHEVRON_LEFT,
-	FILE,
-	FOLDER,
-	PLUS,
-	TRASH_2,
-	UPLOAD,
-	X,
-} from "./icons.js";
 import "./app-data-table.js";
 import type {DataTableColumn} from "./app-data-table.js";
 
@@ -45,7 +36,7 @@ export class AppFileManager extends LitElement {
 			header: "Name",
 			render: (entry) => html`
 				<button class="cell-action" type="button" @click=${() => this.openEntry(entry)}>
-					<span class="cell-icon">${entry.kind === "directory" ? FOLDER : FILE}</span>
+					<span class="cell-icon">${entry.kind === "directory" ? html`<icon-folder></icon-folder>` : html`<icon-file></icon-file>`}</span>
 					<span>${entry.name}</span>
 				</button>
 			`,
@@ -147,8 +138,12 @@ export class AppFileManager extends LitElement {
 			box-shadow: 0 0 0 3px var(--ring-shadow);
 		}
 
-		.icon-button svg,
-		.action-button svg {
+		.icon-button > * {
+			height: 16px;
+			width: 16px;
+		}
+
+		.action-button > :first-child {
 			height: 16px;
 			width: 16px;
 		}
@@ -250,24 +245,24 @@ export class AppFileManager extends LitElement {
 				<header>
 					<h2>Files</h2>
 					<button class="icon-button" type="button" aria-label="Close files" @click=${this.close}>
-						${X}
+						<icon-x></icon-x>
 					</button>
 				</header>
 				<div class="toolbar">
 					<button class="action-button" type="button" @click=${this.createFolder} ?disabled=${!this.threadId}>
-						${PLUS}<span>Folder</span>
+						<icon-plus></icon-plus><span>Folder</span>
 					</button>
 					<button class="action-button" type="button" @click=${this.selectFiles} ?disabled=${!this.threadId}>
-						${UPLOAD}<span>Upload</span>
+						<icon-upload></icon-upload><span>Upload</span>
 					</button>
 					<button class="action-button" type="button" @click=${this.removeSelected} ?disabled=${this.selected.size === 0}>
-						${TRASH_2}<span>Remove</span>
+						<icon-trash-2></icon-trash-2><span>Remove</span>
 					</button>
 					<input type="file" multiple @change=${this.onFilesSelected} />
 				</div>
 				<div class="path">
 					<button class="icon-button" type="button" aria-label="Up one level" @click=${this.goUp} ?disabled=${!this.path}>
-						${CHEVRON_LEFT}
+						<icon-chevron-left></icon-chevron-left>
 					</button>
 					<span>/${this.path}</span>
 				</div>

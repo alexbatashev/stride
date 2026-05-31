@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=frontend/tsconfig.json");
 
     let manifest = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let out_dir = env::var("OUT_DIR").unwrap();
     let frontend = std::path::Path::new(&manifest).join("frontend");
 
     let status = Command::new("pnpm")
@@ -24,4 +25,28 @@ fn main() {
         .status()
         .expect("pnpm build failed");
     assert!(status.success(), "pnpm build failed");
+
+    // Compile icon components to Rust for SSR
+    let icons_dir = frontend.join("src/components/icons");
+    let mut entries: Vec<_> = std::fs::read_dir(&icons_dir)
+        .expect("failed to read icons dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "ts"))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let file_name = entry.file_name().to_str().unwrap().to_string();
+        println!("cargo:rerun-if-changed=frontend/src/components/icons/{file_name}");
+        let status = Command::new("pnpm")
+            .current_dir(&frontend)
+            .args([
+                "exec", "argon", "compile",
+                &format!("src/components/icons/{file_name}"),
+                "--rust", "--out-dir", &out_dir,
+            ])
+            .status()
+            .expect("argon compile failed");
+        assert!(status.success(), "argon --rust failed for {file_name}");
+    }
 }

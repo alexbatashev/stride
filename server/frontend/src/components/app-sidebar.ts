@@ -6,12 +6,6 @@
 
 import { LitElement, css, html } from "lit";
 import { customElement, state, property } from "lit/decorators.js";
-import {
-  CHEVRON_DOWN,
-  CHEVRON_RIGHT,
-  PANEL_LEFT_CLOSE,
-  PANEL_LEFT_OPEN,
-} from "./icons";
 
 type SidebarStatus = "open" | "collapsed" | "hidden";
 
@@ -375,19 +369,6 @@ export class AppSidebarNavItem extends LitElement {
         (node.nodeType === Node.TEXT_NODE && !!node.textContent?.trim())
       );
     });
-
-    for (const element of slot.assignedElements({ flatten: true })) {
-      const svgs =
-        element instanceof SVGSVGElement
-          ? [element]
-          : Array.from(element.querySelectorAll("svg"));
-
-      for (const svg of svgs) {
-        svg.style.width = "16px";
-        svg.style.height = "16px";
-        svg.style.flexShrink = "0";
-      }
-    }
   }
 
   private onLabelSlotChange(event: Event) {
@@ -492,10 +473,10 @@ export class AppSidebarToggle extends LitElement {
     const content =
       this.brand && this.isClosed
         ? html`<span class="brand-mark">${this.brand}</span>
-            <span class="hover-icon">${PANEL_LEFT_OPEN}</span>`
+            <span class="hover-icon"><icon-panel-left-open></icon-panel-left-open></span>`
         : this.isClosed
-          ? PANEL_LEFT_OPEN
-          : PANEL_LEFT_CLOSE;
+          ? html`<icon-panel-left-open></icon-panel-left-open>`
+          : html`<icon-panel-left-close></icon-panel-left-close>`;
 
     return html`<app-button
       variant="ghost"
@@ -579,7 +560,7 @@ export class AppSidebarGroup extends LitElement {
       opacity: 1;
     }
 
-    .chevron svg {
+    .chevron > * {
       height: 1em;
       width: 1em;
     }
@@ -665,7 +646,7 @@ export class AppSidebarGroup extends LitElement {
       >
         <span class="title">${this.title}</span>
         <span class="chevron"
-          >${this.is_open ? CHEVRON_DOWN : CHEVRON_RIGHT}</span
+          >${this.is_open ? html`<icon-chevron-down></icon-chevron-down>` : html`<icon-chevron-right></icon-chevron-right>`}</span
         >
       </button>
       <ul ?hidden=${!this.is_open}>
