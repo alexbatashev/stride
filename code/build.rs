@@ -42,9 +42,8 @@ fn download_source(out_dir: &Path) -> PathBuf {
     }
 
     let tarball = out_dir.join("capnproto.tar.gz");
-    let url = format!(
-        "https://github.com/capnproto/capnproto/archive/refs/tags/v{CAPNP_VERSION}.tar.gz"
-    );
+    let url =
+        format!("https://github.com/capnproto/capnproto/archive/refs/tags/v{CAPNP_VERSION}.tar.gz");
     run(
         Command::new("curl")
             .args(["-sSfL", "-o"])
@@ -64,7 +63,9 @@ fn download_source(out_dir: &Path) -> PathBuf {
 }
 
 fn run(cmd: &mut Command, what: &str) {
-    let status = cmd.status().unwrap_or_else(|e| panic!("{what} failed: {e}"));
+    let status = cmd
+        .status()
+        .unwrap_or_else(|e| panic!("{what} failed: {e}"));
     assert!(status.success(), "{what} failed");
 }
 
