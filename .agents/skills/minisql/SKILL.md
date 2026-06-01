@@ -32,8 +32,11 @@ Prefer the `migrations!` macro path over manual `Migration` or `Table` builders.
 - Use `table::insert()` for normal inserts.
 - Use `table::select()` for `SELECT *` single-table reads.
 - Use `table::select_cols((...))` when only a few columns are needed.
+- Use `table::update()` with per-column setters for single-table updates.
+- Use `table::delete()` for single-table deletes.
 - Build predicates with generated column consts like `users::email.eq("x")` and combine them with `.and(...)`, `.or(...)`, `.not()`.
-- Use raw SQL with `query_with_params` when the query needs joins, updates, deletes, aggregates, or anything beyond the single-table DSL.
+- `update()` and `delete()` require a `.where_(...)` predicate; call `.all()` to intentionally affect every row.
+- Use raw SQL with `query_with_params` when the query needs joins, aggregates, or anything beyond the single-table DSL.
 
 ## Sharp Edges
 

@@ -529,6 +529,24 @@ impl Table {
             })
             .collect();
 
+        // Update builder setters per column (SET column = value)
+        let update_setters: Vec<proc_macro2::TokenStream> = self
+            .columns
+            .iter()
+            .map(|c| {
+                let name_ident = &c.name;
+                let ty = &c.ty;
+                let db_name = c.column_name.clone().unwrap_or_else(|| c.name.to_string());
+                quote! {
+                    pub fn #name_ident<U: ::minisql::ColumnInput<#ty>>(mut self, v: U) -> Self {
+                        let val = <U as ::minisql::ColumnInput<#ty>>::into_value(v);
+                        self.0 = self.0.set(#db_name, val);
+                        self
+                    }
+                }
+            })
+            .collect();
+
         quote! {
             pub mod #mod_ident {
                 use super::*;
@@ -662,6 +680,67 @@ impl Table {
                             placeholders
                         );
                         let res = db.query_with_params(&sql, self.params).await?;
+                        Ok(res.affected_rows())
+                    }
+                }
+
+                /// Typed UPDATE builder for this table
+                pub struct UpdateBuilder(pub(crate) ::minisql::Update<Table>);
+
+                /// Start an UPDATE builder for this table
+                pub fn update() -> UpdateBuilder {
+                    UpdateBuilder(::minisql::Update::new(#table_name_str))
+                }
+
+                impl UpdateBuilder {
+                    #(#update_setters)*
+
+                    /// Restrict the rows to update. Required unless `all()` is called.
+                    pub fn where_(mut self, predicate: ::minisql::Expr<Table>) -> Self {
+                        self.0 = self.0.where_(predicate);
+                        self
+                    }
+
+                    /// Opt in to updating every row (no WHERE clause).
+                    pub fn all(mut self) -> Self {
+                        self.0 = self.0.all();
+                        self
+                    }
+
+                    pub async fn execute(self, db: &::minisql::ConnectionPool) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+                        if self.0.is_empty() {
+                            return Ok(0);
+                        }
+                        let (sql, params) = self.0.to_sql()?;
+                        let res = db.query_with_params(&sql, params).await?;
+                        Ok(res.affected_rows())
+                    }
+                }
+
+                /// Typed DELETE builder for this table
+                pub struct DeleteBuilder(pub(crate) ::minisql::Delete<Table>);
+
+                /// Start a DELETE builder for this table
+                pub fn delete() -> DeleteBuilder {
+                    DeleteBuilder(::minisql::Delete::new(#table_name_str))
+                }
+
+                impl DeleteBuilder {
+                    /// Restrict the rows to delete. Required unless `all()` is called.
+                    pub fn where_(mut self, predicate: ::minisql::Expr<Table>) -> Self {
+                        self.0 = self.0.where_(predicate);
+                        self
+                    }
+
+                    /// Opt in to deleting every row (no WHERE clause).
+                    pub fn all(mut self) -> Self {
+                        self.0 = self.0.all();
+                        self
+                    }
+
+                    pub async fn execute(self, db: &::minisql::ConnectionPool) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+                        let (sql, params) = self.0.to_sql()?;
+                        let res = db.query_with_params(&sql, params).await?;
                         Ok(res.affected_rows())
                     }
                 }

@@ -1491,21 +1491,14 @@ async fn update_message(
     thinking: Option<&str>,
     tool_calls: Option<&str>,
 ) -> Result<(), AgentPoolError> {
-    db.query_with_params(
-        "UPDATE messages SET content = ?, thinking = ?, tool_calls = ? WHERE id = ?",
-        vec![
-            Value::Text(content.to_string()),
-            thinking
-                .map(|s| Value::Text(s.to_string()))
-                .unwrap_or(Value::Null),
-            tool_calls
-                .map(|s| Value::Text(s.to_string()))
-                .unwrap_or(Value::Null),
-            Value::Uuid(id),
-        ],
-    )
-    .await
-    .map_err(db_error)?;
+    messages::update()
+        .content(content)
+        .thinking(thinking)
+        .tool_calls(tool_calls)
+        .where_(messages::id.eq(id))
+        .execute(db)
+        .await
+        .map_err(db_error)?;
 
     Ok(())
 }
