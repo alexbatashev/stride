@@ -7,7 +7,6 @@ import {
 	listWorkspaceFiles,
 	uploadFiles,
 } from "../api/threads.js";
-import "./app-data-table.js";
 import type {DataTableColumn} from "./app-data-table.js";
 
 export class AppFileManager extends LitElement {
@@ -34,12 +33,8 @@ export class AppFileManager extends LitElement {
 		{
 			key: "name",
 			header: "Name",
-			render: (entry) => html`
-				<button class="cell-action" type="button" @click=${() => this.openEntry(entry)}>
-					<span class="cell-icon">${entry.kind === "directory" ? html`<icon-folder></icon-folder>` : html`<icon-file></icon-file>`}</span>
-					<span>${entry.name}</span>
-				</button>
-			`,
+			html: true,
+			render: (entry) => this.renderNameCell(entry),
 		},
 		{
 			key: "size",
@@ -274,7 +269,7 @@ export class AppFileManager extends LitElement {
 
 	private renderTable() {
 		if (!this.threadId) {
-			return html`<app-data-table empty-text="Start a thread before managing files."></app-data-table>`;
+			return html`<app-data-table data-empty-text="Start a thread before managing files."></app-data-table>`;
 		}
 
 		return html`<app-data-table
@@ -283,8 +278,9 @@ export class AppFileManager extends LitElement {
 			.loading=${this.loading}
 			.rows=${this.entries}
 			.selectedIds=${this.selected}
-			empty-text="No files here."
-			loading-text="Loading files..."
+			data-empty-text="No files here."
+			data-loading-text="Loading files..."
+			@row-action=${this.onRowAction}
 			@selection-change=${this.onSelectionChange}
 		></app-data-table>`;
 	}
@@ -396,6 +392,12 @@ export class AppFileManager extends LitElement {
 		this.selected = event.detail.selectedIds;
 	}
 
+	private onRowAction(event: CustomEvent<{action: string; rowId: string}>) {
+		if (event.detail.action !== "open") return;
+		const entry = this.entries.find((item) => item.path === event.detail.rowId);
+		if (entry) void this.openEntry(entry);
+	}
+
 	private joinPath(name: string) {
 		return [this.path, name].filter(Boolean).join("/");
 	}
@@ -421,6 +423,26 @@ export class AppFileManager extends LitElement {
 			day: "numeric",
 			year: "numeric",
 		}).format(new Date(ms));
+	}
+
+	private renderNameCell(entry: WorkspaceEntry) {
+		const icon = entry.kind === "directory" ? "icon-folder" : "icon-file";
+		const path = this.escapeAttribute(entry.path);
+		const name = this.escapeHtml(entry.name);
+		return `<button class="cell-action" type="button" data-row-action="open" data-row-id="${path}"><span class="cell-icon"><${icon}></${icon}></span><span>${name}</span></button>`;
+	}
+
+	private escapeHtml(value: string) {
+		return value
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;")
+			.replace(/'/g, "&#39;");
+	}
+
+	private escapeAttribute(value: string) {
+		return this.escapeHtml(value);
 	}
 }
 

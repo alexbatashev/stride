@@ -1,5 +1,3 @@
-import "./app-button.js";
-import "./app-data-table.js";
 import "./app-file-manager.js";
 import "./app-prompt-input.js";
 import "./app-sidebar.js";

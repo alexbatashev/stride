@@ -18,30 +18,18 @@
             href="https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,100..900;1,100..900&display=swap"
             rel="stylesheet"
         />
+        <script type="module" src="/static/components2.js"></script>
         <script type="module" src="/static/components.js"></script>
-        <script type="module">
-            import { render } from "lit";
-            import {
-                BOT_MESSAGE_SQUARE,
-                WORKFLOW,
-            } from "/static/components.js";
-
-            render(
-                BOT_MESSAGE_SQUARE,
-                document.querySelector("#new-task-icon"),
-            );
-            render(WORKFLOW, document.querySelector("#workflow-icon"));
-        </script>
     </head>
     <body>
         <nav>
             <app-sidebar>
                 <app-sidebar-nav-item target="/thread">
-                    <span id="new-task-icon" slot="icon"></span>
+                    <span slot="icon"><icon-bot-message-square></icon-bot-message-square></span>
                     New task
                 </app-sidebar-nav-item>
                 <app-sidebar-nav-item target="/thread">
-                    <span id="workflow-icon" slot="icon"></span>
+                    <span slot="icon"><icon-workflow></icon-workflow></span>
                     Automations
                 </app-sidebar-nav-item>
                 <app-sidebar-group title="Threads">

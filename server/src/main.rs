@@ -1,7 +1,7 @@
 mod api;
+mod components2;
 mod config;
 mod db;
-mod icons;
 mod pages;
 pub mod runner;
 mod tools;

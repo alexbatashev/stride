@@ -1,4 +1,10 @@
-#[allow(dead_code, unused_variables, unused_parens, clippy::all)]
+#![allow(dead_code, unused_variables, unused_parens, clippy::useless_format)]
+
+#[allow(dead_code, unused_variables, unused_parens)]
+pub mod app_button {
+    include!(concat!(env!("OUT_DIR"), "/app_button.rs"));
+}
+#[allow(dead_code, unused_variables, unused_parens)]
 pub mod arrow_up {
     include!(concat!(env!("OUT_DIR"), "/arrow_up.rs"));
 }

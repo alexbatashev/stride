@@ -1,6 +1,5 @@
 import {LitElement, css, html} from 'lit';
 import {AuthMode, authenticate} from '../api/auth.js';
-import './app-button.js';
 import './app-text-input.js';
 
 export class AuthForm extends LitElement {
