@@ -47,6 +47,8 @@ For `table users { ... }`, the macro generates:
 - `users::insert() -> InsertBuilder`
 - `users::select() -> SelectQuery`
 - `users::select_cols((...)) -> SelectColsQuery<_>`
+- `users::update() -> UpdateBuilder`
+- `users::delete() -> DeleteBuilder`
 
 If a column uses `[column = "type"]`, Rust code still uses the Rust field name while SQL uses the overridden DB column name.
 
@@ -114,16 +116,41 @@ let first: (uuid::Uuid, String) = rows[0].clone();
 Current limit:
 - tuple projections are implemented only for 1, 2, 3, or 4 columns
 
+## Update Pattern
+
+```rust
+users::update()
+    .display_name("Alice")
+    .where_(users::id.eq(id))
+    .execute(&db)
+    .await?;
+```
+
+Notes:
+- Setters match the Rust field names, same as `insert()`.
+- A `.where_(...)` predicate is required; `execute()` errors otherwise.
+- Call `.all()` instead of `.where_(...)` to update every row on purpose.
+
+## Delete Pattern
+
+```rust
+users::delete()
+    .where_(users::id.eq(id))
+    .execute(&db)
+    .await?;
+```
+
+Notes:
+- Like `update()`, a `.where_(...)` predicate is required; use `.all()` to delete every row.
+
 ## When to Drop to Raw SQL
 
 Use `db.query_with_params(...)` instead of the DSL for:
 
 - joins
-- updates
-- deletes
 - aggregates
 - custom SQL functions
-- anything that is not a single-table `SELECT` or generated `INSERT`
+- anything that is not a single-table `SELECT`, `INSERT`, `UPDATE`, or `DELETE`
 
 ## Current Runtime Limits
 

@@ -374,6 +374,122 @@ impl<Tab> Select<Tab> {
     }
 }
 
+/// A single-table UPDATE builder that emits SQL and parameters.
+///
+/// Refuses to build without a WHERE clause unless `all()` is called, so a
+/// forgotten predicate can't silently rewrite the whole table.
+pub struct Update<Tab> {
+    table: &'static str,
+    set_cols: Vec<&'static str>,
+    set_vals: Vec<Value>,
+    where_clause: Option<Expr<Tab>>,
+    all: bool,
+    _p: PhantomData<Tab>,
+}
+
+impl<Tab> Update<Tab> {
+    pub fn new(table: &'static str) -> Self {
+        Self {
+            table,
+            set_cols: Vec::new(),
+            set_vals: Vec::new(),
+            where_clause: None,
+            all: false,
+            _p: PhantomData,
+        }
+    }
+
+    pub fn set(mut self, column: &'static str, value: Value) -> Self {
+        self.set_cols.push(column);
+        self.set_vals.push(value);
+        self
+    }
+
+    pub fn where_(mut self, predicate: Expr<Tab>) -> Self {
+        self.where_clause = Some(predicate);
+        self
+    }
+
+    pub fn all(mut self) -> Self {
+        self.all = true;
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.set_cols.is_empty()
+    }
+
+    pub fn to_sql(&self) -> Result<(String, Vec<Value>), String> {
+        if self.where_clause.is_none() && !self.all {
+            return Err("UPDATE without WHERE: call .where_(...) or .all() to confirm".into());
+        }
+        let mut sql = String::new();
+        sql.push_str("UPDATE ");
+        sql.push_str(self.table);
+        sql.push_str(" SET ");
+        let assignments = self
+            .set_cols
+            .iter()
+            .map(|c| format!("{} = ?", c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sql.push_str(&assignments);
+        let mut params = self.set_vals.clone();
+        if let Some(expr) = &self.where_clause {
+            sql.push_str(" WHERE ");
+            expr.to_sql(&mut sql, &mut params);
+        }
+        Ok((sql, params))
+    }
+}
+
+/// A single-table DELETE builder that emits SQL and parameters.
+///
+/// Like `Update`, it refuses to build without a WHERE clause unless `all()`
+/// is called.
+pub struct Delete<Tab> {
+    table: &'static str,
+    where_clause: Option<Expr<Tab>>,
+    all: bool,
+    _p: PhantomData<Tab>,
+}
+
+impl<Tab> Delete<Tab> {
+    pub fn new(table: &'static str) -> Self {
+        Self {
+            table,
+            where_clause: None,
+            all: false,
+            _p: PhantomData,
+        }
+    }
+
+    pub fn where_(mut self, predicate: Expr<Tab>) -> Self {
+        self.where_clause = Some(predicate);
+        self
+    }
+
+    pub fn all(mut self) -> Self {
+        self.all = true;
+        self
+    }
+
+    pub fn to_sql(&self) -> Result<(String, Vec<Value>), String> {
+        if self.where_clause.is_none() && !self.all {
+            return Err("DELETE without WHERE: call .where_(...) or .all() to confirm".into());
+        }
+        let mut sql = String::new();
+        sql.push_str("DELETE FROM ");
+        sql.push_str(self.table);
+        let mut params = Vec::new();
+        if let Some(expr) = &self.where_clause {
+            sql.push_str(" WHERE ");
+            expr.to_sql(&mut sql, &mut params);
+        }
+        Ok((sql, params))
+    }
+}
+
 // -----------------------
 // Projection support
 // -----------------------

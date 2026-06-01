@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     ServerState,
     api::auth::{self, AuthError},
-    db::projects,
+    db::{projects, threads},
 };
 
 #[derive(Serialize)]
@@ -121,15 +121,10 @@ pub async fn rename(
 
     require_project_owner(&state, owner, project_id).await?;
 
-    state
-        .db
-        .query_with_params(
-            "UPDATE projects SET title = ? WHERE id = ?",
-            vec![
-                minisql::Value::Text(title.clone()),
-                minisql::Value::Uuid(project_id),
-            ],
-        )
+    projects::update()
+        .title(title.clone())
+        .where_(projects::id.eq(project_id))
+        .execute(&state.db)
         .await
         .map_err(|_| ProjectApiError::Internal)?;
 
@@ -148,21 +143,16 @@ pub async fn delete(
     require_project_owner(&state, owner, project_id).await?;
 
     // Unlink threads from this project before deleting it
-    state
-        .db
-        .query_with_params(
-            "UPDATE threads SET project_id = NULL WHERE project_id = ?",
-            vec![minisql::Value::Uuid(project_id)],
-        )
+    threads::update()
+        .project_id(Option::<Uuid>::None)
+        .where_(threads::project_id.eq(project_id))
+        .execute(&state.db)
         .await
         .map_err(|_| ProjectApiError::Internal)?;
 
-    state
-        .db
-        .query_with_params(
-            "DELETE FROM projects WHERE id = ?",
-            vec![minisql::Value::Uuid(project_id)],
-        )
+    projects::delete()
+        .where_(projects::id.eq(project_id))
+        .execute(&state.db)
         .await
         .map_err(|_| ProjectApiError::Internal)?;
 

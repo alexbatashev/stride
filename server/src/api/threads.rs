@@ -360,11 +360,10 @@ pub async fn create_thread(
     let model_config = state.model_config.clone();
     tokio::spawn(async move {
         if let Some(title) = generate_title(&model_config, &content).await {
-            let _ = db
-                .query_with_params(
-                    "UPDATE threads SET title = ? WHERE id = ?",
-                    vec![Value::Text(title), Value::Uuid(thread_id)],
-                )
+            let _ = threads::update()
+                .title(title)
+                .where_(threads::id.eq(thread_id))
+                .execute(&db)
                 .await;
         }
     });

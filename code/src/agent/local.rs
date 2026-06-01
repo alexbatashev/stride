@@ -6,7 +6,7 @@ use friday_agent::{
 };
 use futures::{Stream, StreamExt, stream};
 use llm::{API, Anthropic, Ollama, OpenAI};
-use minisql::{ConnectionPool, Value};
+use minisql::ConnectionPool;
 use uuid::Uuid;
 
 use crate::{
@@ -129,18 +129,13 @@ async fn update_message(
     content: &str,
     thinking: Option<&str>,
 ) -> Result<(), AgentError> {
-    db.query_with_params(
-        "UPDATE messages SET content = ?, thinking = ? WHERE id = ?",
-        vec![
-            Value::Text(content.to_string()),
-            thinking
-                .map(|s| Value::Text(s.to_string()))
-                .unwrap_or(Value::Null),
-            Value::Uuid(id),
-        ],
-    )
-    .await
-    .map_err(db_error)?;
+    messages::update()
+        .content(content)
+        .thinking(thinking)
+        .where_(messages::id.eq(id))
+        .execute(db)
+        .await
+        .map_err(db_error)?;
 
     Ok(())
 }
