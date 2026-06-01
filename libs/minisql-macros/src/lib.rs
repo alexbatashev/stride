@@ -20,9 +20,11 @@ struct Migrations {
 
 struct Migration {
     tables: Vec<Table>,
+    alters: Vec<AlterTable>,
     raw_sql: Vec<LitStr>,
 }
 
+#[derive(Clone)]
 struct Table {
     name: Ident,
     columns: Vec<Column>,
@@ -30,6 +32,7 @@ struct Table {
     enable_vectors: bool,
 }
 
+#[derive(Clone)]
 struct Column {
     name: Ident,
     column_name: Option<String>,
@@ -37,10 +40,23 @@ struct Column {
     tags: Vec<SqlTag>,
 }
 
+#[derive(Clone)]
 struct ForeignKey {
     fields: Vec<Ident>,
     table: Ident,
     foreign_fields: Vec<Ident>,
+}
+
+struct AlterTable {
+    name: Ident,
+    actions: Vec<AlterAction>,
+}
+
+enum AlterAction {
+    AddColumn { name: Ident, ty: Type },
+    DropColumn { name: Ident },
+    RenameColumn { from: Ident, to: Ident },
+    RenameTable { to: Ident },
 }
 
 #[derive(Clone)]
@@ -68,6 +84,7 @@ impl Parse for Migration {
         braced!(content in input);
 
         let mut tables = Vec::new();
+        let mut alters = Vec::new();
         let mut raw_sql = Vec::new();
 
         while !content.is_empty() {
@@ -76,6 +93,8 @@ impl Parse for Migration {
                 let ident: Ident = content.fork().parse()?;
                 if ident == "table" {
                     tables.push(content.parse()?);
+                } else if ident == "alter" {
+                    alters.push(content.parse()?);
                 } else if ident == "raw" {
                     content.parse::<Ident>()?; // consume "raw"
                     let sql: LitStr = content.parse()?;
@@ -89,7 +108,11 @@ impl Parse for Migration {
             }
         }
 
-        Ok(Migration { tables, raw_sql })
+        Ok(Migration {
+            tables,
+            alters,
+            raw_sql,
+        })
     }
 }
 
@@ -240,6 +263,124 @@ impl Parse for ForeignKey {
     }
 }
 
+impl Parse for AlterTable {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let alter_keyword: Ident = input.parse()?;
+        if alter_keyword != "alter" {
+            return Err(syn::Error::new(alter_keyword.span(), "Expected 'alter'"));
+        }
+        let table_keyword: Ident = input.parse()?;
+        if table_keyword != "table" {
+            return Err(syn::Error::new(table_keyword.span(), "Expected 'table'"));
+        }
+        let name: Ident = input.parse()?;
+        let content;
+        braced!(content in input);
+
+        let mut actions = Vec::new();
+
+        while !content.is_empty() {
+            let kw: Ident = content.parse()?;
+            if kw == "add" {
+                let col_name: Ident = content.parse()?;
+                content.parse::<Token![:]>()?;
+                let ty: Type = content.parse()?;
+                content.parse::<Token![;]>()?;
+                actions.push(AlterAction::AddColumn { name: col_name, ty });
+            } else if kw == "drop" {
+                let col_name: Ident = content.parse()?;
+                content.parse::<Token![;]>()?;
+                actions.push(AlterAction::DropColumn { name: col_name });
+            } else if kw == "rename" {
+                // `rename table <new>;` renames the table; `rename <a> -> <b>;`
+                // renames a column. "table" is reserved as a column name here.
+                if content.peek(syn::Ident) && content.fork().parse::<Ident>()? == "table" {
+                    content.parse::<Ident>()?; // consume "table"
+                    let to: Ident = content.parse()?;
+                    content.parse::<Token![;]>()?;
+                    actions.push(AlterAction::RenameTable { to });
+                } else {
+                    let from: Ident = content.parse()?;
+                    content.parse::<Token![-]>()?;
+                    content.parse::<Token![>]>()?;
+                    let to: Ident = content.parse()?;
+                    content.parse::<Token![;]>()?;
+                    actions.push(AlterAction::RenameColumn { from, to });
+                }
+            } else {
+                return Err(syn::Error::new(
+                    kw.span(),
+                    "Expected 'add', 'drop', or 'rename'",
+                ));
+            }
+        }
+
+        Ok(AlterTable { name, actions })
+    }
+}
+
+impl AlterTable {
+    fn expand(&self) -> proc_macro2::TokenStream {
+        let name = self.name.to_string();
+        let action_calls: Vec<proc_macro2::TokenStream> =
+            self.actions.iter().map(|a| a.expand()).collect();
+
+        quote! {
+            ::minisql::AlterTable::from_name(#name)
+                #(#action_calls)*
+        }
+    }
+
+    // Fold this alter into the accumulated schema so generated typed modules
+    // reflect the final, post-migration table shape.
+    fn apply_to(&self, table: &mut Table) {
+        for action in &self.actions {
+            match action {
+                AlterAction::AddColumn { name, ty } => table.columns.push(Column {
+                    name: name.clone(),
+                    column_name: None,
+                    ty: ty.clone(),
+                    tags: vec![],
+                }),
+                AlterAction::DropColumn { name } => {
+                    table.columns.retain(|c| &c.name != name);
+                }
+                AlterAction::RenameColumn { from, to } => {
+                    if let Some(c) = table.columns.iter_mut().find(|c| &c.name == from) {
+                        c.name = to.clone();
+                        c.column_name = None;
+                    }
+                }
+                AlterAction::RenameTable { to } => table.name = to.clone(),
+            }
+        }
+    }
+}
+
+impl AlterAction {
+    fn expand(&self) -> proc_macro2::TokenStream {
+        match self {
+            AlterAction::AddColumn { name, ty } => {
+                let n = name.to_string();
+                quote! { .add_column::<#ty, _>(#n) }
+            }
+            AlterAction::DropColumn { name } => {
+                let n = name.to_string();
+                quote! { .drop_column(#n) }
+            }
+            AlterAction::RenameColumn { from, to } => {
+                let f = from.to_string();
+                let t = to.to_string();
+                quote! { .rename_column(#f, #t) }
+            }
+            AlterAction::RenameTable { to } => {
+                let t = to.to_string();
+                quote! { .rename_to(#t) }
+            }
+        }
+    }
+}
+
 impl Migrations {
     fn expand(&self) -> proc_macro2::TokenStream {
         let migration_exprs: Vec<proc_macro2::TokenStream> = self
@@ -248,13 +389,22 @@ impl Migrations {
             .map(|migration| migration.expand())
             .collect();
 
-        // Generate per-table modules for a simple, single-table select DSL
-        let table_modules: Vec<proc_macro2::TokenStream> = self
-            .migrations
-            .iter()
-            .flat_map(|m| m.tables.iter())
-            .map(|t| t.expand_module())
-            .collect();
+        // Build the final schema by replaying creates and alters in order, so
+        // generated typed modules match the table shape after all migrations.
+        let mut final_tables: Vec<Table> = Vec::new();
+        for migration in &self.migrations {
+            for t in &migration.tables {
+                final_tables.push(t.clone());
+            }
+            for a in &migration.alters {
+                if let Some(t) = final_tables.iter_mut().find(|t| t.name == a.name) {
+                    a.apply_to(t);
+                }
+            }
+        }
+
+        let table_modules: Vec<proc_macro2::TokenStream> =
+            final_tables.iter().map(|t| t.expand_module()).collect();
 
         quote! {
             pub fn get_migrations() -> Vec<::minisql::Migration> {
@@ -273,6 +423,9 @@ impl Migration {
         let table_exprs: Vec<proc_macro2::TokenStream> =
             self.tables.iter().map(|table| table.expand()).collect();
 
+        let alter_exprs: Vec<proc_macro2::TokenStream> =
+            self.alters.iter().map(|alter| alter.expand()).collect();
+
         let raw_sql_exprs: Vec<proc_macro2::TokenStream> = self
             .raw_sql
             .iter()
@@ -284,6 +437,7 @@ impl Migration {
         quote! {
             ::minisql::Migration::new()
                 #(.table(#table_exprs))*
+                #(.alter_table(#alter_exprs))*
                 #(#raw_sql_exprs)*
         }
     }
