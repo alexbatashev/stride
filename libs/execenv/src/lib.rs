@@ -257,20 +257,61 @@ pub struct WasiDependencies {
 }
 
 async fn download(url: &str, path: &Path) -> anyhow::Result<()> {
-    let url = url.to_string();
-    let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(60)))
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_recv_body(Some(Duration::from_secs(60)))
-            .build()
-            .into();
-        let mut response = agent.get(&url).call()?;
-        Ok(response.body_mut().read_to_vec()?)
-    })
-    .await??;
+    let bytes = tokio::time::timeout(Duration::from_secs(60), fetch(url)).await??;
     tokio::fs::write(path, bytes).await?;
     Ok(())
+}
+
+const MAX_REDIRECTS: usize = 10;
+
+async fn fetch(url: &str) -> anyhow::Result<bytes::Bytes> {
+    use http_body_util::{BodyExt, Empty};
+    use hyper::header::LOCATION;
+
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()?
+        .https_or_http()
+        .enable_http1()
+        .build();
+    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build::<_, Empty<bytes::Bytes>>(https);
+
+    let mut url = url.to_string();
+    for _ in 0..MAX_REDIRECTS {
+        let req = hyper::Request::builder()
+            .uri(&url)
+            .body(Empty::<bytes::Bytes>::new())?;
+        let res = client.request(req).await?;
+        let status = res.status();
+
+        if status.is_redirection() {
+            let location = res
+                .headers()
+                .get(LOCATION)
+                .ok_or_else(|| anyhow::anyhow!("redirect {status} without location header"))?
+                .to_str()?;
+            url = resolve_redirect(&url, location)?;
+            continue;
+        }
+
+        anyhow::ensure!(status.is_success(), "download failed with status {status}");
+        return Ok(res.into_body().collect().await?.to_bytes());
+    }
+
+    anyhow::bail!("too many redirects")
+}
+
+fn resolve_redirect(base: &str, location: &str) -> anyhow::Result<String> {
+    if location.starts_with("http://") || location.starts_with("https://") {
+        return Ok(location.to_string());
+    }
+    let base: hyper::Uri = base.parse()?;
+    let scheme = base.scheme_str().unwrap_or("https");
+    let authority = base
+        .authority()
+        .ok_or_else(|| anyhow::anyhow!("base url missing authority"))?;
+    let sep = if location.starts_with('/') { "" } else { "/" };
+    Ok(format!("{scheme}://{authority}{sep}{location}"))
 }
 
 async fn extract_tar_gz(archive: &Path, target: &Path) -> anyhow::Result<()> {
@@ -683,6 +724,17 @@ async fn make_eryx_service(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "network: downloads numpy WASI tarball"]
+    async fn download_follows_redirects_and_fetches_tarball() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("numpy-wasi.tar.gz");
+        download(NUMPY_WASI_URL, &path).await.unwrap();
+        let bytes = tokio::fs::read(&path).await.unwrap();
+        assert!(bytes.len() > 1024, "got {} bytes", bytes.len());
+        assert_eq!(&bytes[..2], &[0x1f, 0x8b], "not a gzip stream");
+    }
 
     #[tokio::test]
     async fn mock_service_returns_empty_output() {
