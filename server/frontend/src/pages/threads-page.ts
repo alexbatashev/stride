@@ -7,9 +7,11 @@ import {
 	renameProject,
 } from "../api/projects.js";
 import {
+	QuizQuestion,
 	ThreadEvent,
 	ThreadMessage,
 	ThreadSummary,
+	answerQuiz,
 	cancelRun,
 	createThread,
 	listMessages,
@@ -22,9 +24,16 @@ import "../components/app-approval-bar.js";
 import "../components/app-file-manager.js";
 import "../components/app-message.js";
 import "../components/app-prompt-input.js";
+import "../components/app-quiz-bar.js";
 import "../components/app-sidebar.js";
 
 type ViewMessage = ThreadMessage & { pending?: boolean };
+type PendingQuiz = {
+	id: string;
+	questions: QuizQuestion[];
+	index: number;
+	answers: string[];
+};
 
 const root = document.querySelector<HTMLElement>("#threads-page");
 
@@ -41,6 +50,7 @@ class ThreadsPageHydrator {
 	private events: WebSocket | null = null;
 	private pendingAssistant = "";
 	private pendingApproval: {id: string; message: string} | null = null;
+	private pendingQuiz: PendingQuiz | null = null;
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
 	private readonly messagesEl: HTMLElement;
@@ -53,6 +63,8 @@ class ThreadsPageHydrator {
 	};
 	private readonly approvalEl: HTMLElement;
 	private readonly approvalMessageEl: HTMLElement;
+	private readonly quizEl: HTMLElement;
+	private readonly quizQuestionEl: HTMLElement;
 	private readonly errorEl: HTMLElement;
 	private readonly sidebarListEl: HTMLElement;
 	private readonly fileManagerEl: HTMLElement & {threadId: string; open: boolean};
@@ -63,9 +75,11 @@ class ThreadsPageHydrator {
 		this.messagesEl = this.mustQuery("[data-messages]");
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");
-		this.approvalEl = this.mustQuery("[data-approval]");
-		this.approvalMessageEl = this.mustQuery("[data-approval-message]");
 		this.errorEl = this.mustQuery("[data-error]");
+		this.approvalEl = this.ensureApprovalElement();
+		this.approvalMessageEl = this.mustQueryFrom(this.approvalEl, "[data-approval-message]");
+		this.quizEl = this.ensureQuizElement();
+		this.quizQuestionEl = this.mustQueryFrom(this.quizEl, "[data-quiz-question]");
 		this.sidebarListEl = this.mustQuery("[data-sidebar-list]");
 		this.fileManagerEl = this.mustQuery("[data-file-manager]");
 		this.threads = this.readThreads();
@@ -86,6 +100,52 @@ class ThreadsPageHydrator {
 			throw new Error(`Missing ${selector}`);
 		}
 
+		return element;
+	}
+
+	private mustQueryFrom<T extends Element>(root: Element, selector: string): T {
+		const element = root.querySelector<T>(selector);
+		if (!element) {
+			throw new Error(`Missing ${selector}`);
+		}
+
+		return element;
+	}
+
+	private ensureApprovalElement(): HTMLElement {
+		const existing = this.root.querySelector<HTMLElement>("[data-approval]");
+		if (existing) return existing;
+
+		const element = document.createElement("app-approval-bar");
+		element.dataset.approval = "";
+		element.hidden = true;
+		element.style.margin = "auto";
+		element.style.display = "none";
+
+		const message = document.createElement("span");
+		message.dataset.approvalMessage = "";
+		element.append(message);
+
+		this.errorEl.before(element);
+		return element;
+	}
+
+	private ensureQuizElement(): HTMLElement {
+		const existing = this.root.querySelector<HTMLElement>("[data-quiz]");
+		if (existing) return existing;
+
+		const element = document.createElement("app-quiz-bar");
+		element.dataset.quiz = "";
+		element.hidden = true;
+		element.style.margin = "auto";
+		element.style.display = "none";
+
+		const question = document.createElement("span");
+		question.slot = "question";
+		question.dataset.quizQuestion = "";
+		element.append(question);
+
+		this.errorEl.before(element);
 		return element;
 	}
 
@@ -120,6 +180,9 @@ class ThreadsPageHydrator {
 		);
 		this.approvalEl.addEventListener("approval-response", (event) =>
 			void this.onApprovalResponse(event as CustomEvent<{approved: boolean}>),
+		);
+		this.quizEl.addEventListener("quiz-response", (event) =>
+			void this.onQuizResponse(event as CustomEvent<{answer: string}>),
 		);
 		window.addEventListener("popstate", () => {
 			window.location.href = window.location.pathname;
@@ -227,6 +290,12 @@ class ThreadsPageHydrator {
 						message: event.kind.pending_approval.message,
 					}
 				: null;
+			this.pendingQuiz = event.kind.pending_quiz
+				? this.createPendingQuiz(
+						event.kind.pending_quiz.quiz_id,
+						event.kind.pending_quiz.questions,
+					)
+				: null;
 			this.syncComposer();
 			if (event.kind.in_progress?.content) {
 				const last = this.messages[this.messages.length - 1];
@@ -270,6 +339,22 @@ class ThreadsPageHydrator {
 			}
 		}
 
+		if (event.kind.type === "WaitingForQuiz") {
+			this.running = true;
+			this.pendingQuiz = this.createPendingQuiz(
+				event.kind.quiz_id,
+				event.kind.questions,
+			);
+			this.syncComposer();
+		}
+
+		if (event.kind.type === "QuizAnswered") {
+			if (this.pendingQuiz?.id === event.kind.quiz_id) {
+				this.pendingQuiz = null;
+				this.syncComposer();
+			}
+		}
+
 		if (event.kind.type === "AgentMessageCommitted") {
 			void this.refreshAfterRun();
 		}
@@ -281,6 +366,7 @@ class ThreadsPageHydrator {
 
 		if (event.kind.type === "ToolFinished") {
 			this.pendingApproval = null;
+			this.pendingQuiz = null;
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
@@ -288,6 +374,7 @@ class ThreadsPageHydrator {
 		if (event.kind.type === "RunFinished") {
 			this.running = false;
 			this.pendingApproval = null;
+			this.pendingQuiz = null;
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
@@ -295,6 +382,7 @@ class ThreadsPageHydrator {
 		if (event.kind.type === "RunFailed") {
 			this.running = false;
 			this.pendingApproval = null;
+			this.pendingQuiz = null;
 			this.syncComposer();
 			this.setError(event.kind.error);
 		}
@@ -302,10 +390,19 @@ class ThreadsPageHydrator {
 		if (event.kind.type === "RunCancelled") {
 			this.running = false;
 			this.pendingApproval = null;
+			this.pendingQuiz = null;
 			this.pendingAssistant = "";
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
+	}
+
+	private createPendingQuiz(id: string, questions: QuizQuestion[]): PendingQuiz | null {
+		if (questions.length === 0) {
+			return null;
+		}
+
+		return { id, questions, index: 0, answers: [] };
 	}
 
 	private upsertPendingAssistant(thinking?: string) {
@@ -423,6 +520,7 @@ class ThreadsPageHydrator {
 		this.lastEventSeq = 0;
 		this.pendingAssistant = "";
 		this.pendingApproval = null;
+		this.pendingQuiz = null;
 		this.attachedFiles = [];
 		this.setError("");
 
@@ -449,6 +547,7 @@ class ThreadsPageHydrator {
 		this.running = false;
 		this.pendingAssistant = "";
 		this.pendingApproval = null;
+		this.pendingQuiz = null;
 		this.lastEventSeq = 0;
 		this.renderMessages();
 		this.renderSidebar();
@@ -759,11 +858,55 @@ class ThreadsPageHydrator {
 		this.promptEl.value = this.draft;
 		this.promptEl.running = this.running;
 		this.promptEl.placeholder = this.threadId ? "Message Friday" : "Ask Friday anything";
-		this.promptEl.hidden = this.pendingApproval !== null;
-		this.approvalEl.hidden = this.pendingApproval === null;
+		const hasApproval = this.pendingApproval !== null;
+		const hasQuiz = this.pendingQuiz !== null;
+		this.promptEl.hidden = hasApproval || hasQuiz;
+		this.promptEl.style.display = hasApproval || hasQuiz ? "none" : "";
+		this.approvalEl.hidden = !hasApproval;
+		this.approvalEl.style.display = hasApproval ? "" : "none";
 		this.approvalMessageEl.textContent = this.pendingApproval?.message ?? "";
+		this.quizEl.hidden = !hasQuiz;
+		this.quizEl.style.display = hasQuiz ? "" : "none";
+		this.renderQuiz();
 		this.errorEl.textContent = this.error;
 		this.fileManagerEl.threadId = this.threadId;
+	}
+
+	private renderQuiz() {
+		const quiz = this.pendingQuiz;
+		this.quizQuestionEl.textContent = quiz
+			? quiz.questions[quiz.index]?.question ?? ""
+			: "";
+		this.quizEl
+			.querySelectorAll("[data-quiz-option]")
+			.forEach((option) => option.remove());
+		const customInput = this.quizEl.shadowRoot?.querySelector<HTMLInputElement>(
+			'input[type="text"]',
+		);
+		if (customInput) customInput.value = "";
+
+		if (!quiz) {
+			return;
+		}
+
+		const question = quiz.questions[quiz.index];
+		const name = `quiz-${quiz.id}-${quiz.index}`;
+		for (const option of question.options) {
+			const label = document.createElement("label");
+			label.slot = "options";
+			label.dataset.quizOption = "";
+
+			const input = document.createElement("input");
+			input.type = "radio";
+			input.name = name;
+			input.value = option;
+
+			const text = document.createElement("span");
+			text.textContent = option;
+
+			label.append(input, text);
+			this.quizEl.append(label);
+		}
 	}
 
 	private toggleFiles() {
@@ -792,6 +935,29 @@ class ThreadsPageHydrator {
 		} catch {
 			this.pendingApproval = approval;
 			this.setError("Approval response failed.");
+		}
+	}
+
+	private async onQuizResponse(event: CustomEvent<{answer: string}>) {
+		if (!this.threadId || !this.pendingQuiz) return;
+
+		const quiz = this.pendingQuiz;
+		quiz.answers[quiz.index] = event.detail.answer;
+
+		if (quiz.index + 1 < quiz.questions.length) {
+			quiz.index += 1;
+			this.syncComposer();
+			return;
+		}
+
+		this.pendingQuiz = null;
+		this.syncComposer();
+
+		try {
+			await answerQuiz(this.threadId, quiz.id, quiz.answers);
+		} catch {
+			this.pendingQuiz = quiz;
+			this.setError("Quiz response failed.");
 		}
 	}
 

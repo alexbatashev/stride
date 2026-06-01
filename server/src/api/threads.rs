@@ -102,6 +102,11 @@ pub struct ApprovalRequest {
     approved: bool,
 }
 
+#[derive(Deserialize)]
+pub struct QuizAnswerRequest {
+    answers: Vec<String>,
+}
+
 #[derive(Serialize)]
 pub struct SendMessageResponse {
     thread_id: String,
@@ -130,12 +135,25 @@ struct ApprovalResponse {
 }
 
 #[derive(Serialize)]
+struct QuizQuestionResponse {
+    question: String,
+    options: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct QuizResponse {
+    quiz_id: String,
+    questions: Vec<QuizQuestionResponse>,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "type")]
 enum EventKindResponse {
     Snapshot {
         status: &'static str,
         in_progress: Option<SnapshotMessageResponse>,
         pending_approval: Option<ApprovalResponse>,
+        pending_quiz: Option<QuizResponse>,
     },
     RunStarted,
     UserMessageCommitted {
@@ -165,6 +183,13 @@ enum EventKindResponse {
     ApprovalResolved {
         approval_id: String,
         approved: bool,
+    },
+    WaitingForQuiz {
+        quiz_id: String,
+        questions: Vec<QuizQuestionResponse>,
+    },
+    QuizAnswered {
+        quiz_id: String,
     },
     RunFinished,
     RunFailed {
@@ -520,6 +545,21 @@ pub async fn resolve_approval(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn answer_quiz(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path((thread_id, quiz_id)): Path<(Uuid, Uuid)>,
+    Json(request): Json<QuizAnswerRequest>,
+) -> Result<StatusCode, ThreadApiError> {
+    require_thread_owner(&state, &headers, thread_id).await?;
+    state
+        .runner
+        .answer_quiz(thread_id, quiz_id, request.answers)
+        .await
+        .map_err(pool_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
     let snapshot = snapshot_event(&subscription);
     if socket.send(Message::Text(snapshot.into())).await.is_err() {
@@ -675,6 +715,7 @@ fn pool_error(error: AgentPoolError) -> ThreadApiError {
     match error {
         AgentPoolError::ThreadNotFound => ThreadApiError::NotFound,
         AgentPoolError::ApprovalNotFound => ThreadApiError::NotFound,
+        AgentPoolError::QuizNotFound => ThreadApiError::NotFound,
         AgentPoolError::AlreadyRunning => ThreadApiError::Conflict,
         AgentPoolError::EventHistoryExpired
         | AgentPoolError::WorkerStopped
@@ -982,6 +1023,15 @@ fn event_response(event: AgentEvent) -> EventResponse {
                 approval_id: approval_id.to_string(),
                 approved,
             },
+            AgentEventKind::WaitingForQuiz { quiz_id, questions } => {
+                EventKindResponse::WaitingForQuiz {
+                    quiz_id: quiz_id.to_string(),
+                    questions: quiz_questions_response(questions),
+                }
+            }
+            AgentEventKind::QuizAnswered { quiz_id } => EventKindResponse::QuizAnswered {
+                quiz_id: quiz_id.to_string(),
+            },
             AgentEventKind::RunFinished => EventKindResponse::RunFinished,
             AgentEventKind::RunFailed { error } => EventKindResponse::RunFailed { error },
             AgentEventKind::RunCancelled => EventKindResponse::RunCancelled,
@@ -990,34 +1040,53 @@ fn event_response(event: AgentEvent) -> EventResponse {
 }
 
 fn snapshot_event(subscription: &crate::runner::ThreadSubscription) -> String {
-    let event = EventResponse {
-        seq: subscription.snapshot.last_event_seq,
-        thread_id: subscription.snapshot.thread_id.to_string(),
-        run_id: None,
-        kind: EventKindResponse::Snapshot {
-            status: match subscription.snapshot.status {
-                ThreadStatus::Idle => "idle",
-                ThreadStatus::Running { .. } => "running",
-            },
-            in_progress: subscription.snapshot.in_progress.as_ref().map(|message| {
-                SnapshotMessageResponse {
-                    run_id: message.run_id.0.to_string(),
-                    content: message.content.clone(),
-                    thinking: message.thinking.clone(),
-                }
-            }),
-            pending_approval: subscription
-                .snapshot
-                .pending_approval
-                .as_ref()
-                .map(|approval| ApprovalResponse {
-                    approval_id: approval.approval_id.to_string(),
-                    message: approval.message.clone(),
+    let event =
+        EventResponse {
+            seq: subscription.snapshot.last_event_seq,
+            thread_id: subscription.snapshot.thread_id.to_string(),
+            run_id: None,
+            kind: EventKindResponse::Snapshot {
+                status: match subscription.snapshot.status {
+                    ThreadStatus::Idle => "idle",
+                    ThreadStatus::Running { .. } => "running",
+                },
+                in_progress: subscription.snapshot.in_progress.as_ref().map(|message| {
+                    SnapshotMessageResponse {
+                        run_id: message.run_id.0.to_string(),
+                        content: message.content.clone(),
+                        thinking: message.thinking.clone(),
+                    }
                 }),
-        },
-    };
+                pending_approval: subscription
+                    .snapshot
+                    .pending_approval
+                    .as_ref()
+                    .map(|approval| ApprovalResponse {
+                        approval_id: approval.approval_id.to_string(),
+                        message: approval.message.clone(),
+                    }),
+                pending_quiz: subscription.snapshot.pending_quiz.as_ref().map(|quiz| {
+                    QuizResponse {
+                        quiz_id: quiz.quiz_id.to_string(),
+                        questions: quiz_questions_response(quiz.questions.clone()),
+                    }
+                }),
+            },
+        };
 
     serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn quiz_questions_response(
+    questions: Vec<friday_agent::QuizQuestion>,
+) -> Vec<QuizQuestionResponse> {
+    questions
+        .into_iter()
+        .map(|question| QuizQuestionResponse {
+            question: question.question,
+            options: question.options,
+        })
+        .collect()
 }
 
 #[cfg(test)]

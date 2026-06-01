@@ -50,6 +50,7 @@ export type ThreadEvent = {
 				status: 'idle' | 'running';
 				in_progress: {run_id: string; content: string; thinking: string | null} | null;
 				pending_approval: {approval_id: string; message: string} | null;
+				pending_quiz: {quiz_id: string; questions: QuizQuestion[]} | null;
 		  }
 		| {type: 'RunStarted'}
 		| {type: 'UserMessageCommitted'; message_id: string; seq: number}
@@ -60,9 +61,16 @@ export type ThreadEvent = {
 		| {type: 'ToolFinished'; name: string}
 		| {type: 'WaitingForApproval'; approval_id: string; message: string}
 		| {type: 'ApprovalResolved'; approval_id: string; approved: boolean}
+		| {type: 'WaitingForQuiz'; quiz_id: string; questions: QuizQuestion[]}
+		| {type: 'QuizAnswered'; quiz_id: string}
 		| {type: 'RunFinished'}
 		| {type: 'RunFailed'; error: string}
 		| {type: 'RunCancelled'};
+};
+
+export type QuizQuestion = {
+	question: string;
+	options: string[];
 };
 
 export async function listThreads(): Promise<ThreadSummary[]> {
@@ -95,6 +103,13 @@ export async function resolveApproval(threadId: string, approvalId: string, appr
 	await request(`/api/threads/${threadId}/approvals/${approvalId}`, {
 		method: 'POST',
 		body: JSON.stringify({approved})
+	});
+}
+
+export async function answerQuiz(threadId: string, quizId: string, answers: string[]): Promise<void> {
+	await request(`/api/threads/${threadId}/quizzes/${quizId}`, {
+		method: 'POST',
+		body: JSON.stringify({answers})
 	});
 }
 

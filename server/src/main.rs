@@ -182,6 +182,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             post(api::threads::resolve_approval),
         )
         .route(
+            "/api/threads/{id}/quizzes/{quiz_id}",
+            post(api::threads::answer_quiz),
+        )
+        .route(
             "/api/threads/{id}/files",
             get(api::threads::list_files).post(api::threads::upload_file),
         )

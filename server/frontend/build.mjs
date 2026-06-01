@@ -78,6 +78,7 @@ const argonComponentFiles = [
   'src/components/app-approval-bar.ts',
   'src/components/app-button.ts',
   'src/components/app-data-table.ts',
+  'src/components/app-quiz-bar.ts',
   ...readdirSync(iconSrcDir)
     .filter(f => f.endsWith('.ts'))
     .sort()
