@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use postgres::types::{ToSql, Type};
 use postgres::{Client, NoTls};
 
-use crate::migration::{Command, SqlType};
+use crate::migration::{AlterTable, Command, SqlType};
 use crate::query::{QueryResult, Row, Value};
 use crate::sql_builder::SQLBuilder;
 
@@ -205,6 +205,17 @@ impl PostgresBuilder {
 
         Ok(format!("CREATE TABLE {} ({});", table.name, columns))
     }
+
+    pub(crate) fn build_alter_table(
+        &self,
+        alter: &AlterTable,
+    ) -> Result<Vec<String>, crate::sql_builder::SQLError> {
+        Ok(crate::sql_builder::build_alter_statements(
+            &alter.name,
+            &alter.actions,
+            sql_type,
+        ))
+    }
 }
 
 fn sql_type(ty: &SqlType) -> String {
@@ -224,7 +235,26 @@ fn sql_type(ty: &SqlType) -> String {
 #[cfg(test)]
 mod tests {
     use super::{PostgresBuilder, postgres_placeholders};
-    use crate::{SqlTag, Table};
+    use crate::{AlterTable, SqlTag, Table};
+
+    #[test]
+    fn builds_postgres_alter_table_sql() {
+        let alter = AlterTable::from_name("users")
+            .add_column::<i64, _>("age")
+            .drop_column("nickname")
+            .rename_column("name", "full_name")
+            .rename_to("accounts");
+
+        assert_eq!(
+            PostgresBuilder.build_alter_table(&alter).unwrap(),
+            vec![
+                "ALTER TABLE users ADD COLUMN age BIGINT;",
+                "ALTER TABLE users DROP COLUMN nickname;",
+                "ALTER TABLE users RENAME COLUMN name TO full_name;",
+                "ALTER TABLE users RENAME TO accounts;",
+            ]
+        );
+    }
 
     #[test]
     fn converts_question_mark_placeholders_to_postgres_placeholders() {

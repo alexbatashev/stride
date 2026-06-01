@@ -38,10 +38,6 @@ impl ConnectionPool {
         &self,
         migrations: Vec<Migration>,
     ) -> Result<(), Box<dyn StdError + Send + Sync>> {
-        if migrations.len() > 1 {
-            unimplemented!("Actual migration process is not here yet");
-        }
-
         let hashes = migrations
             .iter()
             .map(|m| {
@@ -87,6 +83,13 @@ impl ConnectionPool {
                 // FIXME correctly handle error
                 let sql = t.to_sql(&self.backend).unwrap();
                 self.query(&sql).await?;
+            }
+
+            for a in m.get_alters() {
+                // FIXME correctly handle error
+                for sql in a.to_sql(&self.backend).unwrap() {
+                    self.query(&sql).await?;
+                }
             }
 
             for r in m.get_raw_queries() {
