@@ -52,6 +52,14 @@ include_pubmed = true
 api_key = "fc-..."
 api_url = "https://api.firecrawl.dev"
 
+[mcp.deepwiki]
+url = "https://mcp.deepwiki.com/mcp"
+
+[mcp.internal]
+url = "https://mcp.example.com/mcp"
+token = "secret-token"
+headers = { X-Tenant = "acme" }
+
 [tools.python]
 enabled = true
 cache_dir = "/tmp/friday-execenv"

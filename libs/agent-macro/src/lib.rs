@@ -49,6 +49,7 @@ fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
                 llm::FunctionProperty {
                     r#type: #ty.to_string(),
                     description: #description.to_string(),
+                    ..Default::default()
                 },
             );
         });
@@ -101,6 +102,7 @@ fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
                     param_type: "object".to_string(),
                     properties,
                     required: #required_expr,
+                    ..Default::default()
                 }
             }
 

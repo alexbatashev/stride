@@ -33,6 +33,18 @@ where
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
+    let (status, _headers, body) = send_request_with_headers(req).await?;
+    Ok((status, body))
+}
+
+pub async fn send_request_with_headers<T>(
+    req: Request<T>,
+) -> Result<(u16, hyper::HeaderMap, Bytes), Error>
+where
+    T: Body + Send + 'static,
+    T::Data: Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let (host, is_https, addrs, req) = prepare_request(req)?;
 
     if is_https {
@@ -110,7 +122,7 @@ where
     }
 }
 
-async fn do_request<Io, T>(io: Io, req: Request<T>) -> Result<(u16, Bytes), Error>
+async fn do_request<Io, T>(io: Io, req: Request<T>) -> Result<(u16, hyper::HeaderMap, Bytes), Error>
 where
     Io: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
     T: Body + Send + 'static,
@@ -128,6 +140,7 @@ where
             .map_err(|e| Error::RequestError(e.to_string()))?;
 
         let status = res.status().as_u16();
+        let headers = res.headers().clone();
         let bytes = res
             .into_body()
             .collect()
@@ -135,7 +148,7 @@ where
             .map_err(|e| Error::RequestError(e.to_string()))?
             .to_bytes();
 
-        Ok((status, bytes))
+        Ok((status, headers, bytes))
     };
 
     futures::pin_mut!(request_fut);

@@ -494,6 +494,7 @@ mod tests {
             models: HashMap::new(),
             server: None,
             tools: None,
+            mcp: HashMap::new(),
         }
     }
 
