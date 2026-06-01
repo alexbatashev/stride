@@ -17,7 +17,6 @@ import {
 	sendMessage,
 	uploadFiles,
 } from "../api/threads.js";
-import "../components/app-button.js";
 import "../components/app-file-manager.js";
 import "../components/app-message.js";
 import "../components/app-prompt-input.js";

@@ -11,11 +11,11 @@ pub fn get_templates() -> anyhow::Result<Handlebars<'static>> {
     let sidebar = SIDEBAR_PARTIAL
         .replace(
             "<!-- ICON:bot-message-square -->",
-            &crate::icons::bot_message_square::IconBotMessageSquare {}.render(),
+            &crate::components2::bot_message_square::IconBotMessageSquare {}.render(),
         )
         .replace(
             "<!-- ICON:workflow -->",
-            &crate::icons::workflow::IconWorkflow {}.render(),
+            &crate::components2::workflow::IconWorkflow {}.render(),
         );
     hb.register_template_string("sidebar", &sidebar)?;
     hb.register_template_string("threads", THREADS_TEMPLATE)?;
@@ -65,8 +65,9 @@ const BASE_TEMPLATE: &str = r#"<!doctype html>
         <script type="importmap">{"imports": {"lit": "/static/lit.js"}}</script>
         <link rel="stylesheet" href="/static/common.css" />
         <link rel="modulepreload" href="/static/lit.js">
+        <link rel="modulepreload" href="/static/components2.js">
         <link rel="modulepreload" href="/static/components.js">
-        <script type="module" src="/static/icons.js"></script>
+        <script type="module" src="/static/components2.js"></script>
         <script type="module" src="/static/api.js"></script>
         <script type="module" src="/static/components.js"></script>
         {{{page_script}}}

@@ -26,7 +26,23 @@ fn main() {
         .expect("pnpm build failed");
     assert!(status.success(), "pnpm build failed");
 
-    // Compile icon components to Rust for SSR
+    // Compile Argon components to Rust for SSR
+    println!("cargo:rerun-if-changed=frontend/src/components/app-button.ts");
+    let status = Command::new("pnpm")
+        .current_dir(&frontend)
+        .args([
+            "exec",
+            "argon",
+            "compile",
+            "src/components/app-button.ts",
+            "--rust",
+            "--out-dir",
+            &out_dir,
+        ])
+        .status()
+        .expect("argon compile failed");
+    assert!(status.success(), "argon --rust failed for app-button.ts");
+
     let icons_dir = frontend.join("src/components/icons");
     let mut entries: Vec<_> = std::fs::read_dir(&icons_dir)
         .expect("failed to read icons dir")

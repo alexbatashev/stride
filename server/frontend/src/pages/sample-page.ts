@@ -1,6 +1,5 @@
 import {LitElement, css, html} from 'lit';
 import {logout} from '../api/auth.js';
-import '../components/app-button.js';
 
 export class SamplePage extends LitElement {
 	static styles = css`
