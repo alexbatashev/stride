@@ -178,6 +178,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/api/threads/{id}/events", get(api::threads::events))
         .route("/api/threads/{id}/cancel", post(api::threads::cancel))
         .route(
+            "/api/threads/{id}/approvals/{approval_id}",
+            post(api::threads::resolve_approval),
+        )
+        .route(
             "/api/threads/{id}/files",
             get(api::threads::list_files).post(api::threads::upload_file),
         )

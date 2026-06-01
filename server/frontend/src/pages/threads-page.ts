@@ -14,9 +14,11 @@ import {
 	createThread,
 	listMessages,
 	listThreads,
+	resolveApproval,
 	sendMessage,
 	uploadFiles,
 } from "../api/threads.js";
+import "../components/app-approval-bar.js";
 import "../components/app-file-manager.js";
 import "../components/app-message.js";
 import "../components/app-prompt-input.js";
@@ -38,6 +40,7 @@ class ThreadsPageHydrator {
 	private error = "";
 	private events: WebSocket | null = null;
 	private pendingAssistant = "";
+	private pendingApproval: {id: string; message: string} | null = null;
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
 	private readonly messagesEl: HTMLElement;
@@ -48,6 +51,8 @@ class ThreadsPageHydrator {
 		running: boolean;
 		placeholder: string;
 	};
+	private readonly approvalEl: HTMLElement;
+	private readonly approvalMessageEl: HTMLElement;
 	private readonly errorEl: HTMLElement;
 	private readonly sidebarListEl: HTMLElement;
 	private readonly fileManagerEl: HTMLElement & {threadId: string; open: boolean};
@@ -58,6 +63,8 @@ class ThreadsPageHydrator {
 		this.messagesEl = this.mustQuery("[data-messages]");
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");
+		this.approvalEl = this.mustQuery("[data-approval]");
+		this.approvalMessageEl = this.mustQuery("[data-approval-message]");
 		this.errorEl = this.mustQuery("[data-error]");
 		this.sidebarListEl = this.mustQuery("[data-sidebar-list]");
 		this.fileManagerEl = this.mustQuery("[data-file-manager]");
@@ -110,6 +117,9 @@ class ThreadsPageHydrator {
 		this.promptEl.addEventListener("prompt-stop", () => void this.onStop());
 		this.promptEl.addEventListener("files-attach", (event) =>
 			void this.onFilesAttach(event as CustomEvent<{files: File[]}>),
+		);
+		this.approvalEl.addEventListener("approval-response", (event) =>
+			void this.onApprovalResponse(event as CustomEvent<{approved: boolean}>),
 		);
 		window.addEventListener("popstate", () => {
 			window.location.href = window.location.pathname;
@@ -211,6 +221,12 @@ class ThreadsPageHydrator {
 
 		if (event.kind.type === "Snapshot") {
 			this.running = event.kind.status === "running";
+			this.pendingApproval = event.kind.pending_approval
+				? {
+						id: event.kind.pending_approval.approval_id,
+						message: event.kind.pending_approval.message,
+					}
+				: null;
 			this.syncComposer();
 			if (event.kind.in_progress?.content) {
 				const last = this.messages[this.messages.length - 1];
@@ -238,6 +254,22 @@ class ThreadsPageHydrator {
 			this.upsertPendingAssistant(event.kind.thinking);
 		}
 
+		if (event.kind.type === "WaitingForApproval") {
+			this.running = true;
+			this.pendingApproval = {
+				id: event.kind.approval_id,
+				message: event.kind.message,
+			};
+			this.syncComposer();
+		}
+
+		if (event.kind.type === "ApprovalResolved") {
+			if (this.pendingApproval?.id === event.kind.approval_id) {
+				this.pendingApproval = null;
+				this.syncComposer();
+			}
+		}
+
 		if (event.kind.type === "AgentMessageCommitted") {
 			void this.refreshAfterRun();
 		}
@@ -248,23 +280,28 @@ class ThreadsPageHydrator {
 		}
 
 		if (event.kind.type === "ToolFinished") {
+			this.pendingApproval = null;
+			this.syncComposer();
 			void this.refreshAfterRun();
 		}
 
 		if (event.kind.type === "RunFinished") {
 			this.running = false;
+			this.pendingApproval = null;
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
 
 		if (event.kind.type === "RunFailed") {
 			this.running = false;
+			this.pendingApproval = null;
 			this.syncComposer();
 			this.setError(event.kind.error);
 		}
 
 		if (event.kind.type === "RunCancelled") {
 			this.running = false;
+			this.pendingApproval = null;
 			this.pendingAssistant = "";
 			this.syncComposer();
 			void this.refreshAfterRun();
@@ -385,6 +422,7 @@ class ThreadsPageHydrator {
 		this.closeEvents();
 		this.lastEventSeq = 0;
 		this.pendingAssistant = "";
+		this.pendingApproval = null;
 		this.attachedFiles = [];
 		this.setError("");
 
@@ -410,6 +448,7 @@ class ThreadsPageHydrator {
 		this.attachedFiles = [];
 		this.running = false;
 		this.pendingAssistant = "";
+		this.pendingApproval = null;
 		this.lastEventSeq = 0;
 		this.renderMessages();
 		this.renderSidebar();
@@ -720,6 +759,9 @@ class ThreadsPageHydrator {
 		this.promptEl.value = this.draft;
 		this.promptEl.running = this.running;
 		this.promptEl.placeholder = this.threadId ? "Message Friday" : "Ask Friday anything";
+		this.promptEl.hidden = this.pendingApproval !== null;
+		this.approvalEl.hidden = this.pendingApproval === null;
+		this.approvalMessageEl.textContent = this.pendingApproval?.message ?? "";
 		this.errorEl.textContent = this.error;
 		this.fileManagerEl.threadId = this.threadId;
 	}
@@ -735,6 +777,21 @@ class ThreadsPageHydrator {
 			await cancelRun(this.threadId);
 		} catch {
 			// Ignore errors — the RunCancelled event will update state
+		}
+	}
+
+	private async onApprovalResponse(event: CustomEvent<{approved: boolean}>) {
+		if (!this.threadId || !this.pendingApproval) return;
+
+		const approval = this.pendingApproval;
+		this.pendingApproval = null;
+		this.syncComposer();
+
+		try {
+			await resolveApproval(this.threadId, approval.id, event.detail.approved);
+		} catch {
+			this.pendingApproval = approval;
+			this.setError("Approval response failed.");
 		}
 	}
 

@@ -97,6 +97,11 @@ pub struct EventsQuery {
     after: Option<u64>,
 }
 
+#[derive(Deserialize)]
+pub struct ApprovalRequest {
+    approved: bool,
+}
+
 #[derive(Serialize)]
 pub struct SendMessageResponse {
     thread_id: String,
@@ -119,11 +124,18 @@ struct SnapshotMessageResponse {
 }
 
 #[derive(Serialize)]
+struct ApprovalResponse {
+    approval_id: String,
+    message: String,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "type")]
 enum EventKindResponse {
     Snapshot {
         status: &'static str,
         in_progress: Option<SnapshotMessageResponse>,
+        pending_approval: Option<ApprovalResponse>,
     },
     RunStarted,
     UserMessageCommitted {
@@ -149,6 +161,10 @@ enum EventKindResponse {
     WaitingForApproval {
         approval_id: String,
         message: String,
+    },
+    ApprovalResolved {
+        approval_id: String,
+        approved: bool,
     },
     RunFinished,
     RunFailed {
@@ -489,6 +505,21 @@ pub async fn cancel(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn resolve_approval(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path((thread_id, approval_id)): Path<(Uuid, Uuid)>,
+    Json(request): Json<ApprovalRequest>,
+) -> Result<StatusCode, ThreadApiError> {
+    require_thread_owner(&state, &headers, thread_id).await?;
+    state
+        .runner
+        .resolve_approval(thread_id, approval_id, request.approved)
+        .await
+        .map_err(pool_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
     let snapshot = snapshot_event(&subscription);
     if socket.send(Message::Text(snapshot.into())).await.is_err() {
@@ -643,6 +674,7 @@ fn uuid_value(value: Option<&Value>) -> Result<Uuid, ThreadApiError> {
 fn pool_error(error: AgentPoolError) -> ThreadApiError {
     match error {
         AgentPoolError::ThreadNotFound => ThreadApiError::NotFound,
+        AgentPoolError::ApprovalNotFound => ThreadApiError::NotFound,
         AgentPoolError::AlreadyRunning => ThreadApiError::Conflict,
         AgentPoolError::EventHistoryExpired
         | AgentPoolError::WorkerStopped
@@ -943,6 +975,13 @@ fn event_response(event: AgentEvent) -> EventResponse {
                 approval_id: approval_id.to_string(),
                 message,
             },
+            AgentEventKind::ApprovalResolved {
+                approval_id,
+                approved,
+            } => EventKindResponse::ApprovalResolved {
+                approval_id: approval_id.to_string(),
+                approved,
+            },
             AgentEventKind::RunFinished => EventKindResponse::RunFinished,
             AgentEventKind::RunFailed { error } => EventKindResponse::RunFailed { error },
             AgentEventKind::RunCancelled => EventKindResponse::RunCancelled,
@@ -967,6 +1006,14 @@ fn snapshot_event(subscription: &crate::runner::ThreadSubscription) -> String {
                     thinking: message.thinking.clone(),
                 }
             }),
+            pending_approval: subscription
+                .snapshot
+                .pending_approval
+                .as_ref()
+                .map(|approval| ApprovalResponse {
+                    approval_id: approval.approval_id.to_string(),
+                    message: approval.message.clone(),
+                }),
         },
     };
 

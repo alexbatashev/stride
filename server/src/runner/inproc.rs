@@ -20,7 +20,7 @@ use friday_agent::{
         },
     },
 };
-use futures::StreamExt;
+use futures::{StreamExt, channel::oneshot as futures_oneshot};
 use minisql::{ConnectionPool, Value};
 use tokio::{
     runtime::Builder,
@@ -34,7 +34,7 @@ use crate::{
     db::{Role, messages},
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
-        RunId, ThreadSnapshot, ThreadStatus, ThreadSubscription,
+        PendingApproval, RunId, ThreadSnapshot, ThreadStatus, ThreadSubscription,
     },
     tools::{
         personality::UpdatePersonalityTool,
@@ -133,6 +133,12 @@ enum WorkerCommand {
         thread_id: Uuid,
         resp: oneshot::Sender<Result<(), AgentPoolError>>,
     },
+    ResolveApproval {
+        thread_id: Uuid,
+        approval_id: Uuid,
+        approved: bool,
+        resp: oneshot::Sender<Result<(), AgentPoolError>>,
+    },
     Status {
         thread_id: Uuid,
         resp: oneshot::Sender<Result<ThreadStatus, AgentPoolError>>,
@@ -170,11 +176,18 @@ struct ThreadRunner {
     event_tx: broadcast::Sender<AgentEvent>,
     event_history: VecDeque<AgentEvent>,
     cancel_tx: Option<watch::Sender<bool>>,
+    pending_approvals: HashMap<Uuid, PendingApprovalState>,
     last_event_seq: u64,
     next_message_seq: u64,
     status: ThreadStatus,
     in_progress: Option<PartialAgentMessage>,
     last_used: Instant,
+}
+
+struct PendingApprovalState {
+    run_id: RunId,
+    message: String,
+    approved: futures_oneshot::Sender<bool>,
 }
 
 struct AssistantMessageState {
@@ -355,6 +368,25 @@ impl AgentPool for InProcessAgentPool {
         rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
     }
 
+    async fn resolve_approval(
+        &self,
+        thread_id: Uuid,
+        approval_id: Uuid,
+        approved: bool,
+    ) -> Result<(), AgentPoolError> {
+        let (resp, rx) = oneshot::channel();
+        self.worker(thread_id)
+            .tx
+            .send(WorkerCommand::ResolveApproval {
+                thread_id,
+                approval_id,
+                approved,
+                resp,
+            })
+            .map_err(|_| AgentPoolError::WorkerStopped)?;
+        rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
+    }
+
     async fn shutdown_thread(&self, thread_id: Uuid) -> Result<(), AgentPoolError> {
         let (resp, rx) = oneshot::channel();
         self.worker(thread_id)
@@ -444,6 +476,15 @@ async fn handle_command(state: Rc<RefCell<WorkerState>>, command: WorkerCommand)
         }
         WorkerCommand::Cancel { thread_id, resp } => {
             let result = handle_cancel(&state, thread_id);
+            let _ = resp.send(result);
+        }
+        WorkerCommand::ResolveApproval {
+            thread_id,
+            approval_id,
+            approved,
+            resp,
+        } => {
+            let result = handle_resolve_approval(&state, thread_id, approval_id, approved);
             let _ = resp.send(result);
         }
         WorkerCommand::Status { thread_id, resp } => {
@@ -555,12 +596,19 @@ async fn handle_subscribe(
     runner.last_used = Instant::now();
     // Subscribe before reading last_event_seq so no events slip through the gap.
     let events = runner.event_tx.subscribe();
-    let snapshot = ThreadSnapshot {
-        thread_id,
-        last_event_seq: runner.last_event_seq,
-        status: runner.status.clone(),
-        in_progress: runner.in_progress.clone(),
-    };
+    let snapshot =
+        ThreadSnapshot {
+            thread_id,
+            last_event_seq: runner.last_event_seq,
+            status: runner.status.clone(),
+            in_progress: runner.in_progress.clone(),
+            pending_approval: runner.pending_approvals.iter().next().map(
+                |(approval_id, approval)| PendingApproval {
+                    approval_id: *approval_id,
+                    message: approval.message.clone(),
+                },
+            ),
+        };
 
     let replay = if let Some(after) = after {
         if after < runner.last_event_seq
@@ -598,6 +646,34 @@ fn handle_cancel(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) -> Result<()
     if let Some(tx) = &runner.cancel_tx {
         let _ = tx.send(true);
     }
+    Ok(())
+}
+
+fn handle_resolve_approval(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    approval_id: Uuid,
+    approved: bool,
+) -> Result<(), AgentPoolError> {
+    let mut state = state.borrow_mut();
+    let runner = state
+        .threads
+        .get_mut(&thread_id)
+        .ok_or(AgentPoolError::ThreadNotFound)?;
+    let Some(approval) = runner.pending_approvals.remove(&approval_id) else {
+        return Err(AgentPoolError::ApprovalNotFound);
+    };
+    let run_id = approval.run_id;
+    let _ = approval.approved.send(approved);
+    emit(
+        runner,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::ApprovalResolved {
+            approval_id,
+            approved,
+        },
+    );
     Ok(())
 }
 
@@ -737,6 +813,7 @@ async fn ensure_runner(
             event_tx,
             event_history: VecDeque::new(),
             cancel_tx: None,
+            pending_approvals: HashMap::new(),
             last_event_seq: 0,
             next_message_seq,
             status: ThreadStatus::Idle,
@@ -960,14 +1037,22 @@ async fn run_agent_turn(
                     Ok(AgentResponseChunk::Approval {
                         message, approved, ..
                     }) => {
-                        let _ = approved.send(false);
+                        let approval_id = Uuid::now_v7();
                         with_runner(&state, thread_id, |runner| {
+                            runner.pending_approvals.insert(
+                                approval_id,
+                                PendingApprovalState {
+                                    run_id,
+                                    message: message.clone(),
+                                    approved,
+                                },
+                            );
                             emit(
                                 runner,
                                 thread_id,
                                 Some(run_id),
                                 AgentEventKind::WaitingForApproval {
-                                    approval_id: Uuid::now_v7(),
+                                    approval_id,
                                     message,
                                 },
                             );
@@ -988,6 +1073,7 @@ async fn run_agent_turn(
 
     with_runner(&state, thread_id, |runner| {
         runner.cancel_tx = None;
+        runner.pending_approvals.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
@@ -1339,6 +1425,7 @@ fn restore_agent(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, agent: BaseA
 fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId, error: String) {
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
+        runner.pending_approvals.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
@@ -1354,6 +1441,7 @@ fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId, er
 fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId) {
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
+        runner.pending_approvals.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
@@ -1869,6 +1957,86 @@ mod tests {
         let (thread, _) = load_thread(&db, thread_id).await.unwrap();
         assert_eq!(thread[1].tool_calls.as_ref().unwrap().len(), 1);
         assert_eq!(thread[2].tool_call_id.as_deref(), Some("call-1"));
+    }
+
+    #[tokio::test]
+    async fn resolving_approval_updates_state_and_answers_sender() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let thread_id = Uuid::now_v7();
+        let run_id = RunId(Uuid::now_v7());
+        let approval_id = Uuid::now_v7();
+        let (approved_tx, approved_rx) = futures::channel::oneshot::channel();
+        let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
+        let mut events = event_tx.subscribe();
+
+        let mut runner = ThreadRunner {
+            agent: None,
+            event_tx,
+            event_history: VecDeque::new(),
+            cancel_tx: None,
+            pending_approvals: HashMap::new(),
+            last_event_seq: 0,
+            next_message_seq: 0,
+            status: ThreadStatus::Running { run_id },
+            in_progress: None,
+            last_used: Instant::now(),
+        };
+        runner.pending_approvals.insert(
+            approval_id,
+            PendingApprovalState {
+                run_id,
+                message: "Approve test".to_string(),
+                approved: approved_tx,
+            },
+        );
+
+        let mut threads = HashMap::new();
+        threads.insert(thread_id, runner);
+        let state = Rc::new(RefCell::new(WorkerState {
+            db: db.clone(),
+            config: Arc::new(AgentConfig {
+                model_registry: ModelRegistry::new(),
+                max_iterations: 4,
+            }),
+            tools: Tools::default(),
+            mcp_tools: Vec::new(),
+            vfs: None,
+            system_prompt: "System prompt".to_string(),
+            idle_ttl: Duration::from_secs(60),
+            threads,
+        }));
+
+        let snapshot = handle_subscribe(state.clone(), thread_id, None)
+            .await
+            .unwrap()
+            .snapshot;
+        assert_eq!(
+            snapshot.pending_approval.as_ref().map(|a| a.approval_id),
+            Some(approval_id)
+        );
+
+        handle_resolve_approval(&state, thread_id, approval_id, false).unwrap();
+        assert!(!approved_rx.await.unwrap());
+
+        let event = events.recv().await.unwrap();
+        match event.kind {
+            AgentEventKind::ApprovalResolved {
+                approval_id: resolved_id,
+                approved,
+            } => {
+                assert_eq!(resolved_id, approval_id);
+                assert!(!approved);
+            }
+            _ => panic!("expected approval resolution"),
+        }
+
+        let snapshot = handle_subscribe(state, thread_id, None)
+            .await
+            .unwrap()
+            .snapshot;
+        assert!(snapshot.pending_approval.is_none());
     }
 
     #[tokio::test]

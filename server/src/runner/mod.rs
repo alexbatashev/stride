@@ -20,6 +20,13 @@ pub trait AgentPool: Send + Sync + 'static {
 
     async fn cancel_run(&self, thread_id: Uuid) -> Result<(), AgentPoolError>;
 
+    async fn resolve_approval(
+        &self,
+        thread_id: Uuid,
+        approval_id: Uuid,
+        approved: bool,
+    ) -> Result<(), AgentPoolError>;
+
     async fn status(&self, thread_id: Uuid) -> Result<ThreadStatus, AgentPoolError>;
 
     async fn shutdown_thread(&self, thread_id: Uuid) -> Result<(), AgentPoolError>;
@@ -45,6 +52,7 @@ pub struct ThreadSnapshot {
     pub last_event_seq: EventSeq,
     pub status: ThreadStatus,
     pub in_progress: Option<PartialAgentMessage>,
+    pub pending_approval: Option<PendingApproval>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +66,12 @@ pub struct PartialAgentMessage {
     pub run_id: RunId,
     pub content: String,
     pub thinking: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingApproval {
+    pub approval_id: Uuid,
+    pub message: String,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +92,7 @@ pub enum AgentEventKind {
     ToolStarted { name: String },
     ToolFinished { name: String },
     WaitingForApproval { approval_id: Uuid, message: String },
+    ApprovalResolved { approval_id: Uuid, approved: bool },
     RunFinished,
     RunFailed { error: String },
     RunCancelled,
@@ -87,6 +102,7 @@ pub enum AgentEventKind {
 pub enum AgentPoolError {
     ThreadNotFound,
     AlreadyRunning,
+    ApprovalNotFound,
     EventHistoryExpired,
     WorkerStopped,
     Internal(anyhow::Error),
@@ -97,6 +113,7 @@ impl std::fmt::Display for AgentPoolError {
         match self {
             AgentPoolError::ThreadNotFound => write!(f, "thread not found"),
             AgentPoolError::AlreadyRunning => write!(f, "thread is already running"),
+            AgentPoolError::ApprovalNotFound => write!(f, "approval not found"),
             AgentPoolError::EventHistoryExpired => write!(f, "event history expired"),
             AgentPoolError::WorkerStopped => write!(f, "agent worker stopped"),
             AgentPoolError::Internal(error) => write!(f, "{error}"),

@@ -49,6 +49,7 @@ export type ThreadEvent = {
 				type: 'Snapshot';
 				status: 'idle' | 'running';
 				in_progress: {run_id: string; content: string; thinking: string | null} | null;
+				pending_approval: {approval_id: string; message: string} | null;
 		  }
 		| {type: 'RunStarted'}
 		| {type: 'UserMessageCommitted'; message_id: string; seq: number}
@@ -58,6 +59,7 @@ export type ThreadEvent = {
 		| {type: 'ToolStarted'; name: string}
 		| {type: 'ToolFinished'; name: string}
 		| {type: 'WaitingForApproval'; approval_id: string; message: string}
+		| {type: 'ApprovalResolved'; approval_id: string; approved: boolean}
 		| {type: 'RunFinished'}
 		| {type: 'RunFailed'; error: string}
 		| {type: 'RunCancelled'};
@@ -87,6 +89,13 @@ export async function sendMessage(threadId: string, content: string, filePaths?:
 
 export async function cancelRun(threadId: string): Promise<void> {
 	await request(`/api/threads/${threadId}/cancel`, {method: 'POST'});
+}
+
+export async function resolveApproval(threadId: string, approvalId: string, approved: boolean): Promise<void> {
+	await request(`/api/threads/${threadId}/approvals/${approvalId}`, {
+		method: 'POST',
+		body: JSON.stringify({approved})
+	});
 }
 
 export async function listWorkspaceFiles(threadId: string, path = ''): Promise<WorkspaceList> {
