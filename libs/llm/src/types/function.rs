@@ -30,12 +30,20 @@ pub struct FunctionParameters {
     pub properties: HashMap<String, FunctionProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<Vec<String>>,
+    /// Additional JSON Schema keywords passed through verbatim (e.g. from MCP
+    /// tool input schemas: `additionalProperties`, `$defs`, ...).
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct FunctionProperty {
     pub r#type: String,
     pub description: String,
+    /// Additional JSON Schema keywords passed through verbatim (`enum`,
+    /// `items`, nested `properties`, ...).
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

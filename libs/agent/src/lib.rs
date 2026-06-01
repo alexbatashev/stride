@@ -1,4 +1,5 @@
 mod base;
+pub mod mcp;
 mod tool;
 mod tool_registry;
 pub mod tools;

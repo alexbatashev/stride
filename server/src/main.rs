@@ -17,7 +17,10 @@ use axum::{
     routing::{get, patch, post},
 };
 use clap::Parser;
-use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
+use friday_agent::{
+    AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry,
+    mcp::{self, McpTool},
+};
 use handlebars::Handlebars;
 use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::ConnectionPool;
@@ -78,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         model_registry: create_model_registry(&config),
         max_iterations: 90,
     });
+    let mcp_tools = connect_mcp_servers(&config).await;
     let vfs_provider = config
         .server
         .as_ref()
@@ -107,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
             db.clone(),
             model_config.clone(),
             tools,
+            mcp_tools,
             vfs.clone(),
         ))
     } else {
@@ -114,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
             db.clone(),
             model_config.clone(),
             tools,
+            mcp_tools,
         ))
     };
 
@@ -196,6 +202,28 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
         .with_state(state)
+}
+
+async fn connect_mcp_servers(config: &config::Config) -> Vec<McpTool> {
+    let mut tools = Vec::new();
+
+    for (name, server) in &config.mcp {
+        let mcp_server = mcp::McpServer {
+            url: server.url.clone(),
+            headers: server.request_headers(name),
+        };
+        match mcp::connect(name, mcp_server).await {
+            Ok(server_tools) => {
+                tracing::info!(server = %name, count = server_tools.len(), "connected to MCP server");
+                tools.extend(server_tools);
+            }
+            Err(error) => {
+                tracing::warn!(server = %name, %error, "failed to connect to MCP server");
+            }
+        }
+    }
+
+    tools
 }
 
 fn create_model_registry(config: &config::Config) -> ModelRegistry {
