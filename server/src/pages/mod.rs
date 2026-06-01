@@ -319,6 +319,12 @@ const THREADS_TEMPLATE: &str = r#"<style>
         placeholder="{{#if thread_id}}Message Friday{{else}}Ask Friday anything{{/if}}"
         {{#if running}}disabled{{/if}}
     ></app-prompt-input>
+    <app-approval-bar style="margin: auto; display: none" data-approval hidden>
+        <span data-approval-message></span>
+    </app-approval-bar>
+    <app-quiz-bar style="margin: auto; display: none" data-quiz hidden>
+        <span slot="question" data-quiz-question></span>
+    </app-quiz-bar>
     <div class="error" data-error></div>
 </main>
 <app-file-manager data-file-manager thread-id="{{thread_id}}"></app-file-manager>

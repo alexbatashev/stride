@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use friday_agent::QuizQuestion;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -19,6 +20,20 @@ pub trait AgentPool: Send + Sync + 'static {
     ) -> Result<ThreadSubscription, AgentPoolError>;
 
     async fn cancel_run(&self, thread_id: Uuid) -> Result<(), AgentPoolError>;
+
+    async fn resolve_approval(
+        &self,
+        thread_id: Uuid,
+        approval_id: Uuid,
+        approved: bool,
+    ) -> Result<(), AgentPoolError>;
+
+    async fn answer_quiz(
+        &self,
+        thread_id: Uuid,
+        quiz_id: Uuid,
+        answers: Vec<String>,
+    ) -> Result<(), AgentPoolError>;
 
     async fn status(&self, thread_id: Uuid) -> Result<ThreadStatus, AgentPoolError>;
 
@@ -45,6 +60,8 @@ pub struct ThreadSnapshot {
     pub last_event_seq: EventSeq,
     pub status: ThreadStatus,
     pub in_progress: Option<PartialAgentMessage>,
+    pub pending_approval: Option<PendingApproval>,
+    pub pending_quiz: Option<PendingQuiz>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,6 +77,18 @@ pub struct PartialAgentMessage {
     pub thinking: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingApproval {
+    pub approval_id: Uuid,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingQuiz {
+    pub quiz_id: Uuid,
+    pub questions: Vec<QuizQuestion>,
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentEvent {
     pub seq: EventSeq,
@@ -71,15 +100,45 @@ pub struct AgentEvent {
 #[derive(Clone, Debug)]
 pub enum AgentEventKind {
     RunStarted,
-    UserMessageCommitted { message_id: Uuid, seq: u64 },
-    AgentDelta { content: String },
-    ThinkingDelta { thinking: String },
-    AgentMessageCommitted { message_id: Uuid, seq: u64 },
-    ToolStarted { name: String },
-    ToolFinished { name: String },
-    WaitingForApproval { approval_id: Uuid, message: String },
+    UserMessageCommitted {
+        message_id: Uuid,
+        seq: u64,
+    },
+    AgentDelta {
+        content: String,
+    },
+    ThinkingDelta {
+        thinking: String,
+    },
+    AgentMessageCommitted {
+        message_id: Uuid,
+        seq: u64,
+    },
+    ToolStarted {
+        name: String,
+    },
+    ToolFinished {
+        name: String,
+    },
+    WaitingForApproval {
+        approval_id: Uuid,
+        message: String,
+    },
+    ApprovalResolved {
+        approval_id: Uuid,
+        approved: bool,
+    },
+    WaitingForQuiz {
+        quiz_id: Uuid,
+        questions: Vec<QuizQuestion>,
+    },
+    QuizAnswered {
+        quiz_id: Uuid,
+    },
     RunFinished,
-    RunFailed { error: String },
+    RunFailed {
+        error: String,
+    },
     RunCancelled,
 }
 
@@ -87,6 +146,8 @@ pub enum AgentEventKind {
 pub enum AgentPoolError {
     ThreadNotFound,
     AlreadyRunning,
+    ApprovalNotFound,
+    QuizNotFound,
     EventHistoryExpired,
     WorkerStopped,
     Internal(anyhow::Error),
@@ -97,6 +158,8 @@ impl std::fmt::Display for AgentPoolError {
         match self {
             AgentPoolError::ThreadNotFound => write!(f, "thread not found"),
             AgentPoolError::AlreadyRunning => write!(f, "thread is already running"),
+            AgentPoolError::ApprovalNotFound => write!(f, "approval not found"),
+            AgentPoolError::QuizNotFound => write!(f, "quiz not found"),
             AgentPoolError::EventHistoryExpired => write!(f, "event history expired"),
             AgentPoolError::WorkerStopped => write!(f, "agent worker stopped"),
             AgentPoolError::Internal(error) => write!(f, "{error}"),

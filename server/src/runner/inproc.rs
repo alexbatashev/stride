@@ -9,18 +9,19 @@ use std::{
 
 use async_trait::async_trait;
 use friday_agent::{
-    AgentConfig, AgentResponseChunk, BaseAgent, Tool, ToolRegistry,
+    AgentConfig, AgentResponseChunk, BaseAgent, QuizQuestion, Tool, ToolRegistry,
     mcp::McpTool,
     tools::{
         expert::{EXPERT_NAME, make_expert},
         firecrawl::FirecrawlTool,
+        quiz::QuizTool,
         web_search::{
             WebSearchTool, arxiv::ArxivProvider, pubmed::PubmedProvider, searxng::SearxngProvider,
             uspto::UsptoProvider,
         },
     },
 };
-use futures::StreamExt;
+use futures::{StreamExt, channel::oneshot as futures_oneshot};
 use minisql::{ConnectionPool, Value};
 use tokio::{
     runtime::Builder,
@@ -34,7 +35,7 @@ use crate::{
     db::{Role, messages},
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
-        RunId, ThreadSnapshot, ThreadStatus, ThreadSubscription,
+        PendingApproval, PendingQuiz, RunId, ThreadSnapshot, ThreadStatus, ThreadSubscription,
     },
     tools::{
         personality::UpdatePersonalityTool,
@@ -133,6 +134,18 @@ enum WorkerCommand {
         thread_id: Uuid,
         resp: oneshot::Sender<Result<(), AgentPoolError>>,
     },
+    ResolveApproval {
+        thread_id: Uuid,
+        approval_id: Uuid,
+        approved: bool,
+        resp: oneshot::Sender<Result<(), AgentPoolError>>,
+    },
+    AnswerQuiz {
+        thread_id: Uuid,
+        quiz_id: Uuid,
+        answers: Vec<String>,
+        resp: oneshot::Sender<Result<(), AgentPoolError>>,
+    },
     Status {
         thread_id: Uuid,
         resp: oneshot::Sender<Result<ThreadStatus, AgentPoolError>>,
@@ -170,11 +183,25 @@ struct ThreadRunner {
     event_tx: broadcast::Sender<AgentEvent>,
     event_history: VecDeque<AgentEvent>,
     cancel_tx: Option<watch::Sender<bool>>,
+    pending_approvals: HashMap<Uuid, PendingApprovalState>,
+    pending_quizzes: HashMap<Uuid, PendingQuizState>,
     last_event_seq: u64,
     next_message_seq: u64,
     status: ThreadStatus,
     in_progress: Option<PartialAgentMessage>,
     last_used: Instant,
+}
+
+struct PendingApprovalState {
+    run_id: RunId,
+    message: String,
+    approved: futures_oneshot::Sender<bool>,
+}
+
+struct PendingQuizState {
+    run_id: RunId,
+    questions: Vec<QuizQuestion>,
+    answered: futures_oneshot::Sender<Vec<String>>,
 }
 
 struct AssistantMessageState {
@@ -355,6 +382,44 @@ impl AgentPool for InProcessAgentPool {
         rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
     }
 
+    async fn resolve_approval(
+        &self,
+        thread_id: Uuid,
+        approval_id: Uuid,
+        approved: bool,
+    ) -> Result<(), AgentPoolError> {
+        let (resp, rx) = oneshot::channel();
+        self.worker(thread_id)
+            .tx
+            .send(WorkerCommand::ResolveApproval {
+                thread_id,
+                approval_id,
+                approved,
+                resp,
+            })
+            .map_err(|_| AgentPoolError::WorkerStopped)?;
+        rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
+    }
+
+    async fn answer_quiz(
+        &self,
+        thread_id: Uuid,
+        quiz_id: Uuid,
+        answers: Vec<String>,
+    ) -> Result<(), AgentPoolError> {
+        let (resp, rx) = oneshot::channel();
+        self.worker(thread_id)
+            .tx
+            .send(WorkerCommand::AnswerQuiz {
+                thread_id,
+                quiz_id,
+                answers,
+                resp,
+            })
+            .map_err(|_| AgentPoolError::WorkerStopped)?;
+        rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
+    }
+
     async fn shutdown_thread(&self, thread_id: Uuid) -> Result<(), AgentPoolError> {
         let (resp, rx) = oneshot::channel();
         self.worker(thread_id)
@@ -444,6 +509,24 @@ async fn handle_command(state: Rc<RefCell<WorkerState>>, command: WorkerCommand)
         }
         WorkerCommand::Cancel { thread_id, resp } => {
             let result = handle_cancel(&state, thread_id);
+            let _ = resp.send(result);
+        }
+        WorkerCommand::ResolveApproval {
+            thread_id,
+            approval_id,
+            approved,
+            resp,
+        } => {
+            let result = handle_resolve_approval(&state, thread_id, approval_id, approved);
+            let _ = resp.send(result);
+        }
+        WorkerCommand::AnswerQuiz {
+            thread_id,
+            quiz_id,
+            answers,
+            resp,
+        } => {
+            let result = handle_answer_quiz(&state, thread_id, quiz_id, answers);
             let _ = resp.send(result);
         }
         WorkerCommand::Status { thread_id, resp } => {
@@ -555,12 +638,27 @@ async fn handle_subscribe(
     runner.last_used = Instant::now();
     // Subscribe before reading last_event_seq so no events slip through the gap.
     let events = runner.event_tx.subscribe();
-    let snapshot = ThreadSnapshot {
-        thread_id,
-        last_event_seq: runner.last_event_seq,
-        status: runner.status.clone(),
-        in_progress: runner.in_progress.clone(),
-    };
+    let snapshot =
+        ThreadSnapshot {
+            thread_id,
+            last_event_seq: runner.last_event_seq,
+            status: runner.status.clone(),
+            in_progress: runner.in_progress.clone(),
+            pending_approval: runner.pending_approvals.iter().next().map(
+                |(approval_id, approval)| PendingApproval {
+                    approval_id: *approval_id,
+                    message: approval.message.clone(),
+                },
+            ),
+            pending_quiz: runner
+                .pending_quizzes
+                .iter()
+                .next()
+                .map(|(quiz_id, quiz)| PendingQuiz {
+                    quiz_id: *quiz_id,
+                    questions: quiz.questions.clone(),
+                }),
+        };
 
     let replay = if let Some(after) = after {
         if after < runner.last_event_seq
@@ -598,6 +696,59 @@ fn handle_cancel(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) -> Result<()
     if let Some(tx) = &runner.cancel_tx {
         let _ = tx.send(true);
     }
+    Ok(())
+}
+
+fn handle_resolve_approval(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    approval_id: Uuid,
+    approved: bool,
+) -> Result<(), AgentPoolError> {
+    let mut state = state.borrow_mut();
+    let runner = state
+        .threads
+        .get_mut(&thread_id)
+        .ok_or(AgentPoolError::ThreadNotFound)?;
+    let Some(approval) = runner.pending_approvals.remove(&approval_id) else {
+        return Err(AgentPoolError::ApprovalNotFound);
+    };
+    let run_id = approval.run_id;
+    let _ = approval.approved.send(approved);
+    emit(
+        runner,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::ApprovalResolved {
+            approval_id,
+            approved,
+        },
+    );
+    Ok(())
+}
+
+fn handle_answer_quiz(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    quiz_id: Uuid,
+    answers: Vec<String>,
+) -> Result<(), AgentPoolError> {
+    let mut state = state.borrow_mut();
+    let runner = state
+        .threads
+        .get_mut(&thread_id)
+        .ok_or(AgentPoolError::ThreadNotFound)?;
+    let Some(quiz) = runner.pending_quizzes.remove(&quiz_id) else {
+        return Err(AgentPoolError::QuizNotFound);
+    };
+    let run_id = quiz.run_id;
+    let _ = quiz.answered.send(answers);
+    emit(
+        runner,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::QuizAnswered { quiz_id },
+    );
     Ok(())
 }
 
@@ -737,6 +888,8 @@ async fn ensure_runner(
             event_tx,
             event_history: VecDeque::new(),
             cancel_tx: None,
+            pending_approvals: HashMap::new(),
+            pending_quizzes: HashMap::new(),
             last_event_seq: 0,
             next_message_seq,
             status: ThreadStatus::Idle,
@@ -749,6 +902,8 @@ async fn ensure_runner(
 }
 
 fn configure_agent_tools(agent: &BaseAgent, tools: &Tools) {
+    agent.register_tool(QuizTool);
+
     agent.register_tool(make_expert(expert_tool_registry(tools)));
     agent.allow_tool(EXPERT_NAME);
 
@@ -960,21 +1115,49 @@ async fn run_agent_turn(
                     Ok(AgentResponseChunk::Approval {
                         message, approved, ..
                     }) => {
-                        let _ = approved.send(false);
+                        let approval_id = Uuid::now_v7();
                         with_runner(&state, thread_id, |runner| {
+                            runner.pending_approvals.insert(
+                                approval_id,
+                                PendingApprovalState {
+                                    run_id,
+                                    message: message.clone(),
+                                    approved,
+                                },
+                            );
                             emit(
                                 runner,
                                 thread_id,
                                 Some(run_id),
                                 AgentEventKind::WaitingForApproval {
-                                    approval_id: Uuid::now_v7(),
+                                    approval_id,
                                     message,
                                 },
                             );
                         });
                     }
-                    Ok(AgentResponseChunk::Quiz { answered, .. }) => {
-                        let _ = answered.send(vec![]);
+                    Ok(AgentResponseChunk::Quiz {
+                        questions,
+                        answered,
+                        ..
+                    }) => {
+                        let quiz_id = Uuid::now_v7();
+                        with_runner(&state, thread_id, |runner| {
+                            runner.pending_quizzes.insert(
+                                quiz_id,
+                                PendingQuizState {
+                                    run_id,
+                                    questions: questions.clone(),
+                                    answered,
+                                },
+                            );
+                            emit(
+                                runner,
+                                thread_id,
+                                Some(run_id),
+                                AgentEventKind::WaitingForQuiz { quiz_id, questions },
+                            );
+                        });
                     }
                     Err(error) => {
                         fail_run(&state, thread_id, run_id, error.to_string());
@@ -988,6 +1171,8 @@ async fn run_agent_turn(
 
     with_runner(&state, thread_id, |runner| {
         runner.cancel_tx = None;
+        runner.pending_approvals.clear();
+        runner.pending_quizzes.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
@@ -1339,6 +1524,8 @@ fn restore_agent(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, agent: BaseA
 fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId, error: String) {
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
+        runner.pending_approvals.clear();
+        runner.pending_quizzes.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
@@ -1354,6 +1541,8 @@ fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId, er
 fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId) {
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
+        runner.pending_approvals.clear();
+        runner.pending_quizzes.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
@@ -1607,7 +1796,7 @@ mod tests {
     }
 
     #[test]
-    fn expert_is_registered_without_optional_web_tools() {
+    fn base_tools_are_registered_without_optional_web_tools() {
         let agent = BaseAgent::new(
             "default".to_string(),
             Arc::new(AgentConfig {
@@ -1620,13 +1809,14 @@ mod tests {
 
         configure_agent_tools(&agent, &Tools::default());
 
-        let names: Vec<_> = agent
+        let mut names: Vec<_> = agent
             .tool_definitions()
             .into_iter()
             .map(|tool| tool.function.name)
             .collect();
+        names.sort();
 
-        assert_eq!(names, vec!["expert".to_string()]);
+        assert_eq!(names, vec!["expert".to_string(), "quiz".to_string()]);
     }
 
     #[test]
@@ -1869,6 +2059,169 @@ mod tests {
         let (thread, _) = load_thread(&db, thread_id).await.unwrap();
         assert_eq!(thread[1].tool_calls.as_ref().unwrap().len(), 1);
         assert_eq!(thread[2].tool_call_id.as_deref(), Some("call-1"));
+    }
+
+    #[tokio::test]
+    async fn resolving_approval_updates_state_and_answers_sender() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let thread_id = Uuid::now_v7();
+        let run_id = RunId(Uuid::now_v7());
+        let approval_id = Uuid::now_v7();
+        let (approved_tx, approved_rx) = futures::channel::oneshot::channel();
+        let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
+        let mut events = event_tx.subscribe();
+
+        let mut runner = ThreadRunner {
+            agent: None,
+            event_tx,
+            event_history: VecDeque::new(),
+            cancel_tx: None,
+            pending_approvals: HashMap::new(),
+            pending_quizzes: HashMap::new(),
+            last_event_seq: 0,
+            next_message_seq: 0,
+            status: ThreadStatus::Running { run_id },
+            in_progress: None,
+            last_used: Instant::now(),
+        };
+        runner.pending_approvals.insert(
+            approval_id,
+            PendingApprovalState {
+                run_id,
+                message: "Approve test".to_string(),
+                approved: approved_tx,
+            },
+        );
+
+        let mut threads = HashMap::new();
+        threads.insert(thread_id, runner);
+        let state = Rc::new(RefCell::new(WorkerState {
+            db: db.clone(),
+            config: Arc::new(AgentConfig {
+                model_registry: ModelRegistry::new(),
+                max_iterations: 4,
+            }),
+            tools: Tools::default(),
+            mcp_tools: Vec::new(),
+            vfs: None,
+            system_prompt: "System prompt".to_string(),
+            idle_ttl: Duration::from_secs(60),
+            threads,
+        }));
+
+        let snapshot = handle_subscribe(state.clone(), thread_id, None)
+            .await
+            .unwrap()
+            .snapshot;
+        assert_eq!(
+            snapshot.pending_approval.as_ref().map(|a| a.approval_id),
+            Some(approval_id)
+        );
+
+        handle_resolve_approval(&state, thread_id, approval_id, false).unwrap();
+        assert!(!approved_rx.await.unwrap());
+
+        let event = events.recv().await.unwrap();
+        match event.kind {
+            AgentEventKind::ApprovalResolved {
+                approval_id: resolved_id,
+                approved,
+            } => {
+                assert_eq!(resolved_id, approval_id);
+                assert!(!approved);
+            }
+            _ => panic!("expected approval resolution"),
+        }
+
+        let snapshot = handle_subscribe(state, thread_id, None)
+            .await
+            .unwrap()
+            .snapshot;
+        assert!(snapshot.pending_approval.is_none());
+    }
+
+    #[tokio::test]
+    async fn answering_quiz_updates_state_and_answers_sender() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let thread_id = Uuid::now_v7();
+        let run_id = RunId(Uuid::now_v7());
+        let quiz_id = Uuid::now_v7();
+        let questions = vec![QuizQuestion {
+            question: "Pick one".to_string(),
+            options: vec!["A".to_string(), "B".to_string()],
+        }];
+        let (answered_tx, answered_rx) = futures::channel::oneshot::channel();
+        let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
+        let mut events = event_tx.subscribe();
+
+        let mut runner = ThreadRunner {
+            agent: None,
+            event_tx,
+            event_history: VecDeque::new(),
+            cancel_tx: None,
+            pending_approvals: HashMap::new(),
+            pending_quizzes: HashMap::new(),
+            last_event_seq: 0,
+            next_message_seq: 0,
+            status: ThreadStatus::Running { run_id },
+            in_progress: None,
+            last_used: Instant::now(),
+        };
+        runner.pending_quizzes.insert(
+            quiz_id,
+            PendingQuizState {
+                run_id,
+                questions: questions.clone(),
+                answered: answered_tx,
+            },
+        );
+
+        let mut threads = HashMap::new();
+        threads.insert(thread_id, runner);
+        let state = Rc::new(RefCell::new(WorkerState {
+            db: db.clone(),
+            config: Arc::new(AgentConfig {
+                model_registry: ModelRegistry::new(),
+                max_iterations: 4,
+            }),
+            tools: Tools::default(),
+            mcp_tools: Vec::new(),
+            vfs: None,
+            system_prompt: "System prompt".to_string(),
+            idle_ttl: Duration::from_secs(60),
+            threads,
+        }));
+
+        let snapshot = handle_subscribe(state.clone(), thread_id, None)
+            .await
+            .unwrap()
+            .snapshot;
+        assert_eq!(
+            snapshot.pending_quiz.as_ref().map(|q| q.quiz_id),
+            Some(quiz_id)
+        );
+        assert_eq!(snapshot.pending_quiz.unwrap().questions, questions);
+
+        handle_answer_quiz(&state, thread_id, quiz_id, vec!["B".to_string()]).unwrap();
+        assert_eq!(answered_rx.await.unwrap(), vec!["B".to_string()]);
+
+        let event = events.recv().await.unwrap();
+        match event.kind {
+            AgentEventKind::QuizAnswered {
+                quiz_id: answered_id,
+            } => assert_eq!(answered_id, quiz_id),
+            _ => panic!("expected quiz answer"),
+        }
+
+        let snapshot = handle_subscribe(state, thread_id, None)
+            .await
+            .unwrap()
+            .snapshot;
+        assert!(snapshot.pending_quiz.is_none());
     }
 
     #[tokio::test]

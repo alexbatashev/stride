@@ -162,6 +162,8 @@ header {
     nav,
     header,
     app-prompt-input,
+    app-approval-bar,
+    app-quiz-bar,
     .error {
         display: none !important;
     }

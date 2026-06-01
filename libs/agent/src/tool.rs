@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::AgentConfig;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct QuizQuestion {
     pub question: String,
     /// Suggested answer options; empty means free-form answer expected.
