@@ -825,6 +825,7 @@ dependencies = [
  "capnp-rpc",
  "capnpc",
  "clap",
+ "cmake",
  "crossterm 0.28.1",
  "dirs",
  "friday-agent",
