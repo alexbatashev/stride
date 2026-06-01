@@ -54,10 +54,10 @@ jobs:
           tool: nextest
 
       - name: Build
-        run: cargo build --workspace --all-targets
+        run: cargo build --release --workspace --all-targets
 
       - name: Test
-        run: cargo nextest run --workspace --profile ci
+        run: cargo nextest run --release --workspace --profile ci
 
       - name: Report test results
         if: always()

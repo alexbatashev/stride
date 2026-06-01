@@ -200,12 +200,9 @@ pub async fn logout(
     let claims = decode_token(&state, token)?;
     let session_id = Uuid::parse_str(&claims.sid).map_err(|_| AuthError::Unauthorized)?;
 
-    state
-        .db
-        .query_with_params(
-            "DELETE FROM sessions WHERE id = ?",
-            vec![Value::Uuid(session_id)],
-        )
+    sessions::delete()
+        .where_(sessions::id.eq(session_id))
+        .execute(&state.db)
         .await
         .map_err(|_| AuthError::Internal)?;
 
@@ -430,12 +427,11 @@ mod tests {
         let token = response_token(response).await;
         assert!(!token.is_empty());
 
-        db.query_with_params(
-            "DELETE FROM users WHERE username = ?",
-            vec![Value::Text("alice".to_string())],
-        )
-        .await
-        .unwrap();
+        crate::db::users::delete()
+            .where_(crate::db::users::username.eq("alice"))
+            .execute(&db)
+            .await
+            .unwrap();
 
         let response = app.oneshot(threads_request(&token)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -498,6 +494,7 @@ mod tests {
             models: HashMap::new(),
             server: None,
             tools: None,
+            mcp: HashMap::new(),
         }
     }
 

@@ -8,6 +8,16 @@ pub struct Config {
     pub models: HashMap<String, Model>,
     pub server: Option<Server>,
     pub tools: Option<Tools>,
+    #[serde(default)]
+    pub mcp: HashMap<String, McpServer>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct McpServer {
+    pub url: String,
+    token: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +158,29 @@ impl Provider {
     }
 }
 
+impl McpServer {
+    /// Request headers for this server, including a bearer `Authorization`
+    /// header when a token is configured (or available via
+    /// `FRIDAY_MCP_<NAME>_TOKEN`).
+    pub fn request_headers(&self, name: &str) -> Vec<(String, String)> {
+        let mut headers: Vec<(String, String)> = self
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let token = self
+            .token
+            .clone()
+            .or_else(|| env::var(format!("FRIDAY_MCP_{}_TOKEN", name.to_ascii_uppercase())).ok());
+        if let Some(token) = token {
+            headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+        }
+
+        headers
+    }
+}
+
 impl Firecrawl {
     pub fn read_api_key(&self) -> Option<String> {
         self.api_key
@@ -179,6 +212,7 @@ mod tests {
                 files: None,
             }),
             tools: None,
+            mcp: HashMap::new(),
         };
 
         assert_eq!(cfg.db_url(), "sqlite:///tmp/friday-test.db");
@@ -193,6 +227,7 @@ mod tests {
             models: HashMap::new(),
             server: None,
             tools: None,
+            mcp: HashMap::new(),
         };
 
         assert!(cfg.allow_registration());
@@ -265,5 +300,32 @@ mod tests {
         assert!(cfg.models.contains_key("gpt_4_1"));
         assert!(cfg.server.unwrap().ldap.is_some());
         assert!(cfg.tools.unwrap().web_search.is_some());
+        assert!(cfg.mcp.contains_key("deepwiki"));
+    }
+
+    #[test]
+    fn mcp_servers_load_and_build_headers() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [mcp.internal]
+            url = "https://mcp.example.com/mcp"
+            token = "secret-token"
+            headers = { X-Tenant = "acme" }
+            "#,
+        )
+        .unwrap();
+
+        let server = cfg.mcp.get("internal").unwrap();
+        assert_eq!(server.url, "https://mcp.example.com/mcp");
+
+        let headers = server.request_headers("internal");
+        assert!(headers.contains(&("X-Tenant".to_string(), "acme".to_string())));
+        assert!(headers.contains(&(
+            "Authorization".to_string(),
+            "Bearer secret-token".to_string()
+        )));
     }
 }

@@ -8,6 +8,8 @@ use anyhow::{Context, bail};
 use minisql::{ConnectionPool, Value};
 use uuid::Uuid;
 
+use crate::db::{vfs_nodes, vfs_objects};
+
 pub struct DirEntry {
     pub name: String,
     pub kind: EntryKind,
@@ -148,11 +150,9 @@ impl Vfs {
                     continue;
                 };
                 let location = row.get_text("location").map(|s| s.to_string());
-                self.db
-                    .query_with_params(
-                        "DELETE FROM vfs_objects WHERE id = ?",
-                        vec![Value::Uuid(object_id)],
-                    )
+                vfs_objects::delete()
+                    .where_(vfs_objects::id.eq(object_id))
+                    .execute(&self.db)
                     .await
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 if let Some(loc) = location {
@@ -162,8 +162,9 @@ impl Vfs {
         }
 
         for id in node_ids.into_iter().rev() {
-            self.db
-                .query_with_params("DELETE FROM vfs_nodes WHERE id = ?", vec![Value::Uuid(id)])
+            vfs_nodes::delete()
+                .where_(vfs_nodes::id.eq(id))
+                .execute(&self.db)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
@@ -265,11 +266,10 @@ impl Vfs {
                     bail!("path is a directory");
                 }
                 if let Some(mime) = mime_type {
-                    self.db
-                        .query_with_params(
-                            "UPDATE vfs_nodes SET mime_type = ? WHERE id = ?",
-                            vec![Value::Text(mime.to_string()), Value::Uuid(id)],
-                        )
+                    vfs_nodes::update()
+                        .mime_type(Some(mime))
+                        .where_(vfs_nodes::id.eq(id))
+                        .execute(&self.db)
                         .await
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 }
@@ -588,11 +588,9 @@ impl Vfs {
                 continue;
             };
             let location = row.get_text("location").map(|s| s.to_string());
-            self.db
-                .query_with_params(
-                    "DELETE FROM vfs_objects WHERE id = ?",
-                    vec![Value::Uuid(id)],
-                )
+            vfs_objects::delete()
+                .where_(vfs_objects::id.eq(id))
+                .execute(&self.db)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             if let Some(loc) = location {

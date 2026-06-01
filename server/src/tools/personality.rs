@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use friday_agent::{AgentConfig, Tool, ToolDesc};
 use llm::{Function, Tool as LlmTool};
-use minisql::{ConnectionPool, Value};
+use minisql::ConnectionPool;
 use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
@@ -45,12 +45,10 @@ impl Tool for UpdatePersonalityTool {
             Err(e) => return json!({"success": false, "error": e}),
         };
 
-        let result = self
-            .db
-            .query_with_params(
-                "UPDATE users SET personality = ? WHERE id = ?",
-                vec![Value::Text(params.personality), Value::Uuid(self.user_id)],
-            )
+        let result = crate::db::users::update()
+            .personality(params.personality)
+            .where_(crate::db::users::id.eq(self.user_id))
+            .execute(&self.db)
             .await;
 
         match result {

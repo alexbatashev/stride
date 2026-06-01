@@ -2,7 +2,7 @@ use std::error::Error as StdError;
 use std::thread;
 use std::{collections::HashMap, sync::Arc};
 
-use crate::migration::{Command, SqlType};
+use crate::migration::{AlterTable, Command, SqlType};
 use crate::query::{QueryResult, Row, Value};
 use crate::sql_builder::SQLBuilder;
 use ::sqlite::{self, Connection, State, Value as SqliteValue};
@@ -219,6 +219,17 @@ impl SqliteBuilder {
             .join(", ");
 
         Ok(format!("CREATE TABLE {} ({});", table.name, columns))
+    }
+
+    pub(crate) fn build_alter_table(
+        &self,
+        alter: &AlterTable,
+    ) -> Result<Vec<String>, crate::sql_builder::SQLError> {
+        Ok(crate::sql_builder::build_alter_statements(
+            &alter.name,
+            &alter.actions,
+            sql_type,
+        ))
     }
 }
 

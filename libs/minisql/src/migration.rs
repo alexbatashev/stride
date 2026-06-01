@@ -1,3 +1,5 @@
+use std::hash::{Hash, Hasher};
+
 use uuid::Uuid;
 
 use crate::{connection_pool::Backend, sql_builder::SQLError};
@@ -6,10 +8,39 @@ pub struct BitVec<const DIM: u32>(pub Vec<u8>);
 pub struct FloatVec<const DIM: u32>(pub Vec<f32>);
 pub struct Int8Vec<const DIM: u32>(pub Vec<i8>);
 
-#[derive(Debug, Clone, Default, Hash)]
+#[derive(Debug, Clone, Default)]
 pub struct Migration {
     tables: Vec<Table>,
+    alters: Vec<AlterTable>,
     raw_sql: Vec<String>,
+}
+
+// Manual impl so migrations without alters hash exactly as before, keeping
+// already-applied databases compatible after this field was introduced.
+impl Hash for Migration {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.tables.hash(state);
+        self.raw_sql.hash(state);
+        if !self.alters.is_empty() {
+            self.alters.hash(state);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash)]
+pub struct AlterTable {
+    pub(crate) name: String,
+    pub(crate) actions: Vec<AlterAction>,
+}
+
+#[derive(Debug, Clone, Hash)]
+pub enum AlterAction {
+    // PRIMARY KEY / UNIQUE are intentionally absent: SQLite forbids them on
+    // ALTER TABLE ADD COLUMN.
+    AddColumn { name: String, r#type: SqlType },
+    DropColumn { name: String },
+    RenameColumn { from: String, to: String },
+    RenameTable { to: String },
 }
 
 #[derive(Debug, Clone, Hash)]
@@ -82,6 +113,11 @@ impl Migration {
         self
     }
 
+    pub fn alter_table(mut self, a: AlterTable) -> Self {
+        self.alters.push(a);
+        self
+    }
+
     pub fn raw<S: ToString>(mut self, sql: S) -> Self {
         self.raw_sql.push(sql.to_string());
         self
@@ -91,8 +127,54 @@ impl Migration {
         &self.tables
     }
 
+    pub(crate) fn get_alters(&self) -> &[AlterTable] {
+        &self.alters
+    }
+
     pub(crate) fn get_raw_queries(&self) -> &[String] {
         &self.raw_sql
+    }
+}
+
+impl AlterTable {
+    pub fn from_name(name: &str) -> AlterTable {
+        AlterTable {
+            name: name.to_owned(),
+            actions: vec![],
+        }
+    }
+
+    pub fn add_column<T: SqlLikeType, S: ToString>(mut self, name: S) -> Self {
+        self.actions.push(AlterAction::AddColumn {
+            name: name.to_string(),
+            r#type: T::as_sql_type(),
+        });
+        self
+    }
+
+    pub fn drop_column<S: ToString>(mut self, name: S) -> Self {
+        self.actions.push(AlterAction::DropColumn {
+            name: name.to_string(),
+        });
+        self
+    }
+
+    pub fn rename_column<S1: ToString, S2: ToString>(mut self, from: S1, to: S2) -> Self {
+        self.actions.push(AlterAction::RenameColumn {
+            from: from.to_string(),
+            to: to.to_string(),
+        });
+        self
+    }
+
+    pub fn rename_to<S: ToString>(mut self, to: S) -> Self {
+        self.actions
+            .push(AlterAction::RenameTable { to: to.to_string() });
+        self
+    }
+
+    pub fn to_sql(&self, backend: &Backend) -> Result<Vec<String>, SQLError> {
+        backend.builder().build_alter_table(self)
     }
 }
 

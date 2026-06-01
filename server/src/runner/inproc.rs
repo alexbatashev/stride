@@ -10,6 +10,7 @@ use std::{
 use async_trait::async_trait;
 use friday_agent::{
     AgentConfig, AgentResponseChunk, BaseAgent, Tool, ToolRegistry,
+    mcp::McpTool,
     tools::{
         expert::{EXPERT_NAME, make_expert},
         firecrawl::FirecrawlTool,
@@ -142,10 +143,22 @@ enum WorkerCommand {
     },
 }
 
+#[derive(Clone)]
+struct WorkerInit {
+    db: ConnectionPool,
+    config: Arc<AgentConfig>,
+    tools: Tools,
+    mcp_tools: Vec<McpTool>,
+    vfs: Option<Arc<Vfs>>,
+    system_prompt: String,
+    idle_ttl: Duration,
+}
+
 struct WorkerState {
     db: ConnectionPool,
     config: Arc<AgentConfig>,
     tools: Tools,
+    mcp_tools: Vec<McpTool>,
     vfs: Option<Arc<Vfs>>,
     system_prompt: String,
     idle_ttl: Duration,
@@ -184,14 +197,27 @@ impl InProcessAgentPool {
         Self::with_system_prompt(db, config, BASE_SYSTEM_PROMPT.to_string())
     }
 
-    pub fn with_tool_config(db: ConnectionPool, config: Arc<AgentConfig>, tools: Tools) -> Self {
-        Self::with_system_prompt_and_tools(db, config, BASE_SYSTEM_PROMPT.to_string(), tools, None)
+    pub fn with_tool_config(
+        db: ConnectionPool,
+        config: Arc<AgentConfig>,
+        tools: Tools,
+        mcp_tools: Vec<McpTool>,
+    ) -> Self {
+        Self::with_system_prompt_and_tools(
+            db,
+            config,
+            BASE_SYSTEM_PROMPT.to_string(),
+            tools,
+            mcp_tools,
+            None,
+        )
     }
 
     pub fn with_file_provider(
         db: ConnectionPool,
         config: Arc<AgentConfig>,
         tools: Tools,
+        mcp_tools: Vec<McpTool>,
         vfs: Arc<Vfs>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
@@ -199,6 +225,7 @@ impl InProcessAgentPool {
             config,
             BASE_SYSTEM_PROMPT.to_string(),
             tools,
+            mcp_tools,
             Some(vfs),
         )
     }
@@ -216,9 +243,18 @@ impl InProcessAgentPool {
         config: Arc<AgentConfig>,
         system_prompt: String,
         tools: Tools,
+        mcp_tools: Vec<McpTool>,
         vfs: Option<Arc<Vfs>>,
     ) -> Self {
-        Self::with_idle_ttl_and_tools(db, config, system_prompt, DEFAULT_IDLE_TTL, tools, vfs)
+        Self::with_idle_ttl_and_tools(
+            db,
+            config,
+            system_prompt,
+            DEFAULT_IDLE_TTL,
+            tools,
+            mcp_tools,
+            vfs,
+        )
     }
 
     pub fn with_idle_ttl(
@@ -227,7 +263,15 @@ impl InProcessAgentPool {
         system_prompt: String,
         idle_ttl: Duration,
     ) -> Self {
-        Self::with_idle_ttl_and_tools(db, config, system_prompt, idle_ttl, Tools::default(), None)
+        Self::with_idle_ttl_and_tools(
+            db,
+            config,
+            system_prompt,
+            idle_ttl,
+            Tools::default(),
+            Vec::new(),
+            None,
+        )
     }
 
     pub fn with_idle_ttl_and_tools(
@@ -236,20 +280,20 @@ impl InProcessAgentPool {
         system_prompt: String,
         idle_ttl: Duration,
         tools: Tools,
+        mcp_tools: Vec<McpTool>,
         vfs: Option<Arc<Vfs>>,
     ) -> Self {
+        let init = WorkerInit {
+            db,
+            config,
+            tools,
+            mcp_tools,
+            vfs,
+            system_prompt,
+            idle_ttl,
+        };
         let workers = (0..WORKER_THREADS)
-            .map(|idx| {
-                start_worker(
-                    idx,
-                    db.clone(),
-                    config.clone(),
-                    system_prompt.clone(),
-                    idle_ttl,
-                    tools.clone(),
-                    vfs.clone(),
-                )
-            })
+            .map(|idx| start_worker(idx, init.clone()))
             .collect();
 
         Self { workers }
@@ -321,15 +365,7 @@ impl AgentPool for InProcessAgentPool {
     }
 }
 
-fn start_worker(
-    idx: usize,
-    db: ConnectionPool,
-    config: Arc<AgentConfig>,
-    system_prompt: String,
-    idle_ttl: Duration,
-    tools: Tools,
-    vfs: Option<Arc<Vfs>>,
-) -> WorkerHandle {
+fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
     let (tx, rx) = mpsc::unbounded_channel();
 
     std::thread::Builder::new()
@@ -340,10 +376,20 @@ fn start_worker(
                 .build()
                 .expect("agent worker runtime");
             let local = LocalSet::new();
+            let WorkerInit {
+                db,
+                config,
+                tools,
+                mcp_tools,
+                vfs,
+                system_prompt,
+                idle_ttl,
+            } = init;
             let state = Rc::new(RefCell::new(WorkerState {
                 db,
                 config,
                 tools,
+                mcp_tools,
                 vfs,
                 system_prompt,
                 idle_ttl,
@@ -578,12 +624,13 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, tools, vfs, base_system_prompt) = {
+    let (db, config, tools, mcp_tools, vfs, base_system_prompt) = {
         let state = state.borrow();
         (
             state.db.clone(),
             state.config.clone(),
             state.tools.clone(),
+            state.mcp_tools.clone(),
             state.vfs.clone(),
             state.system_prompt.clone(),
         )
@@ -601,6 +648,9 @@ async fn ensure_runner(
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
+    for tool in mcp_tools {
+        agent.register_searchable_tool(tool);
+    }
     agent.register_tool(UpdatePersonalityTool {
         db: db.clone(),
         user_id,
@@ -1491,21 +1541,14 @@ async fn update_message(
     thinking: Option<&str>,
     tool_calls: Option<&str>,
 ) -> Result<(), AgentPoolError> {
-    db.query_with_params(
-        "UPDATE messages SET content = ?, thinking = ?, tool_calls = ? WHERE id = ?",
-        vec![
-            Value::Text(content.to_string()),
-            thinking
-                .map(|s| Value::Text(s.to_string()))
-                .unwrap_or(Value::Null),
-            tool_calls
-                .map(|s| Value::Text(s.to_string()))
-                .unwrap_or(Value::Null),
-            Value::Uuid(id),
-        ],
-    )
-    .await
-    .map_err(db_error)?;
+    messages::update()
+        .content(content)
+        .thinking(thinking)
+        .tool_calls(tool_calls)
+        .where_(messages::id.eq(id))
+        .execute(db)
+        .await
+        .map_err(db_error)?;
 
     Ok(())
 }

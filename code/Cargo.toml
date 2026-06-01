@@ -54,3 +54,4 @@ minisql = { path = "../libs/minisql" }
 
 [build-dependencies]
 capnpc = "0.20"
+cmake = "0.1"
