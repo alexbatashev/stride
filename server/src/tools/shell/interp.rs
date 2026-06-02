@@ -10,18 +10,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::mem;
 use std::pin::Pin;
-use std::sync::Arc;
 
-use uuid::Uuid;
-
-use crate::vfs::{EntryKind, Vfs};
+use crate::vfs::{EntryKind, MountedVfs};
 
 const MAX_LOOP_ITERATIONS: usize = 100_000;
 
 pub(super) async fn run(
-    vfs: &Arc<Vfs>,
-    workspace_id: Uuid,
-    owner: Uuid,
+    fs: &MountedVfs,
     command: &str,
     cwd: &str,
 ) -> Result<(String, String, i32), String> {
@@ -29,9 +24,7 @@ pub(super) async fn run(
     let program = Parser::new(tokens).parse_program()?;
 
     let mut shell = Shell {
-        vfs: vfs.clone(),
-        workspace_id,
-        owner,
+        fs: fs.clone(),
         vars: HashMap::new(),
         cwd: normalize("", cwd),
         status: 0,
@@ -583,9 +576,7 @@ fn is_name(s: &str) -> bool {
 // ----------------------------------------------------------------------------
 
 struct Shell {
-    vfs: Arc<Vfs>,
-    workspace_id: Uuid,
-    owner: Uuid,
+    fs: MountedVfs,
     vars: HashMap<String, String>,
     cwd: String,
     status: i32,
@@ -757,7 +748,7 @@ impl Shell {
     }
 
     async fn read_file(&self, path: &str) -> Option<String> {
-        self.vfs.read(self.workspace_id, path).await.ok()
+        self.fs.read(path).await.ok()
     }
 
     /// Reads and concatenates `files`, or returns `stdin` when none are given.
@@ -782,20 +773,12 @@ impl Shell {
 
     async fn write_file(&mut self, path: &str, content: &str, append: bool) {
         let content = if append {
-            let existing = self
-                .vfs
-                .read(self.workspace_id, path)
-                .await
-                .unwrap_or_default();
+            let existing = self.fs.read(path).await.unwrap_or_default();
             format!("{existing}{content}")
         } else {
             content.to_string()
         };
-        if let Err(e) = self
-            .vfs
-            .write(self.workspace_id, path, &content, self.owner)
-            .await
-        {
+        if let Err(e) = self.fs.write(path, &content).await {
             self.fail(format!("{path}: {e}"));
         }
     }
@@ -806,7 +789,7 @@ impl Shell {
             return Some(true);
         }
         let (parent, name) = split_parent(path);
-        let entries = self.vfs.list(self.workspace_id, parent).await.ok()?;
+        let entries = self.fs.list(parent).await.ok()?;
         entries
             .into_iter()
             .find(|e| e.name == name)
@@ -863,12 +846,7 @@ impl Shell {
             let path = self.resolve(arg);
             match self.stat(&path).await {
                 Some(true) => {
-                    for e in self
-                        .vfs
-                        .list(self.workspace_id, &path)
-                        .await
-                        .unwrap_or_default()
-                    {
+                    for e in self.fs.list(&path).await.unwrap_or_default() {
                         out.push_str(&e.name);
                         out.push('\n');
                     }
@@ -891,11 +869,7 @@ impl Shell {
             let path = self.resolve(arg);
             if !flags.contains('p') && self.stat(&path).await.is_some() {
                 self.fail(format!("mkdir: {arg}: exists"));
-            } else if let Err(e) = self
-                .vfs
-                .create_dir(self.workspace_id, &path, self.owner)
-                .await
-            {
+            } else if let Err(e) = self.fs.create_dir(&path).await {
                 self.fail(format!("mkdir: {e}"));
             }
         }
@@ -908,11 +882,11 @@ impl Shell {
         for arg in &paths {
             let path = self.resolve(arg);
             if path.is_empty() {
-                self.fail("rm: refusing to remove workspace root".to_string());
+                self.fail("rm: refusing to remove root".to_string());
             } else if let Some(is_dir) = self.stat(&path).await {
                 if is_dir && !recursive {
                     self.fail(format!("rm: {arg}: is a directory"));
-                } else if let Err(e) = self.vfs.delete(self.workspace_id, &path).await {
+                } else if let Err(e) = self.fs.delete(&path).await {
                     self.fail(format!("rm: {e}"));
                 }
             } else if !flags.contains('f') {
@@ -926,10 +900,7 @@ impl Shell {
         for arg in args {
             let path = self.resolve(arg);
             if self.stat(&path).await.is_none()
-                && let Err(e) = self
-                    .vfs
-                    .write(self.workspace_id, &path, "", self.owner)
-                    .await
+                && let Err(e) = self.fs.write(&path, "").await
             {
                 self.fail(format!("touch: {e}"));
             }
@@ -954,14 +925,10 @@ impl Shell {
         let Some(content) = self.read_file(&src).await else {
             return self.fail(format!("{name}: {}: read error", ops[0]));
         };
-        if let Err(e) = self
-            .vfs
-            .write(self.workspace_id, &dst, &content, self.owner)
-            .await
-        {
+        if let Err(e) = self.fs.write(&dst, &content).await {
             return self.fail(format!("{name}: {e}"));
         }
-        if remove_src && let Err(e) = self.vfs.delete(self.workspace_id, &src).await {
+        if remove_src && let Err(e) = self.fs.delete(&src).await {
             return self.fail(format!("{name}: {e}"));
         }
         String::new()
@@ -1213,10 +1180,12 @@ fn basename(path: &str) -> &str {
 mod tests {
     use super::*;
     use crate::db;
-    use crate::vfs::{AnyFileProvider, LocalFileProvider};
+    use crate::vfs::{AnyFileProvider, LocalFileProvider, Vfs};
     use minisql::{ConnectionPool, Value};
+    use std::sync::Arc;
+    use uuid::Uuid;
 
-    async fn setup() -> (Arc<Vfs>, Uuid, Uuid) {
+    async fn setup() -> MountedVfs {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
         let owner = Uuid::now_v7();
@@ -1237,74 +1206,74 @@ mod tests {
             .get_or_create_workspace(Uuid::now_v7(), None, owner)
             .await
             .unwrap();
-        (vfs, ws, owner)
+        MountedVfs::new(vfs, ws, owner)
     }
 
-    async fn exec(vfs: &Arc<Vfs>, ws: Uuid, owner: Uuid, cmd: &str) -> (String, String, i32) {
-        run(vfs, ws, owner, cmd, "/").await.unwrap()
+    async fn exec(fs: &MountedVfs, cmd: &str) -> (String, String, i32) {
+        run(fs, cmd, "/~workspace").await.unwrap()
     }
 
     #[tokio::test]
     async fn echo_and_pipe() {
-        let (vfs, ws, owner) = setup().await;
-        let (out, _, code) = exec(&vfs, ws, owner, "echo hello world").await;
+        let fs = setup().await;
+        let (out, _, code) = exec(&fs, "echo hello world").await;
         assert_eq!(out, "hello world\n");
         assert_eq!(code, 0);
     }
 
     #[tokio::test]
     async fn variables_and_expansion() {
-        let (vfs, ws, owner) = setup().await;
-        let (out, _, _) = exec(&vfs, ws, owner, "X=42; echo \"val=$X\"").await;
+        let fs = setup().await;
+        let (out, _, _) = exec(&fs, "X=42; echo \"val=$X\"").await;
         assert_eq!(out, "val=42\n");
     }
 
     #[tokio::test]
     async fn redirect_and_read_back() {
-        let (vfs, ws, owner) = setup().await;
-        exec(&vfs, ws, owner, "echo line1 > /a.txt").await;
-        exec(&vfs, ws, owner, "echo line2 >> /a.txt").await;
-        let (out, _, _) = exec(&vfs, ws, owner, "cat /a.txt").await;
+        let fs = setup().await;
+        exec(&fs, "echo line1 > /~workspace/a.txt").await;
+        exec(&fs, "echo line2 >> /~workspace/a.txt").await;
+        let (out, _, _) = exec(&fs, "cat /~workspace/a.txt").await;
         assert_eq!(out, "line1\nline2\n");
     }
 
     #[tokio::test]
+    async fn writes_outside_workspace_are_rejected() {
+        let fs = setup().await;
+        let (_, err, code) = exec(&fs, "echo hi > /global.txt").await;
+        assert_ne!(code, 0);
+        assert!(err.contains("read-only"));
+    }
+
+    #[tokio::test]
     async fn pipe_to_grep() {
-        let (vfs, ws, owner) = setup().await;
-        exec(&vfs, ws, owner, "echo foo > f; echo bar >> f").await;
-        let (out, _, code) = exec(&vfs, ws, owner, "cat f | grep foo").await;
+        let fs = setup().await;
+        exec(&fs, "echo foo > f; echo bar >> f").await;
+        let (out, _, code) = exec(&fs, "cat f | grep foo").await;
         assert_eq!(out, "foo\n");
         assert_eq!(code, 0);
     }
 
     #[tokio::test]
     async fn if_branch() {
-        let (vfs, ws, owner) = setup().await;
-        exec(&vfs, ws, owner, "echo hi > exists.txt").await;
-        let (out, _, _) = exec(
-            &vfs,
-            ws,
-            owner,
-            "if test -f exists.txt; then echo yes; else echo no; fi",
-        )
-        .await;
+        let fs = setup().await;
+        exec(&fs, "echo hi > exists.txt").await;
+        let (out, _, _) = exec(&fs, "if test -f exists.txt; then echo yes; else echo no; fi").await;
         assert_eq!(out, "yes\n");
     }
 
     #[tokio::test]
     async fn for_loop() {
-        let (vfs, ws, owner) = setup().await;
-        let (out, _, _) = exec(&vfs, ws, owner, "for x in a b c; do echo $x; done").await;
+        let fs = setup().await;
+        let (out, _, _) = exec(&fs, "for x in a b c; do echo $x; done").await;
         assert_eq!(out, "a\nb\nc\n");
     }
 
     #[tokio::test]
     async fn while_loop_terminates_on_state_change() {
-        let (vfs, ws, owner) = setup().await;
+        let fs = setup().await;
         let (out, _, _) = exec(
-            &vfs,
-            ws,
-            owner,
+            &fs,
             "echo x > flag; while test -f flag; do echo run; rm flag; done",
         )
         .await;
@@ -1313,51 +1282,51 @@ mod tests {
 
     #[tokio::test]
     async fn mkdir_cd_and_relative_paths() {
-        let (vfs, ws, owner) = setup().await;
-        exec(&vfs, ws, owner, "mkdir -p a/b").await;
-        exec(&vfs, ws, owner, "echo deep > a/b/c.txt").await;
-        let (out, _, _) = exec(&vfs, ws, owner, "cd a/b; cat c.txt").await;
+        let fs = setup().await;
+        exec(&fs, "mkdir -p a/b").await;
+        exec(&fs, "echo deep > a/b/c.txt").await;
+        let (out, _, _) = exec(&fs, "cd a/b; cat c.txt").await;
         assert_eq!(out, "deep\n");
     }
 
     #[tokio::test]
     async fn rm_and_logical_operators() {
-        let (vfs, ws, owner) = setup().await;
-        exec(&vfs, ws, owner, "echo x > gone.txt").await;
-        let (_, _, code) = exec(&vfs, ws, owner, "rm gone.txt && echo removed").await;
+        let fs = setup().await;
+        exec(&fs, "echo x > gone.txt").await;
+        let (_, _, code) = exec(&fs, "rm gone.txt && echo removed").await;
         assert_eq!(code, 0);
-        let (_, _, code) = exec(&vfs, ws, owner, "cat gone.txt").await;
+        let (_, _, code) = exec(&fs, "cat gone.txt").await;
         assert_eq!(code, 1);
     }
 
     #[tokio::test]
     async fn mv_and_cp() {
-        let (vfs, ws, owner) = setup().await;
-        exec(&vfs, ws, owner, "echo data > src.txt").await;
-        exec(&vfs, ws, owner, "cp src.txt copy.txt").await;
-        exec(&vfs, ws, owner, "mv src.txt moved.txt").await;
-        let (out, _, _) = exec(&vfs, ws, owner, "cat copy.txt moved.txt").await;
+        let fs = setup().await;
+        exec(&fs, "echo data > src.txt").await;
+        exec(&fs, "cp src.txt copy.txt").await;
+        exec(&fs, "mv src.txt moved.txt").await;
+        let (out, _, _) = exec(&fs, "cat copy.txt moved.txt").await;
         assert_eq!(out, "data\ndata\n");
-        let (_, _, code) = exec(&vfs, ws, owner, "cat src.txt").await;
+        let (_, _, code) = exec(&fs, "cat src.txt").await;
         assert_eq!(code, 1);
     }
 
     #[tokio::test]
     async fn wc_and_head_tail() {
-        let (vfs, ws, owner) = setup().await;
-        exec(&vfs, ws, owner, "echo a > f; echo b >> f; echo c >> f").await;
-        let (out, _, _) = exec(&vfs, ws, owner, "wc -l f").await;
+        let fs = setup().await;
+        exec(&fs, "echo a > f; echo b >> f; echo c >> f").await;
+        let (out, _, _) = exec(&fs, "wc -l f").await;
         assert_eq!(out, "3\n");
-        let (out, _, _) = exec(&vfs, ws, owner, "head -n 1 f").await;
+        let (out, _, _) = exec(&fs, "head -n 1 f").await;
         assert_eq!(out, "a\n");
-        let (out, _, _) = exec(&vfs, ws, owner, "tail -n 1 f").await;
+        let (out, _, _) = exec(&fs, "tail -n 1 f").await;
         assert_eq!(out, "c\n");
     }
 
     #[tokio::test]
     async fn parse_error_is_reported() {
-        let (vfs, ws, owner) = setup().await;
-        let err = run(&vfs, ws, owner, "if true; then echo hi", "/").await;
+        let fs = setup().await;
+        let err = run(&fs, "if true; then echo hi", "/~workspace").await;
         assert!(err.is_err());
     }
 }

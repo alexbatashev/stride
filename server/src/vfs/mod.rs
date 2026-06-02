@@ -1,6 +1,8 @@
 mod local;
+mod mounted;
 
 pub use local::LocalFileProvider;
+pub use mounted::MountedVfs;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,6 +23,38 @@ pub struct DirEntry {
 pub enum EntryKind {
     Directory,
     File,
+}
+
+/// Addresses a node tree: either a thread/project workspace or a user's global
+/// space (nodes with `parent_workspace` NULL, owned by the user).
+#[derive(Clone, Copy)]
+pub enum Scope {
+    Workspace(Uuid),
+    Global(Uuid),
+}
+
+impl Scope {
+    /// Builds the `WHERE` fragment and params selecting nodes in this scope.
+    /// `prefix` is the column qualifier (e.g. "n." or "").
+    fn clause(&self, prefix: &str) -> (String, Vec<Value>) {
+        match self {
+            Scope::Workspace(id) => {
+                (format!("{prefix}parent_workspace = ?"), vec![Value::Uuid(*id)])
+            }
+            Scope::Global(owner) => (
+                format!("{prefix}parent_workspace IS NULL AND {prefix}owner = ?"),
+                vec![Value::Uuid(*owner)],
+            ),
+        }
+    }
+
+    /// Value stored in `vfs_nodes.parent_workspace` for nodes in this scope.
+    fn parent_workspace(&self) -> Value {
+        match self {
+            Scope::Workspace(id) => Value::Uuid(*id),
+            Scope::Global(_) => Value::Null,
+        }
+    }
 }
 
 /// Byte-level storage backend. Implement this for each storage target.
@@ -96,9 +130,18 @@ impl Vfs {
 
     /// Lists entries at `path` relative to workspace root (empty = root).
     pub async fn list(&self, workspace_id: Uuid, path: &str) -> anyhow::Result<Vec<DirEntry>> {
+        self.list_scoped(Scope::Workspace(workspace_id), path).await
+    }
+
+    /// Lists entries in the user's global space at `path` (empty = root).
+    pub async fn list_global(&self, owner: Uuid, path: &str) -> anyhow::Result<Vec<DirEntry>> {
+        self.list_scoped(Scope::Global(owner), path).await
+    }
+
+    async fn list_scoped(&self, scope: Scope, path: &str) -> anyhow::Result<Vec<DirEntry>> {
         let segments = split_path(path);
-        let parent = self.resolve_dir(workspace_id, &segments).await?;
-        self.list_children(workspace_id, parent).await
+        let parent = self.resolve_dir(scope, &segments).await?;
+        self.list_children(scope, parent).await
     }
 
     /// Creates a directory and any missing parent directories.
@@ -108,31 +151,111 @@ impl Vfs {
         path: &str,
         owner: Uuid,
     ) -> anyhow::Result<()> {
+        self.create_dir_scoped(Scope::Workspace(workspace_id), path, owner)
+            .await
+    }
+
+    /// Creates a directory in the user's global space.
+    pub async fn create_dir_global(&self, owner: Uuid, path: &str) -> anyhow::Result<()> {
+        self.create_dir_scoped(Scope::Global(owner), path, owner)
+            .await
+    }
+
+    async fn create_dir_scoped(
+        &self,
+        scope: Scope,
+        path: &str,
+        owner: Uuid,
+    ) -> anyhow::Result<()> {
         let segments = split_path(path);
         if segments.is_empty() {
             bail!("path must include a directory name");
         }
 
-        self.ensure_dir_path(workspace_id, &segments, owner).await?;
+        self.ensure_dir_path(scope, &segments, owner).await?;
+        Ok(())
+    }
+
+    /// Renames a node (file or directory) at `path` to `new_name`.
+    pub async fn rename(
+        &self,
+        workspace_id: Uuid,
+        path: &str,
+        new_name: &str,
+    ) -> anyhow::Result<()> {
+        self.rename_scoped(Scope::Workspace(workspace_id), path, new_name)
+            .await
+    }
+
+    /// Renames a node in the user's global space.
+    pub async fn rename_global(
+        &self,
+        owner: Uuid,
+        path: &str,
+        new_name: &str,
+    ) -> anyhow::Result<()> {
+        self.rename_scoped(Scope::Global(owner), path, new_name)
+            .await
+    }
+
+    async fn rename_scoped(
+        &self,
+        scope: Scope,
+        path: &str,
+        new_name: &str,
+    ) -> anyhow::Result<()> {
+        let segments = split_path(path);
+        if segments.is_empty() {
+            bail!("path must include a file or directory name");
+        }
+        if new_name.is_empty() || new_name.contains('/') {
+            bail!("invalid name: {new_name}");
+        }
+
+        let (dir_segs, name_part) = segments.split_at(segments.len() - 1);
+        let parent = self.resolve_dir(scope, dir_segs).await?;
+        let node_id = self
+            .find_child(scope, parent, name_part[0])
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("path not found: {path}"))?;
+        if self.find_child(scope, parent, new_name).await?.is_some() {
+            bail!("name already exists: {new_name}");
+        }
+
+        vfs_nodes::update()
+            .name(new_name)
+            .where_(vfs_nodes::id.eq(node_id))
+            .execute(&self.db)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(())
     }
 
     /// Deletes a file or directory tree at `path` relative to workspace root.
     pub async fn delete(&self, workspace_id: Uuid, path: &str) -> anyhow::Result<()> {
+        self.delete_scoped(Scope::Workspace(workspace_id), path).await
+    }
+
+    /// Deletes a file or directory tree in the user's global space.
+    pub async fn delete_global(&self, owner: Uuid, path: &str) -> anyhow::Result<()> {
+        self.delete_scoped(Scope::Global(owner), path).await
+    }
+
+    async fn delete_scoped(&self, scope: Scope, path: &str) -> anyhow::Result<()> {
         let segments = split_path(path);
         if segments.is_empty() {
             bail!("path must include a file or directory name");
         }
 
         let (dir_segs, name_part) = segments.split_at(segments.len() - 1);
-        let parent = self.resolve_dir(workspace_id, dir_segs).await?;
+        let parent = self.resolve_dir(scope, dir_segs).await?;
         let node_id = self
-            .find_child(workspace_id, parent, name_part[0])
+            .find_child(scope, parent, name_part[0])
             .await?
             .ok_or_else(|| anyhow::anyhow!("path not found: {path}"))?;
 
         let mut node_ids = Vec::new();
-        self.collect_descendants(workspace_id, node_id, &mut node_ids)
+        self.collect_descendants(scope, node_id, &mut node_ids)
             .await?;
 
         for id in &node_ids {
@@ -178,10 +301,34 @@ impl Vfs {
         String::from_utf8(bytes).context("file is not valid UTF-8")
     }
 
+    /// Reads UTF-8 content of a file in the user's global space.
+    pub async fn read_global(&self, owner: Uuid, path: &str) -> anyhow::Result<String> {
+        let (bytes, _) = self.read_bytes_scoped(Scope::Global(owner), path).await?;
+        String::from_utf8(bytes).context("file is not valid UTF-8")
+    }
+
     /// Reads raw bytes and mime type of a file at `path` relative to workspace root.
     pub async fn read_bytes(
         &self,
         workspace_id: Uuid,
+        path: &str,
+    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+        self.read_bytes_scoped(Scope::Workspace(workspace_id), path)
+            .await
+    }
+
+    /// Reads raw bytes and mime type of a file in the user's global space.
+    pub async fn read_bytes_global(
+        &self,
+        owner: Uuid,
+        path: &str,
+    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+        self.read_bytes_scoped(Scope::Global(owner), path).await
+    }
+
+    async fn read_bytes_scoped(
+        &self,
+        scope: Scope,
         path: &str,
     ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
         let segments = split_path(path);
@@ -189,10 +336,10 @@ impl Vfs {
             bail!("path is a directory");
         }
         let (dir_segs, file_part) = segments.split_at(segments.len() - 1);
-        let parent = self.resolve_dir(workspace_id, dir_segs).await?;
+        let parent = self.resolve_dir(scope, dir_segs).await?;
 
         let node_id = self
-            .find_child(workspace_id, parent, file_part[0])
+            .find_child(scope, parent, file_part[0])
             .await?
             .ok_or_else(|| anyhow::anyhow!("file not found: {path}"))?;
         if self.node_kind(node_id).await? != "file" {
@@ -242,11 +389,46 @@ impl Vfs {
             .await
     }
 
+    /// Writes UTF-8 content to `path` in the user's global space.
+    pub async fn write_global(
+        &self,
+        owner: Uuid,
+        path: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        self.write_bytes_scoped(Scope::Global(owner), path, content.as_bytes(), None, owner)
+            .await
+    }
+
     /// Writes raw bytes to `path` relative to workspace root.
     /// Creates intermediate directories and file nodes as needed.
     pub async fn write_bytes(
         &self,
         workspace_id: Uuid,
+        path: &str,
+        content: &[u8],
+        mime_type: Option<&str>,
+        owner: Uuid,
+    ) -> anyhow::Result<()> {
+        self.write_bytes_scoped(Scope::Workspace(workspace_id), path, content, mime_type, owner)
+            .await
+    }
+
+    /// Writes raw bytes to `path` in the user's global space.
+    pub async fn write_bytes_global(
+        &self,
+        owner: Uuid,
+        path: &str,
+        content: &[u8],
+        mime_type: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.write_bytes_scoped(Scope::Global(owner), path, content, mime_type, owner)
+            .await
+    }
+
+    async fn write_bytes_scoped(
+        &self,
+        scope: Scope,
         path: &str,
         content: &[u8],
         mime_type: Option<&str>,
@@ -259,8 +441,8 @@ impl Vfs {
         let (dir_segs, file_part) = segments.split_at(segments.len() - 1);
         let file_name = file_part[0];
 
-        let parent = self.ensure_dir_path(workspace_id, dir_segs, owner).await?;
-        let node_id = match self.find_child(workspace_id, parent, file_name).await? {
+        let parent = self.ensure_dir_path(scope, dir_segs, owner).await?;
+        let node_id = match self.find_child(scope, parent, file_name).await? {
             Some(id) => {
                 if self.node_kind(id).await? != "file" {
                     bail!("path is a directory");
@@ -276,7 +458,7 @@ impl Vfs {
                 id
             }
             None => {
-                self.create_node(workspace_id, parent, file_name, "file", mime_type, owner)
+                self.create_node(scope, parent, file_name, "file", mime_type, owner)
                     .await?
             }
         };
@@ -367,13 +549,13 @@ impl Vfs {
 
     async fn resolve_dir(
         &self,
-        workspace_id: Uuid,
+        scope: Scope,
         segments: &[&str],
     ) -> anyhow::Result<Option<Uuid>> {
         let mut current = None;
         for &seg in segments {
             let child = self
-                .find_child(workspace_id, current, seg)
+                .find_child(scope, current, seg)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("directory not found: {seg}"))?;
             if self.node_kind(child).await? != "dir" {
@@ -386,28 +568,26 @@ impl Vfs {
 
     async fn find_child(
         &self,
-        workspace_id: Uuid,
+        scope: Scope,
         parent: Option<Uuid>,
         name: &str,
     ) -> anyhow::Result<Option<Uuid>> {
-        let (sql, params) = if let Some(pid) = parent {
-            (
-                "SELECT id FROM vfs_nodes WHERE parent_workspace = ? AND parent_node = ? AND name = ? LIMIT 1",
-                vec![
-                    Value::Uuid(workspace_id),
-                    Value::Uuid(pid),
-                    Value::Text(name.to_string()),
-                ],
+        let (scope_sql, mut params) = scope.clause("");
+        let sql = if let Some(pid) = parent {
+            params.push(Value::Uuid(pid));
+            params.push(Value::Text(name.to_string()));
+            format!(
+                "SELECT id FROM vfs_nodes WHERE {scope_sql} AND parent_node = ? AND name = ? LIMIT 1"
             )
         } else {
-            (
-                "SELECT id FROM vfs_nodes WHERE parent_workspace = ? AND parent_node IS NULL AND name = ? LIMIT 1",
-                vec![Value::Uuid(workspace_id), Value::Text(name.to_string())],
+            params.push(Value::Text(name.to_string()));
+            format!(
+                "SELECT id FROM vfs_nodes WHERE {scope_sql} AND parent_node IS NULL AND name = ? LIMIT 1"
             )
         };
         let rows = self
             .db
-            .query_with_params(sql, params)
+            .query_with_params(&sql, params)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(rows.rows().first().and_then(|r| uuid_from_row(r, "id")))
@@ -415,33 +595,33 @@ impl Vfs {
 
     async fn list_children(
         &self,
-        workspace_id: Uuid,
+        scope: Scope,
         parent: Option<Uuid>,
     ) -> anyhow::Result<Vec<DirEntry>> {
-        let (sql, params) = if let Some(pid) = parent {
-            (
+        let (scope_sql, mut params) = scope.clause("n.");
+        let sql = if let Some(pid) = parent {
+            params.push(Value::Uuid(pid));
+            format!(
                 "SELECT n.name, n.kind, n.mime_type, \
                     (SELECT o.size FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1) as size, \
                     COALESCE((SELECT o.created_at FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1), n.created_at) as updated_at \
                  FROM vfs_nodes n \
-                 WHERE n.parent_workspace = ? AND n.parent_node = ? \
-                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, n.name COLLATE NOCASE ASC",
-                vec![Value::Uuid(workspace_id), Value::Uuid(pid)],
+                 WHERE {scope_sql} AND n.parent_node = ? \
+                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, n.name COLLATE NOCASE ASC"
             )
         } else {
-            (
+            format!(
                 "SELECT n.name, n.kind, n.mime_type, \
                     (SELECT o.size FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1) as size, \
                     COALESCE((SELECT o.created_at FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1), n.created_at) as updated_at \
                  FROM vfs_nodes n \
-                 WHERE n.parent_workspace = ? AND n.parent_node IS NULL AND n.name != '' \
-                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, n.name COLLATE NOCASE ASC",
-                vec![Value::Uuid(workspace_id)],
+                 WHERE {scope_sql} AND n.parent_node IS NULL AND n.name != '' \
+                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, n.name COLLATE NOCASE ASC"
             )
         };
         let rows = self
             .db
-            .query_with_params(sql, params)
+            .query_with_params(&sql, params)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(rows
@@ -462,13 +642,13 @@ impl Vfs {
 
     async fn ensure_dir_path(
         &self,
-        workspace_id: Uuid,
+        scope: Scope,
         segments: &[&str],
         owner: Uuid,
     ) -> anyhow::Result<Option<Uuid>> {
         let mut current = None;
         for &seg in segments {
-            let child = match self.find_child(workspace_id, current, seg).await? {
+            let child = match self.find_child(scope, current, seg).await? {
                 Some(id) => {
                     if self.node_kind(id).await? != "dir" {
                         bail!("path is not a directory: {seg}");
@@ -476,7 +656,7 @@ impl Vfs {
                     id
                 }
                 None => {
-                    self.create_node(workspace_id, current, seg, "dir", None, owner)
+                    self.create_node(scope, current, seg, "dir", None, owner)
                         .await?
                 }
             };
@@ -487,7 +667,7 @@ impl Vfs {
 
     async fn create_node(
         &self,
-        workspace_id: Uuid,
+        scope: Scope,
         parent: Option<Uuid>,
         name: &str,
         kind: &str,
@@ -503,7 +683,7 @@ impl Vfs {
                     Value::Text(name.to_string()),
                     Value::Text(kind.to_string()),
                     parent.map(Value::Uuid).unwrap_or(Value::Null),
-                    Value::Uuid(workspace_id),
+                    scope.parent_workspace(),
                     Value::Uuid(owner),
                     Value::Integer(now_ms()),
                     mime_type.map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null),
@@ -532,23 +712,25 @@ impl Vfs {
 
     async fn collect_descendants(
         &self,
-        workspace_id: Uuid,
+        scope: Scope,
         node_id: Uuid,
         node_ids: &mut Vec<Uuid>,
     ) -> anyhow::Result<()> {
         node_ids.push(node_id);
+        let (scope_sql, mut params) = scope.clause("");
+        params.push(Value::Uuid(node_id));
         let rows = self
             .db
             .query_with_params(
-                "SELECT id FROM vfs_nodes WHERE parent_workspace = ? AND parent_node = ?",
-                vec![Value::Uuid(workspace_id), Value::Uuid(node_id)],
+                &format!("SELECT id FROM vfs_nodes WHERE {scope_sql} AND parent_node = ?"),
+                params,
             )
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         for row in rows.rows() {
             if let Some(child_id) = uuid_from_row(row, "id") {
-                Box::pin(self.collect_descendants(workspace_id, child_id, node_ids)).await?;
+                Box::pin(self.collect_descendants(scope, child_id, node_ids)).await?;
             }
         }
 
@@ -758,6 +940,62 @@ mod tests {
 
         assert!(vfs.read(ws, "a/b/c.txt").await.is_err());
         assert_eq!(vfs.read(ws, "keep.txt").await.unwrap(), "keep");
+    }
+
+    #[tokio::test]
+    async fn global_files_isolated_from_workspace() {
+        let (vfs, owner) = setup_vfs().await;
+        let ws = vfs
+            .get_or_create_workspace(Uuid::now_v7(), None, owner)
+            .await
+            .unwrap();
+        vfs.write_global(owner, "doc.txt", "global").await.unwrap();
+        vfs.write(ws, "doc.txt", "workspace", owner).await.unwrap();
+
+        assert_eq!(vfs.read_global(owner, "doc.txt").await.unwrap(), "global");
+        assert_eq!(vfs.read(ws, "doc.txt").await.unwrap(), "workspace");
+        // Global file must not leak into the workspace listing.
+        let ws_names: Vec<_> = vfs.list(ws, "").await.unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(ws_names, vec!["doc.txt".to_string()]);
+        let global_names: Vec<_> = vfs
+            .list_global(owner, "")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(global_names, vec!["doc.txt".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn global_files_scoped_per_owner() {
+        let (vfs, owner) = setup_vfs().await;
+        let other = Uuid::now_v7();
+        vfs.db
+            .query_with_params(
+                "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
+                vec![
+                    Value::Uuid(other),
+                    Value::Text("bob".to_string()),
+                    Value::Text("hash".to_string()),
+                ],
+            )
+            .await
+            .unwrap();
+        vfs.write_global(owner, "a.txt", "alice").await.unwrap();
+        assert!(vfs.list_global(other, "").await.unwrap().is_empty());
+        assert!(vfs.read_global(other, "a.txt").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rename_changes_name() {
+        let (vfs, owner) = setup_vfs().await;
+        vfs.write_global(owner, "dir/old.txt", "x").await.unwrap();
+        vfs.rename_global(owner, "dir/old.txt", "new.txt")
+            .await
+            .unwrap();
+        assert_eq!(vfs.read_global(owner, "dir/new.txt").await.unwrap(), "x");
+        assert!(vfs.read_global(owner, "dir/old.txt").await.is_err());
     }
 
     #[tokio::test]

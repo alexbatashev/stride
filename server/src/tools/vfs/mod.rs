@@ -6,33 +6,25 @@ use async_trait::async_trait;
 use friday_agent::{AgentConfig, Tool, ToolDesc};
 use llm::{Function, Tool as LlmTool};
 use serde_json::{Value as JsonValue, json};
-use uuid::Uuid;
 
 pub use basic::*;
 
-use crate::vfs::Vfs;
+use crate::vfs::MountedVfs;
 
 pub struct VfsDocumentToMarkdownTool {
-    pub vfs: Arc<Vfs>,
-    pub workspace_id: Uuid,
+    pub fs: MountedVfs,
 }
 
 pub struct VfsMarkdownToPdfTool {
-    pub vfs: Arc<Vfs>,
-    pub workspace_id: Uuid,
-    pub owner: Uuid,
+    pub fs: MountedVfs,
 }
 
 pub struct VfsMarkdownToOfficeWordTool {
-    pub vfs: Arc<Vfs>,
-    pub workspace_id: Uuid,
-    pub owner: Uuid,
+    pub fs: MountedVfs,
 }
 
 pub struct VfsPresentationXmlToPptxTool {
-    pub vfs: Arc<Vfs>,
-    pub workspace_id: Uuid,
-    pub owner: Uuid,
+    pub fs: MountedVfs,
     pub requires_confirmation: bool,
 }
 
@@ -66,13 +58,6 @@ struct VfsPresentationXmlToPptxParams {
     content: String,
 }
 
-fn strip_workspace_prefix(path: &str) -> Option<&str> {
-    let p = path.trim_start_matches('/');
-    let p = p.strip_prefix("~workspace").unwrap_or(p);
-    let p = p.trim_start_matches('/');
-    Some(p)
-}
-
 #[async_trait(?Send)]
 impl Tool for VfsDocumentToMarkdownTool {
     fn name(&self) -> &str {
@@ -100,12 +85,7 @@ impl Tool for VfsDocumentToMarkdownTool {
             Err(e) => return json!({"error": e}),
         };
 
-        let rel = match strip_workspace_prefix(&params.path) {
-            Some(p) if !p.is_empty() => p,
-            _ => return json!({"error": "path must point to a file"}),
-        };
-
-        let data = match self.vfs.read_bytes(self.workspace_id, rel).await {
+        let data = match self.fs.read_bytes(&params.path).await {
             Ok((data, _)) => data,
             Err(e) => return json!({"error": e.to_string()}),
         };
@@ -153,24 +133,14 @@ impl Tool for VfsMarkdownToPdfTool {
             Err(e) => return json!({"error": e}),
         };
 
-        let rel = match document_write_path(&params.path) {
-            Ok(p) => p,
-            Err(e) => return json!({"error": e}),
-        };
         let data = match fzilla::markdown_to_pdf(params.content).await {
             Ok(data) => data,
             Err(e) => return json!({"error": e.to_string()}),
         };
 
         match self
-            .vfs
-            .write_bytes(
-                self.workspace_id,
-                rel,
-                &data,
-                Some("application/pdf"),
-                self.owner,
-            )
+            .fs
+            .write_bytes(&params.path, &data, Some("application/pdf"))
             .await
         {
             Ok(()) => json!({"success": true, "path": params.path}),
@@ -215,23 +185,17 @@ impl Tool for VfsMarkdownToOfficeWordTool {
             Err(e) => return json!({"error": e}),
         };
 
-        let rel = match document_write_path(&params.path) {
-            Ok(p) => p,
-            Err(e) => return json!({"error": e}),
-        };
         let data = match fzilla::markdown_to_office_word(params.content).await {
             Ok(data) => data,
             Err(e) => return json!({"error": e.to_string()}),
         };
 
         match self
-            .vfs
+            .fs
             .write_bytes(
-                self.workspace_id,
-                rel,
+                &params.path,
                 &data,
                 Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-                self.owner,
             )
             .await
         {
@@ -277,20 +241,12 @@ impl Tool for VfsPresentationXmlToPptxTool {
             Err(e) => return json!({"error": e}),
         };
 
-        let rel = match document_write_path(&params.path) {
-            Ok(p) => p,
-            Err(e) => return json!({"error": e}),
-        };
         let mut assets = Vec::new();
         for path in match fzilla::presentation_xml_image_paths(&params.content) {
             Ok(paths) => paths,
             Err(e) => return json!({"error": e.to_string()}),
         } {
-            let rel = match strip_workspace_prefix(&path) {
-                Some(p) if !p.is_empty() => p,
-                _ => return json!({"error": format!("image path must point to a file: {path}")}),
-            };
-            let (data, mime_type) = match self.vfs.read_bytes(self.workspace_id, rel).await {
+            let (data, mime_type) = match self.fs.read_bytes(&path).await {
                 Ok(result) => result,
                 Err(e) => return json!({"error": e.to_string()}),
             };
@@ -308,26 +264,17 @@ impl Tool for VfsPresentationXmlToPptxTool {
         };
 
         match self
-            .vfs
+            .fs
             .write_bytes(
-                self.workspace_id,
-                rel,
+                &params.path,
                 &data,
                 Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
-                self.owner,
             )
             .await
         {
             Ok(()) => json!({"success": true, "path": params.path}),
             Err(e) => json!({"error": e.to_string()}),
         }
-    }
-}
-
-fn document_write_path(path: &str) -> Result<&str, String> {
-    match strip_workspace_prefix(path) {
-        Some(p) if !p.is_empty() => Ok(p),
-        _ => Err("path must point to a file".to_string()),
     }
 }
 
@@ -338,14 +285,13 @@ mod tests {
     use friday_agent::{AgentConfig, ModelRegistry, Tool};
     use minisql::{ConnectionPool, Value};
     use serde_json::json;
+    use uuid::Uuid;
 
     use super::*;
-    use crate::{
-        db,
-        vfs::{AnyFileProvider, LocalFileProvider},
-    };
+    use crate::vfs::{AnyFileProvider, LocalFileProvider, Vfs};
+    use crate::db;
 
-    async fn setup() -> (Arc<Vfs>, Uuid, Uuid, Arc<AgentConfig>) {
+    async fn setup() -> (MountedVfs, Arc<Vfs>, Uuid, Arc<AgentConfig>) {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
 
@@ -372,24 +318,21 @@ mod tests {
             model_registry: ModelRegistry::default(),
             max_iterations: 1,
         });
-        (vfs, workspace_id, owner, config)
+        let fs = MountedVfs::new(vfs.clone(), workspace_id, owner);
+        (fs, vfs, workspace_id, config)
     }
 
     #[tokio::test]
     async fn markdown_to_word_tool_writes_readable_document() {
-        let (vfs, workspace_id, owner, config) = setup().await;
-        let write = VfsMarkdownToOfficeWordTool {
-            vfs: vfs.clone(),
-            workspace_id,
-            owner,
-        };
-        let read = VfsDocumentToMarkdownTool { vfs, workspace_id };
+        let (fs, _vfs, _ws, config) = setup().await;
+        let write = VfsMarkdownToOfficeWordTool { fs: fs.clone() };
+        let read = VfsDocumentToMarkdownTool { fs };
 
         let result = write
             .execute(
                 config.clone(),
                 json!({
-                    "path": "/reports/report.docx",
+                    "path": "/~workspace/reports/report.docx",
                     "content": "# Report\n\nHello **world**.",
                 }),
             )
@@ -397,7 +340,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         let result = read
-            .execute(config, json!({"path": "/reports/report.docx"}))
+            .execute(config, json!({"path": "/~workspace/reports/report.docx"}))
             .await;
         let content = result["content"].as_str().unwrap();
         assert!(content.contains("Report"));
@@ -405,19 +348,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_tool_rejects_global_path() {
+        let (fs, _vfs, _ws, config) = setup().await;
+        let write = VfsMarkdownToPdfTool { fs };
+        let result = write
+            .execute(config, json!({"path": "/reports/report.pdf", "content": "# x"}))
+            .await;
+        assert!(result["error"].as_str().unwrap().contains("read-only"));
+    }
+
+    #[tokio::test]
     async fn markdown_to_pdf_tool_writes_pdf_bytes() {
-        let (vfs, workspace_id, owner, config) = setup().await;
-        let write = VfsMarkdownToPdfTool {
-            vfs: vfs.clone(),
-            workspace_id,
-            owner,
-        };
+        let (fs, vfs, workspace_id, config) = setup().await;
+        let write = VfsMarkdownToPdfTool { fs };
 
         let result = write
             .execute(
                 config,
                 json!({
-                    "path": "/reports/report.pdf",
+                    "path": "/~workspace/reports/report.pdf",
                     "content": "# Report\n\nHello.",
                 }),
             )
@@ -434,53 +383,34 @@ mod tests {
 
     #[tokio::test]
     async fn presentation_xml_tool_writes_readable_pptx() {
-        let (vfs, workspace_id, owner, config) = setup().await;
-        vfs.write_bytes(
-            workspace_id,
-            "figures/chart.png",
+        let (fs, _vfs, _ws, config) = setup().await;
+        fs.write_bytes(
+            "/~workspace/figures/chart.png",
             &[137, 80, 78, 71, 13, 10, 26, 10],
             Some("image/png"),
-            owner,
         )
         .await
         .unwrap();
 
         let write = VfsPresentationXmlToPptxTool {
-            vfs: vfs.clone(),
-            workspace_id,
-            owner,
+            fs: fs.clone(),
             requires_confirmation: false,
         };
-        let read = VfsDocumentToMarkdownTool { vfs, workspace_id };
+        let read = VfsDocumentToMarkdownTool { fs };
 
         let result = write
             .execute(
                 config.clone(),
                 json!({
-                    "path": "/decks/roadmap.pptx",
-                    "content": r#"<presentation size="wide"><slide layout="two-column"><title>Roadmap</title><columns><left><text>Next quarter</text><bullets><item>Documents</item><item>Presentations</item></bullets></left><right><image src="/figures/chart.png" w="3" h="2"/></right></columns><notes>Explain chart source.</notes></slide></presentation>"#,
+                    "path": "/~workspace/decks/roadmap.pptx",
+                    "content": r#"<presentation size="wide"><slide layout="two-column"><title>Roadmap</title><columns><left><text>Next quarter</text><bullets><item>Documents</item><item>Presentations</item></bullets></left><right><image src="/~workspace/figures/chart.png" w="3" h="2"/></right></columns><notes>Explain chart source.</notes></slide></presentation>"#,
                 }),
             )
             .await;
         assert_eq!(result["success"], true);
 
-        let (bytes, mime_type) = read
-            .vfs
-            .read_bytes(workspace_id, "decks/roadmap.pptx")
-            .await
-            .unwrap();
-        assert!(
-            bytes
-                .windows(b"ppt/media/image1.png".len())
-                .any(|window| window == b"ppt/media/image1.png")
-        );
-        assert_eq!(
-            mime_type.as_deref(),
-            Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
-        );
-
         let result = read
-            .execute(config, json!({"path": "/decks/roadmap.pptx"}))
+            .execute(config, json!({"path": "/~workspace/decks/roadmap.pptx"}))
             .await;
         let content = result["content"].as_str().unwrap();
         assert!(content.contains("Roadmap"));

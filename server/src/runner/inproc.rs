@@ -50,7 +50,7 @@ use crate::{
             WriteTextFileTool,
         },
     },
-    vfs::Vfs,
+    vfs::{MountedVfs, Vfs},
 };
 
 const WORKER_THREADS: usize = 8;
@@ -77,12 +77,12 @@ fn build_system_prompt(base: &str, personality: Option<&str>, thread_id: Option<
     prompt.push_str(&format!("\nCurrent date: {date}"));
     if let Some(id) = thread_id {
         prompt.push_str(&format!(
-            "\n\nFiles are downloadable via `/api/threads/{id}/files/<vfs-path>` \
-             where `<vfs-path>` is the file path with the leading `/` removed. \
-             Examples: \
-             `/report.pdf` → `[report.pdf](/api/threads/{id}/files/report.pdf)`, \
-             `/data/results.csv` → `[results.csv](/api/threads/{id}/files/data/results.csv)`. \
-             The `/~workspace/` prefix is accepted for old file paths but is not required."
+            "\n\nFile system: list `/` to see the user's files (read-only) alongside `/~workspace`. \
+             Only paths under `/~workspace` are writable; everything else is read-only. \
+             Write all outputs you create under `/~workspace`. \
+             Workspace files are downloadable via `/api/threads/{id}/files/<path>` \
+             where `<path>` is the workspace-relative path (drop the leading `/~workspace/`). \
+             Example: `/~workspace/report.pdf` → `[report.pdf](/api/threads/{id}/files/report.pdf)`."
         ));
     }
     if let Some(p) = personality {
@@ -831,51 +831,25 @@ async fn ensure_runner(
             .await
             .map_err(AgentPoolError::Internal)?;
         python_workspace = Some((provider.clone(), workspace_id));
-        agent.register_tool(ListFilesTool {
-            vfs: provider.clone(),
-            workspace_id,
-        });
+        let fs = MountedVfs::new(provider.clone(), workspace_id, user_id);
+        agent.register_tool(ListFilesTool { fs: fs.clone() });
         agent.allow_tool("list_files");
-        agent.register_tool(ReadTextFileTool {
-            vfs: provider.clone(),
-            workspace_id,
-        });
+        agent.register_tool(ReadTextFileTool { fs: fs.clone() });
         agent.allow_tool("read_text_file");
-        agent.register_tool(WriteTextFileTool {
-            vfs: provider.clone(),
-            workspace_id,
-            owner: user_id,
-        });
+        agent.register_tool(WriteTextFileTool { fs: fs.clone() });
         agent.allow_tool("write_text_file");
-        agent.register_tool(VfsDocumentToMarkdownTool {
-            vfs: provider.clone(),
-            workspace_id,
-        });
+        agent.register_tool(VfsDocumentToMarkdownTool { fs: fs.clone() });
         agent.allow_tool("vfs_document_to_markdown");
-        agent.register_tool(VfsMarkdownToPdfTool {
-            vfs: provider.clone(),
-            workspace_id,
-            owner: user_id,
-        });
+        agent.register_tool(VfsMarkdownToPdfTool { fs: fs.clone() });
         agent.allow_tool("vfs_markdown_to_pdf");
-        agent.register_tool(VfsMarkdownToOfficeWordTool {
-            vfs: provider.clone(),
-            workspace_id,
-            owner: user_id,
-        });
+        agent.register_tool(VfsMarkdownToOfficeWordTool { fs: fs.clone() });
         agent.allow_tool("vfs_markdown_to_office_word");
         agent.register_tool(VfsPresentationXmlToPptxTool {
-            vfs: provider.clone(),
-            workspace_id,
-            owner: user_id,
+            fs: fs.clone(),
             requires_confirmation: true,
         });
         agent.allow_tool("vfs_presentation_xml_to_pptx");
-        agent.register_tool(ShellTool::new(EmulatedShellBackend::new(
-            provider.clone(),
-            workspace_id,
-            user_id,
-        )));
+        agent.register_tool(ShellTool::new(EmulatedShellBackend::new(fs)));
         agent.register_searchable_tool(make_presentation_draft(provider, workspace_id, user_id));
         agent.allow_tool(PRESENTATION_DRAFT_NAME);
     }

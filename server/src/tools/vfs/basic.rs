@@ -1,44 +1,38 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use friday_agent::{AgentConfig, Tool, ToolDesc};
 use llm::{Function, Tool as LlmTool};
 use serde_json::{Value as JsonValue, json};
-use uuid::Uuid;
+use std::sync::Arc;
 
-use crate::vfs::{EntryKind, Vfs};
+use crate::vfs::{EntryKind, MountedVfs};
 
 pub struct ListFilesTool {
-    pub vfs: Arc<Vfs>,
-    pub workspace_id: Uuid,
+    pub fs: MountedVfs,
 }
 
 pub struct ReadTextFileTool {
-    pub vfs: Arc<Vfs>,
-    pub workspace_id: Uuid,
+    pub fs: MountedVfs,
 }
 
 pub struct WriteTextFileTool {
-    pub vfs: Arc<Vfs>,
-    pub workspace_id: Uuid,
-    pub owner: Uuid,
+    pub fs: MountedVfs,
 }
 
 #[derive(ToolDesc)]
 struct ListFilesParams {
-    /// Absolute path to list. Use "/" to list the file root. "/~workspace/subdir" remains supported for compatibility.
+    /// Absolute path to list. Use "/" for the root, which contains your read-only files plus the writable "/~workspace" directory.
     path: String,
 }
 
 #[derive(ToolDesc)]
 struct ReadTextFileParams {
-    /// Absolute path to the file, e.g. "/notes.md" or "/docs/notes.md".
+    /// Absolute path to the file, e.g. "/notes.md" or "/~workspace/docs/notes.md".
     path: String,
 }
 
 #[derive(ToolDesc)]
 struct WriteTextFileParams {
-    /// Absolute path to write, e.g. "/output.txt" or "/docs/output.txt". Intermediate directories are created automatically.
+    /// Absolute path to write inside the workspace, e.g. "/~workspace/output.txt". Only paths under "/~workspace" are writable. Intermediate directories are created automatically.
     path: String,
     /// UTF-8 text content to write.
     content: String,
@@ -59,7 +53,7 @@ impl Tool for ListFilesTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "List files and directories at a given path. Use \"/\" to list the file root. The /~workspace prefix is also accepted for compatibility.".to_string(),
+                description: "List files and directories at a given path. Use \"/\" to list the root, which contains your read-only files alongside the writable /~workspace directory.".to_string(),
                 parameters: Some(ListFilesParams::function_parameters()),
             },
         }
@@ -71,12 +65,7 @@ impl Tool for ListFilesTool {
             Err(e) => return json!({"error": e}),
         };
 
-        let rel = match super::strip_workspace_prefix(&params.path) {
-            Some(p) => p,
-            None => return json!({"error": "invalid path"}),
-        };
-
-        match self.vfs.list(self.workspace_id, rel).await {
+        match self.fs.list(&params.path).await {
             Ok(entries) => {
                 let list: Vec<JsonValue> = entries
                     .iter()
@@ -116,7 +105,7 @@ impl Tool for ReadTextFileTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "Read the text content of a file. Use an absolute path such as /notes.md or /docs/notes.md.".to_string(),
+                description: "Read the text content of a file. Use an absolute path such as /notes.md or /~workspace/notes.md.".to_string(),
                 parameters: Some(ReadTextFileParams::function_parameters()),
             },
         }
@@ -128,12 +117,7 @@ impl Tool for ReadTextFileTool {
             Err(e) => return json!({"error": e}),
         };
 
-        let rel = match super::strip_workspace_prefix(&params.path) {
-            Some(p) if !p.is_empty() => p,
-            _ => return json!({"error": "path must point to a file"}),
-        };
-
-        match self.vfs.read(self.workspace_id, rel).await {
+        match self.fs.read(&params.path).await {
             Ok(content) => json!({"content": content}),
             Err(e) => json!({"error": e.to_string()}),
         }
@@ -176,16 +160,7 @@ impl Tool for WriteTextFileTool {
             Err(e) => return json!({"error": e}),
         };
 
-        let rel = match super::strip_workspace_prefix(&params.path) {
-            Some(p) if !p.is_empty() => p,
-            _ => return json!({"error": "path must point to a file"}),
-        };
-
-        match self
-            .vfs
-            .write(self.workspace_id, rel, &params.content, self.owner)
-            .await
-        {
+        match self.fs.write(&params.path, &params.content).await {
             Ok(()) => json!({"success": true, "path": params.path}),
             Err(e) => json!({"error": e.to_string()}),
         }
