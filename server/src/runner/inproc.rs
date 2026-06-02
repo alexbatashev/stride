@@ -15,6 +15,7 @@ use friday_agent::{
         expert::{EXPERT_NAME, make_expert},
         firecrawl::FirecrawlTool,
         quiz::QuizTool,
+        shell::ShellTool,
         web_search::{
             WebSearchTool, arxiv::ArxivProvider, pubmed::PubmedProvider, searxng::SearxngProvider,
             uspto::UsptoProvider,
@@ -41,6 +42,7 @@ use crate::{
         personality::UpdatePersonalityTool,
         presentation_draft::{PRESENTATION_DRAFT_NAME, make_presentation_draft},
         python::VfsExecFileSystem,
+        shell::EmulatedShellBackend,
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
         vfs::{
             ListFilesTool, ReadTextFileTool, VfsDocumentToMarkdownTool,
@@ -869,6 +871,11 @@ async fn ensure_runner(
             requires_confirmation: true,
         });
         agent.allow_tool("vfs_presentation_xml_to_pptx");
+        agent.register_tool(ShellTool::new(EmulatedShellBackend::new(
+            provider.clone(),
+            workspace_id,
+            user_id,
+        )));
         agent.register_searchable_tool(make_presentation_draft(provider, workspace_id, user_id));
         agent.allow_tool(PRESENTATION_DRAFT_NAME);
     }
