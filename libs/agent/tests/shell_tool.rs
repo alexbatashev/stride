@@ -1,4 +1,7 @@
-use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::shell::ShellTool};
+use friday_agent::{
+    AgentConfig, ModelRegistry, Tool,
+    tools::shell::{BashBackend, ShellTool},
+};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -56,7 +59,7 @@ fn file_exists_command() -> &'static str {
 
 #[test]
 fn execute_returns_stdout() {
-    let result = futures::executor::block_on(ShellTool.execute(
+    let result = futures::executor::block_on(ShellTool::new(BashBackend).execute(
         dummy_config(),
         json!({
             "command": echo_command()
@@ -72,7 +75,7 @@ fn execute_returns_stdout() {
 
 #[test]
 fn execute_returns_nonzero_exit_status() {
-    let result = futures::executor::block_on(ShellTool.execute(
+    let result = futures::executor::block_on(ShellTool::new(BashBackend).execute(
         dummy_config(),
         json!({
             "command": fail_command()
@@ -90,7 +93,7 @@ fn execute_uses_working_directory() {
     let file = dir.join("example.txt");
     fs::write(&file, "hello").unwrap();
 
-    let result = futures::executor::block_on(ShellTool.execute(
+    let result = futures::executor::block_on(ShellTool::new(BashBackend).execute(
         dummy_config(),
         json!({
             "command": file_exists_command(),
@@ -103,4 +106,18 @@ fn execute_uses_working_directory() {
 
     assert_eq!(result["success"], true);
     assert_eq!(result["exit_code"], 0);
+}
+
+#[test]
+fn read_only_commands_skip_approval() {
+    let tool = ShellTool::new(BashBackend);
+    assert!(tool.are_safe_args(&json!({ "command": "ls -la" })));
+    assert!(tool.are_safe_args(&json!({ "command": "cat a | grep b" })));
+}
+
+#[test]
+fn mutating_commands_require_approval() {
+    let tool = ShellTool::new(BashBackend);
+    assert!(!tool.are_safe_args(&json!({ "command": "rm -rf /" })));
+    assert!(!tool.are_safe_args(&json!({ "command": "echo hi > file" })));
 }
