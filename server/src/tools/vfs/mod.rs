@@ -36,7 +36,7 @@ struct VfsDocumentToMarkdownParams {
 
 #[derive(ToolDesc)]
 struct VfsMarkdownToPdfParams {
-    /// Absolute path to write, e.g. "/reports/report.pdf".
+    /// Absolute path to write inside the workspace, e.g. "/~workspace/reports/report.pdf". Only paths under "/~workspace" are writable.
     path: String,
     /// Markdown content to convert into a PDF document.
     content: String,
@@ -44,7 +44,7 @@ struct VfsMarkdownToPdfParams {
 
 #[derive(ToolDesc)]
 struct VfsMarkdownToOfficeWordParams {
-    /// Absolute path to write, e.g. "/reports/report.docx".
+    /// Absolute path to write inside the workspace, e.g. "/~workspace/reports/report.docx". Only paths under "/~workspace" are writable.
     path: String,
     /// Markdown content to convert into a DOCX document.
     content: String,
@@ -52,7 +52,7 @@ struct VfsMarkdownToOfficeWordParams {
 
 #[derive(ToolDesc)]
 struct VfsPresentationXmlToPptxParams {
-    /// Absolute path to write, e.g. "/decks/strategy.pptx".
+    /// Absolute path to write inside the workspace, e.g. "/~workspace/decks/strategy.pptx". Only paths under "/~workspace" are writable.
     path: String,
     /// Presentation XML to convert into a PPTX deck.
     content: String,
@@ -112,7 +112,7 @@ impl Tool for VfsMarkdownToPdfTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "Convert Markdown to PDF and write it to a file path such as /reports/report.pdf.".to_string(),
+                description: "Convert Markdown to PDF and write it inside the workspace, e.g. /~workspace/reports/report.pdf. Only /~workspace is writable.".to_string(),
                 parameters: Some(VfsMarkdownToPdfParams::function_parameters()),
             },
         }
@@ -164,7 +164,7 @@ impl Tool for VfsMarkdownToOfficeWordTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "Convert Markdown to DOCX and write it to a file path such as /reports/report.docx.".to_string(),
+                description: "Convert Markdown to DOCX and write it inside the workspace, e.g. /~workspace/reports/report.docx. Only /~workspace is writable.".to_string(),
                 parameters: Some(VfsMarkdownToOfficeWordParams::function_parameters()),
             },
         }
@@ -220,7 +220,7 @@ impl Tool for VfsPresentationXmlToPptxTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "Convert Friday presentation XML to PPTX and write it to a file path such as /decks/strategy.pptx. The XML root is <presentation size=\"wide|standard\">. Slides support layout=\"title|section|title-content|two-column|blank\", <title>, <subtitle>, <text>, <bullets><item>...</item></bullets>, <image src=\"/path.png\" x=\"in\" y=\"in\" w=\"in\" h=\"in\"/>, <textbox x=\"in\" y=\"in\" w=\"in\" h=\"in\">...</textbox>, <notes>, and <columns><left>...</left><right>...</right></columns> for two-column scientific slides.".to_string(),
+                description: "Convert Friday presentation XML to PPTX and write it inside the workspace, e.g. /~workspace/decks/strategy.pptx (only /~workspace is writable). The XML root is <presentation size=\"wide|standard\">. Slides support layout=\"title|section|title-content|two-column|blank\", <title>, <subtitle>, <text>, <bullets><item>...</item></bullets>, <image src=\"/path.png\" x=\"in\" y=\"in\" w=\"in\" h=\"in\"/>, <textbox x=\"in\" y=\"in\" w=\"in\" h=\"in\">...</textbox>, <notes>, and <columns><left>...</left><right>...</right></columns> for two-column scientific slides.".to_string(),
                 parameters: Some(VfsPresentationXmlToPptxParams::function_parameters()),
             },
         }
@@ -288,8 +288,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::vfs::{AnyFileProvider, LocalFileProvider, Vfs};
     use crate::db;
+    use crate::vfs::{AnyFileProvider, LocalFileProvider, Vfs};
 
     async fn setup() -> (MountedVfs, Arc<Vfs>, Uuid, Arc<AgentConfig>) {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
@@ -352,7 +352,10 @@ mod tests {
         let (fs, _vfs, _ws, config) = setup().await;
         let write = VfsMarkdownToPdfTool { fs };
         let result = write
-            .execute(config, json!({"path": "/reports/report.pdf", "content": "# x"}))
+            .execute(
+                config,
+                json!({"path": "/reports/report.pdf", "content": "# x"}),
+            )
             .await;
         assert!(result["error"].as_str().unwrap().contains("read-only"));
     }

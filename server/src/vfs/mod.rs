@@ -38,9 +38,10 @@ impl Scope {
     /// `prefix` is the column qualifier (e.g. "n." or "").
     fn clause(&self, prefix: &str) -> (String, Vec<Value>) {
         match self {
-            Scope::Workspace(id) => {
-                (format!("{prefix}parent_workspace = ?"), vec![Value::Uuid(*id)])
-            }
+            Scope::Workspace(id) => (
+                format!("{prefix}parent_workspace = ?"),
+                vec![Value::Uuid(*id)],
+            ),
             Scope::Global(owner) => (
                 format!("{prefix}parent_workspace IS NULL AND {prefix}owner = ?"),
                 vec![Value::Uuid(*owner)],
@@ -161,12 +162,7 @@ impl Vfs {
             .await
     }
 
-    async fn create_dir_scoped(
-        &self,
-        scope: Scope,
-        path: &str,
-        owner: Uuid,
-    ) -> anyhow::Result<()> {
+    async fn create_dir_scoped(&self, scope: Scope, path: &str, owner: Uuid) -> anyhow::Result<()> {
         let segments = split_path(path);
         if segments.is_empty() {
             bail!("path must include a directory name");
@@ -198,12 +194,7 @@ impl Vfs {
             .await
     }
 
-    async fn rename_scoped(
-        &self,
-        scope: Scope,
-        path: &str,
-        new_name: &str,
-    ) -> anyhow::Result<()> {
+    async fn rename_scoped(&self, scope: Scope, path: &str, new_name: &str) -> anyhow::Result<()> {
         let segments = split_path(path);
         if segments.is_empty() {
             bail!("path must include a file or directory name");
@@ -233,7 +224,8 @@ impl Vfs {
 
     /// Deletes a file or directory tree at `path` relative to workspace root.
     pub async fn delete(&self, workspace_id: Uuid, path: &str) -> anyhow::Result<()> {
-        self.delete_scoped(Scope::Workspace(workspace_id), path).await
+        self.delete_scoped(Scope::Workspace(workspace_id), path)
+            .await
     }
 
     /// Deletes a file or directory tree in the user's global space.
@@ -390,12 +382,7 @@ impl Vfs {
     }
 
     /// Writes UTF-8 content to `path` in the user's global space.
-    pub async fn write_global(
-        &self,
-        owner: Uuid,
-        path: &str,
-        content: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn write_global(&self, owner: Uuid, path: &str, content: &str) -> anyhow::Result<()> {
         self.write_bytes_scoped(Scope::Global(owner), path, content.as_bytes(), None, owner)
             .await
     }
@@ -410,8 +397,14 @@ impl Vfs {
         mime_type: Option<&str>,
         owner: Uuid,
     ) -> anyhow::Result<()> {
-        self.write_bytes_scoped(Scope::Workspace(workspace_id), path, content, mime_type, owner)
-            .await
+        self.write_bytes_scoped(
+            Scope::Workspace(workspace_id),
+            path,
+            content,
+            mime_type,
+            owner,
+        )
+        .await
     }
 
     /// Writes raw bytes to `path` in the user's global space.
@@ -547,11 +540,7 @@ impl Vfs {
         Ok(workspace_id)
     }
 
-    async fn resolve_dir(
-        &self,
-        scope: Scope,
-        segments: &[&str],
-    ) -> anyhow::Result<Option<Uuid>> {
+    async fn resolve_dir(&self, scope: Scope, segments: &[&str]) -> anyhow::Result<Option<Uuid>> {
         let mut current = None;
         for &seg in segments {
             let child = self
@@ -955,7 +944,13 @@ mod tests {
         assert_eq!(vfs.read_global(owner, "doc.txt").await.unwrap(), "global");
         assert_eq!(vfs.read(ws, "doc.txt").await.unwrap(), "workspace");
         // Global file must not leak into the workspace listing.
-        let ws_names: Vec<_> = vfs.list(ws, "").await.unwrap().into_iter().map(|e| e.name).collect();
+        let ws_names: Vec<_> = vfs
+            .list(ws, "")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
         assert_eq!(ws_names, vec!["doc.txt".to_string()]);
         let global_names: Vec<_> = vfs
             .list_global(owner, "")

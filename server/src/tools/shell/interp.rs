@@ -1258,7 +1258,11 @@ mod tests {
     async fn if_branch() {
         let fs = setup().await;
         exec(&fs, "echo hi > exists.txt").await;
-        let (out, _, _) = exec(&fs, "if test -f exists.txt; then echo yes; else echo no; fi").await;
+        let (out, _, _) = exec(
+            &fs,
+            "if test -f exists.txt; then echo yes; else echo no; fi",
+        )
+        .await;
         assert_eq!(out, "yes\n");
     }
 

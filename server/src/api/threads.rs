@@ -867,8 +867,10 @@ pub async fn upload_file(
             .await
             .map_err(|_| ThreadApiError::Internal)?;
 
+        // Reference uploaded files under the writable workspace mount so the
+        // agent reads them from the workspace, not the read-only global root.
         uploaded.push(UploadedFile {
-            path: format!("/{path}"),
+            path: format!("/~workspace/{path}"),
             name,
             size,
         });

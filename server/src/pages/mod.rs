@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod auth;
+pub mod files;
 
 use handlebars::{Handlebars, html_escape};
 use serde_json::Value;
@@ -14,11 +15,16 @@ pub fn get_templates() -> anyhow::Result<Handlebars<'static>> {
             &crate::components2::bot_message_square::IconBotMessageSquare {}.render(),
         )
         .replace(
+            "<!-- ICON:files -->",
+            &crate::components2::files::IconFiles {}.render(),
+        )
+        .replace(
             "<!-- ICON:workflow -->",
             &crate::components2::workflow::IconWorkflow {}.render(),
         );
     hb.register_template_string("sidebar", &sidebar)?;
     hb.register_template_string("threads", THREADS_TEMPLATE)?;
+    hb.register_template_string("files", FILES_TEMPLATE)?;
     Ok(hb)
 }
 
@@ -41,6 +47,8 @@ pub fn render_page(
             .unwrap_or_default();
         let thread_id = html_escape(thread_id);
         format!(r#"id="threads-page" data-thread-id="{thread_id}" data-running="{running}""#)
+    } else if template == "files" {
+        r#"id="files-page""#.to_string()
     } else {
         String::new()
     };
@@ -92,6 +100,10 @@ const SIDEBAR_PARTIAL: &str = r#"<nav>
         <app-sidebar-nav-item target="/threads" data-action="new-thread">
             <span slot="icon"><!-- ICON:bot-message-square --></span>
             New task
+        </app-sidebar-nav-item>
+        <app-sidebar-nav-item target="/files"{{#if files_active}} active{{/if}}>
+            <span slot="icon"><!-- ICON:files --></span>
+            Files
         </app-sidebar-nav-item>
         <app-sidebar-nav-item target="/threads">
             <span slot="icon"><!-- ICON:workflow --></span>
@@ -334,6 +346,109 @@ const THREADS_TEMPLATE: &str = r#"<style>
     });
 </script>"#;
 
+const FILES_TEMPLATE: &str = r#"<style>
+    #files-page .brand {
+        align-items: center;
+        display: flex;
+        gap: 10px;
+        margin-bottom: 10px;
+        padding: 4px;
+    }
+
+    #files-page .mark {
+        align-items: center;
+        background: var(--primary);
+        border-radius: 8px;
+        color: var(--primary-foreground);
+        display: inline-flex;
+        font-size: 13px;
+        font-weight: 700;
+        height: 32px;
+        justify-content: center;
+        width: 32px;
+    }
+
+    #files-page .brand strong {
+        color: var(--foreground);
+        flex: 1;
+        font-size: 14px;
+        font-weight: 650;
+        min-width: 0;
+    }
+
+    #files-page app-sidebar[status="collapsed"] .brand {
+        justify-content: center;
+        padding: 8px;
+    }
+
+    #files-page app-sidebar[status="collapsed"] .brand .mark,
+    #files-page app-sidebar[status="collapsed"] .brand strong {
+        display: none;
+    }
+
+    #files-page app-sidebar[status="collapsed"] [data-sidebar-list] {
+        display: none;
+    }
+
+    #files-page .thread-label {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    #files-page .sidebar-footer {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    #files-page .sidebar-action {
+        width: 100%;
+    }
+
+    #files-page > main {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+    }
+
+    #files-page app-file-browser {
+        flex: 1;
+        min-height: 0;
+    }
+
+    #files-page .mobile-bar {
+        display: none;
+    }
+
+    @media (max-width: 767px) {
+        #files-page .mobile-bar {
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            padding: 8px 12px;
+        }
+
+        #files-page .sidebar-brand-toggle {
+            display: none;
+        }
+    }
+</style>
+{{> sidebar}}
+<main>
+    <div class="mobile-bar"><app-sidebar-toggle class="mobile-sidebar-toggle"></app-sidebar-toggle></div>
+    <app-file-browser></app-file-browser>
+</main>
+<script type="module">
+    document.addEventListener('navigate', (e) => {
+        window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;
+    });
+</script>"#;
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -396,5 +511,26 @@ mod tests {
         assert!(!html.contains(r#"tool_name="Tool output""#));
         assert!(!html.contains(r#"<div id="threads-page""#));
         assert!(!html.contains(r#"class="topbar""#));
+    }
+
+    #[test]
+    fn files_page_renders_browser_and_active_nav() {
+        let hb = get_templates().unwrap();
+        let html = render_page(
+            &hb,
+            "Files",
+            "",
+            "files",
+            &json!({
+                "projects": [],
+                "ungrouped_threads": [],
+                "files_active": true,
+            }),
+        );
+
+        assert!(html.contains(r#"<body id="files-page">"#));
+        assert!(html.contains(r#"<app-file-browser></app-file-browser>"#));
+        assert!(html.contains(r#"<app-sidebar-nav-item target="/files" active>"#));
+        assert!(!html.contains(r#"{{> sidebar}}"#));
     }
 }

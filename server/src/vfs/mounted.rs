@@ -106,7 +106,9 @@ impl MountedVfs {
 
     pub async fn create_dir(&self, path: &str) -> anyhow::Result<()> {
         let rel = self.writable(path)?;
-        self.vfs.create_dir(self.workspace_id, &rel, self.owner).await
+        self.vfs
+            .create_dir(self.workspace_id, &rel, self.owner)
+            .await
     }
 
     pub async fn delete(&self, path: &str) -> anyhow::Result<()> {
