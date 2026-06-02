@@ -701,36 +701,23 @@ impl Shell {
             if let Redirect::In(w) = redirect {
                 let path = self.resolve(&self.expand(w));
                 match self.read_file(&path).await {
-                    Ok(content) => stdin = content,
-                    Err(e) => {
-                        self.stderr.push_str(&format!("{e}\n"));
-                        self.status = 1;
-                        return String::new();
-                    }
+                    Some(content) => stdin = content,
+                    None => return self.fail(format!("{path}: No such file")),
                 }
             }
         }
 
-        let (out, err, code) = self.builtin(&argv[0], &argv[1..], stdin).await;
-        self.status = code;
-        if !err.is_empty() {
-            self.stderr.push_str(&err);
-        }
+        self.status = 0;
+        let out = self.builtin(&argv[0], &argv[1..], stdin).await;
 
         for redirect in &simple.redirects {
-            match redirect {
-                Redirect::Out(w) => {
-                    let path = self.resolve(&self.expand(w));
-                    self.write_file(&path, &out, false).await;
-                    return String::new();
-                }
-                Redirect::Append(w) => {
-                    let path = self.resolve(&self.expand(w));
-                    self.write_file(&path, &out, true).await;
-                    return String::new();
-                }
-                Redirect::In(_) => {}
-            }
+            let (path, append) = match redirect {
+                Redirect::Out(w) => (self.resolve(&self.expand(w)), false),
+                Redirect::Append(w) => (self.resolve(&self.expand(w)), true),
+                Redirect::In(_) => continue,
+            };
+            self.write_file(&path, &out, append).await;
+            return String::new();
         }
         out
     }
@@ -760,11 +747,37 @@ impl Shell {
 
     // --- VFS helpers --------------------------------------------------------
 
-    async fn read_file(&self, path: &str) -> Result<String, String> {
-        self.vfs
-            .read(self.workspace_id, path)
-            .await
-            .map_err(|_| format!("{}: No such file", display(path)))
+    /// Records a command failure: sets a non-zero exit status and appends `msg`
+    /// (plus a newline) to stderr. Returns empty stdout for convenience.
+    fn fail(&mut self, msg: String) -> String {
+        self.status = 1;
+        self.stderr.push_str(&msg);
+        self.stderr.push('\n');
+        String::new()
+    }
+
+    async fn read_file(&self, path: &str) -> Option<String> {
+        self.vfs.read(self.workspace_id, path).await.ok()
+    }
+
+    /// Reads and concatenates `files`, or returns `stdin` when none are given.
+    /// On a missing file records a `cmd: file` failure and returns None.
+    async fn read_all(&mut self, files: &[String], stdin: String, cmd: &str) -> Option<String> {
+        if files.is_empty() {
+            return Some(stdin);
+        }
+        let mut out = String::new();
+        for arg in files {
+            let path = self.resolve(arg);
+            match self.read_file(&path).await {
+                Some(content) => out.push_str(&content),
+                None => {
+                    self.fail(format!("{cmd}: {arg}: not found"));
+                    return None;
+                }
+            }
+        }
+        Some(out)
     }
 
     async fn write_file(&mut self, path: &str, content: &str, append: bool) {
@@ -783,8 +796,7 @@ impl Shell {
             .write(self.workspace_id, path, &content, self.owner)
             .await
         {
-            self.stderr.push_str(&format!("{}: {e}\n", display(path)));
-            self.status = 1;
+            self.fail(format!("{path}: {e}"));
         }
     }
 
@@ -803,179 +815,114 @@ impl Shell {
 
     // --- builtins -----------------------------------------------------------
 
-    async fn builtin(
-        &mut self,
-        cmd: &str,
-        args: &[String],
-        stdin: String,
-    ) -> (String, String, i32) {
+    async fn builtin(&mut self, cmd: &str, args: &[String], stdin: String) -> String {
         match cmd {
-            "echo" => builtin_echo(args),
-            "true" => (String::new(), String::new(), 0),
-            "false" => (String::new(), String::new(), 1),
-            "pwd" => (
-                format!("/{}\n", self.cwd).replace("//", "/"),
-                String::new(),
-                0,
-            ),
-            "cd" => self.builtin_cd(args).await,
-            "ls" => self.builtin_ls(args).await,
-            "cat" => self.builtin_cat(args, stdin).await,
-            "mkdir" => self.builtin_mkdir(args).await,
-            "rm" => self.builtin_rm(args).await,
-            "touch" => self.builtin_touch(args).await,
-            "mv" => self.builtin_copy(args, true).await,
-            "cp" => self.builtin_copy(args, false).await,
-            "grep" => self.builtin_grep(args, stdin).await,
-            "head" => self.builtin_head_tail(args, stdin, true).await,
-            "tail" => self.builtin_head_tail(args, stdin, false).await,
-            "wc" => self.builtin_wc(args, stdin).await,
-            "test" | "[" => self.builtin_test(cmd, args).await,
-            other => (String::new(), format!("{other}: command not found\n"), 127),
-        }
-    }
-
-    async fn builtin_cd(&mut self, args: &[String]) -> (String, String, i32) {
-        let target = self.resolve(args.first().map(|s| s.as_str()).unwrap_or(""));
-        match self.stat(&target).await {
-            Some(true) => {
-                self.cwd = target;
-                (String::new(), String::new(), 0)
+            "echo" => echo(args),
+            "true" => String::new(),
+            "false" => {
+                self.status = 1;
+                String::new()
             }
-            Some(false) => (
-                String::new(),
-                format!("cd: not a directory: {}\n", args[0]),
-                1,
-            ),
-            None => (
-                String::new(),
-                format!("cd: no such file or directory: {}\n", args[0]),
-                1,
-            ),
+            "pwd" => format!("/{}\n", self.cwd),
+            "cd" => self.cd(args).await,
+            "ls" => self.ls(args).await,
+            "cat" => self.read_all(args, stdin, "cat").await.unwrap_or_default(),
+            "mkdir" => self.mkdir(args).await,
+            "rm" => self.rm(args).await,
+            "touch" => self.touch(args).await,
+            "mv" => self.copy(args, true).await,
+            "cp" => self.copy(args, false).await,
+            "grep" => self.grep(args, stdin).await,
+            "head" => self.head_tail(args, stdin, true).await,
+            "tail" => self.head_tail(args, stdin, false).await,
+            "wc" => self.wc(args, stdin).await,
+            "test" | "[" => self.test(cmd, args).await,
+            other => self.fail(format!("{other}: command not found")),
         }
     }
 
-    async fn builtin_ls(&self, args: &[String]) -> (String, String, i32) {
-        let paths = files_or(args, &[""]);
+    async fn cd(&mut self, args: &[String]) -> String {
+        let arg = args.first().map(String::as_str).unwrap_or("");
+        let path = self.resolve(arg);
+        if self.stat(&path).await == Some(true) {
+            self.cwd = path;
+            String::new()
+        } else {
+            self.fail(format!("cd: {arg}: no such directory"))
+        }
+    }
+
+    async fn ls(&mut self, args: &[String]) -> String {
+        let paths: Vec<&str> = if args.is_empty() {
+            vec![""]
+        } else {
+            args.iter().map(String::as_str).collect()
+        };
         let mut out = String::new();
-        let mut err = String::new();
-        let mut code = 0;
         for arg in paths {
             let path = self.resolve(arg);
             match self.stat(&path).await {
-                Some(true) => match self.vfs.list(self.workspace_id, &path).await {
-                    Ok(entries) => {
-                        for e in entries {
-                            out.push_str(&e.name);
-                            out.push('\n');
-                        }
+                Some(true) => {
+                    for e in self
+                        .vfs
+                        .list(self.workspace_id, &path)
+                        .await
+                        .unwrap_or_default()
+                    {
+                        out.push_str(&e.name);
+                        out.push('\n');
                     }
-                    Err(e) => {
-                        err.push_str(&format!("ls: {e}\n"));
-                        code = 2;
-                    }
-                },
+                }
                 Some(false) => {
                     out.push_str(arg);
                     out.push('\n');
                 }
                 None => {
-                    err.push_str(&format!(
-                        "ls: cannot access '{arg}': No such file or directory\n"
-                    ));
-                    code = 2;
+                    self.fail(format!("ls: {arg}: not found"));
                 }
             }
         }
-        (out, err, code)
+        out
     }
 
-    async fn builtin_cat(&self, args: &[String], stdin: String) -> (String, String, i32) {
-        if args.is_empty() {
-            return (stdin, String::new(), 0);
-        }
-        let mut out = String::new();
-        let mut err = String::new();
-        let mut code = 0;
-        for arg in args {
-            let path = self.resolve(arg);
-            match self.read_file(&path).await {
-                Ok(content) => out.push_str(&content),
-                Err(_) => {
-                    err.push_str(&format!("cat: {arg}: No such file or directory\n"));
-                    code = 1;
-                }
-            }
-        }
-        (out, err, code)
-    }
-
-    async fn builtin_mkdir(&mut self, args: &[String]) -> (String, String, i32) {
+    async fn mkdir(&mut self, args: &[String]) -> String {
         let (flags, paths) = split_flags(args);
-        let parents = flags.contains('p');
-        let mut err = String::new();
-        let mut code = 0;
-        for arg in paths {
+        for arg in &paths {
             let path = self.resolve(arg);
-            if !parents && self.stat(&path).await.is_some() {
-                err.push_str(&format!(
-                    "mkdir: cannot create directory '{arg}': File exists\n"
-                ));
-                code = 1;
-                continue;
-            }
-            if let Err(e) = self
+            if !flags.contains('p') && self.stat(&path).await.is_some() {
+                self.fail(format!("mkdir: {arg}: exists"));
+            } else if let Err(e) = self
                 .vfs
                 .create_dir(self.workspace_id, &path, self.owner)
                 .await
             {
-                err.push_str(&format!("mkdir: {e}\n"));
-                code = 1;
+                self.fail(format!("mkdir: {e}"));
             }
         }
-        (String::new(), err, code)
+        String::new()
     }
 
-    async fn builtin_rm(&mut self, args: &[String]) -> (String, String, i32) {
+    async fn rm(&mut self, args: &[String]) -> String {
         let (flags, paths) = split_flags(args);
         let recursive = flags.contains('r') || flags.contains('R');
-        let force = flags.contains('f');
-        let mut err = String::new();
-        let mut code = 0;
-        for arg in paths {
+        for arg in &paths {
             let path = self.resolve(arg);
             if path.is_empty() {
-                err.push_str("rm: refusing to remove workspace root\n");
-                code = 1;
-                continue;
-            }
-            match self.stat(&path).await {
-                Some(true) if !recursive => {
-                    err.push_str(&format!("rm: cannot remove '{arg}': Is a directory\n"));
-                    code = 1;
+                self.fail("rm: refusing to remove workspace root".to_string());
+            } else if let Some(is_dir) = self.stat(&path).await {
+                if is_dir && !recursive {
+                    self.fail(format!("rm: {arg}: is a directory"));
+                } else if let Err(e) = self.vfs.delete(self.workspace_id, &path).await {
+                    self.fail(format!("rm: {e}"));
                 }
-                Some(_) => {
-                    if let Err(e) = self.vfs.delete(self.workspace_id, &path).await {
-                        err.push_str(&format!("rm: {e}\n"));
-                        code = 1;
-                    }
-                }
-                None => {
-                    if !force {
-                        err.push_str(&format!(
-                            "rm: cannot remove '{arg}': No such file or directory\n"
-                        ));
-                        code = 1;
-                    }
-                }
+            } else if !flags.contains('f') {
+                self.fail(format!("rm: {arg}: not found"));
             }
         }
-        (String::new(), err, code)
+        String::new()
     }
 
-    async fn builtin_touch(&mut self, args: &[String]) -> (String, String, i32) {
-        let mut code = 0;
-        let mut err = String::new();
+    async fn touch(&mut self, args: &[String]) -> String {
         for arg in args {
             let path = self.resolve(arg);
             if self.stat(&path).await.is_none()
@@ -984,75 +931,52 @@ impl Shell {
                     .write(self.workspace_id, &path, "", self.owner)
                     .await
             {
-                err.push_str(&format!("touch: {e}\n"));
-                code = 1;
+                self.fail(format!("touch: {e}"));
             }
         }
-        (String::new(), err, code)
+        String::new()
     }
 
-    async fn builtin_copy(&mut self, args: &[String], remove_src: bool) -> (String, String, i32) {
-        let (_, operands) = split_flags(args);
+    async fn copy(&mut self, args: &[String], remove_src: bool) -> String {
         let name = if remove_src { "mv" } else { "cp" };
-        if operands.len() != 2 {
-            return (
-                String::new(),
-                format!("{name}: expected source and destination\n"),
-                1,
-            );
+        let ops: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+        if ops.len() != 2 {
+            return self.fail(format!("{name}: need source and destination"));
         }
-        let src = self.resolve(operands[0]);
-        match self.stat(&src).await {
-            Some(true) => {
-                return (
-                    String::new(),
-                    format!("{name}: '{}' is a directory\n", operands[0]),
-                    1,
-                );
-            }
-            None => {
-                return (
-                    String::new(),
-                    format!(
-                        "{name}: cannot stat '{}': No such file or directory\n",
-                        operands[0]
-                    ),
-                    1,
-                );
-            }
-            Some(false) => {}
+        let src = self.resolve(ops[0]);
+        if self.stat(&src).await != Some(false) {
+            return self.fail(format!("{name}: {}: not a file", ops[0]));
         }
-        let mut dst = self.resolve(operands[1]);
+        let mut dst = self.resolve(ops[1]);
         if self.stat(&dst).await == Some(true) {
             dst = normalize(&dst, basename(&src));
         }
-        let content = match self.vfs.read(self.workspace_id, &src).await {
-            Ok(c) => c,
-            Err(e) => return (String::new(), format!("{name}: {e}\n"), 1),
+        let Some(content) = self.read_file(&src).await else {
+            return self.fail(format!("{name}: {}: read error", ops[0]));
         };
         if let Err(e) = self
             .vfs
             .write(self.workspace_id, &dst, &content, self.owner)
             .await
         {
-            return (String::new(), format!("{name}: {e}\n"), 1);
+            return self.fail(format!("{name}: {e}"));
         }
         if remove_src && let Err(e) = self.vfs.delete(self.workspace_id, &src).await {
-            return (String::new(), format!("{name}: {e}\n"), 1);
+            return self.fail(format!("{name}: {e}"));
         }
-        (String::new(), String::new(), 0)
+        String::new()
     }
 
-    async fn builtin_grep(&self, args: &[String], stdin: String) -> (String, String, i32) {
-        let mut ignore_case = false;
+    async fn grep(&mut self, args: &[String], stdin: String) -> String {
+        let mut ignore = false;
         let mut invert = false;
         let mut number = false;
         let mut rest = Vec::new();
         for arg in args {
-            if arg.starts_with('-') && arg.len() > 1 && rest.is_empty() {
+            if rest.is_empty() && arg.starts_with('-') && arg.len() > 1 {
                 for f in arg[1..].chars() {
                     match f {
-                        'i' => ignore_case = true,
+                        'i' => ignore = true,
                         'v' => invert = true,
                         'n' => number = true,
                         _ => {}
@@ -1063,48 +987,42 @@ impl Shell {
             }
         }
         if rest.is_empty() {
-            return (String::new(), "grep: missing pattern\n".to_string(), 2);
+            return self.fail("grep: missing pattern".to_string());
         }
         let pattern = rest.remove(0);
-        let needle = if ignore_case {
+        let needle = if ignore {
             pattern.to_lowercase()
         } else {
-            pattern.clone()
+            pattern
         };
+        let multi = rest.len() > 1;
 
-        let mut sources: Vec<(Option<String>, String)> = Vec::new();
+        let mut sources: Vec<(String, String)> = Vec::new();
         if rest.is_empty() {
-            sources.push((None, stdin));
+            sources.push((String::new(), stdin));
         } else {
             for arg in &rest {
                 let path = self.resolve(arg);
                 match self.read_file(&path).await {
-                    Ok(content) => sources.push((Some(arg.clone()), content)),
-                    Err(_) => {
-                        return (
-                            String::new(),
-                            format!("grep: {arg}: No such file or directory\n"),
-                            2,
-                        );
-                    }
+                    Some(content) => sources.push((arg.clone(), content)),
+                    None => return self.fail(format!("grep: {arg}: not found")),
                 }
             }
         }
-        let multi = rest.len() > 1;
+
         let mut out = String::new();
         let mut matched = false;
         for (name, content) in sources {
             for (idx, line) in content.lines().enumerate() {
-                let hay = if ignore_case {
+                let hay = if ignore {
                     line.to_lowercase()
                 } else {
                     line.to_string()
                 };
-                let hit = hay.contains(&needle);
-                if hit != invert {
+                if hay.contains(&needle) != invert {
                     matched = true;
-                    if multi && let Some(n) = &name {
-                        out.push_str(n);
+                    if multi {
+                        out.push_str(&name);
                         out.push(':');
                     }
                     if number {
@@ -1115,44 +1033,38 @@ impl Shell {
                 }
             }
         }
-        (out, String::new(), if matched { 0 } else { 1 })
+        self.status = if matched { 0 } else { 1 };
+        out
     }
 
-    async fn builtin_head_tail(
-        &self,
-        args: &[String],
-        stdin: String,
-        head: bool,
-    ) -> (String, String, i32) {
+    async fn head_tail(&mut self, args: &[String], stdin: String, head: bool) -> String {
         let (count, files) = parse_count(args, 10);
-        let content = match self.gather(files, stdin).await {
-            Ok(c) => c,
-            Err(e) => return (String::new(), e, 1),
+        let cmd = if head { "head" } else { "tail" };
+        let Some(content) = self.read_all(&files, stdin, cmd).await else {
+            return String::new();
         };
         let lines: Vec<&str> = content.lines().collect();
-        let selected: Vec<&str> = if head {
-            lines.into_iter().take(count).collect()
+        let selected = if head {
+            &lines[..count.min(lines.len())]
         } else {
-            let skip = lines.len().saturating_sub(count);
-            lines.into_iter().skip(skip).collect()
+            &lines[lines.len().saturating_sub(count)..]
         };
         let mut out = selected.join("\n");
         if !out.is_empty() {
             out.push('\n');
         }
-        (out, String::new(), 0)
+        out
     }
 
-    async fn builtin_wc(&self, args: &[String], stdin: String) -> (String, String, i32) {
+    async fn wc(&mut self, args: &[String], stdin: String) -> String {
         let (flags, files) = split_flags(args);
-        let content = match self.gather(files, stdin).await {
-            Ok(c) => c,
-            Err(e) => return (String::new(), e, 1),
+        let Some(content) = self.read_all(&files, stdin, "wc").await else {
+            return String::new();
         };
         let lines = content.lines().count();
         let words = content.split_whitespace().count();
         let bytes = content.len();
-        let out = if flags.contains('l') {
+        if flags.contains('l') {
             format!("{lines}\n")
         } else if flags.contains('w') {
             format!("{words}\n")
@@ -1160,70 +1072,43 @@ impl Shell {
             format!("{bytes}\n")
         } else {
             format!("{lines} {words} {bytes}\n")
-        };
-        (out, String::new(), 0)
+        }
     }
 
-    async fn builtin_test(&self, cmd: &str, args: &[String]) -> (String, String, i32) {
+    async fn test(&mut self, cmd: &str, args: &[String]) -> String {
         let mut args = args.to_vec();
         if cmd == "[" {
-            if args.last().map(|s| s.as_str()) != Some("]") {
-                return (String::new(), "[: missing `]'\n".to_string(), 2);
+            if args.last().map(String::as_str) != Some("]") {
+                return self.fail("[: missing `]'".to_string());
             }
             args.pop();
         }
-        let result = match args.len() {
-            0 => false,
-            1 => !args[0].is_empty(),
-            2 => match args[0].as_str() {
-                "-z" => args[1].is_empty(),
-                "-n" => !args[1].is_empty(),
-                "-e" => self.stat(&self.resolve(&args[1])).await.is_some(),
-                "-f" => self.stat(&self.resolve(&args[1])).await == Some(false),
-                "-d" => self.stat(&self.resolve(&args[1])).await == Some(true),
-                _ => {
-                    return (
-                        String::new(),
-                        format!("test: {}: unary operator expected\n", args[0]),
-                        2,
-                    );
-                }
+        let result = match args.as_slice() {
+            [] => false,
+            [a] => !a.is_empty(),
+            [op, a] => match op.as_str() {
+                "-z" => a.is_empty(),
+                "-n" => !a.is_empty(),
+                "-e" => self.stat(&self.resolve(a)).await.is_some(),
+                "-f" => self.stat(&self.resolve(a)).await == Some(false),
+                "-d" => self.stat(&self.resolve(a)).await == Some(true),
+                _ => return self.fail(format!("test: {op}: unary operator expected")),
             },
-            3 => match args[1].as_str() {
-                "=" | "==" => args[0] == args[2],
-                "!=" => args[0] != args[2],
-                "-eq" => int_cmp(&args[0], &args[2], |a, b| a == b),
-                "-ne" => int_cmp(&args[0], &args[2], |a, b| a != b),
-                "-lt" => int_cmp(&args[0], &args[2], |a, b| a < b),
-                "-le" => int_cmp(&args[0], &args[2], |a, b| a <= b),
-                "-gt" => int_cmp(&args[0], &args[2], |a, b| a > b),
-                "-ge" => int_cmp(&args[0], &args[2], |a, b| a >= b),
-                _ => {
-                    return (
-                        String::new(),
-                        format!("test: {}: binary operator expected\n", args[1]),
-                        2,
-                    );
-                }
+            [a, op, b] => match op.as_str() {
+                "=" | "==" => a == b,
+                "!=" => a != b,
+                "-eq" => int_cmp(a, b, |x, y| x == y),
+                "-ne" => int_cmp(a, b, |x, y| x != y),
+                "-lt" => int_cmp(a, b, |x, y| x < y),
+                "-le" => int_cmp(a, b, |x, y| x <= y),
+                "-gt" => int_cmp(a, b, |x, y| x > y),
+                "-ge" => int_cmp(a, b, |x, y| x >= y),
+                _ => return self.fail(format!("test: {op}: binary operator expected")),
             },
-            _ => return (String::new(), "test: too many arguments\n".to_string(), 2),
+            _ => return self.fail("test: too many arguments".to_string()),
         };
-        (String::new(), String::new(), if result { 0 } else { 1 })
-    }
-
-    async fn gather(&self, files: Vec<&String>, stdin: String) -> Result<String, String> {
-        if files.is_empty() {
-            return Ok(stdin);
-        }
-        let mut out = String::new();
-        for arg in files {
-            let path = self.resolve(arg);
-            match self.read_file(&path).await {
-                Ok(content) => out.push_str(&content),
-                Err(_) => return Err(format!("{arg}: No such file or directory\n")),
-            }
-        }
-        Ok(out)
+        self.status = if result { 0 } else { 1 };
+        String::new()
     }
 }
 
@@ -1231,67 +1116,59 @@ impl Shell {
 // Helpers
 // ----------------------------------------------------------------------------
 
-fn builtin_echo(args: &[String]) -> (String, String, i32) {
-    let (no_newline, rest) = match args.first() {
-        Some(flag) if flag == "-n" => (true, &args[1..]),
-        _ => (false, args),
+fn echo(args: &[String]) -> String {
+    let (newline, rest) = match args.first() {
+        Some(flag) if flag == "-n" => (false, &args[1..]),
+        _ => (true, args),
     };
     let mut out = rest.join(" ");
-    if !no_newline {
+    if newline {
         out.push('\n');
     }
-    (out, String::new(), 0)
+    out
 }
 
 /// Collects single-letter flags from leading `-x` arguments, returning the
 /// flag characters and the remaining operands.
-fn split_flags(args: &[String]) -> (String, Vec<&String>) {
+fn split_flags(args: &[String]) -> (String, Vec<String>) {
     let mut flags = String::new();
     let mut rest = Vec::new();
-    let mut seen_operand = false;
     for arg in args {
-        if !seen_operand && arg.starts_with('-') && arg.len() > 1 {
+        if rest.is_empty() && arg.starts_with('-') && arg.len() > 1 {
             flags.push_str(&arg[1..]);
         } else {
-            seen_operand = true;
-            rest.push(arg);
+            rest.push(arg.clone());
         }
     }
     (flags, rest)
 }
 
-/// Parses an optional `-n N` count, returning the count and remaining files.
-fn parse_count(args: &[String], default: usize) -> (usize, Vec<&String>) {
+/// Parses an optional `-n N` (or `-N`) count, returning it and the remaining files.
+fn parse_count(args: &[String], default: usize) -> (usize, Vec<String>) {
     let mut count = default;
     let mut files = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
         if arg == "-n" {
-            if let Some(n) = args.get(i + 1).and_then(|s| s.parse().ok()) {
-                count = n;
-            }
+            count = args
+                .get(i + 1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(count);
             i += 2;
-        } else if let Some(n) = arg.strip_prefix("-n").and_then(|s| s.parse().ok()) {
-            count = n;
-            i += 1;
-        } else if let Some(n) = arg.strip_prefix('-').and_then(|s| s.parse().ok()) {
+        } else if let Some(n) = arg
+            .strip_prefix("-n")
+            .or_else(|| arg.strip_prefix('-'))
+            .and_then(|s| s.parse().ok())
+        {
             count = n;
             i += 1;
         } else {
-            files.push(arg);
+            files.push(arg.clone());
             i += 1;
         }
     }
     (count, files)
-}
-
-fn files_or<'a>(args: &'a [String], default: &'a [&'a str]) -> Vec<&'a str> {
-    if args.is_empty() {
-        default.to_vec()
-    } else {
-        args.iter().map(|s| s.as_str()).collect()
-    }
 }
 
 fn int_cmp(a: &str, b: &str, op: impl Fn(i64, i64) -> bool) -> bool {
@@ -1330,10 +1207,6 @@ fn split_parent(path: &str) -> (&str, &str) {
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
-}
-
-fn display(path: &str) -> String {
-    format!("/{path}")
 }
 
 #[cfg(test)]
