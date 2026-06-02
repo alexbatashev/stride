@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::tools::vfs::{
     ListFilesTool, ReadTextFileTool, VfsDocumentToMarkdownTool, VfsPresentationXmlToPptxTool,
 };
-use crate::vfs::Vfs;
+use crate::vfs::{MountedVfs, Vfs};
 
 pub const PRESENTATION_DRAFT_MODEL: &str = "presentation_draft";
 pub const PRESENTATION_DRAFT_NAME: &str = "presentation_draft";
@@ -109,32 +109,22 @@ fn presentation_draft_tool_registry(
     user_id: Uuid,
 ) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
+    let fs = MountedVfs::new(vfs, workspace_id, user_id);
 
-    let list = ListFilesTool {
-        vfs: vfs.clone(),
-        workspace_id,
-    };
+    let list = ListFilesTool { fs: fs.clone() };
     registry.allow_tool(list.name());
     registry.register(list);
 
-    let read = ReadTextFileTool {
-        vfs: vfs.clone(),
-        workspace_id,
-    };
+    let read = ReadTextFileTool { fs: fs.clone() };
     registry.allow_tool(read.name());
     registry.register(read);
 
-    let read_document = VfsDocumentToMarkdownTool {
-        vfs: vfs.clone(),
-        workspace_id,
-    };
+    let read_document = VfsDocumentToMarkdownTool { fs: fs.clone() };
     registry.allow_tool(read_document.name());
     registry.register(read_document);
 
     let write_pptx = VfsPresentationXmlToPptxTool {
-        vfs,
-        workspace_id,
-        owner: user_id,
+        fs,
         requires_confirmation: false,
     };
     registry.allow_tool(write_pptx.name());

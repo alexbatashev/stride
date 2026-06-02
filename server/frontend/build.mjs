@@ -139,7 +139,7 @@ await Promise.all([
     outfile: 'dist/api.js',
   }),
   esbuild.build({
-    entryPoints: ['src/pages/auth-page.ts', 'src/pages/sample-page.ts', 'src/pages/threads-page.ts'],
+    entryPoints: ['src/pages/auth-page.ts', 'src/pages/sample-page.ts', 'src/pages/threads-page.ts', 'src/pages/files-page.ts'],
     bundle: true,
     format: 'esm',
     external: ['lit'],

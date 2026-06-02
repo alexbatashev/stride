@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::sync::Mutex;
 use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
@@ -11,6 +13,9 @@ pub struct VfsExecFileSystem {
     workspace_id: Uuid,
     owner: Uuid,
     host_dir: PathBuf,
+    /// Host-relative paths populated from the read-only global space. They are
+    /// excluded from the write-back so global files stay read-only.
+    global_paths: Mutex<HashSet<String>>,
 }
 
 impl VfsExecFileSystem {
@@ -20,6 +25,7 @@ impl VfsExecFileSystem {
             workspace_id,
             owner,
             host_dir,
+            global_paths: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -29,10 +35,14 @@ impl FileSystemBackend for VfsExecFileSystem {
     async fn before_execute(&self) -> anyhow::Result<()> {
         let _ = tokio::fs::remove_dir_all(&self.host_dir).await;
         tokio::fs::create_dir_all(&self.host_dir).await?;
-        sync_from_vfs(self.vfs.clone(), self.workspace_id, self.host_dir.clone()).await
+        sync_from_vfs(self.vfs.clone(), self.workspace_id, self.host_dir.clone()).await?;
+        let global = sync_global_in(self.vfs.clone(), self.owner, self.host_dir.clone()).await?;
+        *self.global_paths.lock().unwrap() = global;
+        Ok(())
     }
 
     async fn after_execute(&self) -> anyhow::Result<()> {
+        let global = self.global_paths.lock().unwrap().clone();
         prune_vfs_missing(
             self.vfs.clone(),
             self.workspace_id,
@@ -45,6 +55,7 @@ impl FileSystemBackend for VfsExecFileSystem {
             self.workspace_id,
             self.owner,
             self.host_dir.clone(),
+            &global,
         )
         .await
     }
@@ -83,6 +94,49 @@ async fn sync_from_vfs(vfs: Arc<Vfs>, workspace_id: Uuid, host_dir: PathBuf) -> 
     Ok(())
 }
 
+/// Copies the user's read-only global files into the host directory and returns
+/// the set of host-relative paths that came from the global space (skipping any
+/// path already provided by the writable workspace).
+async fn sync_global_in(
+    vfs: Arc<Vfs>,
+    owner: Uuid,
+    host_dir: PathBuf,
+) -> anyhow::Result<HashSet<String>> {
+    let mut global = HashSet::new();
+    let mut stack = vec![String::new()];
+
+    while let Some(rel) = stack.pop() {
+        for entry in vfs.list_global(owner, &rel).await? {
+            let child_rel = join_rel(&rel, &entry.name);
+            let child_local = host_dir.join(&child_rel);
+            if child_local.exists() {
+                // Workspace file shadows the global one; keep it writable.
+                if matches!(entry.kind, EntryKind::Directory) {
+                    stack.push(child_rel);
+                }
+                continue;
+            }
+            match entry.kind {
+                EntryKind::Directory => {
+                    tokio::fs::create_dir_all(&child_local).await?;
+                    global.insert(child_rel.clone());
+                    stack.push(child_rel);
+                }
+                EntryKind::File => {
+                    if let Some(parent) = child_local.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    let (bytes, _) = vfs.read_bytes_global(owner, &child_rel).await?;
+                    tokio::fs::write(child_local, bytes).await?;
+                    global.insert(child_rel);
+                }
+            }
+        }
+    }
+
+    Ok(global)
+}
+
 async fn prune_vfs_missing(
     vfs: Arc<Vfs>,
     workspace_id: Uuid,
@@ -117,11 +171,12 @@ async fn sync_to_vfs(
     workspace_id: Uuid,
     owner: Uuid,
     host_dir: PathBuf,
+    global: &HashSet<String>,
 ) -> anyhow::Result<()> {
-    let mut stack = vec![(host_dir, String::new())];
+    let mut stack = vec![(host_dir.clone(), String::new())];
 
     while let Some((local_dir, rel)) = stack.pop() {
-        if !rel.is_empty() {
+        if !rel.is_empty() && !global.contains(&rel) {
             vfs.create_dir(workspace_id, &rel, owner).await?;
         }
 
@@ -130,6 +185,9 @@ async fn sync_to_vfs(
             let file_type = entry.file_type().await?;
             let name = entry.file_name().to_string_lossy().to_string();
             let child_rel = join_rel(&rel, &name);
+            if global.contains(&child_rel) {
+                continue;
+            }
             let child_local = entry.path();
 
             if file_type.is_dir() {

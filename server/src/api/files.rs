@@ -1,0 +1,272 @@
+use std::sync::Arc;
+
+use axum::{
+    Json,
+    body::Body,
+    extract::{Multipart, Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    ServerState,
+    api::auth::{self, AuthError},
+    vfs::EntryKind,
+};
+
+/// Manages the user's global files: nodes with no workspace, owned by the user.
+/// These are read-only to the agent and surfaced under `/` in threads.
+
+#[derive(Debug)]
+pub enum FilesApiError {
+    Auth(AuthError),
+    BadRequest,
+    NotFound,
+    Internal,
+}
+
+impl IntoResponse for FilesApiError {
+    fn into_response(self) -> Response {
+        match self {
+            FilesApiError::Auth(error) => error.into_response(),
+            FilesApiError::BadRequest => StatusCode::BAD_REQUEST.into_response(),
+            FilesApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
+            FilesApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+}
+
+impl From<AuthError> for FilesApiError {
+    fn from(error: AuthError) -> Self {
+        FilesApiError::Auth(error)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct FilesQuery {
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateDirectoryRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+pub struct RenameRequest {
+    path: String,
+    name: String,
+}
+
+#[derive(Serialize)]
+pub struct FileEntry {
+    name: String,
+    path: String,
+    kind: &'static str,
+    size: Option<i64>,
+    updated_at: i64,
+    mime_type: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct FileListResponse {
+    path: String,
+    entries: Vec<FileEntry>,
+}
+
+#[derive(Serialize)]
+pub struct UploadedFile {
+    name: String,
+    path: String,
+    size: usize,
+}
+
+#[derive(Serialize)]
+pub struct UploadResponse {
+    files: Vec<UploadedFile>,
+}
+
+pub async fn list_files(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<FilesQuery>,
+    headers: HeaderMap,
+) -> Result<Json<FileListResponse>, FilesApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(FilesApiError::NotFound);
+    };
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let path = clean_path(query.path.as_deref());
+
+    let entries = vfs
+        .list_global(owner, &path)
+        .await
+        .map_err(|_| FilesApiError::NotFound)?
+        .into_iter()
+        .map(|entry| FileEntry {
+            path: join_path(&path, &entry.name),
+            kind: match entry.kind {
+                EntryKind::Directory => "directory",
+                EntryKind::File => "file",
+            },
+            size: entry.size,
+            updated_at: entry.updated_at,
+            mime_type: entry.mime_type,
+            name: entry.name,
+        })
+        .collect();
+
+    Ok(Json(FileListResponse { path, entries }))
+}
+
+pub async fn create_directory(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(request): Json<CreateDirectoryRequest>,
+) -> Result<StatusCode, FilesApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(FilesApiError::NotFound);
+    };
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let path = clean_path(Some(&request.path));
+    if path.is_empty() {
+        return Err(FilesApiError::BadRequest);
+    }
+
+    vfs.create_dir_global(owner, &path)
+        .await
+        .map_err(|_| FilesApiError::BadRequest)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn rename(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(request): Json<RenameRequest>,
+) -> Result<StatusCode, FilesApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(FilesApiError::NotFound);
+    };
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let path = clean_path(Some(&request.path));
+    let name = request.name.trim();
+    if path.is_empty() || name.is_empty() || name.contains('/') {
+        return Err(FilesApiError::BadRequest);
+    }
+
+    vfs.rename_global(owner, &path, name)
+        .await
+        .map_err(|_| FilesApiError::BadRequest)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn upload_file(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<FilesQuery>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, FilesApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(FilesApiError::Internal);
+    };
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let directory = clean_path(query.path.as_deref());
+
+    let mut uploaded = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| FilesApiError::BadRequest)?
+    {
+        let name = field
+            .file_name()
+            .filter(|n| !n.is_empty())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "file".to_string());
+        let mime_type = field
+            .content_type()
+            .filter(|ct| !ct.is_empty())
+            .map(|ct| ct.to_string());
+        let bytes = field.bytes().await.map_err(|_| FilesApiError::BadRequest)?;
+        let size = bytes.len();
+        let path = join_path(&directory, &name);
+
+        vfs.write_bytes_global(owner, &path, &bytes, mime_type.as_deref())
+            .await
+            .map_err(|_| FilesApiError::Internal)?;
+
+        uploaded.push(UploadedFile {
+            path: format!("/{path}"),
+            name,
+            size,
+        });
+    }
+
+    Ok(Json(UploadResponse { files: uploaded }))
+}
+
+pub async fn delete_file(
+    State(state): State<Arc<ServerState>>,
+    Path(path): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, FilesApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(FilesApiError::NotFound);
+    };
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let path = clean_path(Some(&path));
+    if path.is_empty() {
+        return Err(FilesApiError::BadRequest);
+    }
+
+    vfs.delete_global(owner, &path)
+        .await
+        .map_err(|_| FilesApiError::NotFound)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn download_file(
+    State(state): State<Arc<ServerState>>,
+    Path(path): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, FilesApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(FilesApiError::NotFound);
+    };
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let path = clean_path(Some(&path));
+
+    let (bytes, mime_type) = vfs
+        .read_bytes_global(owner, &path)
+        .await
+        .map_err(|_| FilesApiError::NotFound)?;
+
+    let content_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    let filename = path.split('/').next_back().unwrap_or(&path).to_string();
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(Body::from(bytes))
+        .map_err(|_| FilesApiError::Internal)
+}
+
+fn clean_path(path: Option<&str>) -> String {
+    path.unwrap_or_default()
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    let name = clean_path(Some(name));
+    if parent.is_empty() {
+        name
+    } else {
+        format!("{parent}/{name}")
+    }
+}

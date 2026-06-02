@@ -197,10 +197,21 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             "/api/threads/{id}/files/{*path}",
             get(api::threads::download_file).delete(api::threads::delete_file),
         )
+        .route(
+            "/api/files",
+            get(api::files::list_files).post(api::files::upload_file),
+        )
+        .route("/api/files/directories", post(api::files::create_directory))
+        .route("/api/files/rename", patch(api::files::rename))
+        .route(
+            "/api/files/{*path}",
+            get(api::files::download_file).delete(api::files::delete_file),
+        )
         .route("/auth/login", get(pages::auth::login))
         .route("/auth/register", get(pages::auth::register))
         .route("/threads", get(pages::agent::new_thread))
         .route("/threads/{id}", get(pages::agent::thread))
+        .route("/files", get(pages::files::files))
         .route("/", get(root))
         .nest_service("/static", ServeDir::new(static_dir))
         .layer(
