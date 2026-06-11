@@ -9,12 +9,13 @@ use std::io::Cursor;
 
 use anyhow::{Context, Result};
 use comrak::{
+    Arena,
     nodes::{AstNode, ListType, NodeList, NodeValue},
-    parse_document, Arena,
+    parse_document,
 };
-use office_oxide::{create::create_from_ir_to_writer, ir, DocumentFormat};
+use office_oxide::{DocumentFormat, create::create_from_ir_to_writer, ir};
 
-use crate::markdown::{self, task_marker, InlineStyle};
+use crate::markdown::{self, InlineStyle, task_marker};
 
 const LIST_INDENT_TWIPS: i32 = 360;
 
