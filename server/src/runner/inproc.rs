@@ -980,6 +980,9 @@ fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
     let mut providers: Vec<Box<dyn friday_agent::tools::web_search::SearchProvider>> =
         vec![Box::new(SearxngProvider {
             endpoint: web_search.searxng_endpoint.clone(),
+            request_delay: Duration::from_secs(
+                web_search.searxng_request_delay_seconds.unwrap_or(5),
+            ),
         })];
 
     if web_search.include_arxiv == Some(true) {
@@ -1753,6 +1756,7 @@ mod tests {
             &Tools {
                 web_search: Some(WebSearch {
                     searxng_endpoint: "https://search.example.com".to_string(),
+                    searxng_request_delay_seconds: None,
                     include_arxiv: None,
                     include_pubmed: None,
                     include_uspto: None,
@@ -1805,6 +1809,7 @@ mod tests {
         let registry = expert_tool_registry(&Tools {
             web_search: Some(WebSearch {
                 searxng_endpoint: "https://search.example.com".to_string(),
+                searxng_request_delay_seconds: None,
                 include_arxiv: None,
                 include_pubmed: None,
                 include_uspto: None,

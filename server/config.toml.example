@@ -45,6 +45,7 @@ user_dn_template = "uid={username},ou=users,dc=example,dc=com"
 
 [tools.web_search]
 searxng_endpoint = "https://search.example.com"
+searxng_request_delay_seconds = 5
 include_arxiv = true
 include_pubmed = true
 

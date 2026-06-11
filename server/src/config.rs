@@ -67,6 +67,7 @@ pub struct Tools {
 #[derive(Clone, Debug, Deserialize)]
 pub struct WebSearch {
     pub searxng_endpoint: String,
+    pub searxng_request_delay_seconds: Option<u64>,
     pub include_arxiv: Option<bool>,
     pub include_pubmed: Option<bool>,
     pub include_uspto: Option<bool>,
@@ -242,6 +243,7 @@ mod tests {
 
             [tools.web_search]
             searxng_endpoint = "https://search.example.com"
+            searxng_request_delay_seconds = 2
 
             [tools.firecrawl]
             api_key = "fc-test"
@@ -251,10 +253,9 @@ mod tests {
         .unwrap();
 
         let tools = cfg.tools.unwrap();
-        assert_eq!(
-            tools.web_search.unwrap().searxng_endpoint,
-            "https://search.example.com"
-        );
+        let web_search = tools.web_search.unwrap();
+        assert_eq!(web_search.searxng_endpoint, "https://search.example.com");
+        assert_eq!(web_search.searxng_request_delay_seconds, Some(2));
 
         let firecrawl = tools.firecrawl.unwrap();
         assert_eq!(firecrawl.read_api_key().unwrap(), "fc-test");
