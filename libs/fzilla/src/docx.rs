@@ -9,13 +9,12 @@ use std::io::Cursor;
 
 use anyhow::{Context, Result};
 use comrak::{
-    Arena,
     nodes::{AstNode, ListType, NodeList, NodeValue},
-    parse_document,
+    parse_document, Arena,
 };
-use office_oxide::{DocumentFormat, create::create_from_ir_to_writer, ir};
+use office_oxide::{create::create_from_ir_to_writer, ir, DocumentFormat};
 
-use crate::markdown::{self, InlineStyle, task_marker};
+use crate::markdown::{self, task_marker, InlineStyle};
 
 const LIST_INDENT_TWIPS: i32 = 360;
 
@@ -99,11 +98,10 @@ fn flatten_list<'a>(
 ) {
     let ordered = list.list_type == ListType::Ordered;
     let item_indent = indent_twips + LIST_INDENT_TWIPS * depth as i32;
-    let mut next = list.start.max(1) as u32;
-    let mut group_start = next;
+    let mut group_start = list.start.max(1) as u32;
     let mut items: Vec<ir::ListItem> = Vec::new();
 
-    for item in node.children() {
+    for (next, item) in (list.start.max(1) as u32..).zip(node.children()) {
         let marker = match &item.data().value {
             NodeValue::TaskItem(task) => Some(task_marker(task.symbol)),
             _ => None,
@@ -135,7 +133,6 @@ fn flatten_list<'a>(
             }
             items.push(list_item(content, marker));
         }
-        next += 1;
     }
     flush_list(&mut items, ordered, group_start, elements);
 }
