@@ -17,9 +17,6 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
-      happy-dom:
-        specifier: ^20.10.2
-        version: 20.10.2
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
