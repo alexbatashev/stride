@@ -1,5 +1,5 @@
 mod api;
-mod components2;
+mod components;
 mod config;
 mod db;
 mod pages;
@@ -21,7 +21,6 @@ use friday_agent::{
     AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry,
     mcp::{self, McpTool},
 };
-use handlebars::Handlebars;
 use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::ConnectionPool;
 use tower_http::{
@@ -31,7 +30,7 @@ use tower_http::{
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{pages::get_templates, runner::AgentPool};
+use crate::runner::AgentPool;
 
 const DEFAULT_STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/frontend/dist");
 
@@ -42,7 +41,6 @@ struct ServerState {
     pub(crate) jwt_secret: String,
     pub(crate) runner: Arc<dyn AgentPool>,
     pub(crate) model_config: Arc<AgentConfig>,
-    pub(crate) templates: Handlebars<'static>,
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
 }
 
@@ -66,7 +64,6 @@ async fn main() -> anyhow::Result<()> {
     let db = ConnectionPool::new(&config.db_url()).unwrap();
     db.initialize_database(db::get_migrations()).await.unwrap();
 
-    let templates = get_templates()?;
     let listen_addr = config.listen_addr().to_string();
     let tools = config.tools.clone().unwrap_or_default();
     if let Some(python) = tools.python.as_ref()
@@ -129,7 +126,6 @@ async fn main() -> anyhow::Result<()> {
         jwt_secret,
         runner,
         model_config,
-        templates,
         vfs: vfs_provider,
     });
 

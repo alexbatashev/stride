@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 use crate::{ServerState, api::threads};
 
-const PAGE_SCRIPT: &str = r#"<script type="module" src="/static/pages/threads-page.js"></script>"#;
+pub(super) const PAGE_SCRIPT: &str =
+    r#"<script type="module" src="/static/pages/threads-page.js"></script>"#;
 
 pub async fn new_thread(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
     render_threads(state, headers, None).await
@@ -36,12 +37,5 @@ async fn render_threads(
         Err(error) => return error.into_response(),
     };
 
-    Html(super::render_page(
-        &state.templates,
-        "Friday",
-        PAGE_SCRIPT,
-        "threads",
-        &serde_json::to_value(data).unwrap(),
-    ))
-    .into_response()
+    Html(super::render_threads_page(&data)).into_response()
 }

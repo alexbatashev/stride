@@ -5,4 +5,4 @@ allowBuilds:
   esbuild: true
 
 minimumReleaseAgeExclude:
-  - '@frontiers-labs/argon@0.2.4'
+  - '@frontiers-labs/argon@0.3.0'

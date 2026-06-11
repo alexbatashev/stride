@@ -20,12 +20,6 @@ import {
 	sendMessage,
 	uploadFiles,
 } from "../api/threads.js";
-import "../components/app-approval-bar.js";
-import "../components/app-file-manager.js";
-import "../components/app-message.js";
-import "../components/app-prompt-input.js";
-import "../components/app-quiz-bar.js";
-import "../components/app-sidebar.js";
 
 type ViewMessage = ThreadMessage & { pending?: boolean };
 type PendingQuiz = {
@@ -35,6 +29,43 @@ type PendingQuiz = {
 	answers: string[];
 };
 
+type SidebarEl = HTMLElement & {
+	projects: { id: string; title: string; threads: { id: string; title: string }[] }[];
+	threads: { id: string; title: string }[];
+	activeThread: string;
+};
+
+type MessageEl = HTMLElement & {
+	messageId: string;
+	seq: number;
+	role: string;
+	kind: string;
+	text: string;
+	thinking: string;
+	toolName: string;
+};
+
+type PromptEl = HTMLElement & {
+	disabled: boolean;
+	running: boolean;
+	placeholder: string;
+};
+
+type ApprovalEl = HTMLElement & { message: string };
+type QuizEl = HTMLElement & { question: string; options: string[] };
+type FileManagerEl = HTMLElement & { threadId: string; open: boolean };
+
+// Argon text bindings insert markup verbatim; everything user-authored is
+// escaped before it is handed to a component prop.
+function esc(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
 const root = document.querySelector<HTMLElement>("#threads-page");
 
 class ThreadsPageHydrator {
@@ -43,31 +74,23 @@ class ThreadsPageHydrator {
 	private projects: ProjectSummary[];
 	private currentProjectId: string | null = null;
 	private messages: ViewMessage[] = [];
-	private draft = "";
-	private attachedFiles: {name: string; path: string}[] = [];
+	private attachedFiles: { name: string; path: string }[] = [];
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
 	private pendingAssistant = "";
-	private pendingApproval: {id: string; message: string} | null = null;
+	private pendingApproval: { id: string; message: string } | null = null;
 	private pendingQuiz: PendingQuiz | null = null;
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
 	private readonly messagesEl: HTMLElement;
 	private readonly titleEl: HTMLElement;
-	private readonly promptEl: HTMLElement & {
-		value: string;
-		disabled: boolean;
-		running: boolean;
-		placeholder: string;
-	};
-	private readonly approvalEl: HTMLElement;
-	private readonly approvalMessageEl: HTMLElement;
-	private readonly quizEl: HTMLElement;
-	private readonly quizQuestionEl: HTMLElement;
+	private readonly promptEl: PromptEl;
+	private readonly approvalEl: ApprovalEl;
+	private readonly quizEl: QuizEl;
 	private readonly errorEl: HTMLElement;
-	private readonly sidebarListEl: HTMLElement;
-	private readonly fileManagerEl: HTMLElement & {threadId: string; open: boolean};
+	private readonly sidebarEl: SidebarEl;
+	private readonly fileManagerEl: FileManagerEl;
 
 	constructor(private readonly root: HTMLElement) {
 		this.threadId = root.dataset.threadId ?? "";
@@ -76,14 +99,12 @@ class ThreadsPageHydrator {
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");
 		this.errorEl = this.mustQuery("[data-error]");
-		this.approvalEl = this.ensureApprovalElement();
-		this.approvalMessageEl = this.mustQueryFrom(this.approvalEl, "[data-approval-message]");
-		this.quizEl = this.ensureQuizElement();
-		this.quizQuestionEl = this.mustQueryFrom(this.quizEl, "[data-quiz-question]");
-		this.sidebarListEl = this.mustQuery("[data-sidebar-list]");
+		this.approvalEl = this.mustQuery("[data-approval]");
+		this.quizEl = this.mustQuery("[data-quiz]");
+		this.sidebarEl = this.mustQuery("app-sidebar");
 		this.fileManagerEl = this.mustQuery("[data-file-manager]");
 		this.threads = this.readThreads();
-		this.projects = this.readProjects();
+		this.projects = this.sidebarEl.projects.map(({ id, title }) => ({ id, title }));
 		this.currentProjectId = this.threads.find((t) => t.id === this.threadId)?.project_id ?? null;
 
 		this.bindEvents();
@@ -103,145 +124,52 @@ class ThreadsPageHydrator {
 		return element;
 	}
 
-	private mustQueryFrom<T extends Element>(root: Element, selector: string): T {
-		const element = root.querySelector<T>(selector);
-		if (!element) {
-			throw new Error(`Missing ${selector}`);
-		}
-
-		return element;
-	}
-
-	private ensureApprovalElement(): HTMLElement {
-		const existing = this.root.querySelector<HTMLElement>("[data-approval]");
-		if (existing) return existing;
-
-		const element = document.createElement("app-approval-bar");
-		element.dataset.approval = "";
-		element.hidden = true;
-		element.style.margin = "auto";
-		element.style.display = "none";
-
-		const message = document.createElement("span");
-		message.dataset.approvalMessage = "";
-		element.append(message);
-
-		this.errorEl.before(element);
-		return element;
-	}
-
-	private ensureQuizElement(): HTMLElement {
-		const existing = this.root.querySelector<HTMLElement>("[data-quiz]");
-		if (existing) return existing;
-
-		const element = document.createElement("app-quiz-bar");
-		element.dataset.quiz = "";
-		element.hidden = true;
-		element.style.margin = "auto";
-		element.style.display = "none";
-
-		const question = document.createElement("span");
-		question.slot = "question";
-		question.dataset.quizQuestion = "";
-		element.append(question);
-
-		this.errorEl.before(element);
-		return element;
+	// The server hydrates the sidebar with grouped threads; flatten them back
+	// into API-shaped summaries.
+	private readThreads(): ThreadSummary[] {
+		const grouped = this.sidebarEl.projects.flatMap((project) =>
+			project.threads.map((thread) => ({ ...thread, project_id: project.id })),
+		);
+		const ungrouped = this.sidebarEl.threads.map((thread) => ({ ...thread, project_id: null }));
+		return [...grouped, ...ungrouped];
 	}
 
 	private bindEvents() {
-		this.root
-			.querySelector<HTMLElement>('[data-action="new-thread"]')
-			?.addEventListener("click", () => this.startNew());
-		this.root
-			.querySelector<HTMLElement>('[data-action="logout"]')
-			?.addEventListener("click", () => void this.onLogout());
-		this.root
-			.querySelector<HTMLElement>('[data-action="new-project"]')
-			?.addEventListener("click", () => void this.onNewProject());
+		this.sidebarEl.addEventListener("new-thread", () => this.startNew());
+		this.sidebarEl.addEventListener("thread-select", (event) =>
+			this.onThreadSelect((event as CustomEvent<{ id: string }>).detail.id),
+		);
+		this.sidebarEl.addEventListener("logout", () => void this.onLogout());
+		this.sidebarEl.addEventListener("new-project", () => void this.onNewProject());
+		this.sidebarEl.addEventListener("project-rename", (event) => {
+			const { id, title } = (event as CustomEvent<{ id: string; title: string }>).detail;
+			void this.onRenameProject(id, title);
+		});
+		this.sidebarEl.addEventListener("project-delete", (event) =>
+			void this.onDeleteProject((event as CustomEvent<{ id: string }>).detail.id),
+		);
 		this.root
 			.querySelectorAll<HTMLElement>('[data-action="files"]')
 			.forEach((button) => button.addEventListener("click", () => this.toggleFiles()));
 		this.fileManagerEl.addEventListener("files-close", () => {
 			this.fileManagerEl.open = false;
 		});
-		this.sidebarListEl.addEventListener("click", (event) =>
-			this.onSidebarClick(event),
-		);
-		this.promptEl.addEventListener("value-change", (event) =>
-			this.onDraft(event as CustomEvent<{ value: string }>),
-		);
 		this.promptEl.addEventListener("prompt-submit", (event) =>
 			this.onPromptSubmit(event as CustomEvent<{ value: string }>),
 		);
 		this.promptEl.addEventListener("prompt-stop", () => void this.onStop());
 		this.promptEl.addEventListener("files-attach", (event) =>
-			void this.onFilesAttach(event as CustomEvent<{files: File[]}>),
+			void this.onFilesAttach(event as CustomEvent<{ files: File[] }>),
 		);
 		this.approvalEl.addEventListener("approval-response", (event) =>
-			void this.onApprovalResponse(event as CustomEvent<{approved: boolean}>),
+			void this.onApprovalResponse(event as CustomEvent<{ approved: boolean }>),
 		);
 		this.quizEl.addEventListener("quiz-response", (event) =>
-			void this.onQuizResponse(event as CustomEvent<{answer: string}>),
+			void this.onQuizResponse(event as CustomEvent<{ answer: string }>),
 		);
 		window.addEventListener("popstate", () => {
 			window.location.href = window.location.pathname;
 		});
-	}
-
-	private readThreads(): ThreadSummary[] {
-		return Array.from(
-			this.sidebarListEl.querySelectorAll<HTMLElement>("[data-thread-id]"),
-		).map((element) => ({
-			id: element.dataset.threadId ?? "",
-			title: element.textContent?.trim() ?? "Untitled",
-			project_id: element.dataset.projectId ?? null,
-		}));
-	}
-
-	private readProjects(): ProjectSummary[] {
-		return Array.from(
-			this.sidebarListEl.querySelectorAll<HTMLElement>("[data-project-id]"),
-		).map((element) => ({
-			id: element.getAttribute("data-project-id") ?? "",
-			title: element.getAttribute("title") ?? element.textContent?.trim() ?? "",
-		}));
-	}
-
-	private readMessages(): ViewMessage[] {
-		return Array.from(
-			this.messagesEl.querySelectorAll<HTMLElement>("app-message[data-role]"),
-		).map((element) => {
-			const toolNames = element.getAttribute("tool_names");
-
-			return {
-				id: element.dataset.messageId ?? "",
-				seq: Number(element.dataset.seq ?? 0),
-				role: this.readRole(element.dataset.role),
-				content:
-					element.querySelector<HTMLElement>("[data-content]")?.textContent ?? "",
-				thinking:
-					element.querySelector<HTMLElement>("[data-thinking]")?.textContent ??
-					null,
-				tool_call_name: toolNames
-					?.split(",")
-					.map((name) => name.trim())
-					.find(Boolean) ?? null,
-			};
-		});
-	}
-
-	private readRole(role: string | undefined): ThreadMessage["role"] {
-		if (
-			role === "system" ||
-			role === "agent" ||
-			role === "user" ||
-			role === "tool"
-		) {
-			return role;
-		}
-
-		return "agent";
 	}
 
 	private openEvents(threadId: string, after?: number) {
@@ -452,27 +380,16 @@ class ThreadsPageHydrator {
 		this.syncTitle();
 	}
 
-	private canSend() {
-		return this.draft.trim().length > 0 && !this.running;
-	}
-
-	private onDraft(event: CustomEvent<{ value: string }>) {
-		this.draft = event.detail.value;
-	}
-
 	private onPromptSubmit(event: CustomEvent<{ value: string }>) {
-		this.draft = event.detail.value;
-		void this.submitDraft();
+		void this.submitDraft(event.detail.value.trim());
 	}
 
-	private async submitDraft() {
-		if (!this.canSend()) {
+	private async submitDraft(content: string) {
+		if (!content || this.running) {
 			return;
 		}
 
-		const content = this.draft.trim();
 		const filePaths = this.attachedFiles.map((f) => f.path);
-		this.draft = "";
 		this.attachedFiles = [];
 		this.error = "";
 		this.running = true;
@@ -542,7 +459,6 @@ class ThreadsPageHydrator {
 		this.currentProjectId = null;
 		this.root.dataset.threadId = "";
 		this.messages = [];
-		this.draft = "";
 		this.attachedFiles = [];
 		this.running = false;
 		this.pendingAssistant = "";
@@ -556,16 +472,7 @@ class ThreadsPageHydrator {
 		history.pushState(null, "", "/threads");
 	}
 
-	private onSidebarClick(event: Event) {
-		const item = (event.target as Element).closest<HTMLElement>(
-			"[data-thread-id]",
-		);
-		if (!item) {
-			return;
-		}
-
-		event.preventDefault();
-		const id = item.dataset.threadId ?? "";
+	private onThreadSelect(id: string) {
 		if (!id || id === this.threadId) {
 			return;
 		}
@@ -636,107 +543,20 @@ class ThreadsPageHydrator {
 		}
 	}
 
+	// Reactive sidebar props: the component reconciles its keyed lists, so
+	// unchanged projects and threads keep their DOM.
 	private renderSidebar() {
-		const grouped = new Map<string, ThreadSummary[]>();
-		const ungrouped: ThreadSummary[] = [];
-
-		for (const project of this.projects) {
-			grouped.set(project.id, []);
-		}
-		for (const thread of this.threads) {
-			if (thread.project_id && grouped.has(thread.project_id)) {
-				grouped.get(thread.project_id)!.push(thread);
-			} else {
-				ungrouped.push(thread);
-			}
-		}
-
-		const children: HTMLElement[] = [];
-
-		for (const project of this.projects) {
-			const group = this.createProjectGroup(project, grouped.get(project.id) ?? []);
-			children.push(group);
-		}
-
-		if (ungrouped.length > 0) {
-			const group = this.createThreadGroup("Threads", ungrouped);
-			children.push(group);
-		}
-
-		this.sidebarListEl.replaceChildren(...children);
-	}
-
-	private createProjectGroup(project: ProjectSummary, threads: ThreadSummary[]): HTMLElement {
-		const group = document.createElement("app-sidebar-group") as HTMLElement & {
-			title: string;
-		};
-		group.title = project.title;
-		group.setAttribute("data-project-id", project.id);
-
-		const actions = document.createElement("span");
-		actions.className = "project-actions";
-
-		const renameBtn = document.createElement("button");
-		renameBtn.type = "button";
-		renameBtn.className = "project-action-btn";
-		renameBtn.title = "Rename";
-		renameBtn.textContent = "✎";
-		renameBtn.addEventListener("click", (e) => {
-			e.stopPropagation();
-			void this.onRenameProject(project.id, project.title);
-		});
-
-		const deleteBtn = document.createElement("button");
-		deleteBtn.type = "button";
-		deleteBtn.className = "project-action-btn";
-		deleteBtn.title = "Delete";
-		deleteBtn.textContent = "✕";
-		deleteBtn.addEventListener("click", (e) => {
-			e.stopPropagation();
-			void this.onDeleteProject(project.id);
-		});
-
-		actions.append(renameBtn, deleteBtn);
-		group.append(actions);
-
-		for (const thread of threads) {
-			group.append(this.createThreadElement(thread));
-		}
-
-		return group;
-	}
-
-	private createThreadGroup(title: string, threads: ThreadSummary[]): HTMLElement {
-		const group = document.createElement("app-sidebar-group") as HTMLElement & {
-			title: string;
-		};
-		group.title = title;
-
-		for (const thread of threads) {
-			group.append(this.createThreadElement(thread));
-		}
-
-		return group;
-	}
-
-	private createThreadElement(thread: ThreadSummary) {
-		const item = document.createElement("app-sidebar-group-item") as HTMLElement & {
-			target: string;
-			active: boolean;
-		};
-		item.setAttribute("target", `/threads/${thread.id}`);
-		item.dataset.threadId = thread.id;
-		if (thread.project_id) {
-			item.dataset.projectId = thread.project_id;
-		}
-		item.active = thread.id === this.threadId;
-		item.toggleAttribute("active", item.active);
-
-		const label = document.createElement("span");
-		label.className = "thread-label";
-		label.textContent = thread.title;
-		item.append(label);
-		return item;
+		this.sidebarEl.projects = this.projects.map((project) => ({
+			id: project.id,
+			title: esc(project.title),
+			threads: this.threads
+				.filter((thread) => thread.project_id === project.id)
+				.map(({ id, title }) => ({ id, title: esc(title) })),
+		}));
+		this.sidebarEl.threads = this.threads
+			.filter((thread) => !thread.project_id || !this.projects.some((p) => p.id === thread.project_id))
+			.map(({ id, title }) => ({ id, title: esc(title) }));
+		this.sidebarEl.activeThread = this.threadId;
 	}
 
 	private renderMessages() {
@@ -757,66 +577,31 @@ class ThreadsPageHydrator {
 	}
 
 	private updateMessageElement(message: ViewMessage) {
-		const element = this.messagesEl.querySelector<HTMLElement & { text: string; with_thinking: boolean }>(
+		const element = this.messagesEl.querySelector<MessageEl>(
 			`app-message[data-message-id="${message.id}"]`,
 		);
 		if (!element) {
 			return;
 		}
 
-		element.text = message.content || (message.pending ? "Thinking..." : "");
-
+		element.text = message.content ? esc(message.content) : message.pending ? "Thinking..." : "";
 		if (message.thinking) {
-			let thinking = element.querySelector<HTMLElement>("[data-thinking]");
-			if (!thinking) {
-				thinking = document.createElement("span");
-				thinking.slot = "thinking";
-				thinking.dataset.thinking = "";
-				element.prepend(thinking);
-			}
-			thinking.textContent = message.thinking;
-			element.with_thinking = true;
+			element.thinking = esc(message.thinking);
 		}
 
 		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
 	}
 
 	private createMessageElement(message: ViewMessage) {
-		const element = document.createElement("app-message") as HTMLElement & {
-			message_id: string;
-			type: string;
-			tool_names: string[];
-			with_thinking: boolean;
-			text: string;
-		};
+		const element = document.createElement("app-message") as MessageEl;
 		const messageType = this.messageType(message);
-		element.message_id = message.id;
-		element.type = messageType.type;
-		element.dataset.messageId = message.id;
-		element.dataset.seq = String(message.seq);
-		element.dataset.role = message.role;
-		if (messageType.toolName) {
-			element.tool_names = [messageType.toolName];
-			element.setAttribute("tool_names", messageType.toolName);
-		}
-		if (message.thinking) {
-			element.with_thinking = true;
-			const thinking = document.createElement("span");
-			thinking.slot = "thinking";
-			thinking.dataset.thinking = "";
-			thinking.textContent = message.thinking;
-			element.append(thinking);
-		}
-
-		if (messageType.type === "tool_output") {
-			const content = document.createElement("span");
-			content.dataset.content = "";
-			content.textContent = message.content || "";
-			element.append(content);
-		} else {
-			element.text = message.content || (message.pending ? "Thinking..." : "");
-		}
-
+		element.setAttribute("data-message-id", message.id);
+		element.seq = message.seq;
+		element.role = message.role;
+		element.kind = messageType.type;
+		element.toolName = esc(messageType.toolName ?? "");
+		element.thinking = message.thinking ? esc(message.thinking) : "";
+		element.text = message.content ? esc(message.content) : message.pending ? "Thinking..." : "";
 		return element;
 	}
 
@@ -835,7 +620,7 @@ class ThreadsPageHydrator {
 		return empty;
 	}
 
-	private messageType(message: ThreadMessage) {
+	private messageType(message: ThreadMessage): { type: string; toolName?: string } {
 		if (message.tool_call_name) {
 			return { type: "agent", toolName: message.tool_call_name };
 		}
@@ -855,58 +640,20 @@ class ThreadsPageHydrator {
 	}
 
 	private syncComposer() {
-		this.promptEl.value = this.draft;
 		this.promptEl.running = this.running;
 		this.promptEl.placeholder = this.threadId ? "Message Friday" : "Ask Friday anything";
 		const hasApproval = this.pendingApproval !== null;
 		const hasQuiz = this.pendingQuiz !== null;
 		this.promptEl.hidden = hasApproval || hasQuiz;
-		this.promptEl.style.display = hasApproval || hasQuiz ? "none" : "";
 		this.approvalEl.hidden = !hasApproval;
-		this.approvalEl.style.display = hasApproval ? "" : "none";
-		this.approvalMessageEl.textContent = this.pendingApproval?.message ?? "";
+		this.approvalEl.message = esc(this.pendingApproval?.message ?? "");
 		this.quizEl.hidden = !hasQuiz;
-		this.quizEl.style.display = hasQuiz ? "" : "none";
-		this.renderQuiz();
+		const quiz = this.pendingQuiz;
+		const question = quiz ? quiz.questions[quiz.index] : undefined;
+		this.quizEl.question = esc(question?.question ?? "");
+		this.quizEl.options = (question?.options ?? []).map(esc);
 		this.errorEl.textContent = this.error;
 		this.fileManagerEl.threadId = this.threadId;
-	}
-
-	private renderQuiz() {
-		const quiz = this.pendingQuiz;
-		this.quizQuestionEl.textContent = quiz
-			? quiz.questions[quiz.index]?.question ?? ""
-			: "";
-		this.quizEl
-			.querySelectorAll("[data-quiz-option]")
-			.forEach((option) => option.remove());
-		const customInput = this.quizEl.shadowRoot?.querySelector<HTMLInputElement>(
-			'input[type="text"]',
-		);
-		if (customInput) customInput.value = "";
-
-		if (!quiz) {
-			return;
-		}
-
-		const question = quiz.questions[quiz.index];
-		const name = `quiz-${quiz.id}-${quiz.index}`;
-		for (const option of question.options) {
-			const label = document.createElement("label");
-			label.slot = "options";
-			label.dataset.quizOption = "";
-
-			const input = document.createElement("input");
-			input.type = "radio";
-			input.name = name;
-			input.value = option;
-
-			const text = document.createElement("span");
-			text.textContent = option;
-
-			label.append(input, text);
-			this.quizEl.append(label);
-		}
 	}
 
 	private toggleFiles() {
@@ -923,7 +670,7 @@ class ThreadsPageHydrator {
 		}
 	}
 
-	private async onApprovalResponse(event: CustomEvent<{approved: boolean}>) {
+	private async onApprovalResponse(event: CustomEvent<{ approved: boolean }>) {
 		if (!this.threadId || !this.pendingApproval) return;
 
 		const approval = this.pendingApproval;
@@ -938,7 +685,7 @@ class ThreadsPageHydrator {
 		}
 	}
 
-	private async onQuizResponse(event: CustomEvent<{answer: string}>) {
+	private async onQuizResponse(event: CustomEvent<{ answer: string }>) {
 		if (!this.threadId || !this.pendingQuiz) return;
 
 		const quiz = this.pendingQuiz;
@@ -961,20 +708,20 @@ class ThreadsPageHydrator {
 		}
 	}
 
-	private async onFilesAttach(event: CustomEvent<{files: File[]}>) {
+	private async onFilesAttach(event: CustomEvent<{ files: File[] }>) {
 		if (!this.threadId) {
 			this.flash("Start a thread before uploading files.");
 			return;
 		}
 
-		const {files} = event.detail;
+		const { files } = event.detail;
 		const label = files.length === 1 ? files[0].name : `${files.length} files`;
 		this.flash(`Uploading ${label}…`);
 
 		try {
 			const uploaded = await uploadFiles(this.threadId, files);
 			for (const f of uploaded) {
-				this.attachedFiles.push({name: f.name, path: f.path});
+				this.attachedFiles.push({ name: f.name, path: f.path });
 			}
 			const count = this.attachedFiles.length;
 			this.flash(`${count} file${count === 1 ? "" : "s"} attached`);
