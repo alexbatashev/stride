@@ -1,6 +1,21 @@
 use std::env;
 use std::process::Command;
 
+// Components compiled to Rust for SSR. app-files.tsx is client-only (it
+// drives the REST API from the browser), so it stays out of this list.
+const SSR_COMPONENTS: &[&str] = &[
+    "src/components/app-approval-bar.tsx",
+    "src/components/app-button.tsx",
+    "src/components/app-message.tsx",
+    "src/components/app-prompt-input.tsx",
+    "src/components/app-quiz-bar.tsx",
+    "src/components/app-sidebar.tsx",
+    "src/components/app-spoiler.tsx",
+    "src/components/app-text-input.tsx",
+    "src/components/auth-form.tsx",
+    "src/components/auto-markdown.tsx",
+];
+
 fn main() {
     println!("cargo:rerun-if-changed=frontend/src");
     println!("cargo:rerun-if-changed=frontend/package.json");
@@ -26,47 +41,22 @@ fn main() {
         .expect("pnpm build failed");
     assert!(status.success(), "pnpm build failed");
 
-    // Compile Argon components to Rust for SSR
-    println!("cargo:rerun-if-changed=frontend/src/components/app-button.ts");
-    let status = Command::new("pnpm")
-        .current_dir(&frontend)
-        .args([
-            "exec",
-            "argon",
-            "compile",
-            "src/components/app-button.ts",
-            "--rust",
-            "--out-dir",
-            &out_dir,
-        ])
-        .status()
-        .expect("argon compile failed");
-    assert!(status.success(), "argon --rust failed for app-button.ts");
-
     let icons_dir = frontend.join("src/components/icons");
-    let mut entries: Vec<_> = std::fs::read_dir(&icons_dir)
+    let mut icons: Vec<String> = std::fs::read_dir(&icons_dir)
         .expect("failed to read icons dir")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ts"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "tsx"))
+        .map(|e| format!("src/components/icons/{}", e.file_name().to_str().unwrap()))
         .collect();
-    entries.sort_by_key(|e| e.file_name());
+    icons.sort();
 
-    for entry in entries {
-        let file_name = entry.file_name().to_str().unwrap().to_string();
-        println!("cargo:rerun-if-changed=frontend/src/components/icons/{file_name}");
-        let status = Command::new("pnpm")
-            .current_dir(&frontend)
-            .args([
-                "exec",
-                "argon",
-                "compile",
-                &format!("src/components/icons/{file_name}"),
-                "--rust",
-                "--out-dir",
-                &out_dir,
-            ])
-            .status()
-            .expect("argon compile failed");
-        assert!(status.success(), "argon --rust failed for {file_name}");
-    }
+    let status = Command::new("pnpm")
+        .current_dir(&frontend)
+        .args(["exec", "argon", "compile"])
+        .args(SSR_COMPONENTS)
+        .args(&icons)
+        .args(["--rust", "--out-dir", &out_dir])
+        .status()
+        .expect("argon compile failed");
+    assert!(status.success(), "argon --rust failed");
 }

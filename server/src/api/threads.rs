@@ -49,39 +49,39 @@ pub struct MessageResponse {
 
 #[derive(Serialize)]
 pub struct ThreadPageData {
-    thread_id: String,
-    current_title: String,
-    running: bool,
-    projects: Vec<ProjectTemplateData>,
-    ungrouped_threads: Vec<ThreadTemplateData>,
-    messages: Vec<MessageTemplateData>,
+    pub thread_id: String,
+    pub current_title: String,
+    pub running: bool,
+    pub projects: Vec<ProjectTemplateData>,
+    pub ungrouped_threads: Vec<ThreadTemplateData>,
+    pub messages: Vec<MessageTemplateData>,
 }
 
 #[derive(Serialize)]
-struct ProjectTemplateData {
-    id: String,
-    title: String,
-    threads: Vec<ThreadTemplateData>,
+pub struct ProjectTemplateData {
+    pub id: String,
+    pub title: String,
+    pub threads: Vec<ThreadTemplateData>,
 }
 
 #[derive(Serialize, Clone)]
-struct ThreadTemplateData {
-    id: String,
-    title: String,
-    project_id: Option<String>,
-    active: bool,
+pub struct ThreadTemplateData {
+    pub id: String,
+    pub title: String,
+    pub project_id: Option<String>,
+    pub active: bool,
 }
 
 #[derive(Serialize)]
-struct MessageTemplateData {
-    id: String,
-    seq: u64,
-    role: &'static str,
-    message_type: &'static str,
-    tool_name: Option<String>,
-    content: String,
-    thinking: Option<String>,
-    has_thinking: bool,
+pub struct MessageTemplateData {
+    pub id: String,
+    pub seq: u64,
+    pub role: &'static str,
+    pub message_type: &'static str,
+    pub tool_name: Option<String>,
+    pub content: String,
+    pub thinking: Option<String>,
+    pub has_thinking: bool,
 }
 
 #[derive(Deserialize)]

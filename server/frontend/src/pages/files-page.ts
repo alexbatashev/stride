@@ -1,23 +1,27 @@
 import {logout} from "../api/auth.js";
 import {createProject} from "../api/projects.js";
-import "../components/app-file-browser.js";
 
-const root = document.querySelector<HTMLElement>("#files-page");
+const sidebar = document.querySelector<HTMLElement>("#files-page app-sidebar");
 
-root
-	?.querySelector<HTMLElement>('[data-action="logout"]')
-	?.addEventListener("click", () => {
-		void logout().then(() => {
-			window.location.href = "/auth/login";
-		});
+sidebar?.addEventListener("logout", () => {
+	void logout().then(() => {
+		window.location.href = "/auth/login";
 	});
+});
 
-root
-	?.querySelector<HTMLElement>('[data-action="new-project"]')
-	?.addEventListener("click", () => {
-		const title = window.prompt("Project name:")?.trim();
-		if (!title) return;
-		void createProject(title).then(() => {
-			window.location.href = "/threads";
-		});
+sidebar?.addEventListener("new-project", () => {
+	const title = window.prompt("Project name:")?.trim();
+	if (!title) return;
+	void createProject(title).then(() => {
+		window.location.href = "/threads";
 	});
+});
+
+sidebar?.addEventListener("new-thread", () => {
+	window.location.href = "/threads";
+});
+
+sidebar?.addEventListener("thread-select", (event) => {
+	const id = (event as CustomEvent<{id: string}>).detail.id;
+	window.location.href = `/threads/${id}`;
+});

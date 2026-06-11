@@ -1,135 +1,76 @@
 import * as esbuild from 'esbuild';
-import { existsSync, unlinkSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
-const litEntry = [
-  "export { CSSResult, LitElement, ReactiveElement, _$LE, _$LH, adoptStyles, css, defaultConverter, getCompatibleStyle, html, isServer, mathml, noChange, notEqual, nothing, render, supportsAdoptingStyleSheets, svg, unsafeCSS } from 'lit';",
-  "export { literal, unsafeStatic, withStatic } from 'lit/static-html.js';",
-  "export * from 'lit/async-directive.js';",
-  "export * from 'lit/decorators.js';",
-  "export * from 'lit/directive-helpers.js';",
-  "export * from 'lit/directive.js';",
-  "export * from 'lit/directives/async-append.js';",
-  "export * from 'lit/directives/async-replace.js';",
-  "export * from 'lit/directives/cache.js';",
-  "export * from 'lit/directives/choose.js';",
-  "export * from 'lit/directives/class-map.js';",
-  "export * from 'lit/directives/guard.js';",
-  "export * from 'lit/directives/if-defined.js';",
-  "export * from 'lit/directives/join.js';",
-  "export * from 'lit/directives/keyed.js';",
-  "export * from 'lit/directives/live.js';",
-  "export * from 'lit/directives/map.js';",
-  "export * from 'lit/directives/range.js';",
-  "export * from 'lit/directives/ref.js';",
-  "export * from 'lit/directives/repeat.js';",
-  "export * from 'lit/directives/style-map.js';",
-  "export * from 'lit/directives/template-content.js';",
-  "export * from 'lit/directives/unsafe-html.js';",
-  "export * from 'lit/directives/unsafe-mathml.js';",
-  "export * from 'lit/directives/unsafe-svg.js';",
-  "export * from 'lit/directives/until.js';",
-  "export * from 'lit/directives/when.js';",
-  "import 'lit/polyfill-support.js';",
-].join('\n');
-for (const staleFile of ['dist/lit-decorators.js', 'dist/lit-entry.js', 'dist/icons.js']) {
-  if (existsSync(staleFile)) {
-    unlinkSync(staleFile);
-  }
-}
-
-// When compiling pages, component imports are side-effect-only registrations
-// that components.js already handles. Stub them out to avoid duplicate
-// customElements.define calls.
-const componentStubPlugin = {
-  name: 'component-stub',
-  setup(build) {
-    build.onResolve({ filter: /^\.\.\/components\// }, args => ({
-      path: args.path, namespace: 'stub',
-    }));
-    build.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
-      contents: '', loader: 'js',
-    }));
-  },
-};
-
-const litExternalPlugin = {
-  name: 'lit-external',
-  setup(build) {
-    build.onResolve({ filter: /^lit\/.+/ }, () => ({
-      path: 'lit',
-      external: true,
-    }));
-  },
-};
-
-// Compile Argon components and bundle into dist/components2.js
-const iconSrcDir = 'src/components/icons';
-const argonTmpDir = join(tmpdir(), 'friday-components2-js');
+// Compile every Argon component to a JS module, then bundle them into
+// dist/components.js — the shared, cacheable script every page loads.
+const componentsDir = 'src/components';
+const iconsDir = join(componentsDir, 'icons');
+const argonOut = join(tmpdir(), 'friday-argon-js');
 mkdirSync('dist', { recursive: true });
-mkdirSync(argonTmpDir, { recursive: true });
-for (const staleFile of readdirSync(argonTmpDir).filter(f => f.endsWith('.js'))) {
-  unlinkSync(join(argonTmpDir, staleFile));
+mkdirSync(argonOut, { recursive: true });
+for (const stale of readdirSync(argonOut)) {
+  unlinkSync(join(argonOut, stale));
 }
-const argon = './node_modules/.bin/argon';
-const argonComponentFiles = [
-  'src/components/app-approval-bar.ts',
-  'src/components/app-button.ts',
-  'src/components/app-data-table.ts',
-  'src/components/app-quiz-bar.ts',
-  ...readdirSync(iconSrcDir)
-    .filter(f => f.endsWith('.ts'))
+
+const tsxIn = (dir) =>
+  readdirSync(dir)
+    .filter((f) => f.endsWith('.tsx'))
     .sort()
-    .map(file => `${iconSrcDir}/${file}`),
-];
-for (const file of argonComponentFiles) {
-  const result = spawnSync(argon, ['compile', file, '--js', '--out-dir', argonTmpDir], { stdio: 'inherit' });
-  if (result.status !== 0) throw new Error(`argon --js failed for ${file}`);
-}
-const components2Entry = join(argonTmpDir, 'components2-entry.js');
+    .map((f) => join(dir, f));
+const componentFiles = [...tsxIn(componentsDir), ...tsxIn(iconsDir)];
+
+const result = spawnSync(
+  './node_modules/.bin/argon',
+  ['compile', ...componentFiles, '--js', '--out-dir', argonOut],
+  { stdio: 'inherit' },
+);
+if (result.status !== 0) throw new Error('argon --js failed');
+
+const entry = join(argonOut, 'components-entry.js');
 writeFileSync(
-  components2Entry,
-  readdirSync(argonTmpDir)
-    .filter(f => f.endsWith('.js') && f !== 'components2-entry.js')
+  entry,
+  readdirSync(argonOut)
+    .filter((f) => f.endsWith('.js') && f !== 'components-entry.js')
     .sort()
-    .map(f => `import './${f}';`)
+    .map((f) => `import './${f}';`)
     .join('\n'),
 );
 
+// Compiled modules keep their source-relative imports (./icons/x.js,
+// ../api/auth.js) but land flat in argonOut; map them back.
+const argonImportsPlugin = {
+  name: 'argon-imports',
+  setup(build) {
+    build.onResolve({ filter: /^\.\.?\// }, async (args) => {
+      if (args.resolveDir !== argonOut || args.kind === 'entry-point') return;
+      if (args.path.startsWith('./')) {
+        const flat = join(argonOut, basename(args.path));
+        if (existsSync(flat)) return { path: flat };
+      }
+      return build.resolve(args.path, {
+        kind: args.kind,
+        resolveDir: resolve(componentsDir),
+      });
+    });
+  },
+};
+
 await Promise.all([
   esbuild.build({
-    entryPoints: [components2Entry],
+    entryPoints: [entry],
     bundle: true,
     format: 'esm',
     minify: true,
-    outfile: 'dist/components2.js',
+    outfile: 'dist/components.js',
+    plugins: [argonImportsPlugin],
   }),
   esbuild.build({
     entryPoints: ['src/style/index.css'],
     bundle: true,
     outfile: 'dist/common.css',
-  }),
-  esbuild.build({
-    stdin: {
-      contents: litEntry,
-      resolveDir: '.',
-      sourcefile: 'lit-entry.js',
-    },
-    bundle: true,
-    format: 'esm',
-    minify: true,
-    outfile: 'dist/lit.js',
-  }),
-  esbuild.build({
-    entryPoints: ['src/components/index.ts'],
-    bundle: true,
-    format: 'esm',
-    external: ['lit'],
-    minify: true,
-    outfile: 'dist/components.js',
-    plugins: [litExternalPlugin],
   }),
   esbuild.build({
     entryPoints: ['src/api/index.ts'],
@@ -139,12 +80,10 @@ await Promise.all([
     outfile: 'dist/api.js',
   }),
   esbuild.build({
-    entryPoints: ['src/pages/auth-page.ts', 'src/pages/sample-page.ts', 'src/pages/threads-page.ts', 'src/pages/files-page.ts'],
+    entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts'],
     bundle: true,
     format: 'esm',
-    external: ['lit'],
     minify: true,
     outdir: 'dist/pages',
-    plugins: [componentStubPlugin, litExternalPlugin],
   }),
 ]);

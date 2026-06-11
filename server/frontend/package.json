@@ -2,17 +2,13 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "tsc --noEmit",
-    "showcase": "node dev.mjs"
+    "showcase": "node dev.mjs",
+    "test": "node build.mjs && node --test test/components.test.mjs"
   },
   "devDependencies": {
-    "@frontiers-labs/argon": "0.2.4",
-    "@lit/localize-tools": "^0.8.1",
+    "@frontiers-labs/argon": "0.3.0",
+    "@happy-dom/global-registrator": "^20.10.2",
     "esbuild": "^0.28.0",
     "typescript": "^6.0.3"
-  },
-  "dependencies": {
-    "@lit-labs/signals": "^0.2.0",
-    "@lit/localize": "^0.12.2",
-    "lit": "^3.3.2"
   }
 }

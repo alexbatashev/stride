@@ -354,7 +354,6 @@ mod tests {
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
     };
-    use handlebars::Handlebars;
     use std::{collections::HashMap, path::PathBuf};
     use tower::ServiceExt;
 
@@ -512,7 +511,6 @@ mod tests {
                 jwt_secret: "test-secret".to_string(),
                 runner,
                 model_config,
-                templates: Handlebars::new(),
                 vfs: None,
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
