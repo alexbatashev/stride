@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild';
-import { existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -8,7 +8,7 @@ import { basename, join, resolve } from 'node:path';
 // dist/components.js — the shared, cacheable script every page loads.
 const componentsDir = 'src/components';
 const iconsDir = join(componentsDir, 'icons');
-const argonOut = join(tmpdir(), 'friday-argon-js');
+const argonOut = join(realpathSync(tmpdir()), 'friday-argon-js');
 mkdirSync('dist', { recursive: true });
 mkdirSync(argonOut, { recursive: true });
 for (const stale of readdirSync(argonOut)) {
