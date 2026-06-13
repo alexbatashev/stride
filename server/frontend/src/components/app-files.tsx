@@ -404,7 +404,9 @@ const browserStyles = css`
     opacity: 0.5;
   }
 
-  .action-button > :first-child,
+  /* Labels are <span>; icons are custom elements. Only size the icon so a
+     text-only button (e.g. Rename) isn't squeezed into a 16px box. */
+  .action-button > :not(span),
   .icon-button > * {
     height: 16px;
     width: 16px;
@@ -741,7 +743,7 @@ const managerStyles = css`
     width: 16px;
   }
 
-  .action-button > :first-child {
+  .action-button > :not(span) {
     height: 16px;
     width: 16px;
   }

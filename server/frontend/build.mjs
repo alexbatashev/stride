@@ -58,12 +58,19 @@ const argonImportsPlugin = {
   },
 };
 
+// Without an explicit target esbuild emits esnext (private class fields, etc.),
+// which older mobile Safari/Chrome fail to parse — the whole bundle then never
+// runs and every hydrated control (login button included) is dead. Downlevel to
+// a baseline that covers phones a few years old.
+const target = ['es2020'];
+
 await Promise.all([
   esbuild.build({
     entryPoints: [entry],
     bundle: true,
     format: 'esm',
     minify: true,
+    target,
     outfile: 'dist/components.js',
     plugins: [argonImportsPlugin],
   }),
@@ -77,13 +84,15 @@ await Promise.all([
     bundle: true,
     format: 'esm',
     minify: true,
+    target,
     outfile: 'dist/api.js',
   }),
   esbuild.build({
-    entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts'],
+    entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/settings-page.ts'],
     bundle: true,
     format: 'esm',
     minify: true,
+    target,
     outdir: 'dist/pages',
   }),
 ]);

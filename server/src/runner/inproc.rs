@@ -44,6 +44,7 @@ use crate::{
         python::VfsExecFileSystem,
         shell::EmulatedShellBackend,
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
+        telegram::SendTelegramMessageTool,
         vfs::{
             ListFilesTool, ReadTextFileTool, VfsDocumentToMarkdownTool,
             VfsMarkdownToOfficeWordTool, VfsMarkdownToPdfTool, VfsPresentationXmlToPptxTool,
@@ -165,6 +166,7 @@ struct WorkerInit {
     tools: Tools,
     mcp_tools: Vec<McpTool>,
     vfs: Option<Arc<Vfs>>,
+    telegram_bot_token: Option<String>,
     system_prompt: String,
     idle_ttl: Duration,
 }
@@ -175,6 +177,7 @@ struct WorkerState {
     tools: Tools,
     mcp_tools: Vec<McpTool>,
     vfs: Option<Arc<Vfs>>,
+    telegram_bot_token: Option<String>,
     system_prompt: String,
     idle_ttl: Duration,
     threads: HashMap<Uuid, ThreadRunner>,
@@ -239,6 +242,25 @@ impl InProcessAgentPool {
             tools,
             mcp_tools,
             None,
+            None,
+        )
+    }
+
+    pub fn with_tool_config_and_telegram(
+        db: ConnectionPool,
+        config: Arc<AgentConfig>,
+        tools: Tools,
+        mcp_tools: Vec<McpTool>,
+        telegram_bot_token: Option<String>,
+    ) -> Self {
+        Self::with_system_prompt_and_tools(
+            db,
+            config,
+            BASE_SYSTEM_PROMPT.to_string(),
+            tools,
+            mcp_tools,
+            None,
+            telegram_bot_token,
         )
     }
 
@@ -256,6 +278,26 @@ impl InProcessAgentPool {
             tools,
             mcp_tools,
             Some(vfs),
+            None,
+        )
+    }
+
+    pub fn with_file_provider_and_telegram(
+        db: ConnectionPool,
+        config: Arc<AgentConfig>,
+        tools: Tools,
+        mcp_tools: Vec<McpTool>,
+        vfs: Arc<Vfs>,
+        telegram_bot_token: Option<String>,
+    ) -> Self {
+        Self::with_system_prompt_and_tools(
+            db,
+            config,
+            BASE_SYSTEM_PROMPT.to_string(),
+            tools,
+            mcp_tools,
+            Some(vfs),
+            telegram_bot_token,
         )
     }
 
@@ -274,16 +316,18 @@ impl InProcessAgentPool {
         tools: Tools,
         mcp_tools: Vec<McpTool>,
         vfs: Option<Arc<Vfs>>,
+        telegram_bot_token: Option<String>,
     ) -> Self {
-        Self::with_idle_ttl_and_tools(
+        Self::from_init(WorkerInit {
             db,
             config,
-            system_prompt,
-            DEFAULT_IDLE_TTL,
             tools,
             mcp_tools,
             vfs,
-        )
+            telegram_bot_token,
+            system_prompt,
+            idle_ttl: DEFAULT_IDLE_TTL,
+        })
     }
 
     pub fn with_idle_ttl(
@@ -312,15 +356,19 @@ impl InProcessAgentPool {
         mcp_tools: Vec<McpTool>,
         vfs: Option<Arc<Vfs>>,
     ) -> Self {
-        let init = WorkerInit {
+        Self::from_init(WorkerInit {
             db,
             config,
             tools,
             mcp_tools,
             vfs,
+            telegram_bot_token: None,
             system_prompt,
             idle_ttl,
-        };
+        })
+    }
+
+    fn from_init(init: WorkerInit) -> Self {
         let workers = (0..WORKER_THREADS)
             .map(|idx| start_worker(idx, init.clone()))
             .collect();
@@ -449,6 +497,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 tools,
                 mcp_tools,
                 vfs,
+                telegram_bot_token,
                 system_prompt,
                 idle_ttl,
             } = init;
@@ -458,6 +507,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 tools,
                 mcp_tools,
                 vfs,
+                telegram_bot_token,
                 system_prompt,
                 idle_ttl,
                 threads: HashMap::new(),
@@ -777,7 +827,7 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, tools, mcp_tools, vfs, base_system_prompt) = {
+    let (db, config, tools, mcp_tools, vfs, telegram_bot_token, base_system_prompt) = {
         let state = state.borrow();
         (
             state.db.clone(),
@@ -785,6 +835,7 @@ async fn ensure_runner(
             state.tools.clone(),
             state.mcp_tools.clone(),
             state.vfs.clone(),
+            state.telegram_bot_token.clone(),
             state.system_prompt.clone(),
         )
     };
@@ -824,6 +875,15 @@ async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("create_skill");
+    if let Some(bot_token) = telegram_bot_token {
+        agent.register_tool(SendTelegramMessageTool {
+            db: db.clone(),
+            user_id,
+            thread_id,
+            bot_token,
+        });
+        agent.allow_tool("send_telegram_message");
+    }
     let mut python_workspace = None;
     if let Some(provider) = vfs {
         let workspace_id = provider
@@ -2103,6 +2163,7 @@ mod tests {
             tools: Tools::default(),
             mcp_tools: Vec::new(),
             vfs: None,
+            telegram_bot_token: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
             threads,
@@ -2188,6 +2249,7 @@ mod tests {
             tools: Tools::default(),
             mcp_tools: Vec::new(),
             vfs: None,
+            telegram_bot_token: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
             threads,

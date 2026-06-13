@@ -449,6 +449,7 @@ mod tests {
                     allow_registration: Some(false),
                     ldap: None,
                     files: None,
+                    telegram: None,
                 }),
                 ..empty_config()
             },
@@ -512,6 +513,7 @@ mod tests {
                 runner,
                 model_config,
                 vfs: None,
+                telegram_sessions: Arc::new(crate::api::telegram::TelegramSessions::default()),
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
         )

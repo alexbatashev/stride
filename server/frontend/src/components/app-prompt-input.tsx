@@ -25,12 +25,12 @@ const styles = css`
   form {
     background: var(--prompt-bg, #212121);
     border: 1px solid var(--prompt-border, #333333);
-    border-radius: 28px;
+    border-radius: 20px;
     box-shadow: var(--prompt-shadow, none);
     box-sizing: border-box;
     display: grid;
-    gap: 34px;
-    padding: 32px 24px 26px;
+    gap: 10px;
+    padding: 12px 12px 10px;
     transition:
       border-color 140ms ease,
       box-shadow 140ms ease;
@@ -46,10 +46,10 @@ const styles = css`
     border: 0;
     color: var(--prompt-fg, #d4d4d4);
     font: inherit;
-    font-size: 1rem;
-    line-height: 1.2;
+    font-size: 0.95rem;
+    line-height: 1.4;
     max-height: 220px;
-    min-height: 48px;
+    min-height: 36px;
     min-width: 0;
     outline: none;
     overflow-y: auto;
@@ -70,22 +70,22 @@ const styles = css`
   .toolbar {
     align-items: center;
     display: flex;
-    gap: 16px;
+    gap: 8px;
     justify-content: space-between;
-    min-height: 42px;
+    min-height: 32px;
   }
 
   .actions {
     align-items: center;
     display: flex;
-    gap: 14px;
+    gap: 6px;
     min-width: 0;
   }
 
   .right-actions {
     align-items: center;
     display: flex;
-    gap: 18px;
+    gap: 6px;
   }
 
   .tool-button,
@@ -112,17 +112,17 @@ const styles = css`
     color: var(--prompt-control-fg, #bdbdbd);
     cursor: pointer;
     font: inherit;
-    font-size: 0.95rem;
+    font-size: 0.875rem;
     font-weight: 500;
-    gap: 8px;
-    height: 42px;
-    padding: 0 14px;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px;
   }
 
   .tool-button.icon {
-    font-size: 1.5rem;
+    font-size: 1.25rem;
     padding: 0;
-    width: 42px;
+    width: 32px;
   }
 
   .tool-button:hover {
@@ -135,8 +135,8 @@ const styles = css`
     border: 1px solid var(--prompt-send-bg, #333333);
     color: var(--prompt-send-fg, #777777);
     cursor: pointer;
-    height: 42px;
-    width: 42px;
+    height: 32px;
+    width: 32px;
   }
 
   .send:not(:disabled) {
@@ -184,7 +184,7 @@ const styles = css`
 
   @media (min-width: 768px) {
     textarea {
-      font-size: 1.25rem;
+      font-size: 1rem;
     }
   }
 
@@ -194,15 +194,15 @@ const styles = css`
     }
 
     form {
-      border-radius: 24px;
-      gap: 24px;
-      padding: 22px 18px 18px;
+      border-radius: 18px;
+      gap: 10px;
+      padding: 12px;
       width: 100%;
     }
 
     .toolbar {
       align-items: flex-end;
-      gap: 10px;
+      gap: 8px;
     }
 
     .actions {

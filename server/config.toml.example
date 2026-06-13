@@ -39,6 +39,11 @@ keep_versions = 10
 enabled = true
 base = "/tmp/friday-files"
 
+[server.telegram]
+bot_api_key = "123456:telegram-bot-token"
+bot_username = "friday_bot"
+webhook_secret = "change-this-webhook-secret"
+
 [server.ldap]
 url = "ldap://localhost:389"
 user_dn_template = "uid={username},ou=users,dc=example,dc=com"

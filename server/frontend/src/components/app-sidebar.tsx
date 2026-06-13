@@ -11,6 +11,7 @@ import { IconChevronRight } from "./icons/chevron-right.js";
 import { IconFiles } from "./icons/files.js";
 import { IconPanelLeftClose } from "./icons/panel-left-close.js";
 import { IconPanelLeftOpen } from "./icons/panel-left-open.js";
+import { IconSettingsHorizontal } from "./icons/settings-horizontal.js";
 import { IconWorkflow } from "./icons/workflow.js";
 
 interface SidebarThread {
@@ -73,8 +74,8 @@ const styles = css`
   .brand {
     align-items: center;
     display: flex;
-    gap: 10px;
-    padding: 12px;
+    gap: 8px;
+    padding: 8px;
   }
 
   .mark {
@@ -95,7 +96,7 @@ const styles = css`
     color: var(--foreground);
     flex: 1;
     font-size: 14px;
-    font-weight: 650;
+    font-weight: 600;
     min-width: 0;
   }
 
@@ -144,7 +145,7 @@ const styles = css`
 
   .nav-item a {
     align-items: center;
-    border-radius: 8px;
+    border-radius: 6px;
     box-sizing: border-box;
     color: var(--sidebar-fg, var(--foreground));
     display: flex;
@@ -206,24 +207,13 @@ const styles = css`
   }
 
   .root.collapsed .nav-item a {
-    height: 40px;
+    height: 32px;
     justify-content: center;
     padding: 0;
   }
 
   .root.collapsed .nav-item .label {
     display: none;
-  }
-
-  .root.collapsed .nav-item .icon {
-    flex-basis: 32px;
-    height: 32px;
-    width: 32px;
-  }
-
-  .root.collapsed .nav-item .icon > * {
-    height: 32px;
-    width: 32px;
   }
 
   .group {
@@ -235,17 +225,17 @@ const styles = css`
     align-items: center;
     background: transparent;
     border: 0;
-    border-radius: 8px;
+    border-radius: 6px;
     box-sizing: border-box;
-    color: var(--sidebar-fg, var(--foreground));
+    color: var(--muted-foreground);
     cursor: pointer;
     display: flex;
     font: inherit;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 500;
     gap: 8px;
-    height: 32px;
-    line-height: 20px;
+    height: 28px;
+    line-height: 16px;
     margin: 0 8px;
     outline: none;
     padding: 0 8px;
@@ -275,13 +265,14 @@ const styles = css`
 
   .chevron {
     align-items: center;
+    color: var(--muted-foreground);
     display: inline-flex;
-    flex: 0 0 1em;
-    height: 1em;
+    flex: 0 0 16px;
+    height: 16px;
     justify-content: center;
     opacity: 0;
     transition: opacity 140ms ease;
-    width: 1em;
+    width: 16px;
   }
 
   .group-toggle:hover .chevron,
@@ -290,8 +281,16 @@ const styles = css`
   }
 
   .chevron > * {
-    height: 1em;
-    width: 1em;
+    align-items: center;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+
+  .chevron > * > * {
+    height: 16px;
+    width: 16px;
   }
 
   .chevron .closed-mark,
@@ -332,14 +331,14 @@ const styles = css`
   }
 
   .group ul {
+    border-left: 1px solid var(--sidebar-border, var(--border));
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: 2px;
     list-style-type: none;
-    margin: 4px 0 0;
-    padding: 0 8px 0 20px;
-    width: 100%;
+    margin: 4px 8px 0 16px;
+    padding: 0 0 0 10px;
   }
 
   .group.closed ul {
@@ -348,13 +347,13 @@ const styles = css`
 
   .group ul a {
     align-items: center;
-    border-radius: 8px;
+    border-radius: 6px;
     box-sizing: border-box;
     color: var(--sidebar-fg, var(--foreground));
     display: flex;
     font-size: 14px;
     font-weight: 400;
-    height: 32px;
+    height: 28px;
     line-height: 20px;
     outline: none;
     overflow: hidden;
@@ -444,11 +443,13 @@ export function AppSidebar({
   threads = [],
   activeThread = "",
   filesActive = false,
+  settingsActive = false,
 }: {
   projects?: SidebarProject[];
   threads?: SidebarThread[];
   activeThread?: string;
   filesActive?: boolean;
+  settingsActive?: boolean;
 }): Component {
   let status = state("open");
 
@@ -499,6 +500,9 @@ export function AppSidebar({
           class="main"
           onClick={(event: Event) => {
             const target = event.target as Element;
+            // Nav and thread entries are plain <a href> links — let them navigate.
+            // Only project mutations (need a dialog + API) and group collapsing
+            // are handled here.
             const action = target.closest<HTMLElement>("[data-action]");
             if (action) {
               event.preventDefault();
@@ -510,23 +514,11 @@ export function AppSidebar({
             const toggle = target.closest(".group-toggle");
             if (toggle) {
               toggle.closest(".group")!.classList.toggle("closed");
-              return;
-            }
-            const thread = target.closest<HTMLElement>("[data-thread-id]");
-            if (thread) {
-              event.preventDefault();
-              this.dispatchEvent(
-                new CustomEvent("thread-select", {
-                  bubbles: true,
-                  composed: true,
-                  detail: { id: thread.dataset.threadId },
-                }),
-              );
             }
           }}
         >
           <span class="nav-item">
-            <a href="/threads" data-action="new-thread">
+            <a href="/threads">
               <span class="icon"><IconBotMessageSquare /></span>
               <span class="label">New task</span>
             </a>
@@ -541,6 +533,12 @@ export function AppSidebar({
             <a href="/threads">
               <span class="icon"><IconWorkflow /></span>
               <span class="label">Automations</span>
+            </a>
+          </span>
+          <span class="nav-item">
+            <a href="/settings" aria-current={settingsActive ? "page" : "false"}>
+              <span class="icon"><IconSettingsHorizontal /></span>
+              <span class="label">Settings</span>
             </a>
           </span>
           <div class="groups">
@@ -630,6 +628,12 @@ const toggleStyles = css`
     display: inline-flex;
   }
 
+  icon-panel-left-open,
+  icon-panel-left-close {
+    height: 16px;
+    width: 16px;
+  }
+
   .brand-mark {
     align-items: center;
     background: var(--primary);
@@ -656,9 +660,9 @@ const toggleStyles = css`
   .with-brand:focus-within .hover-icon {
     align-items: center;
     display: inline-flex;
-    height: 24px;
+    height: 16px;
     justify-content: center;
-    width: 24px;
+    width: 16px;
   }
 `;
 

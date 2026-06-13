@@ -29,6 +29,13 @@ html {
     --muted-foreground: #71717a;
     --accent: #f4f4f5;
     --accent-foreground: #18181b;
+    /* Sidebar sits slightly off the page background so its hover/active
+       surfaces read against it (shadcn keeps these as a distinct scale). */
+    --sidebar-bg: #fafafa;
+    --sidebar-fg: #18181b;
+    --sidebar-accent: #ececef;
+    --sidebar-accent-fg: #18181b;
+    --sidebar-border: #e4e4e7;
     --border: #e4e4e7;
     --input: #e4e4e7;
     --input-disabled: rgb(244 244 245 / 50%);
@@ -85,6 +92,11 @@ html {
         --muted-foreground: #bdbdbd;
         --accent: #2d2d2d;
         --accent-foreground: #e4e4e7;
+        --sidebar-bg: #1a1a1a;
+        --sidebar-fg: #d4d4d4;
+        --sidebar-accent: #2d2d2d;
+        --sidebar-accent-fg: #fafafa;
+        --sidebar-border: #2a2a2a;
         --border: #333333;
         --input: #333333;
         --input-disabled: rgb(51 51 51 / 55%);

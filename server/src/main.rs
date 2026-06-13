@@ -42,6 +42,7 @@ struct ServerState {
     pub(crate) runner: Arc<dyn AgentPool>,
     pub(crate) model_config: Arc<AgentConfig>,
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
+    pub(crate) telegram_sessions: Arc<api::telegram::TelegramSessions>,
 }
 
 #[derive(Debug, Parser)]
@@ -79,6 +80,12 @@ async fn main() -> anyhow::Result<()> {
         max_iterations: 90,
     });
     let mcp_tools = connect_mcp_servers(&config).await;
+    let telegram_bot_token = config
+        .server
+        .as_ref()
+        .and_then(|s| s.telegram.as_ref())
+        .and_then(|t| t.read_bot_api_key())
+        .filter(|token| !token.is_empty());
     let vfs_provider = config
         .server
         .as_ref()
@@ -104,20 +111,26 @@ async fn main() -> anyhow::Result<()> {
         .map(Arc::new);
 
     let runner: Arc<dyn runner::AgentPool> = if let Some(ref vfs) = vfs_provider {
-        Arc::new(runner::inproc::InProcessAgentPool::with_file_provider(
-            db.clone(),
-            model_config.clone(),
-            tools,
-            mcp_tools,
-            vfs.clone(),
-        ))
+        Arc::new(
+            runner::inproc::InProcessAgentPool::with_file_provider_and_telegram(
+                db.clone(),
+                model_config.clone(),
+                tools,
+                mcp_tools,
+                vfs.clone(),
+                telegram_bot_token,
+            ),
+        )
     } else {
-        Arc::new(runner::inproc::InProcessAgentPool::with_tool_config(
-            db.clone(),
-            model_config.clone(),
-            tools,
-            mcp_tools,
-        ))
+        Arc::new(
+            runner::inproc::InProcessAgentPool::with_tool_config_and_telegram(
+                db.clone(),
+                model_config.clone(),
+                tools,
+                mcp_tools,
+                telegram_bot_token,
+            ),
+        )
     };
 
     let state = Arc::new(ServerState {
@@ -127,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         runner,
         model_config,
         vfs: vfs_provider,
+        telegram_sessions: Arc::new(api::telegram::TelegramSessions::default()),
     });
 
     let static_dir = args
@@ -155,6 +169,16 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/api/register", post(api::auth::register))
         .route("/api/login", post(api::auth::login))
         .route("/api/logout", post(api::auth::logout))
+        .route("/api/settings/telegram", get(api::telegram::settings))
+        .route(
+            "/api/settings/telegram/connect-code",
+            post(api::telegram::create_connect_code),
+        )
+        .route(
+            "/api/settings/telegram/disconnect",
+            post(api::telegram::disconnect),
+        )
+        .route("/api/telegram/webhook", post(api::telegram::webhook))
         .route(
             "/api/projects",
             get(api::projects::list).post(api::projects::create),
@@ -208,6 +232,7 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/threads", get(pages::agent::new_thread))
         .route("/threads/{id}", get(pages::agent::thread))
         .route("/files", get(pages::files::files))
+        .route("/settings", get(pages::settings::settings))
         .route("/", get(root))
         .nest_service("/static", ServeDir::new(static_dir))
         .layer(
