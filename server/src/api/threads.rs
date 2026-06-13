@@ -420,13 +420,35 @@ pub(crate) fn spawn_title_generation(
 ) {
     tokio::spawn(async move {
         let Some(title) = generate_title(&state.model_config, &content).await else {
+            tracing::warn!(%thread_id, "title generation produced no title");
             return;
         };
-        let _ = threads::update()
+        match threads::update()
             .title(title.as_str())
             .where_(threads::id.eq(thread_id))
             .execute(&state.db)
-            .await;
+            .await
+        {
+            Ok(_) => {
+                let stored = threads::select_cols((threads::title,))
+                    .where_(threads::id.eq(thread_id))
+                    .all(&state.db)
+                    .await
+                    .ok()
+                    .and_then(|rows| rows.into_iter().next());
+                match stored {
+                    Some((stored,)) if stored == title => {}
+                    Some((stored,)) => tracing::warn!(
+                        %thread_id,
+                        %title,
+                        %stored,
+                        "title update did not stick"
+                    ),
+                    None => tracing::warn!(%thread_id, %title, "title update matched no thread row"),
+                }
+            }
+            Err(error) => tracing::warn!(%thread_id, %error, "title update failed"),
+        }
         if let Some((chat_id, message_thread_id)) = forum_topic {
             crate::api::telegram::edit_forum_topic(&state, chat_id, message_thread_id, &title)
                 .await;
@@ -1107,6 +1129,55 @@ fn quiz_questions_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn title_update_persists_and_is_read_back() {
+        use crate::db::users;
+        use minisql::ConnectionPool;
+
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(crate::db::get_migrations())
+            .await
+            .unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username("u")
+            .password_hash("x")
+            .personality(Option::<&str>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title(DEFAULT_THREAD_TITLE)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        threads::update()
+            .title("Generated title")
+            .where_(threads::id.eq(thread_id))
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let rows = db
+            .query_with_params(
+                "SELECT title FROM threads WHERE id = ?",
+                vec![Value::Uuid(thread_id)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.rows()[0].get_text("title"),
+            Some("Generated title"),
+            "title update did not persist"
+        );
+    }
 
     #[test]
     fn uuid_value_accepts_sqlite_blob_uuid() {
