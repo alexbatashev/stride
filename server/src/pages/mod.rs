@@ -75,14 +75,26 @@ pub fn render_auth_page(mode: &str) -> String {
         "Log in"
     };
     let body = format!(
-        r#"{form}
+        r#"<style>
+    #auth-page {{
+        align-items: center;
+        box-sizing: border-box;
+        justify-content: center;
+        padding: 24px;
+    }}
+
+    #auth-page .auth-shell {{
+        width: 100%;
+        max-width: 400px;
+    }}
+</style>
+<div class="auth-shell">{form}</div>
 <script type="module">
     document.addEventListener('auth-success', () => {{ window.location.href = '/threads'; }});
-    document.addEventListener('auth-mode-change', (e) => {{ window.location.href = '/auth/' + e.detail.mode; }});
 </script>"#,
         form = AuthForm::new(mode, "", false).render(),
     );
-    render_page(title, "", "", &body)
+    render_page(title, "", r#"id="auth-page""#, &body)
 }
 
 fn render_sidebar(data: &ThreadPageData, files_active: bool, settings_active: bool) -> String {
@@ -591,6 +603,7 @@ mod tests {
         let html = super::render_auth_page("register");
         assert!(html.contains(r#"data-mode="register""#));
         assert!(html.contains("Create account"));
-        assert!(html.contains("auth-mode-change"));
+        // Mode switch is a plain link to the other auth route, not a JS event.
+        assert!(html.contains(r#"href="/auth/login""#));
     }
 }

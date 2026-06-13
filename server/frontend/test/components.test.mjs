@@ -163,11 +163,10 @@ test('app-data-table renders rows and reports selection', () => {
   assert.deepEqual(action.detail, { action: 'open', rowId: 'dir/sub' });
 });
 
-test('auth-form switches mode', () => {
+test('auth-form switches mode via a plain link', () => {
   const el = mount('auth-form', { mode: 'login' });
   assert.match(el.shadowRoot.innerHTML, /Log in/);
-  const switched = lastEvent(el, 'auth-mode-change');
-  const buttons = el.shadowRoot.querySelectorAll('app-button');
-  buttons[1].shadowRoot.querySelector('button').click();
-  assert.equal(switched.detail.mode, 'register');
+  // The mode toggle is a plain navigation link, robust on every page.
+  const link = el.shadowRoot.querySelector('.switch a');
+  assert.equal(link.getAttribute('href'), '/auth/register');
 });
