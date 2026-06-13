@@ -1192,12 +1192,13 @@ async fn finalize_telegram_stream(
         return;
     };
 
-    let Some(message) = send_telegram_rich_message(state, chat_id, message_thread_id, text).await
-    else {
-        let Some(message) = send_telegram_message(state, chat_id, message_thread_id, text).await
-        else {
-            return;
-        };
+    // Only resend as plain text when the rich send genuinely failed to reach Telegram. A delivered
+    // message whose response we couldn't parse must not be resent, or it shows up twice.
+    let sent = match send_telegram_rich_message(state, chat_id, message_thread_id, text).await {
+        RichSend::Sent(message) => message,
+        RichSend::Failed => send_telegram_message(state, chat_id, message_thread_id, text).await,
+    };
+    if let Some(message) = sent {
         let _ = link_telegram_message(
             state,
             user_id,
@@ -1206,16 +1207,7 @@ async fn finalize_telegram_stream(
             thread_id,
         )
         .await;
-        return;
-    };
-    let _ = link_telegram_message(
-        state,
-        user_id,
-        message.chat_id,
-        message.message_id,
-        thread_id,
-    )
-    .await;
+    }
 }
 
 async fn agent_message_content(state: &ServerState, message_id: Uuid) -> Option<String> {
@@ -1309,13 +1301,40 @@ async fn send_telegram_rich_message_draft(
     true
 }
 
+/// Outcome of a rich (Markdown) Telegram send.
+enum RichSend {
+    /// Telegram accepted the message. The id is present only when the response could be parsed;
+    /// either way the message was delivered, so the caller must not resend it as plain text.
+    Sent(Option<TelegramSentMessage>),
+    /// The request never reached Telegram (serialization, network, timeout, or API rejection), so
+    /// resending as plain text is safe.
+    Failed,
+}
+
+fn rich_send_outcome(status: u16, body: &[u8]) -> RichSend {
+    if !(200..300).contains(&status) {
+        return RichSend::Failed;
+    }
+    RichSend::Sent(
+        serde_json::from_slice::<TelegramApiResponse<TelegramSendMessageResult>>(body)
+            .ok()
+            .and_then(|response| response.result)
+            .map(|message| TelegramSentMessage {
+                chat_id: message.chat.id,
+                message_id: message.message_id,
+            }),
+    )
+}
+
 async fn send_telegram_rich_message(
     state: &ServerState,
     chat_id: i64,
     message_thread_id: Option<i64>,
     text: &str,
-) -> Option<TelegramSentMessage> {
-    let token = bot_token(state)?;
+) -> RichSend {
+    let Some(token) = bot_token(state) else {
+        return RichSend::Failed;
+    };
 
     let markdown = rich_markdown(text);
     let request = SendRichMessageRequest {
@@ -1326,7 +1345,7 @@ async fn send_telegram_rich_message(
         },
     };
     let Ok(body) = serde_json::to_vec(&request) else {
-        return None;
+        return RichSend::Failed;
     };
     let uri = format!("https://api.telegram.org/bot{token}/sendRichMessage");
     let Ok(req) = Request::builder()
@@ -1335,18 +1354,18 @@ async fn send_telegram_rich_message(
         .header("Content-Type", "application/json")
         .body(Full::new(Bytes::from(body)))
     else {
-        return None;
+        return RichSend::Failed;
     };
 
     let (status, body) = match timeout(Duration::from_secs(30), tinynet::send_request(req)).await {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => {
             tracing::warn!(%error, "failed to send Telegram rich message");
-            return None;
+            return RichSend::Failed;
         }
         Err(error) => {
             tracing::warn!(%error, "timed out sending Telegram rich message");
-            return None;
+            return RichSend::Failed;
         }
     };
     if !(200..300).contains(&status) {
@@ -1355,16 +1374,9 @@ async fn send_telegram_rich_message(
             body = %String::from_utf8_lossy(&body),
             "Telegram sendRichMessage returned error"
         );
-        return None;
     }
 
-    serde_json::from_slice::<TelegramApiResponse<TelegramSendMessageResult>>(&body)
-        .ok()
-        .and_then(|response| response.result)
-        .map(|message| TelegramSentMessage {
-            chat_id: message.chat.id,
-            message_id: message.message_id,
-        })
+    rich_send_outcome(status, &body)
 }
 
 pub(crate) async fn send_telegram_message(
@@ -1763,6 +1775,28 @@ struct TelegramGetMeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_send_delivered_is_not_resent_as_plain_text() {
+        // 2xx with a parseable result: delivered, id captured.
+        let ok = br#"{"result":{"message_id":7,"chat":{"id":42}}}"#;
+        match rich_send_outcome(200, ok) {
+            RichSend::Sent(Some(message)) => {
+                assert_eq!(message.message_id, 7);
+                assert_eq!(message.chat_id, 42);
+            }
+            _ => panic!("expected Sent with id"),
+        }
+
+        // 2xx but unparseable body: still delivered, so no plain-text fallback (no duplicate).
+        match rich_send_outcome(200, b"not json") {
+            RichSend::Sent(None) => {}
+            _ => panic!("expected Sent without id"),
+        }
+
+        // Non-2xx: not delivered, plain-text fallback is allowed.
+        assert!(matches!(rich_send_outcome(400, b""), RichSend::Failed));
+    }
 
     #[test]
     fn parses_connect_command() {
