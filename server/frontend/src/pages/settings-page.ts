@@ -1,10 +1,10 @@
-import { logout } from "../api/auth.js";
 import {
 	createTelegramConnectCode,
 	disconnectTelegram,
 	getTelegramSettings,
 	type TelegramSettings,
 } from "../api/settings.js";
+import { bindSidebar } from "./sidebar.js";
 
 const root = document.querySelector<HTMLElement>("#settings-page");
 
@@ -40,7 +40,10 @@ class SettingsPage {
 		this.root.querySelector('[data-action="disconnect"]')?.addEventListener("click", () => {
 			void this.disconnect();
 		});
-		this.root.querySelector("app-sidebar")?.addEventListener("logout", () => void this.onLogout());
+		const sidebar = this.root.querySelector<HTMLElement>("app-sidebar");
+		if (sidebar) {
+			bindSidebar(sidebar);
+		}
 	}
 
 	private async refresh() {
@@ -100,11 +103,6 @@ class SettingsPage {
 		} catch (error) {
 			this.setError(error instanceof Error ? error.message : "Failed to disconnect Telegram.");
 		}
-	}
-
-	private async onLogout() {
-		await logout();
-		window.location.href = "/auth/login";
 	}
 
 	private setError(message: string) {

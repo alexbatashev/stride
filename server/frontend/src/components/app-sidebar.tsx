@@ -502,6 +502,9 @@ export function AppSidebar({
           class="main"
           onClick={(event: Event) => {
             const target = event.target as Element;
+            // Nav and thread entries are plain <a href> links — let them navigate.
+            // Only project mutations (need a dialog + API) and group collapsing
+            // are handled here.
             const action = target.closest<HTMLElement>("[data-action]");
             if (action) {
               event.preventDefault();
@@ -513,23 +516,11 @@ export function AppSidebar({
             const toggle = target.closest(".group-toggle");
             if (toggle) {
               toggle.closest(".group")!.classList.toggle("closed");
-              return;
-            }
-            const thread = target.closest<HTMLElement>("[data-thread-id]");
-            if (thread) {
-              event.preventDefault();
-              this.dispatchEvent(
-                new CustomEvent("thread-select", {
-                  bubbles: true,
-                  composed: true,
-                  detail: { id: thread.dataset.threadId },
-                }),
-              );
             }
           }}
         >
           <span class="nav-item">
-            <a href="/threads" data-action="new-thread">
+            <a href="/threads">
               <span class="icon"><IconBotMessageSquare /></span>
               <span class="label">New task</span>
             </a>

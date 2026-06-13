@@ -338,13 +338,6 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
     let body = format!(
         r#"<style>
     #settings-page > main > header {{
-        border-bottom: 1px solid var(--border);
-        box-sizing: border-box;
-        display: flex;
-        justify-content: flex-end;
-    }}
-
-    #settings-page > main > header app-sidebar-toggle {{
         display: none;
     }}
 
@@ -436,12 +429,12 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
     }}
 
     @media (max-width: 767px) {{
-        #settings-page > main > header app-sidebar-toggle {{
-            display: inline-flex;
-        }}
-
         #settings-page > main > header {{
-            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            box-sizing: border-box;
+            display: flex;
+            padding: 8px 12px;
         }}
     }}
 </style>

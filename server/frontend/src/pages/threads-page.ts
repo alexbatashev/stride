@@ -1,11 +1,4 @@
-import { logout } from "../api/auth.js";
-import {
-	ProjectSummary,
-	createProject,
-	deleteProject,
-	listProjects,
-	renameProject,
-} from "../api/projects.js";
+import { ProjectSummary, listProjects } from "../api/projects.js";
 import {
 	QuizQuestion,
 	ThreadEvent,
@@ -20,6 +13,7 @@ import {
 	sendMessage,
 	uploadFiles,
 } from "../api/threads.js";
+import { bindSidebar } from "./sidebar.js";
 
 type ViewMessage = ThreadMessage & { pending?: boolean };
 type PendingQuiz = {
@@ -135,19 +129,7 @@ class ThreadsPageHydrator {
 	}
 
 	private bindEvents() {
-		this.sidebarEl.addEventListener("new-thread", () => this.startNew());
-		this.sidebarEl.addEventListener("thread-select", (event) =>
-			this.onThreadSelect((event as CustomEvent<{ id: string }>).detail.id),
-		);
-		this.sidebarEl.addEventListener("logout", () => void this.onLogout());
-		this.sidebarEl.addEventListener("new-project", () => void this.onNewProject());
-		this.sidebarEl.addEventListener("project-rename", (event) => {
-			const { id, title } = (event as CustomEvent<{ id: string; title: string }>).detail;
-			void this.onRenameProject(id, title);
-		});
-		this.sidebarEl.addEventListener("project-delete", (event) =>
-			void this.onDeleteProject((event as CustomEvent<{ id: string }>).detail.id),
-		);
+		bindSidebar(this.sidebarEl);
 		this.root
 			.querySelectorAll<HTMLElement>('[data-action="files"]')
 			.forEach((button) => button.addEventListener("click", () => this.toggleFiles()));
@@ -448,98 +430,6 @@ class ThreadsPageHydrator {
 			this.openEvents(threadId);
 		} catch (error) {
 			this.handleError(error);
-		}
-	}
-
-	private startNew() {
-		this.closeEvents();
-		this.threadId = "";
-		this.fileManagerEl.threadId = "";
-		this.fileManagerEl.open = false;
-		this.currentProjectId = null;
-		this.root.dataset.threadId = "";
-		this.messages = [];
-		this.attachedFiles = [];
-		this.running = false;
-		this.pendingAssistant = "";
-		this.pendingApproval = null;
-		this.pendingQuiz = null;
-		this.lastEventSeq = 0;
-		this.renderMessages();
-		this.renderSidebar();
-		this.syncTitle();
-		this.syncComposer();
-		history.pushState(null, "", "/threads");
-	}
-
-	private onThreadSelect(id: string) {
-		if (!id || id === this.threadId) {
-			return;
-		}
-
-		this.threadId = id;
-		this.root.dataset.threadId = id;
-		this.fileManagerEl.threadId = id;
-		this.currentProjectId = this.threads.find((t) => t.id === id)?.project_id ?? null;
-		this.renderSidebar();
-		history.pushState(null, "", `/threads/${id}`);
-		void this.loadThread(id);
-	}
-
-	private async onLogout() {
-		await logout();
-		this.navigate("/login");
-	}
-
-	private async onNewProject() {
-		const title = this.promptProjectTitle();
-		if (!title) return;
-
-		try {
-			const project = await createProject(title);
-			this.projects = [project, ...this.projects];
-			this.renderSidebar();
-		} catch {
-			this.setError("Failed to create project.");
-		}
-	}
-
-	private promptProjectTitle(existing?: string): string | null {
-		const input = window.prompt("Project name:", existing ?? "");
-		if (input === null) return null;
-		const trimmed = input.trim();
-		return trimmed.length > 0 ? trimmed : null;
-	}
-
-	private async onRenameProject(projectId: string, currentTitle: string) {
-		const title = this.promptProjectTitle(currentTitle);
-		if (!title || title === currentTitle) return;
-
-		try {
-			const updated = await renameProject(projectId, title);
-			const idx = this.projects.findIndex((p) => p.id === projectId);
-			if (idx >= 0) this.projects[idx] = updated;
-			this.renderSidebar();
-		} catch {
-			this.setError("Failed to rename project.");
-		}
-	}
-
-	private async onDeleteProject(projectId: string) {
-		if (!window.confirm("Delete this project? Threads will be kept but unlinked.")) return;
-
-		try {
-			await deleteProject(projectId);
-			this.projects = this.projects.filter((p) => p.id !== projectId);
-			this.threads = this.threads.map((t) =>
-				t.project_id === projectId ? { ...t, project_id: null } : t,
-			);
-			if (this.currentProjectId === projectId) {
-				this.currentProjectId = null;
-			}
-			this.renderSidebar();
-		} catch {
-			this.setError("Failed to delete project.");
 		}
 	}
 

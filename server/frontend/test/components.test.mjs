@@ -38,7 +38,7 @@ test('all custom elements register', () => {
   }
 });
 
-test('app-sidebar renders projects and threads, dispatches thread-select', () => {
+test('app-sidebar renders projects and threads as links', () => {
   const el = mount('app-sidebar', {
     projects: [{ id: 'p1', title: 'Project One', threads: [{ id: 't1', title: 'Thread One' }] }],
     threads: [{ id: 't2', title: 'Loose' }],
@@ -52,9 +52,9 @@ test('app-sidebar renders projects and threads, dispatches thread-select', () =>
   const active = el.shadowRoot.querySelector('a[data-thread-id="t1"]');
   assert.equal(active.getAttribute('aria-current'), 'page');
 
-  const picked = lastEvent(el, 'thread-select');
-  el.shadowRoot.querySelector('a[data-thread-id="t2"]').click();
-  assert.equal(picked.detail.id, 't2');
+  // Threads are plain links; navigation is the browser's job, not a custom event.
+  const loose = el.shadowRoot.querySelector('a[data-thread-id="t2"]');
+  assert.equal(loose.getAttribute('href'), '/threads/t2');
 
   // Reactive update: a new thread shows up without remounting.
   el.threads = [{ id: 't2', title: 'Loose' }, { id: 't3', title: 'Fresh' }];
