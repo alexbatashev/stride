@@ -17,8 +17,8 @@ use friday_agent::{
         quiz::QuizTool,
         shell::ShellTool,
         web_search::{
-            WebSearchTool, arxiv::ArxivProvider, pubmed::PubmedProvider, searxng::SearxngProvider,
-            uspto::UsptoProvider,
+            WebSearchTool, arxiv::ArxivProvider, brave::BraveProvider, pubmed::PubmedProvider,
+            searxng::SearxngProvider, uspto::UsptoProvider,
         },
     },
 };
@@ -985,6 +985,13 @@ fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
             ),
         })];
 
+    if let Some(api_key) = web_search.read_brave_api_key() {
+        providers.push(Box::new(BraveProvider {
+            api_key,
+            endpoint: web_search.brave_endpoint().to_string(),
+        }));
+    }
+
     if web_search.include_arxiv == Some(true) {
         providers.push(Box::new(ArxivProvider));
     }
@@ -1757,6 +1764,8 @@ mod tests {
                 web_search: Some(WebSearch {
                     searxng_endpoint: "https://search.example.com".to_string(),
                     searxng_request_delay_seconds: None,
+                    brave_api_key: None,
+                    brave_endpoint: None,
                     include_arxiv: None,
                     include_pubmed: None,
                     include_uspto: None,
@@ -1810,6 +1819,8 @@ mod tests {
             web_search: Some(WebSearch {
                 searxng_endpoint: "https://search.example.com".to_string(),
                 searxng_request_delay_seconds: None,
+                brave_api_key: None,
+                brave_endpoint: None,
                 include_arxiv: None,
                 include_pubmed: None,
                 include_uspto: None,

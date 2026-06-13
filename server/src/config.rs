@@ -68,6 +68,8 @@ pub struct Tools {
 pub struct WebSearch {
     pub searxng_endpoint: String,
     pub searxng_request_delay_seconds: Option<u64>,
+    pub brave_api_key: Option<String>,
+    pub brave_endpoint: Option<String>,
     pub include_arxiv: Option<bool>,
     pub include_pubmed: Option<bool>,
     pub include_uspto: Option<bool>,
@@ -182,6 +184,20 @@ impl McpServer {
     }
 }
 
+impl WebSearch {
+    pub fn read_brave_api_key(&self) -> Option<String> {
+        self.brave_api_key
+            .clone()
+            .or_else(|| env::var("FRIDAY_BRAVE_API_KEY").ok())
+    }
+
+    pub fn brave_endpoint(&self) -> &str {
+        self.brave_endpoint
+            .as_deref()
+            .unwrap_or("https://api.search.brave.com/res/v1/web/search")
+    }
+}
+
 impl Firecrawl {
     pub fn read_api_key(&self) -> Option<String> {
         self.api_key
@@ -244,6 +260,7 @@ mod tests {
             [tools.web_search]
             searxng_endpoint = "https://search.example.com"
             searxng_request_delay_seconds = 2
+            brave_api_key = "brave-test"
 
             [tools.firecrawl]
             api_key = "fc-test"
@@ -256,6 +273,11 @@ mod tests {
         let web_search = tools.web_search.unwrap();
         assert_eq!(web_search.searxng_endpoint, "https://search.example.com");
         assert_eq!(web_search.searxng_request_delay_seconds, Some(2));
+        assert_eq!(web_search.read_brave_api_key().unwrap(), "brave-test");
+        assert_eq!(
+            web_search.brave_endpoint(),
+            "https://api.search.brave.com/res/v1/web/search"
+        );
 
         let firecrawl = tools.firecrawl.unwrap();
         assert_eq!(firecrawl.read_api_key().unwrap(), "fc-test");
