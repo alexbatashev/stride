@@ -11,10 +11,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
+use friday_agent::QuizQuestion;
 use http_body_util::Full;
 use hyper::Request;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::{
     sync::{broadcast::error::RecvError, mpsc},
     time::{interval, sleep, timeout},
@@ -160,9 +162,14 @@ pub async fn disconnect(
 pub async fn webhook(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
-    Json(update): Json<TelegramUpdate>,
+    Json(mut update): Json<TelegramUpdate>,
 ) -> Result<StatusCode, TelegramApiError> {
     validate_secret(&state, &headers)?;
+
+    if let Some(callback) = update.callback_query.take() {
+        handle_callback(&state, callback).await;
+        return Ok(StatusCode::OK);
+    }
 
     let Some(message) = update.message() else {
         return Ok(StatusCode::OK);
@@ -284,6 +291,14 @@ async fn handle_topic_message(
         return Ok(());
     }
 
+    // A plain message answers a pending free-form quiz question instead of starting a new run.
+    if let Some((quiz_id, question_index)) =
+        pending_free_form_quiz(&state, message.chat.id, message.topic_id())
+    {
+        answer_quiz_question(&state, quiz_id, question_index, text.to_string()).await;
+        return Ok(());
+    }
+
     let thread_id = if let Some(thread_id) = reply_thread(&state, user_id, &message).await? {
         thread_id
     } else if message.topic_id().unwrap_or(0) == 0 {
@@ -328,6 +343,54 @@ struct QueuedMessage {
 #[derive(Default)]
 pub(crate) struct TelegramSessions {
     inner: Mutex<HashMap<Uuid, mpsc::UnboundedSender<QueuedMessage>>>,
+    interactions: Mutex<Interactions>,
+}
+
+/// Pending interactive prompts (approvals and quizzes) shown in Telegram as inline buttons or, for
+/// free-form quiz questions, captured from the user's next typed reply.
+#[derive(Default)]
+struct Interactions {
+    /// Button `callback_data` token → the action that tap performs.
+    callbacks: HashMap<String, CallbackAction>,
+    /// In-flight quizzes, keyed by quiz id, collecting one answer per question.
+    quizzes: HashMap<Uuid, QuizState>,
+    /// (chat_id, topic_id) currently awaiting a typed free-form answer → quiz id.
+    awaiting_text: HashMap<(i64, Option<i64>), Uuid>,
+}
+
+enum CallbackAction {
+    Approval {
+        thread_id: Uuid,
+        approval_id: Uuid,
+        approved: bool,
+        sibling: String,
+    },
+    QuizOption {
+        thread_id: Uuid,
+        quiz_id: Uuid,
+        question_index: usize,
+        answer: String,
+    },
+}
+
+impl CallbackAction {
+    fn thread_id(&self) -> Uuid {
+        match self {
+            CallbackAction::Approval { thread_id, .. } => *thread_id,
+            CallbackAction::QuizOption { thread_id, .. } => *thread_id,
+        }
+    }
+}
+
+struct QuizState {
+    thread_id: Uuid,
+    chat_id: i64,
+    topic_id: Option<i64>,
+    questions: Vec<QuizQuestion>,
+    answers: Vec<Option<String>>,
+    current: usize,
+    /// Button tokens registered for the question currently awaiting an answer.
+    tokens: Vec<String>,
 }
 
 impl TelegramSessions {
@@ -453,6 +516,426 @@ async fn wait_until_idle(state: &ServerState, thread_id: Uuid) {
             Ok(ThreadStatus::Running { .. }) => sleep(Duration::from_millis(200)).await,
         }
     }
+}
+
+async fn present_approval(
+    state: &ServerState,
+    thread_id: Uuid,
+    chat_id: i64,
+    topic_id: Option<i64>,
+    approval_id: Uuid,
+    message: &str,
+) {
+    let approve = interaction_token();
+    let deny = interaction_token();
+    {
+        let mut ix = state.telegram_sessions.interactions.lock().unwrap();
+        ix.callbacks.insert(
+            approve.clone(),
+            CallbackAction::Approval {
+                thread_id,
+                approval_id,
+                approved: true,
+                sibling: deny.clone(),
+            },
+        );
+        ix.callbacks.insert(
+            deny.clone(),
+            CallbackAction::Approval {
+                thread_id,
+                approval_id,
+                approved: false,
+                sibling: approve.clone(),
+            },
+        );
+    }
+
+    let keyboard = vec![vec![
+        InlineButton {
+            text: "✅ Approve".to_string(),
+            callback_data: approve,
+        },
+        InlineButton {
+            text: "❌ Deny".to_string(),
+            callback_data: deny,
+        },
+    ]];
+    send_telegram_buttons(state, chat_id, topic_id, &format!("⚠️ {message}"), keyboard).await;
+}
+
+async fn present_quiz(
+    state: &ServerState,
+    thread_id: Uuid,
+    chat_id: i64,
+    topic_id: Option<i64>,
+    quiz_id: Uuid,
+    questions: Vec<QuizQuestion>,
+) {
+    if questions.is_empty() {
+        let _ = state
+            .runner
+            .answer_quiz(thread_id, quiz_id, Vec::new())
+            .await;
+        return;
+    }
+
+    {
+        let mut ix = state.telegram_sessions.interactions.lock().unwrap();
+        ix.quizzes.insert(
+            quiz_id,
+            QuizState {
+                thread_id,
+                chat_id,
+                topic_id,
+                answers: vec![None; questions.len()],
+                questions,
+                current: 0,
+                tokens: Vec::new(),
+            },
+        );
+    }
+    send_quiz_question(state, quiz_id).await;
+}
+
+/// Sends the quiz's current question: inline buttons for option questions, or a plain prompt that
+/// captures the user's next typed reply for free-form questions.
+async fn send_quiz_question(state: &ServerState, quiz_id: Uuid) {
+    let Some(prompt) = ({
+        let mut ix = state.telegram_sessions.interactions.lock().unwrap();
+        let Some((index, question, chat_id, topic_id, count, thread_id)) =
+            ix.quizzes.get(&quiz_id).map(|quiz| {
+                (
+                    quiz.current,
+                    quiz.questions[quiz.current].clone(),
+                    quiz.chat_id,
+                    quiz.topic_id,
+                    quiz.questions.len(),
+                    quiz.thread_id,
+                )
+            })
+        else {
+            return;
+        };
+        let header = format!("❓ ({}/{count}) {}", index + 1, question.question);
+
+        if question.options.is_empty() {
+            ix.awaiting_text.insert((chat_id, topic_id), quiz_id);
+            if let Some(quiz) = ix.quizzes.get_mut(&quiz_id) {
+                quiz.tokens.clear();
+            }
+            Some(QuizPrompt {
+                chat_id,
+                topic_id,
+                text: format!("{header}\n\nReply to this chat with your answer."),
+                keyboard: None,
+            })
+        } else {
+            ix.awaiting_text.remove(&(chat_id, topic_id));
+            let mut tokens = Vec::new();
+            let mut keyboard = Vec::new();
+            for option in &question.options {
+                let token = interaction_token();
+                ix.callbacks.insert(
+                    token.clone(),
+                    CallbackAction::QuizOption {
+                        thread_id,
+                        quiz_id,
+                        question_index: index,
+                        answer: option.clone(),
+                    },
+                );
+                tokens.push(token.clone());
+                keyboard.push(vec![InlineButton {
+                    text: option.clone(),
+                    callback_data: token,
+                }]);
+            }
+            if let Some(quiz) = ix.quizzes.get_mut(&quiz_id) {
+                quiz.tokens = tokens;
+            }
+            Some(QuizPrompt {
+                chat_id,
+                topic_id,
+                text: header,
+                keyboard: Some(keyboard),
+            })
+        }
+    }) else {
+        return;
+    };
+
+    match prompt.keyboard {
+        Some(keyboard) => {
+            send_telegram_buttons(
+                state,
+                prompt.chat_id,
+                prompt.topic_id,
+                &prompt.text,
+                keyboard,
+            )
+            .await;
+        }
+        None => {
+            send_telegram_message(state, prompt.chat_id, prompt.topic_id, &prompt.text).await;
+        }
+    }
+}
+
+struct QuizPrompt {
+    chat_id: i64,
+    topic_id: Option<i64>,
+    text: String,
+    keyboard: Option<Vec<Vec<InlineButton>>>,
+}
+
+/// Records an answer for `question_index`, then either advances to the next question or submits the
+/// completed quiz to the agent.
+async fn answer_quiz_question(
+    state: &ServerState,
+    quiz_id: Uuid,
+    question_index: usize,
+    answer: String,
+) {
+    let submit = {
+        let mut ix = state.telegram_sessions.interactions.lock().unwrap();
+        let Some(quiz) = ix.quizzes.get_mut(&quiz_id) else {
+            return;
+        };
+        if question_index != quiz.current {
+            return;
+        }
+        let stale_tokens = std::mem::take(&mut quiz.tokens);
+        quiz.answers[quiz.current] = Some(answer);
+        quiz.current += 1;
+        let done = quiz.current >= quiz.questions.len();
+        let thread_id = quiz.thread_id;
+        let chat_id = quiz.chat_id;
+        let topic_id = quiz.topic_id;
+        let answers = done.then(|| {
+            quiz.answers
+                .iter()
+                .map(|a| a.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        });
+
+        for token in stale_tokens {
+            ix.callbacks.remove(&token);
+        }
+        if done {
+            ix.quizzes.remove(&quiz_id);
+            ix.awaiting_text.remove(&(chat_id, topic_id));
+            answers.map(|answers| (thread_id, answers))
+        } else {
+            None
+        }
+    };
+
+    match submit {
+        Some((thread_id, answers)) => {
+            let _ = state.runner.answer_quiz(thread_id, quiz_id, answers).await;
+        }
+        None => send_quiz_question(state, quiz_id).await,
+    }
+}
+
+fn pending_free_form_quiz(
+    state: &ServerState,
+    chat_id: i64,
+    topic_id: Option<i64>,
+) -> Option<(Uuid, usize)> {
+    let ix = state.telegram_sessions.interactions.lock().unwrap();
+    let quiz_id = *ix.awaiting_text.get(&(chat_id, topic_id))?;
+    let quiz = ix.quizzes.get(&quiz_id)?;
+    Some((quiz_id, quiz.current))
+}
+
+async fn handle_callback(state: &ServerState, callback: CallbackQuery) {
+    let Some(token) = callback.data.clone() else {
+        return;
+    };
+    let action = state
+        .telegram_sessions
+        .interactions
+        .lock()
+        .unwrap()
+        .callbacks
+        .remove(&token);
+    let Some(action) = action else {
+        answer_callback_query(state, &callback.id, "This action is no longer available.").await;
+        return;
+    };
+
+    // Only the thread owner may resolve a prompt — buttons can be visible to a whole group.
+    let owner = thread_owner(state, action.thread_id()).await;
+    let caller = user_for_telegram_id(state, callback.from.id)
+        .await
+        .ok()
+        .flatten();
+    if owner.is_none() || owner != caller {
+        answer_callback_query(state, &callback.id, "Not allowed.").await;
+        return;
+    }
+
+    match action {
+        CallbackAction::Approval {
+            thread_id,
+            approval_id,
+            approved,
+            sibling,
+        } => {
+            state
+                .telegram_sessions
+                .interactions
+                .lock()
+                .unwrap()
+                .callbacks
+                .remove(&sibling);
+            let _ = state
+                .runner
+                .resolve_approval(thread_id, approval_id, approved)
+                .await;
+            answer_callback_query(
+                state,
+                &callback.id,
+                if approved { "Approved" } else { "Denied" },
+            )
+            .await;
+            if let Some(message) = &callback.message {
+                let label = if approved {
+                    "✅ Approved"
+                } else {
+                    "❌ Denied"
+                };
+                edit_telegram_message(state, message.chat.id, message.message_id, label).await;
+            }
+        }
+        CallbackAction::QuizOption {
+            quiz_id,
+            question_index,
+            answer,
+            ..
+        } => {
+            answer_callback_query(state, &callback.id, &answer).await;
+            if let Some(message) = &callback.message {
+                let question = message.text.clone().unwrap_or_default();
+                edit_telegram_message(
+                    state,
+                    message.chat.id,
+                    message.message_id,
+                    &format!("{question}\n➡️ {answer}"),
+                )
+                .await;
+            }
+            answer_quiz_question(state, quiz_id, question_index, answer).await;
+        }
+    }
+}
+
+fn clear_interactions(state: &ServerState, thread_id: Uuid, chat_id: i64, topic_id: Option<i64>) {
+    let mut ix = state.telegram_sessions.interactions.lock().unwrap();
+    ix.callbacks
+        .retain(|_, action| action.thread_id() != thread_id);
+    ix.quizzes.retain(|_, quiz| quiz.thread_id != thread_id);
+    ix.awaiting_text.remove(&(chat_id, topic_id));
+}
+
+fn interaction_token() -> String {
+    let mut bytes = [0u8; 8];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+async fn thread_owner(state: &ServerState, thread_id: Uuid) -> Option<Uuid> {
+    threads::select_cols((threads::owner,))
+        .where_(threads::id.eq(thread_id))
+        .all(&state.db)
+        .await
+        .ok()?
+        .into_iter()
+        .next()
+        .map(|(owner,)| owner)
+}
+
+async fn telegram_post(state: &ServerState, method: &str, body: Vec<u8>) -> Option<Bytes> {
+    let token = bot_token(state)?;
+    let uri = format!("https://api.telegram.org/bot{token}/{method}");
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("Content-Type", "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .ok()?;
+
+    let (status, body) = match timeout(Duration::from_secs(30), tinynet::send_request(req)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, method, "failed to call Telegram API");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, method, "timed out calling Telegram API");
+            return None;
+        }
+    };
+    if !(200..300).contains(&status) {
+        tracing::warn!(
+            method,
+            status,
+            body = %String::from_utf8_lossy(&body),
+            "Telegram API returned error"
+        );
+        return None;
+    }
+    Some(body)
+}
+
+async fn send_telegram_buttons(
+    state: &ServerState,
+    chat_id: i64,
+    message_thread_id: Option<i64>,
+    text: &str,
+    keyboard: Vec<Vec<InlineButton>>,
+) -> Option<TelegramSentMessage> {
+    let text: String = text.chars().take(4096).collect();
+    let request = SendButtonsRequest {
+        chat_id,
+        message_thread_id,
+        text: &text,
+        reply_markup: InlineKeyboardMarkup {
+            inline_keyboard: keyboard,
+        },
+    };
+    let body = telegram_post(state, "sendMessage", serde_json::to_vec(&request).ok()?).await?;
+    serde_json::from_slice::<TelegramApiResponse<TelegramSendMessageResult>>(&body)
+        .ok()
+        .and_then(|response| response.result)
+        .map(|message| TelegramSentMessage {
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+        })
+}
+
+async fn answer_callback_query(state: &ServerState, callback_query_id: &str, text: &str) {
+    let text: String = text.chars().take(200).collect();
+    let Ok(body) = serde_json::to_vec(&json!({
+        "callback_query_id": callback_query_id,
+        "text": text,
+    })) else {
+        return;
+    };
+    let _ = telegram_post(state, "answerCallbackQuery", body).await;
+}
+
+async fn edit_telegram_message(state: &ServerState, chat_id: i64, message_id: i64, text: &str) {
+    let text: String = text.chars().take(4096).collect();
+    let Ok(body) = serde_json::to_vec(&json!({
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+    })) else {
+        return;
+    };
+    let _ = telegram_post(state, "editMessageText", body).await;
 }
 
 async fn reply_thread(
@@ -617,6 +1100,28 @@ async fn forward_run(
                         break;
                     }
                     AgentEventKind::RunCancelled => break,
+                    AgentEventKind::WaitingForApproval { approval_id, message } => {
+                        present_approval(
+                            &state,
+                            thread_id,
+                            chat_id,
+                            message_thread_id,
+                            approval_id,
+                            &message,
+                        )
+                        .await;
+                    }
+                    AgentEventKind::WaitingForQuiz { quiz_id, questions } => {
+                        present_quiz(
+                            &state,
+                            thread_id,
+                            chat_id,
+                            message_thread_id,
+                            quiz_id,
+                            questions,
+                        )
+                        .await;
+                    }
                     _ => {}
                 }
             }
@@ -640,6 +1145,9 @@ async fn forward_run(
             }
         };
     }
+
+    // Drop any prompts left over if the run ended (finished/failed/cancelled) before resolution.
+    clear_interactions(&state, thread_id, chat_id, message_thread_id);
 }
 
 async fn finalize_latest_telegram_response(
@@ -1112,6 +1620,22 @@ pub struct TelegramUpdate {
     message: Option<TelegramMessage>,
     business_message: Option<TelegramMessage>,
     guest_message: Option<TelegramMessage>,
+    callback_query: Option<CallbackQuery>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CallbackQuery {
+    id: String,
+    from: TelegramUser,
+    message: Option<CallbackMessage>,
+    data: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CallbackMessage {
+    message_id: i64,
+    chat: TelegramChat,
+    text: Option<String>,
 }
 
 impl TelegramUpdate {
@@ -1204,6 +1728,26 @@ struct InputRichMessage<'a> {
     markdown: &'a str,
 }
 
+#[derive(Serialize)]
+struct SendButtonsRequest<'a> {
+    chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_thread_id: Option<i64>,
+    text: &'a str,
+    reply_markup: InlineKeyboardMarkup,
+}
+
+#[derive(Serialize)]
+struct InlineKeyboardMarkup {
+    inline_keyboard: Vec<Vec<InlineButton>>,
+}
+
+#[derive(Serialize)]
+struct InlineButton {
+    text: String,
+    callback_data: String,
+}
+
 #[derive(Deserialize)]
 struct TelegramApiResponse<T> {
     result: Option<T>,
@@ -1256,138 +1800,222 @@ mod tests {
         assert_eq!(thread_title(&chat, 42, None), "Telegram: Work #42");
     }
 
-    #[tokio::test]
-    async fn session_queues_concurrent_messages_in_order() {
-        use std::collections::HashMap as Map;
+    use async_trait::async_trait;
+    use minisql::ConnectionPool;
+    use tokio::sync::broadcast;
 
-        use async_trait::async_trait;
-        use friday_agent::{AgentConfig, ModelRegistry};
-        use minisql::ConnectionPool;
-        use tokio::sync::broadcast;
+    use crate::{
+        config::Config,
+        db::users,
+        runner::{
+            AgentEvent, AgentPool, AgentPoolError, RunId, ThreadSnapshot, ThreadSubscription,
+        },
+    };
 
-        use crate::{
-            config::Config,
-            runner::{
-                AgentEvent, AgentPool, AgentPoolError, RunId, ThreadSnapshot, ThreadSubscription,
-            },
-        };
+    #[derive(Default)]
+    struct FakePool {
+        senders: Mutex<HashMap<Uuid, broadcast::Sender<AgentEvent>>>,
+        received: Mutex<Vec<String>>,
+        approvals: Mutex<Vec<(Uuid, Uuid, bool)>>,
+        quiz_answers: Mutex<Vec<(Uuid, Uuid, Vec<String>)>>,
+    }
 
-        #[derive(Default)]
-        struct FakePool {
-            senders: Mutex<HashMap<Uuid, broadcast::Sender<AgentEvent>>>,
-            received: Mutex<Vec<String>>,
+    impl FakePool {
+        fn sender(&self, thread_id: Uuid) -> broadcast::Sender<AgentEvent> {
+            self.senders
+                .lock()
+                .unwrap()
+                .entry(thread_id)
+                .or_insert_with(|| broadcast::channel(16).0)
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl AgentPool for FakePool {
+        async fn send(
+            &self,
+            thread_id: Uuid,
+            request: AgentRequest,
+        ) -> Result<RunId, AgentPoolError> {
+            self.received.lock().unwrap().push(request.content);
+            let run_id = RunId(Uuid::now_v7());
+            let tx = self.sender(thread_id);
+            let _ = tx.send(AgentEvent {
+                seq: 1,
+                thread_id,
+                run_id: Some(run_id),
+                kind: AgentEventKind::RunStarted,
+            });
+            let _ = tx.send(AgentEvent {
+                seq: 2,
+                thread_id,
+                run_id: Some(run_id),
+                kind: AgentEventKind::RunFinished,
+            });
+            Ok(run_id)
         }
 
-        impl FakePool {
-            fn sender(&self, thread_id: Uuid) -> broadcast::Sender<AgentEvent> {
-                self.senders
-                    .lock()
-                    .unwrap()
-                    .entry(thread_id)
-                    .or_insert_with(|| broadcast::channel(16).0)
-                    .clone()
-            }
-        }
-
-        #[async_trait]
-        impl AgentPool for FakePool {
-            async fn send(
-                &self,
-                thread_id: Uuid,
-                request: AgentRequest,
-            ) -> Result<RunId, AgentPoolError> {
-                self.received.lock().unwrap().push(request.content);
-                let run_id = RunId(Uuid::now_v7());
-                let tx = self.sender(thread_id);
-                let _ = tx.send(AgentEvent {
-                    seq: 1,
+        async fn subscribe(
+            &self,
+            thread_id: Uuid,
+            _after: Option<u64>,
+        ) -> Result<ThreadSubscription, AgentPoolError> {
+            Ok(ThreadSubscription {
+                snapshot: ThreadSnapshot {
                     thread_id,
-                    run_id: Some(run_id),
-                    kind: AgentEventKind::RunStarted,
-                });
-                let _ = tx.send(AgentEvent {
-                    seq: 2,
-                    thread_id,
-                    run_id: Some(run_id),
-                    kind: AgentEventKind::RunFinished,
-                });
-                Ok(run_id)
-            }
-
-            async fn subscribe(
-                &self,
-                thread_id: Uuid,
-                _after: Option<u64>,
-            ) -> Result<ThreadSubscription, AgentPoolError> {
-                Ok(ThreadSubscription {
-                    snapshot: ThreadSnapshot {
-                        thread_id,
-                        last_event_seq: 0,
-                        status: ThreadStatus::Idle,
-                        in_progress: None,
-                        pending_approval: None,
-                        pending_quiz: None,
-                    },
-                    events: self.sender(thread_id).subscribe(),
-                    replay: Vec::new(),
-                })
-            }
-
-            async fn status(&self, _thread_id: Uuid) -> Result<ThreadStatus, AgentPoolError> {
-                Ok(ThreadStatus::Idle)
-            }
-
-            async fn cancel_run(&self, _thread_id: Uuid) -> Result<(), AgentPoolError> {
-                Ok(())
-            }
-
-            async fn resolve_approval(
-                &self,
-                _thread_id: Uuid,
-                _approval_id: Uuid,
-                _approved: bool,
-            ) -> Result<(), AgentPoolError> {
-                Ok(())
-            }
-
-            async fn answer_quiz(
-                &self,
-                _thread_id: Uuid,
-                _quiz_id: Uuid,
-                _answers: Vec<String>,
-            ) -> Result<(), AgentPoolError> {
-                Ok(())
-            }
-
-            async fn shutdown_thread(&self, _thread_id: Uuid) -> Result<(), AgentPoolError> {
-                Ok(())
-            }
+                    last_event_seq: 0,
+                    status: ThreadStatus::Idle,
+                    in_progress: None,
+                    pending_approval: None,
+                    pending_quiz: None,
+                },
+                events: self.sender(thread_id).subscribe(),
+                replay: Vec::new(),
+            })
         }
 
+        async fn status(&self, _thread_id: Uuid) -> Result<ThreadStatus, AgentPoolError> {
+            Ok(ThreadStatus::Idle)
+        }
+
+        async fn cancel_run(&self, _thread_id: Uuid) -> Result<(), AgentPoolError> {
+            Ok(())
+        }
+
+        async fn resolve_approval(
+            &self,
+            thread_id: Uuid,
+            approval_id: Uuid,
+            approved: bool,
+        ) -> Result<(), AgentPoolError> {
+            self.approvals
+                .lock()
+                .unwrap()
+                .push((thread_id, approval_id, approved));
+            Ok(())
+        }
+
+        async fn answer_quiz(
+            &self,
+            thread_id: Uuid,
+            quiz_id: Uuid,
+            answers: Vec<String>,
+        ) -> Result<(), AgentPoolError> {
+            self.quiz_answers
+                .lock()
+                .unwrap()
+                .push((thread_id, quiz_id, answers));
+            Ok(())
+        }
+
+        async fn shutdown_thread(&self, _thread_id: Uuid) -> Result<(), AgentPoolError> {
+            Ok(())
+        }
+    }
+
+    async fn build_state(pool: Arc<FakePool>) -> Arc<ServerState> {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(crate::db::get_migrations())
             .await
             .unwrap();
-
-        let pool = Arc::new(FakePool::default());
-        let state = Arc::new(ServerState {
+        Arc::new(ServerState {
             config: Config {
-                providers: Map::new(),
-                models: Map::new(),
+                providers: HashMap::new(),
+                models: HashMap::new(),
                 server: None,
                 tools: None,
-                mcp: Map::new(),
+                mcp: HashMap::new(),
             },
             db,
             jwt_secret: String::new(),
-            runner: pool.clone(),
-            model_config: Arc::new(AgentConfig {
-                model_registry: ModelRegistry::default(),
+            runner: pool,
+            model_config: Arc::new(friday_agent::AgentConfig {
+                model_registry: friday_agent::ModelRegistry::default(),
                 max_iterations: 1,
             }),
             vfs: None,
             telegram_sessions: Arc::new(TelegramSessions::default()),
-        });
+        })
+    }
+
+    /// Seeds a user that owns `thread_id` and is linked to a Telegram account, so callback
+    /// authorization (thread owner == caller) passes.
+    async fn seed_owner(
+        state: &ServerState,
+        user_id: Uuid,
+        thread_id: Uuid,
+        telegram_user_id: i64,
+        chat_id: i64,
+    ) {
+        users::insert()
+            .id(user_id)
+            .username(user_id.to_string().as_str())
+            .password_hash("x")
+            .personality(Option::<&str>::None)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(user_id)
+            .title("t")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        telegram_connections::insert()
+            .id(Uuid::now_v7())
+            .user_id(user_id)
+            .telegram_user_id(telegram_user_id)
+            .chat_id(chat_id)
+            .username(Option::<&str>::None)
+            .first_name(Option::<&str>::None)
+            .last_name(Option::<&str>::None)
+            .connected_at(0)
+            .execute(&state.db)
+            .await
+            .unwrap();
+    }
+
+    fn callback(token: String, from_id: i64, chat_id: i64, text: &str) -> CallbackQuery {
+        CallbackQuery {
+            id: "cb".to_string(),
+            from: TelegramUser {
+                id: from_id,
+                username: None,
+                first_name: None,
+                last_name: None,
+            },
+            message: Some(CallbackMessage {
+                message_id: 10,
+                chat: TelegramChat {
+                    id: chat_id,
+                    kind: "private".to_string(),
+                    title: None,
+                    username: None,
+                },
+                text: Some(text.to_string()),
+            }),
+            data: Some(token),
+        }
+    }
+
+    fn find_token(state: &ServerState, predicate: impl Fn(&CallbackAction) -> bool) -> String {
+        state
+            .telegram_sessions
+            .interactions
+            .lock()
+            .unwrap()
+            .callbacks
+            .iter()
+            .find_map(|(token, action)| predicate(action).then(|| token.clone()))
+            .expect("token not found")
+    }
+
+    #[tokio::test]
+    async fn session_queues_concurrent_messages_in_order() {
+        let pool = Arc::new(FakePool::default());
+        let state = build_state(pool.clone()).await;
 
         let thread_id = Uuid::now_v7();
         let user_id = Uuid::now_v7();
@@ -1414,5 +2042,116 @@ mod tests {
 
         let received = pool.received.lock().unwrap().clone();
         assert_eq!(received, vec!["msg0", "msg1", "msg2"]);
+    }
+
+    #[tokio::test]
+    async fn approval_button_resolves_run() {
+        let pool = Arc::new(FakePool::default());
+        let state = build_state(pool.clone()).await;
+        let (user_id, thread_id, approval_id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        seed_owner(&state, user_id, thread_id, 555, 42).await;
+
+        present_approval(&state, thread_id, 42, None, approval_id, "Run shell?").await;
+        let approve = find_token(&state, |action| {
+            matches!(action, CallbackAction::Approval { approved: true, .. })
+        });
+
+        handle_callback(&state, callback(approve, 555, 42, "⚠️ Run shell?")).await;
+
+        assert_eq!(
+            *pool.approvals.lock().unwrap(),
+            vec![(thread_id, approval_id, true)]
+        );
+        // Both approve and deny tokens are cleared after resolution.
+        assert!(
+            state
+                .telegram_sessions
+                .interactions
+                .lock()
+                .unwrap()
+                .callbacks
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_button_rejects_non_owner() {
+        let pool = Arc::new(FakePool::default());
+        let state = build_state(pool.clone()).await;
+        let (user_id, thread_id, approval_id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        seed_owner(&state, user_id, thread_id, 555, 42).await;
+
+        present_approval(&state, thread_id, 42, None, approval_id, "Run shell?").await;
+        let approve = find_token(&state, |action| {
+            matches!(action, CallbackAction::Approval { approved: true, .. })
+        });
+
+        // A different Telegram user (not connected / not the owner) taps the button.
+        handle_callback(&state, callback(approve, 999, 42, "⚠️ Run shell?")).await;
+
+        assert!(pool.approvals.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn quiz_collects_option_answers_across_questions() {
+        let pool = Arc::new(FakePool::default());
+        let state = build_state(pool.clone()).await;
+        let (user_id, thread_id, quiz_id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        seed_owner(&state, user_id, thread_id, 555, 42).await;
+
+        let questions = vec![
+            QuizQuestion {
+                question: "Pick A".to_string(),
+                options: vec!["a1".to_string(), "a2".to_string()],
+            },
+            QuizQuestion {
+                question: "Pick B".to_string(),
+                options: vec!["b1".to_string(), "b2".to_string()],
+            },
+        ];
+        present_quiz(&state, thread_id, 42, None, quiz_id, questions).await;
+
+        let pick = |index: usize, answer: &str| {
+            let answer = answer.to_string();
+            move |action: &CallbackAction| {
+                matches!(action, CallbackAction::QuizOption { question_index, answer: a, .. }
+                    if *question_index == index && *a == answer)
+            }
+        };
+
+        let a2 = find_token(&state, pick(0, "a2"));
+        handle_callback(&state, callback(a2, 555, 42, "❓ (1/2) Pick A")).await;
+        let b1 = find_token(&state, pick(1, "b1"));
+        handle_callback(&state, callback(b1, 555, 42, "❓ (2/2) Pick B")).await;
+
+        assert_eq!(
+            *pool.quiz_answers.lock().unwrap(),
+            vec![(thread_id, quiz_id, vec!["a2".to_string(), "b1".to_string()])]
+        );
+    }
+
+    #[tokio::test]
+    async fn quiz_free_form_answer_captured_from_text_reply() {
+        let pool = Arc::new(FakePool::default());
+        let state = build_state(pool.clone()).await;
+        let (user_id, thread_id, quiz_id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        seed_owner(&state, user_id, thread_id, 555, 42).await;
+
+        let questions = vec![QuizQuestion {
+            question: "Your name?".to_string(),
+            options: vec![],
+        }];
+        present_quiz(&state, thread_id, 42, None, quiz_id, questions).await;
+
+        // The free-form question routes the user's next typed message as the answer.
+        assert_eq!(pending_free_form_quiz(&state, 42, None), Some((quiz_id, 0)));
+        answer_quiz_question(&state, quiz_id, 0, "Alice".to_string()).await;
+
+        assert_eq!(
+            *pool.quiz_answers.lock().unwrap(),
+            vec![(thread_id, quiz_id, vec!["Alice".to_string()])]
+        );
+        // Routing state is cleared once answered.
+        assert_eq!(pending_free_form_quiz(&state, 42, None), None);
     }
 }
