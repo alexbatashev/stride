@@ -1,4 +1,5 @@
 pub mod arxiv;
+pub mod brave;
 pub mod pubmed;
 pub mod searxng;
 pub mod uspto;
