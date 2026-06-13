@@ -449,6 +449,7 @@ mod tests {
                     allow_registration: Some(false),
                     ldap: None,
                     files: None,
+                    telegram: None,
                 }),
                 ..empty_config()
             },

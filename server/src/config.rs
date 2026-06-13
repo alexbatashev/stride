@@ -55,6 +55,14 @@ pub struct Server {
     pub allow_registration: Option<bool>,
     pub ldap: Option<Ldap>,
     pub files: Option<Files>,
+    pub telegram: Option<Telegram>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Telegram {
+    pub bot_api_key: Option<String>,
+    pub bot_username: Option<String>,
+    pub webhook_secret: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -198,6 +206,20 @@ impl WebSearch {
     }
 }
 
+impl Telegram {
+    pub fn read_bot_api_key(&self) -> Option<String> {
+        self.bot_api_key
+            .clone()
+            .or_else(|| env::var("FRIDAY_TELEGRAM_BOT_API_KEY").ok())
+    }
+
+    pub fn read_bot_username(&self) -> Option<String> {
+        self.bot_username
+            .clone()
+            .or_else(|| env::var("FRIDAY_TELEGRAM_BOT_USERNAME").ok())
+    }
+}
+
 impl Firecrawl {
     pub fn read_api_key(&self) -> Option<String> {
         self.api_key
@@ -227,6 +249,7 @@ mod tests {
                 allow_registration: Some(false),
                 ldap: None,
                 files: None,
+                telegram: None,
             }),
             tools: None,
             mcp: HashMap::new(),
@@ -313,6 +336,27 @@ mod tests {
         assert_eq!(python.max_memory_bytes, Some(67_108_864));
         assert_eq!(python.max_cpu_fuel, Some(1000));
         assert!(matches!(python.network.unwrap(), PythonNetwork::Blocked));
+    }
+
+    #[test]
+    fn telegram_config_loads() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [server.telegram]
+            bot_api_key = "123:abc"
+            bot_username = "friday_bot"
+            webhook_secret = "secret"
+            "#,
+        )
+        .unwrap();
+
+        let telegram = cfg.server.unwrap().telegram.unwrap();
+        assert_eq!(telegram.read_bot_api_key().unwrap(), "123:abc");
+        assert_eq!(telegram.read_bot_username().unwrap(), "friday_bot");
+        assert_eq!(telegram.webhook_secret.unwrap(), "secret");
     }
 
     #[test]

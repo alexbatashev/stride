@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod auth;
 pub mod files;
+pub mod settings;
 
 use crate::api::threads::ThreadPageData;
 use crate::components::{
@@ -84,7 +85,7 @@ pub fn render_auth_page(mode: &str) -> String {
     render_page(title, "", "", &body)
 }
 
-fn render_sidebar(data: &ThreadPageData, files_active: bool) -> String {
+fn render_sidebar(data: &ThreadPageData, files_active: bool, settings_active: bool) -> String {
     let projects = data.projects.iter().map(|project| SidebarProject {
         id: project.id.clone(),
         title: html_escape(&project.title),
@@ -101,7 +102,13 @@ fn render_sidebar(data: &ThreadPageData, files_active: bool) -> String {
         id: thread.id.clone(),
         title: html_escape(&thread.title),
     });
-    let sidebar = AppSidebar::new(projects, ungrouped, &data.thread_id, files_active);
+    let sidebar = AppSidebar::new(
+        projects,
+        ungrouped,
+        &data.thread_id,
+        files_active,
+        settings_active,
+    );
     format!("<nav>{sidebar}</nav>")
 }
 
@@ -208,7 +215,7 @@ const THREADS_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_threads_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false);
+    let sidebar = render_sidebar(data, false, false);
     let toggle = AppSidebarToggle::new("").render();
     let files_button = with_attrs(
         &AppButton::new().render(),
@@ -295,7 +302,7 @@ const FILES_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_files_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, true);
+    let sidebar = render_sidebar(data, true, false);
     let toggle = AppSidebarToggle::new("").render();
     let body = format!(
         r#"{FILES_STYLE}
@@ -310,6 +317,162 @@ pub fn render_files_page(data: &ThreadPageData) -> String {
         "Files - Friday",
         files::PAGE_SCRIPT,
         r#"id="files-page""#,
+        &body,
+    )
+}
+
+pub fn render_settings_page(data: &ThreadPageData) -> String {
+    let sidebar = render_sidebar(data, false, true);
+    let toggle = AppSidebarToggle::new("").render();
+    let connect_button = with_attrs(
+        &AppButton::new().render(),
+        r#"variant="secondary" size="sm" data-action="connect-code""#,
+    )
+    .replacen("</app-button>", "Connect Telegram</app-button>", 1);
+    let disconnect_button = with_attrs(
+        &AppButton::new().render(),
+        r#"variant="destructive" size="sm" data-action="disconnect""#,
+    )
+    .replacen("</app-button>", "Disconnect</app-button>", 1);
+
+    let body = format!(
+        r#"<style>
+    #settings-page > main > header {{
+        border-bottom: 1px solid var(--border);
+        box-sizing: border-box;
+        display: flex;
+        justify-content: flex-end;
+    }}
+
+    #settings-page > main > header app-sidebar-toggle {{
+        display: none;
+    }}
+
+    #settings-page .settings-content {{
+        box-sizing: border-box;
+        margin: 0 auto;
+        max-width: 760px;
+        padding: 32px 24px;
+        width: 100%;
+    }}
+
+    #settings-page h1 {{
+        color: var(--foreground);
+        font-size: 26px;
+        line-height: 1.2;
+        margin: 0 0 8px;
+    }}
+
+    #settings-page .intro,
+    #settings-page .muted {{
+        color: var(--muted-foreground);
+        font-size: 14px;
+        line-height: 1.5;
+        margin: 0;
+    }}
+
+    #settings-page .section {{
+        border-top: 1px solid var(--border);
+        margin-top: 24px;
+        padding-top: 24px;
+    }}
+
+    #settings-page .section h2 {{
+        color: var(--foreground);
+        font-size: 16px;
+        margin: 0 0 8px;
+    }}
+
+    #settings-page .status {{
+        color: var(--foreground);
+        font-size: 14px;
+        margin: 12px 0;
+    }}
+
+    #settings-page .actions {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+    }}
+
+    #settings-page .code {{
+        background: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--foreground);
+        display: none;
+        font: 600 24px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 0;
+        margin-top: 16px;
+        padding: 14px 16px;
+        width: fit-content;
+    }}
+
+    #settings-page .telegram-link {{
+        align-items: center;
+        background: var(--primary);
+        border-radius: 8px;
+        color: var(--primary-foreground);
+        display: none;
+        font-size: 14px;
+        font-weight: 500;
+        height: 36px;
+        justify-content: center;
+        margin-top: 12px;
+        padding: 0 14px;
+        text-decoration: none;
+        width: fit-content;
+    }}
+
+    #settings-page .error {{
+        color: var(--destructive);
+        font-size: 13px;
+        margin-top: 12px;
+    }}
+
+    #settings-page .error:empty {{
+        display: none;
+    }}
+
+    @media (max-width: 767px) {{
+        #settings-page > main > header app-sidebar-toggle {{
+            display: inline-flex;
+        }}
+
+        #settings-page > main > header {{
+            justify-content: space-between;
+        }}
+    }}
+</style>
+{sidebar}
+<main>
+    <header>{toggle}</header>
+    <section class="settings-content">
+        <h1>Settings</h1>
+        <p class="intro">Manage account integrations.</p>
+        <section class="section" data-telegram>
+            <h2>Telegram</h2>
+            <p class="muted">Connect your Telegram account with the Friday bot.</p>
+            <p class="status" data-telegram-status>Loading...</p>
+            <div class="actions">
+                {connect_button}
+                {disconnect_button}
+            </div>
+            <div class="code" data-connect-code></div>
+            <a class="telegram-link" data-connect-link target="_blank" rel="noreferrer">Open Telegram</a>
+            <p class="muted" data-connect-help></p>
+            <div class="error" data-error></div>
+        </section>
+    </section>
+</main>
+{NAVIGATE_SCRIPT}"#,
+    );
+
+    render_page(
+        "Settings - Friday",
+        settings::PAGE_SCRIPT,
+        r#"id="settings-page""#,
         &body,
     )
 }
@@ -417,6 +580,17 @@ mod tests {
         // The Files nav item is marked active inside the SSR shadow DOM.
         assert!(html.contains(r#"href="/files" aria-current="page""#));
         assert!(html.contains("/static/pages/files-page.js"));
+    }
+
+    #[test]
+    fn settings_page_renders_telegram_controls() {
+        let html = super::render_settings_page(&sample_data());
+
+        assert!(html.contains(r#"<body id="settings-page">"#));
+        assert!(html.contains("Telegram"));
+        assert!(html.contains(r#"data-action="connect-code""#));
+        assert!(html.contains(r#"href="/settings" aria-current="page""#));
+        assert!(html.contains("/static/pages/settings-page.js"));
     }
 
     #[test]

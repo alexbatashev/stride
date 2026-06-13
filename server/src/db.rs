@@ -109,6 +109,54 @@ migrations! {
             foreign_key(node -> vfs_nodes.id);
         }
     }
+
+    telegram_integration {
+        table telegram_connect_codes {
+            code: String [PrimaryKey],
+            user_id: Uuid [Unique],
+            expires_at: i64,
+
+            foreign_key(user_id -> users.id);
+        }
+
+        table telegram_connections {
+            id: Uuid [PrimaryKey],
+            user_id: Uuid [Unique],
+            telegram_user_id: i64 [Unique],
+            chat_id: i64,
+            username: Option<String>,
+            first_name: Option<String>,
+            last_name: Option<String>,
+            connected_at: i64,
+
+            foreign_key(user_id -> users.id);
+        }
+
+        table telegram_threads {
+            id: Uuid [PrimaryKey],
+            user_id: Uuid,
+            chat_id: i64,
+            topic_id: i64,
+            thread_id: Uuid [Unique],
+
+            foreign_key(user_id -> users.id);
+            foreign_key(thread_id -> threads.id);
+        }
+
+        table telegram_message_links {
+            id: Uuid [PrimaryKey],
+            user_id: Uuid,
+            chat_id: i64,
+            message_id: i64,
+            thread_id: Uuid,
+
+            foreign_key(user_id -> users.id);
+            foreign_key(thread_id -> threads.id);
+        }
+
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_threads_topic ON telegram_threads(user_id, chat_id, topic_id)";
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_message_links_message ON telegram_message_links(user_id, chat_id, message_id)";
+    }
 }
 
 impl FromValue for Role {

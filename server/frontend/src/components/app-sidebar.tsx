@@ -11,6 +11,7 @@ import { IconChevronRight } from "./icons/chevron-right.js";
 import { IconFiles } from "./icons/files.js";
 import { IconPanelLeftClose } from "./icons/panel-left-close.js";
 import { IconPanelLeftOpen } from "./icons/panel-left-open.js";
+import { IconSettingsHorizontal } from "./icons/settings-horizontal.js";
 import { IconWorkflow } from "./icons/workflow.js";
 
 interface SidebarThread {
@@ -444,11 +445,13 @@ export function AppSidebar({
   threads = [],
   activeThread = "",
   filesActive = false,
+  settingsActive = false,
 }: {
   projects?: SidebarProject[];
   threads?: SidebarThread[];
   activeThread?: string;
   filesActive?: boolean;
+  settingsActive?: boolean;
 }): Component {
   let status = state("open");
 
@@ -541,6 +544,12 @@ export function AppSidebar({
             <a href="/threads">
               <span class="icon"><IconWorkflow /></span>
               <span class="label">Automations</span>
+            </a>
+          </span>
+          <span class="nav-item">
+            <a href="/settings" aria-current={settingsActive ? "page" : "false"}>
+              <span class="icon"><IconSettingsHorizontal /></span>
+              <span class="label">Settings</span>
             </a>
           </span>
           <div class="groups">
