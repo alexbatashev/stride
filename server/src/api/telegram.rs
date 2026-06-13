@@ -26,6 +26,7 @@ use uuid::Uuid;
 use crate::{
     ServerState,
     api::auth::{self, AuthError},
+    api::threads::DEFAULT_THREAD_TITLE,
     db::{
         Role, messages, telegram_connect_codes, telegram_connections, telegram_message_links,
         telegram_threads, threads,
@@ -299,13 +300,25 @@ async fn handle_topic_message(
         return Ok(());
     }
 
-    let thread_id = if let Some(thread_id) = reply_thread(&state, user_id, &message).await? {
-        thread_id
-    } else if message.topic_id().unwrap_or(0) == 0 {
-        create_telegram_thread(&state, user_id, title_from_text(text)).await?
-    } else {
-        ensure_telegram_thread(&state, user_id, &message, None).await?
-    };
+    let (thread_id, is_new) =
+        if let Some(thread_id) = reply_thread(&state, user_id, &message).await? {
+            (thread_id, false)
+        } else if message.topic_id().unwrap_or(0) == 0 {
+            (create_telegram_thread(&state, user_id).await?, true)
+        } else {
+            ensure_telegram_thread(&state, user_id, &message).await?
+        };
+
+    if is_new {
+        crate::api::threads::spawn_title_generation(
+            state.clone(),
+            thread_id,
+            text.to_string(),
+            message
+                .message_thread_id
+                .map(|topic| (message.chat.id, topic)),
+        );
+    }
     link_telegram_message(
         &state,
         user_id,
@@ -964,13 +977,12 @@ async fn reply_thread(
 async fn create_telegram_thread(
     state: &ServerState,
     user_id: Uuid,
-    title: String,
 ) -> Result<Uuid, TelegramApiError> {
     let thread_id = Uuid::now_v7();
     threads::insert()
         .id(thread_id)
         .owner(user_id)
-        .title(title.as_str())
+        .title(DEFAULT_THREAD_TITLE)
         .execute(&state.db)
         .await
         .map_err(|_| TelegramApiError::Internal)?;
@@ -978,12 +990,12 @@ async fn create_telegram_thread(
     Ok(thread_id)
 }
 
+/// Returns the thread and whether it was just created.
 async fn ensure_telegram_thread(
     state: &ServerState,
     user_id: Uuid,
     message: &TelegramMessage,
-    topic_name: Option<String>,
-) -> Result<Uuid, TelegramApiError> {
+) -> Result<(Uuid, bool), TelegramApiError> {
     let topic_id = message.topic_id().unwrap_or(0);
     let rows = telegram_threads::select_cols((telegram_threads::thread_id,))
         .where_(
@@ -997,22 +1009,14 @@ async fn ensure_telegram_thread(
         .map_err(|_| TelegramApiError::Internal)?;
 
     if let Some((thread_id,)) = rows.into_iter().next() {
-        if let Some(title) = topic_name {
-            threads::update()
-                .title(thread_title(&message.chat, topic_id, Some(title)).as_str())
-                .where_(threads::id.eq(thread_id))
-                .execute(&state.db)
-                .await
-                .map_err(|_| TelegramApiError::Internal)?;
-        }
-        return Ok(thread_id);
+        return Ok((thread_id, false));
     }
 
     let thread_id = Uuid::now_v7();
     threads::insert()
         .id(thread_id)
         .owner(user_id)
-        .title(thread_title(&message.chat, topic_id, topic_name).as_str())
+        .title(DEFAULT_THREAD_TITLE)
         .execute(&state.db)
         .await
         .map_err(|_| TelegramApiError::Internal)?;
@@ -1027,7 +1031,7 @@ async fn ensure_telegram_thread(
         .await
         .map_err(|_| TelegramApiError::Internal)?;
 
-    Ok(thread_id)
+    Ok((thread_id, true))
 }
 
 async fn forward_run(
@@ -1571,31 +1575,20 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
-fn thread_title(chat: &TelegramChat, topic_id: i64, topic_name: Option<String>) -> String {
-    if let Some(name) = topic_name.filter(|name| !name.trim().is_empty()) {
-        return format!("Telegram: {}", name.trim());
-    }
-
-    let chat_title = chat
-        .title
-        .as_deref()
-        .or(chat.username.as_deref())
-        .unwrap_or("Chat");
-
-    if topic_id > 0 {
-        format!("Telegram: {chat_title} #{topic_id}")
-    } else {
-        format!("Telegram: {chat_title}")
-    }
-}
-
-fn title_from_text(text: &str) -> String {
-    let title: String = text.chars().take(64).collect();
-    if title.len() < text.len() {
-        format!("Telegram: {title}...")
-    } else {
-        format!("Telegram: {title}")
-    }
+pub(crate) async fn edit_forum_topic(
+    state: &ServerState,
+    chat_id: i64,
+    message_thread_id: i64,
+    name: &str,
+) {
+    let Ok(body) = serde_json::to_vec(&json!({
+        "chat_id": chat_id,
+        "message_thread_id": message_thread_id,
+        "name": name,
+    })) else {
+        return;
+    };
+    let _ = telegram_post(state, "editForumTopic", body).await;
 }
 
 fn telegram_draft_id(run_id: Uuid) -> i64 {
@@ -1683,8 +1676,6 @@ pub struct TelegramChat {
     id: i64,
     #[serde(rename = "type")]
     kind: String,
-    title: Option<String>,
-    username: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1782,22 +1773,6 @@ mod tests {
             Some("123456")
         );
         assert_eq!(connect_code(Some("/connect")), None);
-    }
-
-    #[test]
-    fn names_telegram_threads_from_topic_or_chat() {
-        let chat = TelegramChat {
-            id: -100,
-            kind: "supergroup".to_string(),
-            title: Some("Work".to_string()),
-            username: None,
-        };
-
-        assert_eq!(
-            thread_title(&chat, 42, Some("Launch".to_string())),
-            "Telegram: Launch"
-        );
-        assert_eq!(thread_title(&chat, 42, None), "Telegram: Work #42");
     }
 
     use async_trait::async_trait;
@@ -1991,8 +1966,6 @@ mod tests {
                 chat: TelegramChat {
                     id: chat_id,
                     kind: "private".to_string(),
-                    title: None,
-                    username: None,
                 },
                 text: Some(text.to_string()),
             }),

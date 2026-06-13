@@ -30,6 +30,11 @@ use crate::{
     },
 };
 
+/// Placeholder title a new thread gets until the LLM generates a real one.
+pub(crate) const DEFAULT_THREAD_TITLE: &str = "New chat";
+/// Telegram caps forum topic names at 128 characters; we cap every generated title to match.
+const MAX_TITLE_LEN: usize = 128;
+
 #[derive(Serialize)]
 pub struct ThreadResponse {
     id: String,
@@ -381,12 +386,11 @@ pub async fn create_thread(
     let content = normalize_content(build_content(request.content, request.file_paths))?;
     let project_id = request.project_id;
     let thread_id = Uuid::now_v7();
-    let title = title_from_content(&content);
 
     let mut insert = threads::insert()
         .id(thread_id)
         .owner(owner)
-        .title(title.as_str());
+        .title(DEFAULT_THREAD_TITLE);
     if let Some(pid) = project_id {
         insert = insert.project_id(pid);
     }
@@ -397,17 +401,7 @@ pub async fn create_thread(
 
     let run_id = send_to_runner(&state, thread_id, content.clone()).await?;
 
-    let db = state.db.clone();
-    let model_config = state.model_config.clone();
-    tokio::spawn(async move {
-        if let Some(title) = generate_title(&model_config, &content).await {
-            let _ = threads::update()
-                .title(title)
-                .where_(threads::id.eq(thread_id))
-                .execute(&db)
-                .await;
-        }
-    });
+    spawn_title_generation(state.clone(), thread_id, content, None);
 
     Ok(Json(SendMessageResponse {
         thread_id: thread_id.to_string(),
@@ -415,10 +409,32 @@ pub async fn create_thread(
     }))
 }
 
-async fn generate_title(
-    config: &std::sync::Arc<friday_agent::AgentConfig>,
-    content: &str,
-) -> Option<String> {
+/// The single background task that names a freshly created thread: generate a title from its first
+/// message, save it, and—when the thread is a Telegram forum topic—rename that topic too. Used by
+/// every thread-creating path so naming behaves identically regardless of origin.
+pub(crate) fn spawn_title_generation(
+    state: Arc<ServerState>,
+    thread_id: Uuid,
+    content: String,
+    forum_topic: Option<(i64, i64)>,
+) {
+    tokio::spawn(async move {
+        let Some(title) = generate_title(&state.model_config, &content).await else {
+            return;
+        };
+        let _ = threads::update()
+            .title(title.as_str())
+            .where_(threads::id.eq(thread_id))
+            .execute(&state.db)
+            .await;
+        if let Some((chat_id, message_thread_id)) = forum_topic {
+            crate::api::telegram::edit_forum_topic(&state, chat_id, message_thread_id, &title)
+                .await;
+        }
+    });
+}
+
+async fn generate_title(config: &Arc<friday_agent::AgentConfig>, content: &str) -> Option<String> {
     let model = config.model_registry.get_or_default(DEFAULT_MODEL);
     let prompt = format!(
         "Generate a concise title (5-8 words) for a conversation that starts with this message. Return only the title, no quotes or trailing punctuation.\n\nMessage: {content}"
@@ -440,7 +456,13 @@ async fn generate_title(
         .ok()
         .and_then(|c| c.choices.into_iter().next())
         .and_then(|choice| choice.message)
-        .map(|msg| msg.content.trim().to_string())
+        .map(|msg| {
+            msg.content
+                .trim()
+                .chars()
+                .take(MAX_TITLE_LEN)
+                .collect::<String>()
+        })
         .filter(|t| !t.is_empty())
 }
 
@@ -659,15 +681,6 @@ fn normalize_content(content: String) -> Result<String, ThreadApiError> {
         Err(ThreadApiError::BadRequest)
     } else {
         Ok(content)
-    }
-}
-
-fn title_from_content(content: &str) -> String {
-    let title: String = content.chars().take(64).collect();
-    if title.len() < content.len() {
-        format!("{title}...")
-    } else {
-        title
     }
 }
 
