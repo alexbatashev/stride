@@ -42,6 +42,7 @@ struct ServerState {
     pub(crate) runner: Arc<dyn AgentPool>,
     pub(crate) model_config: Arc<AgentConfig>,
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
+    pub(crate) telegram_sessions: Arc<api::telegram::TelegramSessions>,
 }
 
 #[derive(Debug, Parser)]
@@ -139,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         runner,
         model_config,
         vfs: vfs_provider,
+        telegram_sessions: Arc::new(api::telegram::TelegramSessions::default()),
     });
 
     let static_dir = args

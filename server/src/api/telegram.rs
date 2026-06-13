@@ -1,5 +1,6 @@
 use std::{
-    sync::Arc,
+    collections::HashMap,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -15,8 +16,8 @@ use hyper::Request;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::broadcast::error::RecvError,
-    time::{interval, timeout},
+    sync::{broadcast::error::RecvError, mpsc},
+    time::{interval, sleep, timeout},
 };
 use uuid::Uuid;
 
@@ -27,11 +28,13 @@ use crate::{
         Role, messages, telegram_connect_codes, telegram_connections, telegram_message_links,
         telegram_threads, threads,
     },
-    runner::{AgentEventKind, AgentPoolError, AgentRequest, ThreadStatus},
+    runner::{AgentEventKind, AgentRequest, ThreadStatus},
 };
 
 const CONNECT_CODE_TTL_SECONDS: i64 = 10 * 60;
 const TELEGRAM_SECRET_HEADER: &str = "x-telegram-bot-api-secret-token";
+/// How long a per-thread session task lingers with an empty queue before retiring.
+const SESSION_IDLE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Serialize)]
 pub struct TelegramSettingsResponse {
@@ -60,7 +63,6 @@ pub enum TelegramApiError {
     Auth(AuthError),
     Unauthorized,
     NotFound,
-    Conflict,
     Internal,
 }
 
@@ -70,7 +72,6 @@ impl IntoResponse for TelegramApiError {
             TelegramApiError::Auth(error) => error.into_response(),
             TelegramApiError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
             TelegramApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
-            TelegramApiError::Conflict => StatusCode::CONFLICT.into_response(),
             TelegramApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }
@@ -298,33 +299,160 @@ async fn handle_topic_message(
         thread_id,
     )
     .await?;
-    let subscription = state
-        .runner
-        .subscribe(thread_id, None)
-        .await
-        .map_err(pool_error)?;
-    let run_id = state
-        .runner
-        .send(
-            thread_id,
-            AgentRequest {
-                content: text.to_string(),
-            },
-        )
-        .await
-        .map_err(pool_error)?;
 
-    tokio::spawn(forward_agent_replies(
-        state,
-        subscription.events,
-        run_id.0,
-        user_id,
-        thread_id,
-        message.chat.id,
-        message.topic_id(),
-    ));
+    let queued = QueuedMessage {
+        text: text.to_string(),
+        chat_id: message.chat.id,
+        topic_id: message.topic_id(),
+    };
+    state
+        .telegram_sessions
+        .clone()
+        .dispatch(state.clone(), thread_id, user_id, queued);
 
     Ok(())
+}
+
+struct QueuedMessage {
+    text: String,
+    chat_id: i64,
+    topic_id: Option<i64>,
+}
+
+/// Per-thread Telegram sessions layered over the shared `AgentPool`.
+///
+/// Each thread gets one long-lived session task that owns a FIFO queue: it runs the agent for
+/// one queued message at a time and forwards that run's events to Telegram. Queueing (instead of
+/// sending straight to the pool) is what keeps concurrent Telegram messages from being dropped
+/// with `AlreadyRunning`.
+#[derive(Default)]
+pub(crate) struct TelegramSessions {
+    inner: Mutex<HashMap<Uuid, mpsc::UnboundedSender<QueuedMessage>>>,
+}
+
+impl TelegramSessions {
+    fn dispatch(
+        self: Arc<Self>,
+        state: Arc<ServerState>,
+        thread_id: Uuid,
+        user_id: Uuid,
+        message: QueuedMessage,
+    ) {
+        let mut sessions = self.inner.lock().unwrap();
+        if let Some(tx) = sessions.get(&thread_id) {
+            match tx.send(message) {
+                Ok(()) => return,
+                // Session task is retiring; drop the stale sender and start a fresh one.
+                Err(returned) => {
+                    sessions.remove(&thread_id);
+                    return self.spawn_session(sessions, state, thread_id, user_id, returned.0);
+                }
+            }
+        }
+        self.spawn_session(sessions, state, thread_id, user_id, message);
+    }
+
+    fn spawn_session(
+        self: &Arc<Self>,
+        mut sessions: std::sync::MutexGuard<
+            '_,
+            HashMap<Uuid, mpsc::UnboundedSender<QueuedMessage>>,
+        >,
+        state: Arc<ServerState>,
+        thread_id: Uuid,
+        user_id: Uuid,
+        message: QueuedMessage,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let _ = tx.send(message);
+        sessions.insert(thread_id, tx);
+        drop(sessions);
+        tokio::spawn(run_session(state, self.clone(), thread_id, user_id, rx));
+    }
+}
+
+async fn run_session(
+    state: Arc<ServerState>,
+    sessions: Arc<TelegramSessions>,
+    thread_id: Uuid,
+    user_id: Uuid,
+    mut rx: mpsc::UnboundedReceiver<QueuedMessage>,
+) {
+    loop {
+        let message = match timeout(SESSION_IDLE_TTL, rx.recv()).await {
+            Ok(Some(message)) => message,
+            Ok(None) => break,
+            Err(_) => {
+                // Idle: retire under the lock so a racing dispatch either lands here or recreates.
+                let mut map = sessions.inner.lock().unwrap();
+                match rx.try_recv() {
+                    Ok(message) => {
+                        drop(map);
+                        message
+                    }
+                    Err(_) => {
+                        map.remove(&thread_id);
+                        return;
+                    }
+                }
+            }
+        };
+
+        // Wait out any run started elsewhere (e.g. the web UI) so `send` never hits AlreadyRunning.
+        wait_until_idle(&state, thread_id).await;
+
+        // Subscribe before sending: same worker processes both in order, so no events are missed.
+        let events = match state.runner.subscribe(thread_id, None).await {
+            Ok(subscription) => subscription.events,
+            Err(error) => {
+                tracing::warn!(%thread_id, %error, "failed to subscribe Telegram session");
+                continue;
+            }
+        };
+        let run_id = match state
+            .runner
+            .send(
+                thread_id,
+                AgentRequest {
+                    content: message.text,
+                },
+            )
+            .await
+        {
+            Ok(run_id) => run_id,
+            Err(error) => {
+                tracing::warn!(%thread_id, %error, "failed to start Telegram agent run");
+                send_telegram_message(
+                    &state,
+                    message.chat_id,
+                    message.topic_id,
+                    "Friday could not start: please try again.",
+                )
+                .await;
+                continue;
+            }
+        };
+
+        forward_run(
+            state.clone(),
+            events,
+            run_id.0,
+            user_id,
+            thread_id,
+            message.chat_id,
+            message.topic_id,
+        )
+        .await;
+    }
+}
+
+async fn wait_until_idle(state: &ServerState, thread_id: Uuid) {
+    for _ in 0..600 {
+        match state.runner.status(thread_id).await {
+            Ok(ThreadStatus::Idle) | Err(_) => return,
+            Ok(ThreadStatus::Running { .. }) => sleep(Duration::from_millis(200)).await,
+        }
+    }
 }
 
 async fn reply_thread(
@@ -419,7 +547,7 @@ async fn ensure_telegram_thread(
     Ok(thread_id)
 }
 
-async fn forward_agent_replies(
+async fn forward_run(
     state: Arc<ServerState>,
     mut events: tokio::sync::broadcast::Receiver<crate::runner::AgentEvent>,
     run_id: Uuid,
@@ -432,7 +560,6 @@ async fn forward_agent_replies(
     let draft_id = telegram_draft_id(run_id);
     let mut last_draft_text = String::new();
     let mut finalized = false;
-    let mut status_tick = interval(Duration::from_millis(500));
     let mut draft_tick = interval(Duration::from_millis(700));
 
     loop {
@@ -509,23 +636,6 @@ async fn forward_agent_replies(
                         )
                         .await;
                     });
-                }
-            }
-            _ = status_tick.tick() => {
-                if finalized {
-                    continue;
-                }
-                if matches!(state.runner.status(thread_id).await, Ok(ThreadStatus::Idle)) {
-                    finalize_latest_telegram_response(
-                        &state,
-                        user_id,
-                        thread_id,
-                        chat_id,
-                        message_thread_id,
-                        &mut content,
-                    )
-                    .await;
-                    break;
                 }
             }
         };
@@ -990,18 +1100,6 @@ fn rich_markdown(text: &str) -> String {
     text.chars().take(4096).collect()
 }
 
-fn pool_error(error: AgentPoolError) -> TelegramApiError {
-    match error {
-        AgentPoolError::AlreadyRunning => TelegramApiError::Conflict,
-        AgentPoolError::ThreadNotFound
-        | AgentPoolError::ApprovalNotFound
-        | AgentPoolError::QuizNotFound => TelegramApiError::NotFound,
-        AgentPoolError::EventHistoryExpired
-        | AgentPoolError::WorkerStopped
-        | AgentPoolError::Internal(_) => TelegramApiError::Internal,
-    }
-}
-
 #[derive(Debug)]
 struct TelegramConnection {
     username: Option<String>,
@@ -1156,5 +1254,165 @@ mod tests {
             "Telegram: Launch"
         );
         assert_eq!(thread_title(&chat, 42, None), "Telegram: Work #42");
+    }
+
+    #[tokio::test]
+    async fn session_queues_concurrent_messages_in_order() {
+        use std::collections::HashMap as Map;
+
+        use async_trait::async_trait;
+        use friday_agent::{AgentConfig, ModelRegistry};
+        use minisql::ConnectionPool;
+        use tokio::sync::broadcast;
+
+        use crate::{
+            config::Config,
+            runner::{
+                AgentEvent, AgentPool, AgentPoolError, RunId, ThreadSnapshot, ThreadSubscription,
+            },
+        };
+
+        #[derive(Default)]
+        struct FakePool {
+            senders: Mutex<HashMap<Uuid, broadcast::Sender<AgentEvent>>>,
+            received: Mutex<Vec<String>>,
+        }
+
+        impl FakePool {
+            fn sender(&self, thread_id: Uuid) -> broadcast::Sender<AgentEvent> {
+                self.senders
+                    .lock()
+                    .unwrap()
+                    .entry(thread_id)
+                    .or_insert_with(|| broadcast::channel(16).0)
+                    .clone()
+            }
+        }
+
+        #[async_trait]
+        impl AgentPool for FakePool {
+            async fn send(
+                &self,
+                thread_id: Uuid,
+                request: AgentRequest,
+            ) -> Result<RunId, AgentPoolError> {
+                self.received.lock().unwrap().push(request.content);
+                let run_id = RunId(Uuid::now_v7());
+                let tx = self.sender(thread_id);
+                let _ = tx.send(AgentEvent {
+                    seq: 1,
+                    thread_id,
+                    run_id: Some(run_id),
+                    kind: AgentEventKind::RunStarted,
+                });
+                let _ = tx.send(AgentEvent {
+                    seq: 2,
+                    thread_id,
+                    run_id: Some(run_id),
+                    kind: AgentEventKind::RunFinished,
+                });
+                Ok(run_id)
+            }
+
+            async fn subscribe(
+                &self,
+                thread_id: Uuid,
+                _after: Option<u64>,
+            ) -> Result<ThreadSubscription, AgentPoolError> {
+                Ok(ThreadSubscription {
+                    snapshot: ThreadSnapshot {
+                        thread_id,
+                        last_event_seq: 0,
+                        status: ThreadStatus::Idle,
+                        in_progress: None,
+                        pending_approval: None,
+                        pending_quiz: None,
+                    },
+                    events: self.sender(thread_id).subscribe(),
+                    replay: Vec::new(),
+                })
+            }
+
+            async fn status(&self, _thread_id: Uuid) -> Result<ThreadStatus, AgentPoolError> {
+                Ok(ThreadStatus::Idle)
+            }
+
+            async fn cancel_run(&self, _thread_id: Uuid) -> Result<(), AgentPoolError> {
+                Ok(())
+            }
+
+            async fn resolve_approval(
+                &self,
+                _thread_id: Uuid,
+                _approval_id: Uuid,
+                _approved: bool,
+            ) -> Result<(), AgentPoolError> {
+                Ok(())
+            }
+
+            async fn answer_quiz(
+                &self,
+                _thread_id: Uuid,
+                _quiz_id: Uuid,
+                _answers: Vec<String>,
+            ) -> Result<(), AgentPoolError> {
+                Ok(())
+            }
+
+            async fn shutdown_thread(&self, _thread_id: Uuid) -> Result<(), AgentPoolError> {
+                Ok(())
+            }
+        }
+
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(crate::db::get_migrations())
+            .await
+            .unwrap();
+
+        let pool = Arc::new(FakePool::default());
+        let state = Arc::new(ServerState {
+            config: Config {
+                providers: Map::new(),
+                models: Map::new(),
+                server: None,
+                tools: None,
+                mcp: Map::new(),
+            },
+            db,
+            jwt_secret: String::new(),
+            runner: pool.clone(),
+            model_config: Arc::new(AgentConfig {
+                model_registry: ModelRegistry::default(),
+                max_iterations: 1,
+            }),
+            vfs: None,
+            telegram_sessions: Arc::new(TelegramSessions::default()),
+        });
+
+        let thread_id = Uuid::now_v7();
+        let user_id = Uuid::now_v7();
+        // Enqueue three messages back-to-back for the same thread, as concurrent webhooks would.
+        for i in 0..3 {
+            state.telegram_sessions.clone().dispatch(
+                state.clone(),
+                thread_id,
+                user_id,
+                QueuedMessage {
+                    text: format!("msg{i}"),
+                    chat_id: 1,
+                    topic_id: None,
+                },
+            );
+        }
+
+        for _ in 0..200 {
+            if pool.received.lock().unwrap().len() == 3 {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let received = pool.received.lock().unwrap().clone();
+        assert_eq!(received, vec!["msg0", "msg1", "msg2"]);
     }
 }
