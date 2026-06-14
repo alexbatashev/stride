@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod automations;
 pub mod files;
 pub mod projects;
 pub mod telegram;

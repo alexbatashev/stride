@@ -443,12 +443,14 @@ export function AppSidebar({
   threads = [],
   activeThread = "",
   filesActive = false,
+  automationsActive = false,
   settingsActive = false,
 }: {
   projects?: SidebarProject[];
   threads?: SidebarThread[];
   activeThread?: string;
   filesActive?: boolean;
+  automationsActive?: boolean;
   settingsActive?: boolean;
 }): Component {
   let status = state("open");
@@ -530,7 +532,7 @@ export function AppSidebar({
             </a>
           </span>
           <span class="nav-item">
-            <a href="/threads">
+            <a href="/automations" aria-current={automationsActive ? "page" : "false"}>
               <span class="icon"><IconWorkflow /></span>
               <span class="label">Automations</span>
             </a>

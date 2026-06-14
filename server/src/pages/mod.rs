@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod auth;
+pub mod automations;
 pub mod files;
 pub mod settings;
 
@@ -97,7 +98,12 @@ pub fn render_auth_page(mode: &str) -> String {
     render_page(title, "", r#"id="auth-page""#, &body)
 }
 
-fn render_sidebar(data: &ThreadPageData, files_active: bool, settings_active: bool) -> String {
+fn render_sidebar(
+    data: &ThreadPageData,
+    files_active: bool,
+    automations_active: bool,
+    settings_active: bool,
+) -> String {
     let projects = data.projects.iter().map(|project| SidebarProject {
         id: project.id.clone(),
         title: html_escape(&project.title),
@@ -119,6 +125,7 @@ fn render_sidebar(data: &ThreadPageData, files_active: bool, settings_active: bo
         ungrouped,
         &data.thread_id,
         files_active,
+        automations_active,
         settings_active,
     );
     format!("<nav>{sidebar}</nav>")
@@ -227,7 +234,7 @@ const THREADS_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_threads_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, false);
+    let sidebar = render_sidebar(data, false, false, false);
     let toggle = AppSidebarToggle::new("").render();
     let files_button = with_attrs(
         &AppButton::new().render(),
@@ -314,7 +321,7 @@ const FILES_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_files_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, true, false);
+    let sidebar = render_sidebar(data, true, false, false);
     let toggle = AppSidebarToggle::new("").render();
     let body = format!(
         r#"{FILES_STYLE}
@@ -333,8 +340,54 @@ pub fn render_files_page(data: &ThreadPageData) -> String {
     )
 }
 
+const AUTOMATIONS_STYLE: &str = r#"<style>
+    #automations-page > main {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+    }
+
+    #automations-page app-automations {
+        flex: 1;
+        min-height: 0;
+    }
+
+    #automations-page .mobile-bar {
+        display: none;
+    }
+
+    @media (max-width: 767px) {
+        #automations-page .mobile-bar {
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            padding: 8px 12px;
+        }
+    }
+</style>"#;
+
+pub fn render_automations_page(data: &ThreadPageData) -> String {
+    let sidebar = render_sidebar(data, false, true, false);
+    let toggle = AppSidebarToggle::new("").render();
+    let body = format!(
+        r#"{AUTOMATIONS_STYLE}
+{sidebar}
+<main>
+    <div class="mobile-bar">{toggle}</div>
+    <app-automations></app-automations>
+</main>
+{NAVIGATE_SCRIPT}"#,
+    );
+    render_page(
+        "Automations - Friday",
+        automations::PAGE_SCRIPT,
+        r#"id="automations-page""#,
+        &body,
+    )
+}
+
 pub fn render_settings_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, true);
+    let sidebar = render_sidebar(data, false, false, true);
     let toggle = AppSidebarToggle::new("").render();
     let connect_button = with_attrs(
         &AppButton::new().render(),
@@ -585,6 +638,16 @@ mod tests {
         // The Files nav item is marked active inside the SSR shadow DOM.
         assert!(html.contains(r#"href="/files" aria-current="page""#));
         assert!(html.contains("/static/pages/files-page.js"));
+    }
+
+    #[test]
+    fn automations_page_renders_list_shell() {
+        let html = super::render_automations_page(&sample_data());
+
+        assert!(html.contains(r#"<body id="automations-page">"#));
+        assert!(html.contains("<app-automations></app-automations>"));
+        assert!(html.contains(r#"href="/automations" aria-current="page""#));
+        assert!(html.contains("/static/pages/automations-page.js"));
     }
 
     #[test]

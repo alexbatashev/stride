@@ -39,6 +39,7 @@ use crate::{
         PendingApproval, PendingQuiz, RunId, ThreadSnapshot, ThreadStatus, ThreadSubscription,
     },
     tools::{
+        automations::ScheduleAutomationTool,
         personality::UpdatePersonalityTool,
         presentation_draft::{PRESENTATION_DRAFT_NAME, make_presentation_draft},
         python::VfsExecFileSystem,
@@ -860,6 +861,11 @@ async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("update_personality");
+    agent.register_tool(ScheduleAutomationTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("schedule_automation");
     agent.register_tool(SearchSkillsTool {
         db: db.clone(),
         user_id,

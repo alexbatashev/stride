@@ -32,7 +32,7 @@ test('all custom elements register', () => {
     'app-button', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
     'app-message', 'app-spoiler', 'auto-markdown', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
-    'app-file-manager', 'icon-arrow-up', 'icon-x',
+    'app-file-manager', 'app-automations', 'icon-arrow-up', 'icon-x',
   ]) {
     assert.ok(customElements.get(tag), `${tag} is not registered`);
   }
@@ -169,4 +169,25 @@ test('auth-form switches mode via a plain link', () => {
   // The mode toggle is a plain navigation link, robust on every page.
   const link = el.shadowRoot.querySelector('.switch a');
   assert.equal(link.getAttribute('href'), '/auth/register');
+});
+
+test('app-automations renders and opens the create modal on click', () => {
+  const el = mount('app-automations', { items: [], loading: false });
+  // Inline handlers must wire up without throwing (regression: onClick ref).
+  assert.match(el.shadowRoot.innerHTML, /Automations/);
+  const newButton = el.shadowRoot.querySelector('[data-action="open-create"]');
+  assert.ok(newButton, 'New automation button is missing');
+  newButton.click();
+  assert.match(el.shadowRoot.innerHTML, /New automation/);
+  assert.ok(el.shadowRoot.querySelector('input[name="schedule"]'), 'create form did not open');
+});
+
+test('app-automations lists tasks and toggles enable through delegation', () => {
+  const el = mount('app-automations', {
+    items: [{ id: 'a1', name: 'Daily', schedule: '0 9 * * *', kind: 'agent', payload: 'x', enabled: true, created_at: 1, last_run: null }],
+  });
+  assert.match(el.shadowRoot.innerHTML, /Daily/);
+  assert.match(el.shadowRoot.innerHTML, /0 9 \* \* \*/);
+  const toggle = el.shadowRoot.querySelector('[data-action="toggle"][data-id="a1"]');
+  assert.equal(toggle.textContent.trim(), 'On');
 });

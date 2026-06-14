@@ -1,9 +1,11 @@
 mod api;
 mod components;
 mod config;
+mod cron;
 mod db;
 mod pages;
 pub mod runner;
+mod scheduler;
 mod tools;
 mod vfs;
 
@@ -109,6 +111,8 @@ async fn main() -> anyhow::Result<()> {
         .transpose()
         .map_err(|e: anyhow::Error| e)?
         .map(Arc::new);
+
+    scheduler::spawn(db.clone(), model_config.clone(), tools.clone());
 
     let runner: Arc<dyn runner::AgentPool> = if let Some(ref vfs) = vfs_provider {
         Arc::new(
@@ -224,6 +228,15 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/api/files/directories", post(api::files::create_directory))
         .route("/api/files/rename", patch(api::files::rename))
         .route(
+            "/api/automations",
+            get(api::automations::list).post(api::automations::create),
+        )
+        .route(
+            "/api/automations/{id}",
+            patch(api::automations::update).delete(api::automations::delete),
+        )
+        .route("/api/automations/{id}/runs", get(api::automations::runs))
+        .route(
             "/api/files/{*path}",
             get(api::files::download_file).delete(api::files::delete_file),
         )
@@ -232,6 +245,7 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/threads", get(pages::agent::new_thread))
         .route("/threads/{id}", get(pages::agent::thread))
         .route("/files", get(pages::files::files))
+        .route("/automations", get(pages::automations::automations))
         .route("/settings", get(pages::settings::settings))
         .route("/", get(root))
         .nest_service("/static", ServeDir::new(static_dir))
