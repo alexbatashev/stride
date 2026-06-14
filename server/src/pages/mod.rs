@@ -340,253 +340,44 @@ pub fn render_files_page(data: &ThreadPageData) -> String {
     )
 }
 
+const AUTOMATIONS_STYLE: &str = r#"<style>
+    #automations-page > main {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+    }
+
+    #automations-page app-automations {
+        flex: 1;
+        min-height: 0;
+    }
+
+    #automations-page .mobile-bar {
+        display: none;
+    }
+
+    @media (max-width: 767px) {
+        #automations-page .mobile-bar {
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            padding: 8px 12px;
+        }
+    }
+</style>"#;
+
 pub fn render_automations_page(data: &ThreadPageData) -> String {
     let sidebar = render_sidebar(data, false, true, false);
     let toggle = AppSidebarToggle::new("").render();
-    let new_button = with_attrs(
-        &AppButton::new().render(),
-        r#"variant="secondary" size="sm" data-action="new""#,
-    )
-    .replacen("</app-button>", "New automation</app-button>", 1);
-
     let body = format!(
-        r#"<style>
-    #automations-page > main > header {{
-        display: none;
-    }}
-
-    #automations-page .automations-content {{
-        box-sizing: border-box;
-        margin: 0 auto;
-        max-width: 760px;
-        padding: 32px 24px;
-        width: 100%;
-    }}
-
-    #automations-page .head-row {{
-        align-items: center;
-        display: flex;
-        gap: 12px;
-        justify-content: space-between;
-    }}
-
-    #automations-page h1 {{
-        color: var(--foreground);
-        font-size: 26px;
-        margin: 0;
-    }}
-
-    #automations-page .muted {{
-        color: var(--muted-foreground);
-        font-size: 14px;
-        margin: 8px 0 0;
-    }}
-
-    #automations-page .list {{
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        margin-top: 24px;
-    }}
-
-    #automations-page .row {{
-        align-items: center;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        cursor: pointer;
-        display: flex;
-        gap: 12px;
-        justify-content: space-between;
-        padding: 12px 16px;
-    }}
-
-    #automations-page .row:hover {{
-        background: var(--accent);
-    }}
-
-    #automations-page .info {{
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        min-width: 0;
-    }}
-
-    #automations-page .name {{
-        color: var(--foreground);
-        font-weight: 600;
-    }}
-
-    #automations-page .meta {{
-        color: var(--muted-foreground);
-        font: 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-    }}
-
-    #automations-page .controls {{
-        align-items: center;
-        display: flex;
-        gap: 12px;
-    }}
-
-    #automations-page button {{
-        background: var(--secondary);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        color: var(--foreground);
-        cursor: pointer;
-        font-size: 14px;
-        padding: 6px 12px;
-    }}
-
-    #automations-page button.danger {{
-        color: var(--destructive);
-    }}
-
-    #automations-page .modal {{
-        align-items: center;
-        background: rgba(0, 0, 0, 0.4);
-        bottom: 0;
-        display: flex;
-        justify-content: center;
-        left: 0;
-        padding: 24px;
-        position: fixed;
-        right: 0;
-        top: 0;
-        z-index: 50;
-    }}
-
-    #automations-page .modal[hidden] {{
-        display: none;
-    }}
-
-    #automations-page .card {{
-        background: var(--background);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        box-sizing: border-box;
-        max-height: 85vh;
-        max-width: 560px;
-        overflow: auto;
-        padding: 24px;
-        width: 100%;
-    }}
-
-    #automations-page .card h2 {{
-        margin: 0 0 16px;
-    }}
-
-    #automations-page .card label {{
-        color: var(--foreground);
-        display: flex;
-        flex-direction: column;
-        font-size: 14px;
-        gap: 6px;
-        margin-bottom: 14px;
-    }}
-
-    #automations-page .card label.inline {{
-        flex-direction: row;
-        align-items: center;
-    }}
-
-    #automations-page .card input,
-    #automations-page .card select,
-    #automations-page .card textarea {{
-        background: var(--background);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        color: var(--foreground);
-        font: inherit;
-        padding: 8px 10px;
-    }}
-
-    #automations-page .card label.inline input {{
-        width: auto;
-    }}
-
-    #automations-page .card textarea {{
-        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-        resize: vertical;
-    }}
-
-    #automations-page .actions {{
-        display: flex;
-        gap: 8px;
-        justify-content: flex-end;
-    }}
-
-    #automations-page .runs {{
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-    }}
-
-    #automations-page .run summary {{
-        cursor: pointer;
-    }}
-
-    #automations-page .run pre {{
-        background: var(--muted);
-        border-radius: 8px;
-        margin: 8px 0 0;
-        max-height: 320px;
-        overflow: auto;
-        padding: 12px;
-        white-space: pre-wrap;
-    }}
-
-    #automations-page .status {{
-        border-radius: 6px;
-        font-size: 12px;
-        padding: 2px 6px;
-    }}
-
-    #automations-page .status.success {{
-        color: #16a34a;
-    }}
-
-    #automations-page .status.failed {{
-        color: var(--destructive);
-    }}
-
-    #automations-page .error {{
-        color: var(--destructive);
-        font-size: 13px;
-        margin-top: 12px;
-    }}
-
-    #automations-page .error:empty {{
-        display: none;
-    }}
-
-    @media (max-width: 767px) {{
-        #automations-page > main > header {{
-            align-items: center;
-            border-bottom: 1px solid var(--border);
-            box-sizing: border-box;
-            display: flex;
-            padding: 8px 12px;
-        }}
-    }}
-</style>
+        r#"{AUTOMATIONS_STYLE}
 {sidebar}
 <main>
-    <header>{toggle}</header>
-    <section class="automations-content">
-        <div class="head-row">
-            <h1>Automations</h1>
-            {new_button}
-        </div>
-        <p class="muted">Scheduled tasks Friday runs for you on a cron schedule.</p>
-        <div class="list" data-list></div>
-        <div class="error" data-error></div>
-    </section>
+    <div class="mobile-bar">{toggle}</div>
+    <app-automations></app-automations>
 </main>
-<div class="modal" data-detail hidden></div>
-<div class="modal" data-create hidden></div>
 {NAVIGATE_SCRIPT}"#,
     );
-
     render_page(
         "Automations - Friday",
         automations::PAGE_SCRIPT,
@@ -854,8 +645,7 @@ mod tests {
         let html = super::render_automations_page(&sample_data());
 
         assert!(html.contains(r#"<body id="automations-page">"#));
-        assert!(html.contains("data-list"));
-        assert!(html.contains(r#"data-action="new""#));
+        assert!(html.contains("<app-automations></app-automations>"));
         assert!(html.contains(r#"href="/automations" aria-current="page""#));
         assert!(html.contains("/static/pages/automations-page.js"));
     }
