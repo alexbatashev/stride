@@ -294,82 +294,80 @@ export function AppAutomations({
 		void load(this);
 	});
 
-	// Argon only allows event handlers in the top-level template, so every
-	// control is wired through one delegated click/submit on the root.
-	const onClick = (event: Event) => {
-		const node = event.target as HTMLElement;
-		if (node.dataset.backdrop === "create") {
-			this.creating = false;
-			return;
-		}
-		if (node.dataset.backdrop === "detail") {
-			this.detailOpen = false;
-			return;
-		}
-		const target = node.closest<HTMLElement>("[data-action]");
-		if (!target) return;
-		switch (target.dataset.action) {
-			case "open-create":
-				this.creating = true;
-				return;
-			case "close-create":
-				this.creating = false;
-				return;
-			case "close-detail":
-				this.detailOpen = false;
-				return;
-		}
-		const item = (this.items as Automation[]).find((it) => it.id === target.dataset.id);
-		if (!item) return;
-		switch (target.dataset.action) {
-			case "detail":
-				void openDetail(this, item);
-				break;
-			case "toggle":
-				void setAutomationEnabled(item.id, !item.enabled)
-					.then(() => load(this))
-					.catch(() => {
-						this.error = "Failed to update.";
-					});
-				break;
-			case "delete":
-				if (!window.confirm(`Delete automation "${item.name}"?`)) return;
-				void deleteAutomation(item.id)
-					.then(() => load(this))
-					.catch(() => {
-						this.error = "Failed to delete.";
-					});
-				break;
-		}
-	};
-
-	const onSubmit = (event: Event) => {
-		event.preventDefault();
-		const data = new FormData(event.target as HTMLFormElement);
-		this.formError = "";
-		void createAutomation({
-			name: String(data.get("name") ?? ""),
-			schedule: String(data.get("schedule") ?? ""),
-			kind: data.get("kind") === "python" ? "python" : "agent",
-			payload: String(data.get("payload") ?? ""),
-			enabled: data.get("enabled") !== null,
-		})
-			.then(() => {
-				this.creating = false;
-				void load(this);
-			})
-			.catch((err: unknown) => {
-				this.formError =
-					err instanceof Error && err.message === "400"
-						? "Check the name, cron schedule and task."
-						: "Failed to create automation.";
-			});
-	};
-
 	return (
 		<>
 			<style>{styles}</style>
-			<div class="root" onClick={onClick} onSubmit={onSubmit}>
+			<div
+				class="root"
+				onClick={(event: Event) => {
+					const node = event.target as HTMLElement;
+					if (node.dataset.backdrop === "create") {
+						this.creating = false;
+						return;
+					}
+					if (node.dataset.backdrop === "detail") {
+						this.detailOpen = false;
+						return;
+					}
+					const target = node.closest<HTMLElement>("[data-action]");
+					if (!target) return;
+					switch (target.dataset.action) {
+						case "open-create":
+							this.creating = true;
+							return;
+						case "close-create":
+							this.creating = false;
+							return;
+						case "close-detail":
+							this.detailOpen = false;
+							return;
+					}
+					const item = (this.items as Automation[]).find((it) => it.id === target.dataset.id);
+					if (!item) return;
+					switch (target.dataset.action) {
+						case "detail":
+							void openDetail(this, item);
+							break;
+						case "toggle":
+							void setAutomationEnabled(item.id, !item.enabled)
+								.then(() => load(this))
+								.catch(() => {
+									this.error = "Failed to update.";
+								});
+							break;
+						case "delete":
+							if (!window.confirm(`Delete automation "${item.name}"?`)) return;
+							void deleteAutomation(item.id)
+								.then(() => load(this))
+								.catch(() => {
+									this.error = "Failed to delete.";
+								});
+							break;
+					}
+				}}
+				onSubmit={(event: Event) => {
+					event.preventDefault();
+					const data = new FormData(event.target as HTMLFormElement);
+					this.formError = "";
+					void createAutomation({
+						name: String(data.get("name") ?? ""),
+						schedule: String(data.get("schedule") ?? ""),
+						kind: data.get("kind") === "python" ? "python" : "agent",
+						payload: String(data.get("payload") ?? ""),
+						enabled: data.get("enabled") !== null,
+					})
+						.then(() => {
+							this.creating = false;
+							void load(this);
+						})
+						.catch((err: unknown) => {
+							this.formError =
+								err instanceof Error && err.message === "400"
+									? "Check the name, cron schedule and task."
+									: "Failed to create automation.";
+						});
+				}}
+			>
 				<div class="content">
 					<div class="head-row">
 						<h1>Automations</h1>
