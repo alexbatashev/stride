@@ -18,6 +18,19 @@ pub enum ObjectKind {
     File,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutomationKind {
+    Python,
+    Agent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunStatus {
+    Running,
+    Success,
+    Failed,
+}
+
 migrations! {
     schema {
         table users {
@@ -157,6 +170,33 @@ migrations! {
         raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_threads_topic ON telegram_threads(user_id, chat_id, topic_id)";
         raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_message_links_message ON telegram_message_links(user_id, chat_id, message_id)";
     }
+
+    automations {
+        table automations {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            name: String,
+            schedule: String,
+            kind: AutomationKind,
+            payload: String,
+            enabled: bool,
+            created_at: i64,
+            last_run: Option<i64>,
+
+            foreign_key(owner -> users.id);
+        }
+
+        table automation_runs {
+            id: Uuid [PrimaryKey],
+            automation_id: Uuid,
+            started_at: i64,
+            finished_at: Option<i64>,
+            status: RunStatus,
+            output: String,
+
+            foreign_key(automation_id -> automations.id);
+        }
+    }
 }
 
 impl FromValue for Role {
@@ -220,6 +260,70 @@ impl From<ObjectKind> for Value {
 }
 
 impl IntoValue for ObjectKind {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
+impl SqlLikeType for AutomationKind {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl FromValue for AutomationKind {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "python" => Ok(AutomationKind::Python),
+            Value::Text(s) if s == "agent" => Ok(AutomationKind::Agent),
+            _ => Err(DecodeError("Invalid automation kind".to_string())),
+        }
+    }
+}
+
+impl From<AutomationKind> for Value {
+    fn from(val: AutomationKind) -> Value {
+        match val {
+            AutomationKind::Python => Value::Text("python".to_string()),
+            AutomationKind::Agent => Value::Text("agent".to_string()),
+        }
+    }
+}
+
+impl IntoValue for AutomationKind {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
+impl SqlLikeType for RunStatus {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl FromValue for RunStatus {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "running" => Ok(RunStatus::Running),
+            Value::Text(s) if s == "success" => Ok(RunStatus::Success),
+            Value::Text(s) if s == "failed" => Ok(RunStatus::Failed),
+            _ => Err(DecodeError("Invalid run status".to_string())),
+        }
+    }
+}
+
+impl From<RunStatus> for Value {
+    fn from(val: RunStatus) -> Value {
+        match val {
+            RunStatus::Running => Value::Text("running".to_string()),
+            RunStatus::Success => Value::Text("success".to_string()),
+            RunStatus::Failed => Value::Text("failed".to_string()),
+        }
+    }
+}
+
+impl IntoValue for RunStatus {
     fn into_value(self) -> Value {
         self.into()
     }

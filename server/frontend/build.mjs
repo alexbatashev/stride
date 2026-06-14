@@ -88,7 +88,7 @@ await Promise.all([
     outfile: 'dist/api.js',
   }),
   esbuild.build({
-    entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/settings-page.ts'],
+    entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/automations-page.ts', 'src/pages/settings-page.ts'],
     bundle: true,
     format: 'esm',
     minify: true,

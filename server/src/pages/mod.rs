@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod auth;
+pub mod automations;
 pub mod files;
 pub mod settings;
 
@@ -97,7 +98,12 @@ pub fn render_auth_page(mode: &str) -> String {
     render_page(title, "", r#"id="auth-page""#, &body)
 }
 
-fn render_sidebar(data: &ThreadPageData, files_active: bool, settings_active: bool) -> String {
+fn render_sidebar(
+    data: &ThreadPageData,
+    files_active: bool,
+    automations_active: bool,
+    settings_active: bool,
+) -> String {
     let projects = data.projects.iter().map(|project| SidebarProject {
         id: project.id.clone(),
         title: html_escape(&project.title),
@@ -119,6 +125,7 @@ fn render_sidebar(data: &ThreadPageData, files_active: bool, settings_active: bo
         ungrouped,
         &data.thread_id,
         files_active,
+        automations_active,
         settings_active,
     );
     format!("<nav>{sidebar}</nav>")
@@ -227,7 +234,7 @@ const THREADS_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_threads_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, false);
+    let sidebar = render_sidebar(data, false, false, false);
     let toggle = AppSidebarToggle::new("").render();
     let files_button = with_attrs(
         &AppButton::new().render(),
@@ -314,7 +321,7 @@ const FILES_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_files_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, true, false);
+    let sidebar = render_sidebar(data, true, false, false);
     let toggle = AppSidebarToggle::new("").render();
     let body = format!(
         r#"{FILES_STYLE}
@@ -333,8 +340,263 @@ pub fn render_files_page(data: &ThreadPageData) -> String {
     )
 }
 
+pub fn render_automations_page(data: &ThreadPageData) -> String {
+    let sidebar = render_sidebar(data, false, true, false);
+    let toggle = AppSidebarToggle::new("").render();
+    let new_button = with_attrs(
+        &AppButton::new().render(),
+        r#"variant="secondary" size="sm" data-action="new""#,
+    )
+    .replacen("</app-button>", "New automation</app-button>", 1);
+
+    let body = format!(
+        r#"<style>
+    #automations-page > main > header {{
+        display: none;
+    }}
+
+    #automations-page .automations-content {{
+        box-sizing: border-box;
+        margin: 0 auto;
+        max-width: 760px;
+        padding: 32px 24px;
+        width: 100%;
+    }}
+
+    #automations-page .head-row {{
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+    }}
+
+    #automations-page h1 {{
+        color: var(--foreground);
+        font-size: 26px;
+        margin: 0;
+    }}
+
+    #automations-page .muted {{
+        color: var(--muted-foreground);
+        font-size: 14px;
+        margin: 8px 0 0;
+    }}
+
+    #automations-page .list {{
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 24px;
+    }}
+
+    #automations-page .row {{
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        cursor: pointer;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        padding: 12px 16px;
+    }}
+
+    #automations-page .row:hover {{
+        background: var(--accent);
+    }}
+
+    #automations-page .info {{
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }}
+
+    #automations-page .name {{
+        color: var(--foreground);
+        font-weight: 600;
+    }}
+
+    #automations-page .meta {{
+        color: var(--muted-foreground);
+        font: 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }}
+
+    #automations-page .controls {{
+        align-items: center;
+        display: flex;
+        gap: 12px;
+    }}
+
+    #automations-page button {{
+        background: var(--secondary);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--foreground);
+        cursor: pointer;
+        font-size: 14px;
+        padding: 6px 12px;
+    }}
+
+    #automations-page button.danger {{
+        color: var(--destructive);
+    }}
+
+    #automations-page .modal {{
+        align-items: center;
+        background: rgba(0, 0, 0, 0.4);
+        bottom: 0;
+        display: flex;
+        justify-content: center;
+        left: 0;
+        padding: 24px;
+        position: fixed;
+        right: 0;
+        top: 0;
+        z-index: 50;
+    }}
+
+    #automations-page .modal[hidden] {{
+        display: none;
+    }}
+
+    #automations-page .card {{
+        background: var(--background);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-sizing: border-box;
+        max-height: 85vh;
+        max-width: 560px;
+        overflow: auto;
+        padding: 24px;
+        width: 100%;
+    }}
+
+    #automations-page .card h2 {{
+        margin: 0 0 16px;
+    }}
+
+    #automations-page .card label {{
+        color: var(--foreground);
+        display: flex;
+        flex-direction: column;
+        font-size: 14px;
+        gap: 6px;
+        margin-bottom: 14px;
+    }}
+
+    #automations-page .card label.inline {{
+        flex-direction: row;
+        align-items: center;
+    }}
+
+    #automations-page .card input,
+    #automations-page .card select,
+    #automations-page .card textarea {{
+        background: var(--background);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--foreground);
+        font: inherit;
+        padding: 8px 10px;
+    }}
+
+    #automations-page .card label.inline input {{
+        width: auto;
+    }}
+
+    #automations-page .card textarea {{
+        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        resize: vertical;
+    }}
+
+    #automations-page .actions {{
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+    }}
+
+    #automations-page .runs {{
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }}
+
+    #automations-page .run summary {{
+        cursor: pointer;
+    }}
+
+    #automations-page .run pre {{
+        background: var(--muted);
+        border-radius: 8px;
+        margin: 8px 0 0;
+        max-height: 320px;
+        overflow: auto;
+        padding: 12px;
+        white-space: pre-wrap;
+    }}
+
+    #automations-page .status {{
+        border-radius: 6px;
+        font-size: 12px;
+        padding: 2px 6px;
+    }}
+
+    #automations-page .status.success {{
+        color: #16a34a;
+    }}
+
+    #automations-page .status.failed {{
+        color: var(--destructive);
+    }}
+
+    #automations-page .error {{
+        color: var(--destructive);
+        font-size: 13px;
+        margin-top: 12px;
+    }}
+
+    #automations-page .error:empty {{
+        display: none;
+    }}
+
+    @media (max-width: 767px) {{
+        #automations-page > main > header {{
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            box-sizing: border-box;
+            display: flex;
+            padding: 8px 12px;
+        }}
+    }}
+</style>
+{sidebar}
+<main>
+    <header>{toggle}</header>
+    <section class="automations-content">
+        <div class="head-row">
+            <h1>Automations</h1>
+            {new_button}
+        </div>
+        <p class="muted">Scheduled tasks Friday runs for you on a cron schedule.</p>
+        <div class="list" data-list></div>
+        <div class="error" data-error></div>
+    </section>
+</main>
+<div class="modal" data-detail hidden></div>
+<div class="modal" data-create hidden></div>
+{NAVIGATE_SCRIPT}"#,
+    );
+
+    render_page(
+        "Automations - Friday",
+        automations::PAGE_SCRIPT,
+        r#"id="automations-page""#,
+        &body,
+    )
+}
+
 pub fn render_settings_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, true);
+    let sidebar = render_sidebar(data, false, false, true);
     let toggle = AppSidebarToggle::new("").render();
     let connect_button = with_attrs(
         &AppButton::new().render(),
@@ -585,6 +847,17 @@ mod tests {
         // The Files nav item is marked active inside the SSR shadow DOM.
         assert!(html.contains(r#"href="/files" aria-current="page""#));
         assert!(html.contains("/static/pages/files-page.js"));
+    }
+
+    #[test]
+    fn automations_page_renders_list_shell() {
+        let html = super::render_automations_page(&sample_data());
+
+        assert!(html.contains(r#"<body id="automations-page">"#));
+        assert!(html.contains("data-list"));
+        assert!(html.contains(r#"data-action="new""#));
+        assert!(html.contains(r#"href="/automations" aria-current="page""#));
+        assert!(html.contains("/static/pages/automations-page.js"));
     }
 
     #[test]
