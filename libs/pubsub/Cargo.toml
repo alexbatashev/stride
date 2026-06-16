@@ -1,0 +1,11 @@
+[package]
+name = "pubsub"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "time"] }
