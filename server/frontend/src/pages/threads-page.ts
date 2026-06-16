@@ -224,6 +224,16 @@ class ThreadsPageHydrator {
 			this.syncComposer();
 		}
 
+		if (event.kind.type === "UserMessageCommitted") {
+			const pending = this.messages.find((message) => message.pending && message.role === "user");
+			if (pending) {
+				pending.id = event.kind.message_id;
+				pending.seq = event.kind.seq;
+				pending.pending = false;
+				this.renderMessages();
+			}
+		}
+
 		if (event.kind.type === "AgentDelta") {
 			this.pendingAssistant += event.kind.content;
 			this.upsertPendingAssistant();
@@ -318,7 +328,8 @@ class ThreadsPageHydrator {
 	private upsertPendingAssistant(thinking?: string) {
 		const last = this.messages[this.messages.length - 1];
 
-		if (last?.pending && last.role === "agent") {
+		if (last?.role === "agent" && !last.tool_call_name) {
+			last.pending = true;
 			last.content = this.pendingAssistant;
 			last.thinking = thinking ? `${last.thinking ?? ""}${thinking}` : last.thinking;
 			this.updateMessageElement(last);

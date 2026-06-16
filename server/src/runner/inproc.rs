@@ -35,8 +35,9 @@ use crate::{
     config::{Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
     db::{Role, messages},
     runner::{
-        AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
-        PendingApproval, PendingQuiz, RunId, ThreadSnapshot, ThreadStatus, ThreadSubscription,
+        AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, DispatcherFactory,
+        EventDispatcher, PartialAgentMessage, PendingApproval, PendingQuiz, RunId, ThreadSnapshot,
+        ThreadStatus, ThreadSubscription,
     },
     tools::{
         automations::ScheduleAutomationTool,
@@ -170,6 +171,7 @@ struct WorkerInit {
     telegram_bot_token: Option<String>,
     system_prompt: String,
     idle_ttl: Duration,
+    factories: Vec<Arc<dyn DispatcherFactory>>,
 }
 
 struct WorkerState {
@@ -181,21 +183,30 @@ struct WorkerState {
     telegram_bot_token: Option<String>,
     system_prompt: String,
     idle_ttl: Duration,
+    factories: Vec<Arc<dyn DispatcherFactory>>,
     threads: HashMap<Uuid, ThreadRunner>,
 }
 
 struct ThreadRunner {
     agent: Option<BaseAgent>,
     event_tx: broadcast::Sender<AgentEvent>,
+    dispatchers: Vec<DispatcherHandle>,
     event_history: VecDeque<AgentEvent>,
     cancel_tx: Option<watch::Sender<bool>>,
     pending_approvals: HashMap<Uuid, PendingApprovalState>,
     pending_quizzes: HashMap<Uuid, PendingQuizState>,
+    /// Requests received while a run is in progress, started in order once the thread goes idle.
+    queued: VecDeque<(RunId, String)>,
     last_event_seq: u64,
     next_message_seq: u64,
     status: ThreadStatus,
     in_progress: Option<PartialAgentMessage>,
     last_used: Instant,
+}
+
+#[derive(Clone)]
+struct DispatcherHandle {
+    tx: mpsc::UnboundedSender<AgentEvent>,
 }
 
 struct PendingApprovalState {
@@ -244,6 +255,7 @@ impl InProcessAgentPool {
             mcp_tools,
             None,
             None,
+            Vec::new(),
         )
     }
 
@@ -253,6 +265,7 @@ impl InProcessAgentPool {
         tools: Tools,
         mcp_tools: Vec<McpTool>,
         telegram_bot_token: Option<String>,
+        factories: Vec<Arc<dyn DispatcherFactory>>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -262,6 +275,7 @@ impl InProcessAgentPool {
             mcp_tools,
             None,
             telegram_bot_token,
+            factories,
         )
     }
 
@@ -280,6 +294,7 @@ impl InProcessAgentPool {
             mcp_tools,
             Some(vfs),
             None,
+            Vec::new(),
         )
     }
 
@@ -290,6 +305,7 @@ impl InProcessAgentPool {
         mcp_tools: Vec<McpTool>,
         vfs: Arc<Vfs>,
         telegram_bot_token: Option<String>,
+        factories: Vec<Arc<dyn DispatcherFactory>>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -299,6 +315,7 @@ impl InProcessAgentPool {
             mcp_tools,
             Some(vfs),
             telegram_bot_token,
+            factories,
         )
     }
 
@@ -310,6 +327,7 @@ impl InProcessAgentPool {
         Self::with_idle_ttl(db, config, system_prompt, DEFAULT_IDLE_TTL)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_system_prompt_and_tools(
         db: ConnectionPool,
         config: Arc<AgentConfig>,
@@ -318,6 +336,7 @@ impl InProcessAgentPool {
         mcp_tools: Vec<McpTool>,
         vfs: Option<Arc<Vfs>>,
         telegram_bot_token: Option<String>,
+        factories: Vec<Arc<dyn DispatcherFactory>>,
     ) -> Self {
         Self::from_init(WorkerInit {
             db,
@@ -328,6 +347,7 @@ impl InProcessAgentPool {
             telegram_bot_token,
             system_prompt,
             idle_ttl: DEFAULT_IDLE_TTL,
+            factories,
         })
     }
 
@@ -366,6 +386,7 @@ impl InProcessAgentPool {
             telegram_bot_token: None,
             system_prompt,
             idle_ttl,
+            factories: Vec::new(),
         })
     }
 
@@ -501,6 +522,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 telegram_bot_token,
                 system_prompt,
                 idle_ttl,
+                factories,
             } = init;
             let state = Rc::new(RefCell::new(WorkerState {
                 db,
@@ -511,6 +533,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 telegram_bot_token,
                 system_prompt,
                 idle_ttl,
+                factories,
                 threads: HashMap::new(),
             }));
 
@@ -570,7 +593,7 @@ async fn handle_command(state: Rc<RefCell<WorkerState>>, command: WorkerCommand)
             approved,
             resp,
         } => {
-            let result = handle_resolve_approval(&state, thread_id, approval_id, approved);
+            let result = handle_resolve_approval(&state, thread_id, approval_id, approved).await;
             let _ = resp.send(result);
         }
         WorkerCommand::AnswerQuiz {
@@ -579,7 +602,7 @@ async fn handle_command(state: Rc<RefCell<WorkerState>>, command: WorkerCommand)
             answers,
             resp,
         } => {
-            let result = handle_answer_quiz(&state, thread_id, quiz_id, answers);
+            let result = handle_answer_quiz(&state, thread_id, quiz_id, answers).await;
             let _ = resp.send(result);
         }
         WorkerCommand::Status { thread_id, resp } => {
@@ -602,29 +625,11 @@ async fn handle_send(
 
     let run_id = RunId(Uuid::now_v7());
 
-    let cancel_rx = {
-        let mut state = state.borrow_mut();
-        let runner = state
-            .threads
-            .get_mut(&thread_id)
-            .ok_or(AgentPoolError::ThreadNotFound)?;
-
-        if !matches!(runner.status, ThreadStatus::Idle) {
-            return Err(AgentPoolError::AlreadyRunning);
-        }
-
-        let (cancel_tx, cancel_rx) = watch::channel(false);
-        runner.cancel_tx = Some(cancel_tx);
-        runner.status = ThreadStatus::Running { run_id };
-        runner.last_used = Instant::now();
-        cancel_rx
-    };
-
     let user_message_seq = next_message_seq(&state, thread_id)?;
     let user_message_id = Uuid::now_v7();
     let db = state.borrow().db.clone();
 
-    if let Err(error) = messages::insert()
+    messages::insert()
         .id(user_message_id)
         .parent_thread(thread_id)
         .seq(user_message_seq)
@@ -635,44 +640,87 @@ async fn handle_send(
         .tool_call_id(Option::<&str>::None)
         .execute(&db)
         .await
-        .map_err(db_error)
-    {
-        with_runner(&state, thread_id, |runner| {
-            runner.status = ThreadStatus::Idle;
-            runner.last_used = Instant::now();
-        });
-        return Err(error);
-    }
+        .map_err(db_error)?;
 
-    {
+    emit(
+        &state,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::UserMessageCommitted {
+            message_id: user_message_id,
+            seq: user_message_seq,
+        },
+    )
+    .await;
+
+    // Start immediately when idle, otherwise queue and run after the current turn finishes.
+    let start_now = {
         let mut state = state.borrow_mut();
         let runner = state
             .threads
             .get_mut(&thread_id)
             .ok_or(AgentPoolError::ThreadNotFound)?;
-
         runner.last_used = Instant::now();
-        emit(
-            runner,
-            thread_id,
-            Some(run_id),
-            AgentEventKind::UserMessageCommitted {
-                message_id: user_message_id,
-                seq: user_message_seq,
-            },
-        );
-        emit(runner, thread_id, Some(run_id), AgentEventKind::RunStarted);
+        matches!(runner.status, ThreadStatus::Idle)
+    };
+
+    if start_now {
+        start_run(&state, thread_id, run_id, request.content).await;
+    } else {
+        with_runner(&state, thread_id, |runner| {
+            runner.queued.push_back((run_id, request.content));
+        });
     }
 
+    Ok(run_id)
+}
+
+/// Marks the thread running, emits `RunStarted`, and spawns the turn. The caller must have already
+/// confirmed the thread is idle.
+async fn start_run(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    run_id: RunId,
+    content: String,
+) {
+    let cancel_rx = {
+        let mut state = state.borrow_mut();
+        let Some(runner) = state.threads.get_mut(&thread_id) else {
+            return;
+        };
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        runner.cancel_tx = Some(cancel_tx);
+        runner.status = ThreadStatus::Running { run_id };
+        runner.last_used = Instant::now();
+        cancel_rx
+    };
+
+    emit(state, thread_id, Some(run_id), AgentEventKind::RunStarted).await;
     tokio::task::spawn_local(run_agent_turn(
-        state,
+        state.clone(),
         thread_id,
         run_id,
-        request.content,
+        content,
         cancel_rx,
     ));
+}
 
-    Ok(run_id)
+/// Starts the next queued request if the thread is idle. Called whenever a run ends.
+async fn drain_queue(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) {
+    let next = {
+        let mut state = state.borrow_mut();
+        let Some(runner) = state.threads.get_mut(&thread_id) else {
+            return;
+        };
+        if !matches!(runner.status, ThreadStatus::Idle) {
+            return;
+        }
+        runner.queued.pop_front()
+    };
+
+    if let Some((run_id, content)) = next {
+        start_run(state, thread_id, run_id, content).await;
+    }
 }
 
 async fn handle_subscribe(
@@ -752,56 +800,64 @@ fn handle_cancel(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) -> Result<()
     Ok(())
 }
 
-fn handle_resolve_approval(
+async fn handle_resolve_approval(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
     approval_id: Uuid,
     approved: bool,
 ) -> Result<(), AgentPoolError> {
-    let mut state = state.borrow_mut();
-    let runner = state
-        .threads
-        .get_mut(&thread_id)
-        .ok_or(AgentPoolError::ThreadNotFound)?;
-    let Some(approval) = runner.pending_approvals.remove(&approval_id) else {
-        return Err(AgentPoolError::ApprovalNotFound);
+    let run_id = {
+        let mut state = state.borrow_mut();
+        let runner = state
+            .threads
+            .get_mut(&thread_id)
+            .ok_or(AgentPoolError::ThreadNotFound)?;
+        let Some(approval) = runner.pending_approvals.remove(&approval_id) else {
+            return Err(AgentPoolError::ApprovalNotFound);
+        };
+        let run_id = approval.run_id;
+        let _ = approval.approved.send(approved);
+        run_id
     };
-    let run_id = approval.run_id;
-    let _ = approval.approved.send(approved);
     emit(
-        runner,
+        state,
         thread_id,
         Some(run_id),
         AgentEventKind::ApprovalResolved {
             approval_id,
             approved,
         },
-    );
+    )
+    .await;
     Ok(())
 }
 
-fn handle_answer_quiz(
+async fn handle_answer_quiz(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
     quiz_id: Uuid,
     answers: Vec<String>,
 ) -> Result<(), AgentPoolError> {
-    let mut state = state.borrow_mut();
-    let runner = state
-        .threads
-        .get_mut(&thread_id)
-        .ok_or(AgentPoolError::ThreadNotFound)?;
-    let Some(quiz) = runner.pending_quizzes.remove(&quiz_id) else {
-        return Err(AgentPoolError::QuizNotFound);
+    let run_id = {
+        let mut state = state.borrow_mut();
+        let runner = state
+            .threads
+            .get_mut(&thread_id)
+            .ok_or(AgentPoolError::ThreadNotFound)?;
+        let Some(quiz) = runner.pending_quizzes.remove(&quiz_id) else {
+            return Err(AgentPoolError::QuizNotFound);
+        };
+        let run_id = quiz.run_id;
+        let _ = quiz.answered.send(answers);
+        run_id
     };
-    let run_id = quiz.run_id;
-    let _ = quiz.answered.send(answers);
     emit(
-        runner,
+        state,
         thread_id,
         Some(run_id),
         AgentEventKind::QuizAnswered { quiz_id },
-    );
+    )
+    .await;
     Ok(())
 }
 
@@ -828,7 +884,7 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, tools, mcp_tools, vfs, telegram_bot_token, base_system_prompt) = {
+    let (db, config, tools, mcp_tools, vfs, telegram_bot_token, base_system_prompt, factories) = {
         let state = state.borrow();
         (
             state.db.clone(),
@@ -838,6 +894,7 @@ async fn ensure_runner(
             state.vfs.clone(),
             state.telegram_bot_token.clone(),
             state.system_prompt.clone(),
+            state.factories.clone(),
         )
     };
 
@@ -928,15 +985,24 @@ async fn ensure_runner(
     }
     let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
 
+    let mut dispatchers = Vec::new();
+    for factory in &factories {
+        if let Some(dispatcher) = factory.make(thread_id, &db).await {
+            dispatchers.push(spawn_dispatcher(dispatcher));
+        }
+    }
+
     state.borrow_mut().threads.insert(
         thread_id,
         ThreadRunner {
             agent: Some(agent),
             event_tx,
+            dispatchers,
             event_history: VecDeque::new(),
             cancel_tx: None,
             pending_approvals: HashMap::new(),
             pending_quizzes: HashMap::new(),
+            queued: VecDeque::new(),
             last_event_seq: 0,
             next_message_seq,
             status: ThreadStatus::Idle,
@@ -1104,7 +1170,8 @@ async fn run_agent_turn(
             thread_id,
             run_id,
             "agent is already running".to_string(),
-        );
+        )
+        .await;
         return;
     };
 
@@ -1121,8 +1188,9 @@ async fn run_agent_turn(
         tokio::select! {
             biased;
             _ = cancel_rx.changed() => {
-                cancel_run_task(&state, thread_id, run_id);
+                cancel_run_task(&state, thread_id, run_id).await;
                 restore_agent(&state, thread_id, agent);
+                drain_queue(&state, thread_id).await;
                 return;
             }
             item = stream.next() => {
@@ -1132,20 +1200,20 @@ async fn run_agent_turn(
                         if let Err(error) =
                             handle_agent_chunk(&state, thread_id, run_id, &mut assistant, chunk).await
                         {
-                            fail_run(&state, thread_id, run_id, error.to_string());
+                            fail_run(&state, thread_id, run_id, error.to_string()).await;
                             restore_agent(&state, thread_id, agent);
+                            drain_queue(&state, thread_id).await;
                             return;
                         }
                     }
                     Ok(AgentResponseChunk::ToolStarted { name, .. }) => {
-                        with_runner(&state, thread_id, |runner| {
-                            emit(
-                                runner,
-                                thread_id,
-                                Some(run_id),
-                                AgentEventKind::ToolStarted { name },
-                            );
-                        });
+                        emit(
+                            &state,
+                            thread_id,
+                            Some(run_id),
+                            AgentEventKind::ToolStarted { name },
+                        )
+                        .await;
                     }
                     Ok(AgentResponseChunk::ToolFinished {
                         tool_call_id,
@@ -1155,24 +1223,30 @@ async fn run_agent_turn(
                         if let Err(error) =
                             persist_tool_message(&state, thread_id, &tool_call_id, &result).await
                         {
-                            fail_run(&state, thread_id, run_id, error.to_string());
+                            fail_run(&state, thread_id, run_id, error.to_string()).await;
                             restore_agent(&state, thread_id, agent);
+                            drain_queue(&state, thread_id).await;
                             return;
                         }
 
-                        with_runner(&state, thread_id, |runner| {
-                            emit(
-                                runner,
-                                thread_id,
-                                Some(run_id),
-                                AgentEventKind::ToolFinished { name },
-                            );
-                        });
+                        emit(
+                            &state,
+                            thread_id,
+                            Some(run_id),
+                            AgentEventKind::ToolFinished { name },
+                        )
+                        .await;
                     }
                     Ok(AgentResponseChunk::Approval {
                         message, approved, ..
                     }) => {
                         let approval_id = Uuid::now_v7();
+                        tracing::info!(
+                            %thread_id,
+                            run_id = %run_id.0,
+                            %approval_id,
+                            "agent waiting for approval"
+                        );
                         with_runner(&state, thread_id, |runner| {
                             runner.pending_approvals.insert(
                                 approval_id,
@@ -1182,22 +1256,35 @@ async fn run_agent_turn(
                                     approved,
                                 },
                             );
-                            emit(
-                                runner,
-                                thread_id,
-                                Some(run_id),
-                                AgentEventKind::WaitingForApproval {
-                                    approval_id,
-                                    message,
-                                },
-                            );
                         });
+                        emit(
+                            &state,
+                            thread_id,
+                            Some(run_id),
+                            AgentEventKind::WaitingForApproval {
+                                approval_id,
+                                message,
+                            },
+                        )
+                        .await;
                     }
                     Ok(AgentResponseChunk::Quiz {
                         questions,
                         answered,
                         ..
                     }) => {
+                        tracing::info!(
+                            %thread_id,
+                            run_id = %run_id.0,
+                            question_count = questions.len(),
+                            "agent waiting for quiz answers"
+                        );
+                        // An empty question set has nothing to present; resolve it here so the
+                        // agent never blocks on a dispatcher that cannot answer it.
+                        if questions.is_empty() {
+                            let _ = answered.send(Vec::new());
+                            continue;
+                        }
                         let quiz_id = Uuid::now_v7();
                         with_runner(&state, thread_id, |runner| {
                             runner.pending_quizzes.insert(
@@ -1208,17 +1295,19 @@ async fn run_agent_turn(
                                     answered,
                                 },
                             );
-                            emit(
-                                runner,
-                                thread_id,
-                                Some(run_id),
-                                AgentEventKind::WaitingForQuiz { quiz_id, questions },
-                            );
                         });
+                        emit(
+                            &state,
+                            thread_id,
+                            Some(run_id),
+                            AgentEventKind::WaitingForQuiz { quiz_id, questions },
+                        )
+                        .await;
                     }
                     Err(error) => {
-                        fail_run(&state, thread_id, run_id, error.to_string());
+                        fail_run(&state, thread_id, run_id, error.to_string()).await;
                         restore_agent(&state, thread_id, agent);
+                        drain_queue(&state, thread_id).await;
                         return;
                     }
                 }
@@ -1233,9 +1322,10 @@ async fn run_agent_turn(
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
-        emit(runner, thread_id, Some(run_id), AgentEventKind::RunFinished);
     });
+    emit(&state, thread_id, Some(run_id), AgentEventKind::RunFinished).await;
     restore_agent(&state, thread_id, agent);
+    drain_queue(&state, thread_id).await;
 }
 
 async fn handle_agent_chunk(
@@ -1253,16 +1343,15 @@ async fn handle_agent_chunk(
                 ensure_assistant_message(state, thread_id, assistant).await?;
                 has_message_delta = true;
                 assistant.content.push_str(&message.content);
-                with_runner(state, thread_id, |runner| {
-                    emit(
-                        runner,
-                        thread_id,
-                        Some(run_id),
-                        AgentEventKind::AgentDelta {
-                            content: message.content.clone(),
-                        },
-                    );
-                });
+                emit(
+                    state,
+                    thread_id,
+                    Some(run_id),
+                    AgentEventKind::AgentDelta {
+                        content: message.content.clone(),
+                    },
+                )
+                .await;
             }
 
             if let Some(thinking) = message
@@ -1276,16 +1365,15 @@ async fn handle_agent_chunk(
                     .thinking
                     .get_or_insert_with(String::new)
                     .push_str(thinking);
-                with_runner(state, thread_id, |runner| {
-                    emit(
-                        runner,
-                        thread_id,
-                        Some(run_id),
-                        AgentEventKind::ThinkingDelta {
-                            thinking: thinking.clone(),
-                        },
-                    );
-                });
+                emit(
+                    state,
+                    thread_id,
+                    Some(run_id),
+                    AgentEventKind::ThinkingDelta {
+                        thinking: thinking.clone(),
+                    },
+                )
+                .await;
             }
 
             if let Some(chunks) = message
@@ -1303,16 +1391,15 @@ async fn handle_agent_chunk(
             ensure_assistant_message(state, thread_id, assistant).await?;
             has_message_delta = true;
             assistant.content.push_str(content);
-            with_runner(state, thread_id, |runner| {
-                emit(
-                    runner,
-                    thread_id,
-                    Some(run_id),
-                    AgentEventKind::AgentDelta {
-                        content: content.clone(),
-                    },
-                );
-            });
+            emit(
+                state,
+                thread_id,
+                Some(run_id),
+                AgentEventKind::AgentDelta {
+                    content: content.clone(),
+                },
+            )
+            .await;
         }
 
         if let Some(delta) = &choice.delta {
@@ -1320,16 +1407,15 @@ async fn handle_agent_chunk(
                 ensure_assistant_message(state, thread_id, assistant).await?;
                 has_message_delta = true;
                 assistant.content.push_str(content);
-                with_runner(state, thread_id, |runner| {
-                    emit(
-                        runner,
-                        thread_id,
-                        Some(run_id),
-                        AgentEventKind::AgentDelta {
-                            content: content.clone(),
-                        },
-                    );
-                });
+                emit(
+                    state,
+                    thread_id,
+                    Some(run_id),
+                    AgentEventKind::AgentDelta {
+                        content: content.clone(),
+                    },
+                )
+                .await;
             }
 
             if let Some(thinking) = delta
@@ -1343,16 +1429,15 @@ async fn handle_agent_chunk(
                     .thinking
                     .get_or_insert_with(String::new)
                     .push_str(thinking);
-                with_runner(state, thread_id, |runner| {
-                    emit(
-                        runner,
-                        thread_id,
-                        Some(run_id),
-                        AgentEventKind::ThinkingDelta {
-                            thinking: thinking.clone(),
-                        },
-                    );
-                });
+                emit(
+                    state,
+                    thread_id,
+                    Some(run_id),
+                    AgentEventKind::ThinkingDelta {
+                        thinking: thinking.clone(),
+                    },
+                )
+                .await;
             }
 
             if let Some(chunks) = delta
@@ -1404,14 +1489,13 @@ async fn handle_agent_chunk(
             )
             .await?;
 
-            with_runner(state, thread_id, |runner| {
-                emit(
-                    runner,
-                    thread_id,
-                    Some(run_id),
-                    AgentEventKind::AgentMessageCommitted { message_id, seq },
-                );
-            });
+            emit(
+                state,
+                thread_id,
+                Some(run_id),
+                AgentEventKind::AgentMessageCommitted { message_id, seq },
+            )
+            .await;
         }
 
         assistant.id = None;
@@ -1578,7 +1662,7 @@ fn restore_agent(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, agent: BaseA
     });
 }
 
-fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId, error: String) {
+async fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId, error: String) {
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
         runner.pending_approvals.clear();
@@ -1586,16 +1670,17 @@ fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId, er
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
-        emit(
-            runner,
-            thread_id,
-            Some(run_id),
-            AgentEventKind::RunFailed { error },
-        );
     });
+    emit(
+        state,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::RunFailed { error },
+    )
+    .await;
 }
 
-fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId) {
+async fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId) {
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
         runner.pending_approvals.clear();
@@ -1603,16 +1688,33 @@ fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: Ru
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = Instant::now();
-        emit(
-            runner,
-            thread_id,
-            Some(run_id),
-            AgentEventKind::RunCancelled,
-        );
     });
+    emit(state, thread_id, Some(run_id), AgentEventKind::RunCancelled).await;
 }
 
-fn emit(runner: &mut ThreadRunner, thread_id: Uuid, run_id: Option<RunId>, kind: AgentEventKind) {
+fn spawn_dispatcher(dispatcher: Box<dyn EventDispatcher>) -> DispatcherHandle {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::task::spawn_local(async move {
+        while let Some(event) = rx.recv().await {
+            dispatcher.dispatch(&event).await;
+        }
+    });
+    DispatcherHandle { tx }
+}
+
+/// Records an event, broadcasts it to WebSocket subscribers immediately, and queues external
+/// dispatchers. External dispatchers may hit the network, so they are drained by their own ordered
+/// tasks and cannot block the worker command loop.
+async fn emit(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    run_id: Option<RunId>,
+    kind: AgentEventKind,
+) {
+    let mut state = state.borrow_mut();
+    let Some(runner) = state.threads.get_mut(&thread_id) else {
+        return;
+    };
     runner.last_event_seq += 1;
     let event = AgentEvent {
         seq: runner.last_event_seq,
@@ -1624,7 +1726,11 @@ fn emit(runner: &mut ThreadRunner, thread_id: Uuid, run_id: Option<RunId>, kind:
     if runner.event_history.len() > EVENT_BUFFER {
         runner.event_history.pop_front();
     }
-    let _ = runner.event_tx.send(event);
+
+    let _ = runner.event_tx.send(event.clone());
+    for dispatcher in &runner.dispatchers {
+        let _ = dispatcher.tx.send(event.clone());
+    }
 }
 
 fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
@@ -2138,11 +2244,13 @@ mod tests {
 
         let mut runner = ThreadRunner {
             agent: None,
+            dispatchers: Vec::new(),
             event_tx,
             event_history: VecDeque::new(),
             cancel_tx: None,
             pending_approvals: HashMap::new(),
             pending_quizzes: HashMap::new(),
+            queued: VecDeque::new(),
             last_event_seq: 0,
             next_message_seq: 0,
             status: ThreadStatus::Running { run_id },
@@ -2172,6 +2280,7 @@ mod tests {
             telegram_bot_token: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
+            factories: Vec::new(),
             threads,
         }));
 
@@ -2184,7 +2293,9 @@ mod tests {
             Some(approval_id)
         );
 
-        handle_resolve_approval(&state, thread_id, approval_id, false).unwrap();
+        handle_resolve_approval(&state, thread_id, approval_id, false)
+            .await
+            .unwrap();
         assert!(!approved_rx.await.unwrap());
 
         let event = events.recv().await.unwrap();
@@ -2224,11 +2335,13 @@ mod tests {
 
         let mut runner = ThreadRunner {
             agent: None,
+            dispatchers: Vec::new(),
             event_tx,
             event_history: VecDeque::new(),
             cancel_tx: None,
             pending_approvals: HashMap::new(),
             pending_quizzes: HashMap::new(),
+            queued: VecDeque::new(),
             last_event_seq: 0,
             next_message_seq: 0,
             status: ThreadStatus::Running { run_id },
@@ -2258,6 +2371,7 @@ mod tests {
             telegram_bot_token: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
+            factories: Vec::new(),
             threads,
         }));
 
@@ -2271,7 +2385,9 @@ mod tests {
         );
         assert_eq!(snapshot.pending_quiz.unwrap().questions, questions);
 
-        handle_answer_quiz(&state, thread_id, quiz_id, vec!["B".to_string()]).unwrap();
+        handle_answer_quiz(&state, thread_id, quiz_id, vec!["B".to_string()])
+            .await
+            .unwrap();
         assert_eq!(answered_rx.await.unwrap(), vec!["B".to_string()]);
 
         let event = events.recv().await.unwrap();
@@ -2704,5 +2820,402 @@ mod tests {
 
         assert!(terminated, "run must terminate (cancelled or finished)");
         assert_eq!(pool.status(thread_id).await.unwrap(), ThreadStatus::Idle);
+    }
+
+    #[tokio::test]
+    async fn concurrent_sends_queue_and_run_in_order() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![
+                        vec![text_chunk("one")],
+                        vec![text_chunk("two")],
+                        vec![text_chunk("three")],
+                    ])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+
+        let pool = InProcessAgentPool::with_idle_ttl(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+            "System prompt".to_string(),
+            Duration::from_secs(60),
+        );
+
+        // Fire three sends back-to-back; the second and third must queue, not be rejected.
+        for content in ["msg0", "msg1", "msg2"] {
+            pool.send(
+                thread_id,
+                AgentRequest {
+                    content: content.to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        for _ in 0..200 {
+            let rows = db
+                .query_with_params(
+                    "SELECT COUNT(*) AS n FROM messages WHERE parent_thread = ? AND role = 'user'",
+                    vec![Value::Uuid(thread_id)],
+                )
+                .await
+                .unwrap();
+            if rows.rows().first().and_then(|r| r.get_int("n")) == Some(3)
+                && pool.status(thread_id).await.unwrap() == ThreadStatus::Idle
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let rows = db
+            .query_with_params(
+                "SELECT content FROM messages WHERE parent_thread = ? AND role = 'user' ORDER BY seq ASC",
+                vec![Value::Uuid(thread_id)],
+            )
+            .await
+            .unwrap();
+        let order: Vec<_> = rows
+            .rows()
+            .iter()
+            .filter_map(|r| r.get_text("content").map(str::to_string))
+            .collect();
+        assert_eq!(order, vec!["msg0", "msg1", "msg2"]);
+    }
+
+    #[tokio::test]
+    async fn quiz_answer_through_pool_completes_run() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![
+                        vec![tool_call_chunk(
+                            "call-1",
+                            "quiz",
+                            r#"{"questions":[{"question":"Pick","options":["a","b"]}]}"#,
+                        )],
+                        vec![text_chunk("done")],
+                    ])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+
+        let pool = InProcessAgentPool::with_idle_ttl(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+            "System prompt".to_string(),
+            Duration::from_secs(60),
+        );
+
+        let mut sub = pool.subscribe(thread_id, None).await.unwrap();
+        pool.send(
+            thread_id,
+            AgentRequest {
+                content: "ask".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut quiz_id = None;
+        for _ in 0..20 {
+            let event = tokio::time::timeout(Duration::from_secs(2), sub.events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let AgentEventKind::WaitingForQuiz { quiz_id: id, .. } = event.kind {
+                quiz_id = Some(id);
+                break;
+            }
+        }
+        let quiz_id = quiz_id.expect("agent must present the quiz");
+
+        // The tap path: resolve the pending quiz through the pool while the run is waiting.
+        pool.answer_quiz(thread_id, quiz_id, vec!["a".to_string()])
+            .await
+            .unwrap();
+
+        let mut finished = false;
+        for _ in 0..20 {
+            let event = tokio::time::timeout(Duration::from_secs(2), sub.events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event.kind, AgentEventKind::RunFinished) {
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished, "run must complete after the quiz is answered");
+        assert_eq!(pool.status(thread_id).await.unwrap(), ThreadStatus::Idle);
+    }
+
+    #[derive(Default)]
+    struct RecordingFactory {
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DispatcherFactory for RecordingFactory {
+        async fn make(
+            &self,
+            _thread_id: Uuid,
+            _db: &ConnectionPool,
+        ) -> Option<Box<dyn EventDispatcher>> {
+            Some(Box::new(RecordingDispatcher {
+                events: self.events.clone(),
+            }))
+        }
+    }
+
+    struct RecordingDispatcher {
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl EventDispatcher for RecordingDispatcher {
+        async fn dispatch(&self, event: &AgentEvent) {
+            let label = match event.kind {
+                AgentEventKind::RunStarted => "RunStarted",
+                AgentEventKind::AgentDelta { .. } => "AgentDelta",
+                AgentEventKind::RunFinished => "RunFinished",
+                _ => return,
+            };
+            self.events.lock().unwrap().push(label.to_string());
+        }
+    }
+
+    #[derive(Default)]
+    struct SlowFactory;
+
+    #[async_trait::async_trait]
+    impl DispatcherFactory for SlowFactory {
+        async fn make(
+            &self,
+            _thread_id: Uuid,
+            _db: &ConnectionPool,
+        ) -> Option<Box<dyn EventDispatcher>> {
+            Some(Box::new(SlowDispatcher))
+        }
+    }
+
+    struct SlowDispatcher;
+
+    #[async_trait::async_trait(?Send)]
+    impl EventDispatcher for SlowDispatcher {
+        async fn dispatch(&self, _event: &AgentEvent) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_dispatcher_does_not_block_worker_commands() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![vec![text_chunk("pong")]])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+
+        let pool = InProcessAgentPool::with_system_prompt_and_tools(
+            db,
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+            "System prompt".to_string(),
+            Tools::default(),
+            Vec::new(),
+            None,
+            None,
+            vec![Arc::new(SlowFactory)],
+        );
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            pool.send(
+                thread_id,
+                AgentRequest {
+                    content: "ping".to_string(),
+                },
+            ),
+        )
+        .await
+        .expect("send must not wait for external dispatchers")
+        .unwrap();
+
+        tokio::time::timeout(Duration::from_millis(100), pool.status(thread_id))
+            .await
+            .expect("status must not wait for external dispatchers")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatcher_factory_receives_run_events() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![vec![text_chunk("pong")]])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                thinking: false,
+            },
+        );
+
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let factory = Arc::new(RecordingFactory {
+            events: recorded.clone(),
+        });
+
+        let pool = InProcessAgentPool::with_system_prompt_and_tools(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+            "System prompt".to_string(),
+            Tools::default(),
+            Vec::new(),
+            None,
+            None,
+            vec![factory],
+        );
+
+        pool.send(
+            thread_id,
+            AgentRequest {
+                content: "ping".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // The factory-supplied dispatcher must see every event of the run, end to end.
+        let mut saw_finished = false;
+        for _ in 0..200 {
+            if recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|label| label == "RunFinished")
+            {
+                saw_finished = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let events = recorded.lock().unwrap().clone();
+        assert!(saw_finished, "dispatcher must receive RunFinished");
+        assert!(events.iter().any(|label| label == "RunStarted"));
+        assert!(events.iter().any(|label| label == "AgentDelta"));
     }
 }

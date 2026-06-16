@@ -1,11 +1,28 @@
 use async_trait::async_trait;
 use friday_agent::QuizQuestion;
+use minisql::ConnectionPool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 pub mod inproc;
 
 pub type EventSeq = u64;
+
+/// A consumer of a thread's agent events. The agent holds one of these per attached sink and
+/// presents every emitted event to each. `dispatch` runs on the agent worker thread, so it may
+/// call out to the network directly, but it must not call back into the [`AgentPool`] (the worker
+/// drives a single-threaded runtime — a re-entrant pool call would deadlock).
+#[async_trait(?Send)]
+pub trait EventDispatcher {
+    async fn dispatch(&self, event: &AgentEvent);
+}
+
+/// Builds source-specific dispatchers when a thread runner first starts. Returning `None` means
+/// the factory does not apply to this thread (e.g. it was not created in Telegram).
+#[async_trait]
+pub trait DispatcherFactory: Send + Sync + 'static {
+    async fn make(&self, thread_id: Uuid, db: &ConnectionPool) -> Option<Box<dyn EventDispatcher>>;
+}
 
 #[async_trait]
 pub trait AgentPool: Send + Sync + 'static {

@@ -513,7 +513,9 @@ mod tests {
                 runner,
                 model_config,
                 vfs: None,
-                telegram_sessions: Arc::new(crate::api::telegram::TelegramSessions::default()),
+                telegram_interactions: Arc::new(std::sync::Mutex::new(
+                    crate::api::telegram::Interactions::default(),
+                )),
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
         )

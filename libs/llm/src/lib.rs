@@ -6,7 +6,7 @@ mod openai;
 mod types;
 mod utils;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 pub use api::API;
@@ -21,6 +21,7 @@ pub use utils::*;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Message {
     pub role: Role,
+    #[serde(default, deserialize_with = "deserialize_null_string_default")]
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
@@ -28,6 +29,13 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCallChunk>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+}
+
+fn deserialize_null_string_default<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -162,5 +170,29 @@ impl From<tinynet::Error> for Error {
             tinynet::Error::InvalidRequest(s) => Self::InvalidRequest(s),
             tinynet::Error::ServerError(code, msg) => Self::ServerErrorWithMessage(code, msg),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_message_content_allows_null() {
+        let body = br#"{
+            "id": "chatcmpl-test",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": null},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }"#;
+
+        let parsed: Completion = serde_json::from_slice(body).unwrap();
+        let message = parsed.choices.into_iter().next().unwrap().message.unwrap();
+        assert_eq!(message.content, "");
     }
 }

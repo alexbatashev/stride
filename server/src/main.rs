@@ -9,7 +9,10 @@ mod scheduler;
 mod tools;
 mod vfs;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock, Weak},
+};
 
 use axum::{
     Router,
@@ -44,7 +47,7 @@ struct ServerState {
     pub(crate) runner: Arc<dyn AgentPool>,
     pub(crate) model_config: Arc<AgentConfig>,
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
-    pub(crate) telegram_sessions: Arc<api::telegram::TelegramSessions>,
+    pub(crate) telegram_interactions: Arc<Mutex<api::telegram::Interactions>>,
 }
 
 #[derive(Debug, Parser)]
@@ -114,6 +117,13 @@ async fn main() -> anyhow::Result<()> {
 
     scheduler::spawn(db.clone(), model_config.clone(), tools.clone());
 
+    // The Telegram dispatcher needs ServerState, which holds the pool that holds this factory, so
+    // the handle is filled in (weakly, to avoid a cycle) once ServerState exists below.
+    let state_cell: Arc<OnceLock<Weak<ServerState>>> = Arc::new(OnceLock::new());
+    let factories: Vec<Arc<dyn runner::DispatcherFactory>> = vec![Arc::new(
+        api::telegram::TelegramDispatcherFactory::new(state_cell.clone()),
+    )];
+
     let runner: Arc<dyn runner::AgentPool> = if let Some(ref vfs) = vfs_provider {
         Arc::new(
             runner::inproc::InProcessAgentPool::with_file_provider_and_telegram(
@@ -123,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
                 mcp_tools,
                 vfs.clone(),
                 telegram_bot_token,
+                factories,
             ),
         )
     } else {
@@ -133,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
                 tools,
                 mcp_tools,
                 telegram_bot_token,
+                factories,
             ),
         )
     };
@@ -144,8 +156,9 @@ async fn main() -> anyhow::Result<()> {
         runner,
         model_config,
         vfs: vfs_provider,
-        telegram_sessions: Arc::new(api::telegram::TelegramSessions::default()),
+        telegram_interactions: Arc::new(Mutex::new(api::telegram::Interactions::default())),
     });
+    let _ = state_cell.set(Arc::downgrade(&state));
 
     let static_dir = args
         .static_dir

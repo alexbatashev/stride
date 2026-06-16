@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json,
@@ -34,6 +34,7 @@ use crate::{
 pub(crate) const DEFAULT_THREAD_TITLE: &str = "New chat";
 /// Telegram caps forum topic names at 128 characters; we cap every generated title to match.
 const MAX_TITLE_LEN: usize = 128;
+const TITLE_GENERATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Serialize)]
 pub struct ThreadResponse {
@@ -419,10 +420,25 @@ pub(crate) fn spawn_title_generation(
     forum_topic: Option<(i64, i64)>,
 ) {
     tokio::spawn(async move {
-        let Some(title) = generate_title(&state.model_config, &content).await else {
-            tracing::warn!(%thread_id, "title generation produced no title");
-            return;
+        let (title, used_fallback) = match tokio::time::timeout(
+            TITLE_GENERATION_TIMEOUT,
+            generate_title(&state.model_config, &content),
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                tracing::warn!(%thread_id, %error, "title generation failed");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%thread_id, %error, "title generation timed out");
+                return;
+            }
         };
+        if used_fallback {
+            tracing::warn!(%thread_id, %title, "title generation returned no visible text; using fallback");
+        }
         match threads::update()
             .title(title.as_str())
             .where_(threads::id.eq(thread_id))
@@ -444,7 +460,9 @@ pub(crate) fn spawn_title_generation(
                         %stored,
                         "title update did not stick"
                     ),
-                    None => tracing::warn!(%thread_id, %title, "title update matched no thread row"),
+                    None => {
+                        tracing::warn!(%thread_id, %title, "title update matched no thread row")
+                    }
                 }
             }
             Err(error) => tracing::warn!(%thread_id, %error, "title update failed"),
@@ -456,36 +474,82 @@ pub(crate) fn spawn_title_generation(
     });
 }
 
-async fn generate_title(config: &Arc<friday_agent::AgentConfig>, content: &str) -> Option<String> {
+async fn generate_title(
+    config: &Arc<friday_agent::AgentConfig>,
+    content: &str,
+) -> Result<(String, bool), llm::Error> {
     let model = config.model_registry.get_or_default(DEFAULT_MODEL);
-    let prompt = format!(
-        "Generate a concise title (5-8 words) for a conversation that starts with this message. Return only the title, no quotes or trailing punctuation.\n\nMessage: {content}"
-    );
-    let request = CompletionRequest::new(
-        &model.model_name,
-        &[LlmMessage {
-            role: LlmRole::User,
-            content: prompt,
-            ..Default::default()
-        }],
-    )
-    .max_tokens(32);
+    let request = title_generation_request(&model.model_name, content);
 
-    model
-        .api
-        .get_completion(&model.token, request)
-        .await
-        .ok()
-        .and_then(|c| c.choices.into_iter().next())
-        .and_then(|choice| choice.message)
-        .map(|msg| {
-            msg.content
-                .trim()
-                .chars()
-                .take(MAX_TITLE_LEN)
-                .collect::<String>()
-        })
-        .filter(|t| !t.is_empty())
+    let completion = model.api.get_completion(&model.token, request).await?;
+
+    if let Some(title) = title_from_completion(completion) {
+        return Ok((title, false));
+    }
+
+    Ok((fallback_title(content), true))
+}
+
+fn title_generation_request(model_name: &str, content: &str) -> CompletionRequest {
+    CompletionRequest::new(
+        model_name,
+        &[
+            LlmMessage {
+                role: LlmRole::System,
+                content: "Generate a concise title (5-8 words) for a conversation. Return only the title, no quotes or trailing punctuation.".to_string(),
+                ..Default::default()
+            },
+            LlmMessage {
+                role: LlmRole::User,
+                content: format!("FIRST USER REQUEST:\n{content}"),
+                ..Default::default()
+            },
+        ],
+    )
+    .max_tokens(1024)
+}
+
+fn title_from_completion(completion: llm::Completion) -> Option<String> {
+    completion.choices.into_iter().find_map(|choice| {
+        let message_content = choice.message.map(|message| message.content);
+        [message_content, choice.text]
+            .into_iter()
+            .flatten()
+            .find_map(normalize_title)
+    })
+}
+
+fn normalize_title(text: String) -> Option<String> {
+    let title = text
+        .trim()
+        .trim_matches(title_edge_punctuation)
+        .chars()
+        .take(MAX_TITLE_LEN)
+        .collect::<String>();
+
+    (!title.is_empty()).then_some(title)
+}
+
+fn fallback_title(content: &str) -> String {
+    let mut title = content
+        .split_whitespace()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ");
+    title = title
+        .trim_matches(title_edge_punctuation)
+        .chars()
+        .take(MAX_TITLE_LEN)
+        .collect();
+    if title.is_empty() {
+        DEFAULT_THREAD_TITLE.to_string()
+    } else {
+        title
+    }
+}
+
+fn title_edge_punctuation(c: char) -> bool {
+    matches!(c, '"' | '\'' | '.' | ':' | ';' | '!' | '?')
 }
 
 pub async fn list_messages(
