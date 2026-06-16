@@ -3471,6 +3471,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pubsub"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "pulley-interpreter"
 version = "43.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
