@@ -11,7 +11,7 @@ mod vfs;
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex},
 };
 
 use axum::{
@@ -117,13 +117,6 @@ async fn main() -> anyhow::Result<()> {
 
     scheduler::spawn(db.clone(), model_config.clone(), tools.clone());
 
-    // The Telegram dispatcher needs ServerState, which holds the pool that holds this factory, so
-    // the handle is filled in (weakly, to avoid a cycle) once ServerState exists below.
-    let state_cell: Arc<OnceLock<Weak<ServerState>>> = Arc::new(OnceLock::new());
-    let factories: Vec<Arc<dyn runner::DispatcherFactory>> = vec![Arc::new(
-        api::telegram::TelegramDispatcherFactory::new(state_cell.clone()),
-    )];
-
     let runner: Arc<dyn runner::AgentPool> = if let Some(ref vfs) = vfs_provider {
         Arc::new(
             runner::inproc::InProcessAgentPool::with_file_provider_and_telegram(
@@ -132,8 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 tools,
                 mcp_tools,
                 vfs.clone(),
-                telegram_bot_token,
-                factories,
+                telegram_bot_token.clone(),
             ),
         )
     } else {
@@ -143,8 +135,7 @@ async fn main() -> anyhow::Result<()> {
                 model_config.clone(),
                 tools,
                 mcp_tools,
-                telegram_bot_token,
-                factories,
+                telegram_bot_token.clone(),
             ),
         )
     };
@@ -158,7 +149,30 @@ async fn main() -> anyhow::Result<()> {
         vfs: vfs_provider,
         telegram_interactions: Arc::new(Mutex::new(api::telegram::Interactions::default())),
     });
-    let _ = state_cell.set(Arc::downgrade(&state));
+
+    // Bind Telegram subscriber tasks to agent runner lifetimes (created on activation, aborted on
+    // eviction) so per-thread forwarders do not accumulate.
+    tokio::spawn(api::telegram::supervise(state.clone()));
+
+    // Register the webhook with callback_query updates enabled so inline button taps are delivered.
+    if let Some(token) = telegram_bot_token {
+        let telegram = state
+            .config
+            .server
+            .as_ref()
+            .and_then(|s| s.telegram.as_ref());
+        match telegram.and_then(|t| t.webhook_url.clone()) {
+            Some(url) => {
+                let secret = telegram.and_then(|t| t.webhook_secret.clone());
+                api::telegram::register_webhook(token, url, secret).await;
+            }
+            None => tracing::warn!(
+                "telegram.webhook_url is not configured; skipping setWebhook. Inline button taps \
+                 (approvals/quizzes) will not be delivered unless the webhook was registered \
+                 externally with allowed_updates including callback_query"
+            ),
+        }
+    }
 
     let static_dir = args
         .static_dir

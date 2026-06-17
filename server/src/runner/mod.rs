@@ -1,40 +1,35 @@
 use async_trait::async_trait;
 use friday_agent::QuizQuestion;
-use minisql::ConnectionPool;
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
 pub mod inproc;
 
 pub type EventSeq = u64;
 
-/// A consumer of a thread's agent events. The agent holds one of these per attached sink and
-/// presents every emitted event to each. `dispatch` runs on the agent worker thread, so it may
-/// call out to the network directly, but it must not call back into the [`AgentPool`] (the worker
-/// drives a single-threaded runtime — a re-entrant pool call would deadlock).
-#[async_trait(?Send)]
-pub trait EventDispatcher {
-    async fn dispatch(&self, event: &AgentEvent);
+/// Global pub/sub topic name carrying [`AgentEvent`]s for one thread. Producers (the worker) and
+/// consumers (WS handler, Telegram subscriber) reach the same channel through this name.
+pub fn thread_events_topic(thread_id: Uuid) -> String {
+    format!("thread-events:{thread_id}")
 }
 
-/// Builds source-specific dispatchers when a thread runner first starts. Returning `None` means
-/// the factory does not apply to this thread (e.g. it was not created in Telegram).
-#[async_trait]
-pub trait DispatcherFactory: Send + Sync + 'static {
-    async fn make(&self, thread_id: Uuid, db: &ConnectionPool) -> Option<Box<dyn EventDispatcher>>;
+/// Global pub/sub topic announcing when a thread runner is created or evicted. The Telegram
+/// supervisor listens here to bind a subscriber task's lifetime to the runner's lifetime.
+pub const RUNNER_LIFECYCLE_TOPIC: &str = "runner-lifecycle";
+
+/// Lifecycle of a thread runner, published on [`RUNNER_LIFECYCLE_TOPIC`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunnerLifecycle {
+    Activated { thread_id: Uuid },
+    Deactivated { thread_id: Uuid },
 }
 
 #[async_trait]
 pub trait AgentPool: Send + Sync + 'static {
     async fn send(&self, thread_id: Uuid, request: AgentRequest) -> Result<RunId, AgentPoolError>;
 
-    /// Implementations must create the receiver and snapshot under the same lock.
-    /// Otherwise reconnecting clients can miss events between replay and live stream.
-    async fn subscribe(
-        &self,
-        thread_id: Uuid,
-        after: Option<EventSeq>,
-    ) -> Result<ThreadSubscription, AgentPoolError>;
+    /// Point-in-time snapshot of a thread. Consumers stream live events from the thread's pub/sub
+    /// topic and use [`ThreadSnapshot::last_event_seq`] to discard events already reflected here.
+    async fn snapshot(&self, thread_id: Uuid) -> Result<ThreadSnapshot, AgentPoolError>;
 
     async fn cancel_run(&self, thread_id: Uuid) -> Result<(), AgentPoolError>;
 
@@ -64,12 +59,6 @@ pub struct AgentRequest {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RunId(pub Uuid);
-
-pub struct ThreadSubscription {
-    pub snapshot: ThreadSnapshot,
-    pub events: broadcast::Receiver<AgentEvent>,
-    pub replay: Vec<AgentEvent>,
-}
 
 #[derive(Clone, Debug)]
 pub struct ThreadSnapshot {

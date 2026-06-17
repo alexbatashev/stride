@@ -190,7 +190,17 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
+		// The snapshot resets the baseline; always apply it. Any live or replayed event whose seq we
+		// have already applied is a duplicate (e.g. topic backlog overlap on reconnect) and is dropped
+		// so a message is never rendered twice.
+		if (event.kind.type === "Snapshot") {
+			this.lastEventSeq = event.seq;
+		} else {
+			if (event.seq <= this.lastEventSeq) {
+				return;
+			}
+			this.lastEventSeq = event.seq;
+		}
 
 		if (event.kind.type === "Snapshot") {
 			this.running = event.kind.status === "running";

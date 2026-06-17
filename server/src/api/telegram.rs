@@ -1,10 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use async_trait::async_trait;
 use axum::{
     Json,
     extract::State,
@@ -30,7 +29,10 @@ use crate::{
         Role, messages, telegram_connect_codes, telegram_connections, telegram_message_links,
         telegram_threads, threads,
     },
-    runner::{AgentEvent, AgentEventKind, AgentRequest, DispatcherFactory, EventDispatcher},
+    runner::{
+        AgentEvent, AgentEventKind, AgentRequest, RUNNER_LIFECYCLE_TOPIC, RunnerLifecycle,
+        thread_events_topic,
+    },
 };
 
 /// How long a streamed Telegram draft waits before the next update is pushed.
@@ -163,9 +165,18 @@ pub async fn disconnect(
 pub async fn webhook(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
-    Json(mut update): Json<TelegramUpdate>,
+    body: Bytes,
 ) -> Result<StatusCode, TelegramApiError> {
     validate_secret(&state, &headers)?;
+
+    let mut update: TelegramUpdate = match serde_json::from_slice(&body) {
+        Ok(update) => update,
+        Err(error) => {
+            // Returning OK (not 422) keeps Telegram from retrying an update we will never accept.
+            tracing::warn!(%error, "ignoring unparseable Telegram update");
+            return Ok(StatusCode::OK);
+        }
+    };
 
     if let Some(callback) = update.callback_query.take() {
         handle_callback(&state, callback).await;
@@ -473,10 +484,12 @@ async fn ensure_telegram_mapping_for_message(
 /// Forwards a Telegram thread's agent events straight to Telegram. Created at runner start (one per
 /// thread), so it reliably sees every event pushed to it — there is no on-demand subscription to
 /// race or miss.
-struct TelegramDispatcher {
+/// Forwards one Telegram-originated thread's agent events to Telegram. A single task owns it, so the
+/// per-run state is a plain field rather than a shared lock.
+struct TelegramSubscriber {
     state: Arc<ServerState>,
     thread_id: Uuid,
-    active: Mutex<Option<ActiveRun>>,
+    active: Option<ActiveRun>,
 }
 
 struct ActiveRun {
@@ -491,9 +504,8 @@ struct ActiveRun {
     finalized: bool,
 }
 
-#[async_trait(?Send)]
-impl EventDispatcher for TelegramDispatcher {
-    async fn dispatch(&self, event: &AgentEvent) {
+impl TelegramSubscriber {
+    async fn handle_event(&mut self, event: &AgentEvent) {
         let Some(run_id) = event.run_id.map(|id| id.0) else {
             return;
         };
@@ -505,11 +517,11 @@ impl EventDispatcher for TelegramDispatcher {
                 tracing::warn!(
                     thread_id = %self.thread_id,
                     %run_id,
-                    "Telegram dispatcher has no destination"
+                    "Telegram subscriber has no destination"
                 );
                 return;
             };
-            *self.active.lock().unwrap() = Some(ActiveRun {
+            self.active = Some(ActiveRun {
                 run_id,
                 user_id,
                 chat_id,
@@ -526,8 +538,7 @@ impl EventDispatcher for TelegramDispatcher {
         match &event.kind {
             AgentEventKind::AgentDelta { content } => {
                 let draft = {
-                    let mut guard = self.active.lock().unwrap();
-                    let Some(active) = guard.as_mut().filter(|a| a.run_id == run_id) else {
+                    let Some(active) = self.active.as_mut().filter(|a| a.run_id == run_id) else {
                         return;
                     };
                     active.content.push_str(content);
@@ -545,7 +556,7 @@ impl EventDispatcher for TelegramDispatcher {
                 };
                 if let Some((chat_id, topic_id, draft_id, text)) = draft {
                     let state = self.state.clone();
-                    tokio::task::spawn_local(async move {
+                    tokio::spawn(async move {
                         send_telegram_rich_message_draft(
                             &state, chat_id, topic_id, draft_id, &text,
                         )
@@ -567,25 +578,22 @@ impl EventDispatcher for TelegramDispatcher {
                         &content,
                     )
                     .await;
-                    if let Some(active) = self.active.lock().unwrap().as_mut() {
+                    if let Some(active) = self.active.as_mut() {
                         active.content = content;
                         active.finalized = true;
                     }
                 }
             }
             AgentEventKind::RunFinished => {
-                let info = {
-                    let guard = self.active.lock().unwrap();
-                    guard.as_ref().filter(|a| a.run_id == run_id).map(|a| {
-                        (
-                            a.user_id,
-                            a.chat_id,
-                            a.topic_id,
-                            a.content.clone(),
-                            a.finalized,
-                        )
-                    })
-                };
+                let info = self.active.as_ref().filter(|a| a.run_id == run_id).map(|a| {
+                    (
+                        a.user_id,
+                        a.chat_id,
+                        a.topic_id,
+                        a.content.clone(),
+                        a.finalized,
+                    )
+                });
                 if let Some((user_id, chat_id, topic_id, mut content, finalized)) = info {
                     if !finalized {
                         finalize_latest_telegram_response(
@@ -665,47 +673,73 @@ impl EventDispatcher for TelegramDispatcher {
             _ => {}
         }
     }
-}
 
-impl TelegramDispatcher {
     /// Returns (user_id, chat_id, topic_id) when `run_id` is the run currently being forwarded.
     fn active_run(&self, run_id: Uuid) -> Option<(Uuid, i64, Option<i64>)> {
-        let guard = self.active.lock().unwrap();
-        guard
+        self.active
             .as_ref()
             .filter(|a| a.run_id == run_id)
             .map(|a| (a.user_id, a.chat_id, a.topic_id))
     }
 
-    fn end_run(&self, chat_id: i64, topic_id: Option<i64>) {
+    fn end_run(&mut self, chat_id: i64, topic_id: Option<i64>) {
         clear_interactions(&self.state, self.thread_id, chat_id, topic_id);
-        *self.active.lock().unwrap() = None;
+        self.active = None;
     }
 }
 
-/// Attaches a [`TelegramDispatcher`] to every thread that originated in Telegram.
-pub(crate) struct TelegramDispatcherFactory {
-    state: Arc<OnceLock<Weak<ServerState>>>,
-}
-
-impl TelegramDispatcherFactory {
-    pub(crate) fn new(state: Arc<OnceLock<Weak<ServerState>>>) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl DispatcherFactory for TelegramDispatcherFactory {
-    async fn make(&self, thread_id: Uuid, db: &ConnectionPool) -> Option<Box<dyn EventDispatcher>> {
-        if !thread_has_telegram_mapping(db, thread_id).await {
-            return None;
+/// Forwards a Telegram thread's events until its runner is evicted (the topic closes). Its lifetime
+/// is owned by [`supervise`], which binds it to the agent runner's lifecycle.
+async fn run_telegram_subscriber(state: Arc<ServerState>, thread_id: Uuid) {
+    let mut subscriber = TelegramSubscriber {
+        state,
+        thread_id,
+        active: None,
+    };
+    let mut events = pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe();
+    loop {
+        match events.recv().await {
+            Ok(event) => subscriber.handle_event(&event).await,
+            Err(pubsub::RecvError::Lagged(_)) => {}
+            Err(pubsub::RecvError::Closed) => break,
         }
-        let state = self.state.get().and_then(Weak::upgrade)?;
-        Some(Box::new(TelegramDispatcher {
-            state,
-            thread_id,
-            active: Mutex::new(None),
-        }))
+    }
+}
+
+/// Binds Telegram subscriber tasks to agent runner lifetimes. Listens for [`RunnerLifecycle`] and,
+/// for Telegram-mapped threads, keeps exactly one subscriber task alive while the runner exists —
+/// aborting it when the runner is evicted, so subscribers do not accumulate.
+pub(crate) async fn supervise(state: Arc<ServerState>) {
+    let mut tasks: HashMap<Uuid, tokio::task::AbortHandle> = HashMap::new();
+    let mut lifecycle = pubsub::topic::<RunnerLifecycle>(RUNNER_LIFECYCLE_TOPIC).subscribe();
+
+    loop {
+        let event = match lifecycle.recv().await {
+            Ok(event) => event,
+            Err(pubsub::RecvError::Lagged(_)) => continue,
+            Err(pubsub::RecvError::Closed) => break,
+        };
+
+        match event {
+            RunnerLifecycle::Activated { thread_id } => {
+                if !thread_has_telegram_mapping(&state.db, thread_id).await {
+                    continue;
+                }
+                if let Some(stale) = tasks.remove(&thread_id) {
+                    stale.abort();
+                    tracing::info!(%thread_id, "replacing stale Telegram subscriber on re-activation");
+                }
+                let handle = tokio::spawn(run_telegram_subscriber(state.clone(), thread_id));
+                tasks.insert(thread_id, handle.abort_handle());
+                tracing::info!(%thread_id, "spawned Telegram subscriber");
+            }
+            RunnerLifecycle::Deactivated { thread_id } => {
+                if let Some(handle) = tasks.remove(&thread_id) {
+                    handle.abort();
+                    tracing::info!(%thread_id, "aborted Telegram subscriber on runner eviction");
+                }
+            }
+        }
     }
 }
 
@@ -959,30 +993,43 @@ fn pending_free_form_quiz(
 
 async fn handle_callback(state: &ServerState, callback: CallbackQuery) {
     let Some(token) = callback.data.clone() else {
+        tracing::warn!("Telegram callback has no data token");
         return;
     };
-    let action = state
-        .telegram_interactions
-        .lock()
-        .unwrap()
-        .callbacks
-        .get(&token)
-        .cloned();
+    let (action, registered) = {
+        let ix = state.telegram_interactions.lock().unwrap();
+        (ix.callbacks.get(&token).cloned(), ix.callbacks.len())
+    };
     let Some(action) = action else {
+        tracing::warn!(
+            %token,
+            from_id = callback.from.id,
+            registered,
+            "Telegram callback token not found (cleared, or never registered in this map)"
+        );
         answer_callback_query(state, &callback.id, "This action is no longer available.").await;
         return;
     };
 
     // Only the thread owner may resolve a prompt — buttons can be visible to a whole group.
-    let owner = thread_owner(state, action.thread_id()).await;
+    let thread_id = action.thread_id();
+    let owner = thread_owner(state, thread_id).await;
     let caller = user_for_telegram_id(state, callback.from.id)
         .await
         .ok()
         .flatten();
     if owner.is_none() || owner != caller {
+        tracing::warn!(
+            %thread_id,
+            from_id = callback.from.id,
+            ?owner,
+            ?caller,
+            "Telegram callback rejected: caller is not the thread owner"
+        );
         answer_callback_query(state, &callback.id, "Not allowed.").await;
         return;
     }
+    tracing::info!(%thread_id, %token, "handling Telegram callback");
 
     match action {
         CallbackAction::Approval {
@@ -1042,10 +1089,16 @@ async fn handle_callback(state: &ServerState, callback: CallbackQuery) {
 
 fn clear_interactions(state: &ServerState, thread_id: Uuid, chat_id: i64, topic_id: Option<i64>) {
     let mut ix = state.telegram_interactions.lock().unwrap();
+    let before = ix.callbacks.len();
     ix.callbacks
         .retain(|_, action| action.thread_id() != thread_id);
     ix.quizzes.retain(|_, quiz| quiz.thread_id != thread_id);
     ix.awaiting_text.remove(&(chat_id, topic_id));
+    tracing::info!(
+        %thread_id,
+        cleared = before - ix.callbacks.len(),
+        "cleared Telegram interactions"
+    );
 }
 
 fn interaction_token() -> String {
@@ -1063,6 +1116,53 @@ async fn thread_owner(state: &ServerState, thread_id: Uuid) -> Option<Uuid> {
         .into_iter()
         .next()
         .map(|(owner,)| owner)
+}
+
+/// Registers the webhook with Telegram, enabling `callback_query` updates so inline button taps are
+/// delivered. Without this (or if `allowed_updates` omits `callback_query`) Telegram silently drops
+/// button presses, which is why approvals and quizzes never resolve.
+pub(crate) async fn register_webhook(token: String, url: String, secret: Option<String>) {
+    let mut payload = json!({
+        "url": url,
+        "allowed_updates": ["message", "callback_query"],
+    });
+    if let Some(secret) = secret {
+        payload["secret_token"] = json!(secret);
+    }
+    let body = match serde_json::to_vec(&payload) {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::warn!(%error, "failed to encode setWebhook payload");
+            return;
+        }
+    };
+
+    let uri = format!("https://api.telegram.org/bot{token}/setWebhook");
+    let req = match Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("Content-Type", "application/json")
+        .body(Full::new(Bytes::from(body)))
+    {
+        Ok(req) => req,
+        Err(error) => {
+            tracing::warn!(%error, "failed to build setWebhook request");
+            return;
+        }
+    };
+
+    match timeout(Duration::from_secs(30), tinynet::send_request(req)).await {
+        Ok(Ok((status, _))) if (200..300).contains(&status) => {
+            tracing::info!(%url, "registered Telegram webhook with callback_query updates")
+        }
+        Ok(Ok((status, body))) => tracing::warn!(
+            status,
+            body = %String::from_utf8_lossy(&body),
+            "setWebhook returned error"
+        ),
+        Ok(Err(error)) => tracing::warn!(%error, "failed to call setWebhook"),
+        Err(error) => tracing::warn!(%error, "timed out calling setWebhook"),
+    }
 }
 
 async fn telegram_post(state: &ServerState, method: &str, body: Vec<u8>) -> Option<Bytes> {
@@ -1906,6 +2006,8 @@ struct TelegramGetMeResult {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     #[test]
@@ -1943,34 +2045,18 @@ mod tests {
 
     use async_trait::async_trait;
     use minisql::ConnectionPool;
-    use tokio::sync::broadcast;
 
     use crate::{
         config::Config,
         db::users,
-        runner::{
-            AgentEvent, AgentPool, AgentPoolError, RunId, ThreadSnapshot, ThreadStatus,
-            ThreadSubscription,
-        },
+        runner::{AgentEvent, AgentPool, AgentPoolError, RunId, ThreadSnapshot, ThreadStatus},
     };
 
     #[derive(Default)]
     struct FakePool {
-        senders: Mutex<HashMap<Uuid, broadcast::Sender<AgentEvent>>>,
         received: Mutex<Vec<String>>,
         approvals: Mutex<Vec<(Uuid, Uuid, bool)>>,
         quiz_answers: Mutex<Vec<(Uuid, Uuid, Vec<String>)>>,
-    }
-
-    impl FakePool {
-        fn sender(&self, thread_id: Uuid) -> broadcast::Sender<AgentEvent> {
-            self.senders
-                .lock()
-                .unwrap()
-                .entry(thread_id)
-                .or_insert_with(|| broadcast::channel(16).0)
-                .clone()
-        }
     }
 
     #[async_trait]
@@ -1982,14 +2068,13 @@ mod tests {
         ) -> Result<RunId, AgentPoolError> {
             self.received.lock().unwrap().push(request.content);
             let run_id = RunId(Uuid::now_v7());
-            let tx = self.sender(thread_id);
-            let _ = tx.send(AgentEvent {
+            pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(AgentEvent {
                 seq: 1,
                 thread_id,
                 run_id: Some(run_id),
                 kind: AgentEventKind::RunStarted,
             });
-            let _ = tx.send(AgentEvent {
+            pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(AgentEvent {
                 seq: 2,
                 thread_id,
                 run_id: Some(run_id),
@@ -1998,22 +2083,14 @@ mod tests {
             Ok(run_id)
         }
 
-        async fn subscribe(
-            &self,
-            thread_id: Uuid,
-            _after: Option<u64>,
-        ) -> Result<ThreadSubscription, AgentPoolError> {
-            Ok(ThreadSubscription {
-                snapshot: ThreadSnapshot {
-                    thread_id,
-                    last_event_seq: 0,
-                    status: ThreadStatus::Idle,
-                    in_progress: None,
-                    pending_approval: None,
-                    pending_quiz: None,
-                },
-                events: self.sender(thread_id).subscribe(),
-                replay: Vec::new(),
+        async fn snapshot(&self, thread_id: Uuid) -> Result<ThreadSnapshot, AgentPoolError> {
+            Ok(ThreadSnapshot {
+                thread_id,
+                last_event_seq: 0,
+                status: ThreadStatus::Idle,
+                in_progress: None,
+                pending_approval: None,
+                pending_quiz: None,
             })
         }
 
@@ -2296,10 +2373,10 @@ mod tests {
         seed_owner(&state, user_id, thread_id, 555, 42).await;
         seed_telegram_thread(&state, user_id, thread_id, 42, 0).await;
 
-        let dispatcher = TelegramDispatcher {
+        let mut subscriber = TelegramSubscriber {
             state: state.clone(),
             thread_id,
-            active: Mutex::new(None),
+            active: None,
         };
         let run_id = RunId(Uuid::now_v7());
         let event = |kind| AgentEvent {
@@ -2308,12 +2385,12 @@ mod tests {
             run_id: Some(run_id),
             kind,
         };
-        dispatcher
-            .dispatch(&event(AgentEventKind::RunStarted))
+        subscriber
+            .handle_event(&event(AgentEventKind::RunStarted))
             .await;
         let quiz_id = Uuid::now_v7();
-        dispatcher
-            .dispatch(&event(AgentEventKind::WaitingForQuiz {
+        subscriber
+            .handle_event(&event(AgentEventKind::WaitingForQuiz {
                 quiz_id,
                 questions: vec![QuizQuestion {
                     question: "Pick".to_string(),

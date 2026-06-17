@@ -25,8 +25,8 @@ use crate::{
     },
     db::{Role, messages, projects, threads},
     runner::{
-        AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadStatus,
-        ThreadSubscription,
+        AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
+        ThreadStatus, thread_events_topic,
     },
 };
 
@@ -96,11 +96,6 @@ pub struct SendMessageRequest {
     project_id: Option<Uuid>,
     #[serde(default)]
     file_paths: Vec<String>,
-}
-
-#[derive(Deserialize)]
-pub struct EventsQuery {
-    after: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -612,16 +607,14 @@ pub async fn events(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
-    Query(query): Query<EventsQuery>,
 ) -> Result<Response, ThreadApiError> {
     require_thread_owner(&state, &headers, thread_id).await?;
-    let subscription = state
-        .runner
-        .subscribe(thread_id, query.after)
-        .await
-        .map_err(pool_error)?;
+    // Subscribe to the live topic before reading the snapshot so no event emitted between the two
+    // is lost; the snapshot's `last_event_seq` watermark then discards any backlog already covered.
+    let events = pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe();
+    let snapshot = state.runner.snapshot(thread_id).await.map_err(pool_error)?;
 
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, subscription)))
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, snapshot, events)))
 }
 
 pub async fn cancel(
@@ -668,22 +661,17 @@ pub async fn answer_quiz(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
-    let snapshot = snapshot_event(&subscription);
-    if socket.send(Message::Text(snapshot.into())).await.is_err() {
+async fn handle_ws(
+    mut socket: WebSocket,
+    snapshot: ThreadSnapshot,
+    mut events: pubsub::Subscriber<AgentEvent>,
+) {
+    let watermark = snapshot.last_event_seq;
+    let snapshot_json = snapshot_event(&snapshot);
+    if socket.send(Message::Text(snapshot_json.into())).await.is_err() {
         return;
     }
 
-    for event in subscription.replay {
-        let Ok(data) = serde_json::to_string(&event_response(event)) else {
-            return;
-        };
-        if socket.send(Message::Text(data.into())).await.is_err() {
-            return;
-        }
-    }
-
-    let mut events = subscription.events;
     loop {
         tokio::select! {
             msg = socket.recv() => {
@@ -695,6 +683,11 @@ async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
             event = events.recv() => {
                 match event {
                     Ok(event) => {
+                        // The topic backlog replays events already reflected in the snapshot; the
+                        // watermark drops them so the client never applies an event twice.
+                        if event.seq <= watermark {
+                            continue;
+                        }
                         let Ok(data) = serde_json::to_string(&event_response(event)) else {
                             break;
                         };
@@ -702,8 +695,8 @@ async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(pubsub::RecvError::Lagged(_)) => {}
+                    Err(pubsub::RecvError::Closed) => break,
                 }
             }
         }
@@ -1140,40 +1133,36 @@ fn event_response(event: AgentEvent) -> EventResponse {
     }
 }
 
-fn snapshot_event(subscription: &crate::runner::ThreadSubscription) -> String {
-    let event =
-        EventResponse {
-            seq: subscription.snapshot.last_event_seq,
-            thread_id: subscription.snapshot.thread_id.to_string(),
-            run_id: None,
-            kind: EventKindResponse::Snapshot {
-                status: match subscription.snapshot.status {
-                    ThreadStatus::Idle => "idle",
-                    ThreadStatus::Running { .. } => "running",
-                },
-                in_progress: subscription.snapshot.in_progress.as_ref().map(|message| {
-                    SnapshotMessageResponse {
-                        run_id: message.run_id.0.to_string(),
-                        content: message.content.clone(),
-                        thinking: message.thinking.clone(),
-                    }
-                }),
-                pending_approval: subscription
-                    .snapshot
-                    .pending_approval
-                    .as_ref()
-                    .map(|approval| ApprovalResponse {
-                        approval_id: approval.approval_id.to_string(),
-                        message: approval.message.clone(),
-                    }),
-                pending_quiz: subscription.snapshot.pending_quiz.as_ref().map(|quiz| {
-                    QuizResponse {
-                        quiz_id: quiz.quiz_id.to_string(),
-                        questions: quiz_questions_response(quiz.questions.clone()),
-                    }
-                }),
+fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
+    let event = EventResponse {
+        seq: snapshot.last_event_seq,
+        thread_id: snapshot.thread_id.to_string(),
+        run_id: None,
+        kind: EventKindResponse::Snapshot {
+            status: match snapshot.status {
+                ThreadStatus::Idle => "idle",
+                ThreadStatus::Running { .. } => "running",
             },
-        };
+            in_progress: snapshot.in_progress.as_ref().map(|message| {
+                SnapshotMessageResponse {
+                    run_id: message.run_id.0.to_string(),
+                    content: message.content.clone(),
+                    thinking: message.thinking.clone(),
+                }
+            }),
+            pending_approval: snapshot
+                .pending_approval
+                .as_ref()
+                .map(|approval| ApprovalResponse {
+                    approval_id: approval.approval_id.to_string(),
+                    message: approval.message.clone(),
+                }),
+            pending_quiz: snapshot.pending_quiz.as_ref().map(|quiz| QuizResponse {
+                quiz_id: quiz.quiz_id.to_string(),
+                questions: quiz_questions_response(quiz.questions.clone()),
+            }),
+        },
+    };
 
     serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
 }

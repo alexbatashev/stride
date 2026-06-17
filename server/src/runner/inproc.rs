@@ -26,7 +26,7 @@ use futures::{StreamExt, channel::oneshot as futures_oneshot};
 use minisql::{ConnectionPool, Value};
 use tokio::{
     runtime::Builder,
-    sync::{broadcast, mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch},
     task::LocalSet,
 };
 use uuid::Uuid;
@@ -35,9 +35,9 @@ use crate::{
     config::{Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
     db::{Role, messages},
     runner::{
-        AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, DispatcherFactory,
-        EventDispatcher, PartialAgentMessage, PendingApproval, PendingQuiz, RunId, ThreadSnapshot,
-        ThreadStatus, ThreadSubscription,
+        AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
+        PendingApproval, PendingQuiz, RunId, RunnerLifecycle, ThreadSnapshot, ThreadStatus,
+        RUNNER_LIFECYCLE_TOPIC, thread_events_topic,
     },
     tools::{
         automations::ScheduleAutomationTool,
@@ -57,7 +57,6 @@ use crate::{
 };
 
 const WORKER_THREADS: usize = 8;
-const EVENT_BUFFER: usize = 256;
 const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(300);
 const BASE_SYSTEM_PROMPT: &str = "You are Friday, a semi-autonomous AI agent. Your task is to assist user with any requests.
 
@@ -130,10 +129,9 @@ enum WorkerCommand {
         request: AgentRequest,
         resp: oneshot::Sender<Result<RunId, AgentPoolError>>,
     },
-    Subscribe {
+    Snapshot {
         thread_id: Uuid,
-        after: Option<super::EventSeq>,
-        resp: oneshot::Sender<Result<ThreadSubscription, AgentPoolError>>,
+        resp: oneshot::Sender<Result<ThreadSnapshot, AgentPoolError>>,
     },
     Cancel {
         thread_id: Uuid,
@@ -171,7 +169,6 @@ struct WorkerInit {
     telegram_bot_token: Option<String>,
     system_prompt: String,
     idle_ttl: Duration,
-    factories: Vec<Arc<dyn DispatcherFactory>>,
 }
 
 struct WorkerState {
@@ -183,15 +180,11 @@ struct WorkerState {
     telegram_bot_token: Option<String>,
     system_prompt: String,
     idle_ttl: Duration,
-    factories: Vec<Arc<dyn DispatcherFactory>>,
     threads: HashMap<Uuid, ThreadRunner>,
 }
 
 struct ThreadRunner {
     agent: Option<BaseAgent>,
-    event_tx: broadcast::Sender<AgentEvent>,
-    dispatchers: Vec<DispatcherHandle>,
-    event_history: VecDeque<AgentEvent>,
     cancel_tx: Option<watch::Sender<bool>>,
     pending_approvals: HashMap<Uuid, PendingApprovalState>,
     pending_quizzes: HashMap<Uuid, PendingQuizState>,
@@ -202,11 +195,6 @@ struct ThreadRunner {
     status: ThreadStatus,
     in_progress: Option<PartialAgentMessage>,
     last_used: Instant,
-}
-
-#[derive(Clone)]
-struct DispatcherHandle {
-    tx: mpsc::UnboundedSender<AgentEvent>,
 }
 
 struct PendingApprovalState {
@@ -255,7 +243,6 @@ impl InProcessAgentPool {
             mcp_tools,
             None,
             None,
-            Vec::new(),
         )
     }
 
@@ -265,7 +252,6 @@ impl InProcessAgentPool {
         tools: Tools,
         mcp_tools: Vec<McpTool>,
         telegram_bot_token: Option<String>,
-        factories: Vec<Arc<dyn DispatcherFactory>>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -275,7 +261,6 @@ impl InProcessAgentPool {
             mcp_tools,
             None,
             telegram_bot_token,
-            factories,
         )
     }
 
@@ -294,7 +279,6 @@ impl InProcessAgentPool {
             mcp_tools,
             Some(vfs),
             None,
-            Vec::new(),
         )
     }
 
@@ -305,7 +289,6 @@ impl InProcessAgentPool {
         mcp_tools: Vec<McpTool>,
         vfs: Arc<Vfs>,
         telegram_bot_token: Option<String>,
-        factories: Vec<Arc<dyn DispatcherFactory>>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -315,7 +298,6 @@ impl InProcessAgentPool {
             mcp_tools,
             Some(vfs),
             telegram_bot_token,
-            factories,
         )
     }
 
@@ -336,7 +318,6 @@ impl InProcessAgentPool {
         mcp_tools: Vec<McpTool>,
         vfs: Option<Arc<Vfs>>,
         telegram_bot_token: Option<String>,
-        factories: Vec<Arc<dyn DispatcherFactory>>,
     ) -> Self {
         Self::from_init(WorkerInit {
             db,
@@ -347,7 +328,6 @@ impl InProcessAgentPool {
             telegram_bot_token,
             system_prompt,
             idle_ttl: DEFAULT_IDLE_TTL,
-            factories,
         })
     }
 
@@ -386,7 +366,6 @@ impl InProcessAgentPool {
             telegram_bot_token: None,
             system_prompt,
             idle_ttl,
-            factories: Vec::new(),
         })
     }
 
@@ -419,19 +398,11 @@ impl AgentPool for InProcessAgentPool {
         rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
     }
 
-    async fn subscribe(
-        &self,
-        thread_id: Uuid,
-        after: Option<u64>,
-    ) -> Result<ThreadSubscription, AgentPoolError> {
+    async fn snapshot(&self, thread_id: Uuid) -> Result<ThreadSnapshot, AgentPoolError> {
         let (resp, rx) = oneshot::channel();
         self.worker(thread_id)
             .tx
-            .send(WorkerCommand::Subscribe {
-                thread_id,
-                after,
-                resp,
-            })
+            .send(WorkerCommand::Snapshot { thread_id, resp })
             .map_err(|_| AgentPoolError::WorkerStopped)?;
         rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
     }
@@ -522,7 +493,6 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 telegram_bot_token,
                 system_prompt,
                 idle_ttl,
-                factories,
             } = init;
             let state = Rc::new(RefCell::new(WorkerState {
                 db,
@@ -533,7 +503,6 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 telegram_bot_token,
                 system_prompt,
                 idle_ttl,
-                factories,
                 threads: HashMap::new(),
             }));
 
@@ -575,12 +544,8 @@ async fn handle_command(state: Rc<RefCell<WorkerState>>, command: WorkerCommand)
             let result = handle_send(state, thread_id, request).await;
             let _ = resp.send(result);
         }
-        WorkerCommand::Subscribe {
-            thread_id,
-            after,
-            resp,
-        } => {
-            let result = handle_subscribe(state, thread_id, after).await;
+        WorkerCommand::Snapshot { thread_id, resp } => {
+            let result = handle_snapshot(state, thread_id).await;
             let _ = resp.send(result);
         }
         WorkerCommand::Cancel { thread_id, resp } => {
@@ -610,7 +575,9 @@ async fn handle_command(state: Rc<RefCell<WorkerState>>, command: WorkerCommand)
             let _ = resp.send(result);
         }
         WorkerCommand::ShutdownThread { thread_id, resp } => {
-            state.borrow_mut().threads.remove(&thread_id);
+            if state.borrow_mut().threads.remove(&thread_id).is_some() {
+                deactivate_thread(thread_id);
+            }
             let _ = resp.send(Ok(()));
         }
     }
@@ -723,11 +690,10 @@ async fn drain_queue(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) {
     }
 }
 
-async fn handle_subscribe(
+async fn handle_snapshot(
     state: Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
-    after: Option<super::EventSeq>,
-) -> Result<ThreadSubscription, AgentPoolError> {
+) -> Result<ThreadSnapshot, AgentPoolError> {
     ensure_runner(state.clone(), thread_id).await?;
 
     let mut state = state.borrow_mut();
@@ -737,54 +703,25 @@ async fn handle_subscribe(
         .ok_or(AgentPoolError::ThreadNotFound)?;
 
     runner.last_used = Instant::now();
-    // Subscribe before reading last_event_seq so no events slip through the gap.
-    let events = runner.event_tx.subscribe();
-    let snapshot =
-        ThreadSnapshot {
-            thread_id,
-            last_event_seq: runner.last_event_seq,
-            status: runner.status.clone(),
-            in_progress: runner.in_progress.clone(),
-            pending_approval: runner.pending_approvals.iter().next().map(
-                |(approval_id, approval)| PendingApproval {
-                    approval_id: *approval_id,
-                    message: approval.message.clone(),
-                },
-            ),
-            pending_quiz: runner
-                .pending_quizzes
-                .iter()
-                .next()
-                .map(|(quiz_id, quiz)| PendingQuiz {
-                    quiz_id: *quiz_id,
-                    questions: quiz.questions.clone(),
-                }),
-        };
-
-    let replay = if let Some(after) = after {
-        if after < runner.last_event_seq
-            && runner
-                .event_history
-                .front()
-                .is_none_or(|e| e.seq <= after + 1)
-        {
-            runner
-                .event_history
-                .iter()
-                .filter(|e| e.seq > after)
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-
-    Ok(ThreadSubscription {
-        snapshot,
-        events,
-        replay,
+    Ok(ThreadSnapshot {
+        thread_id,
+        last_event_seq: runner.last_event_seq,
+        status: runner.status.clone(),
+        in_progress: runner.in_progress.clone(),
+        pending_approval: runner.pending_approvals.iter().next().map(
+            |(approval_id, approval)| PendingApproval {
+                approval_id: *approval_id,
+                message: approval.message.clone(),
+            },
+        ),
+        pending_quiz: runner
+            .pending_quizzes
+            .iter()
+            .next()
+            .map(|(quiz_id, quiz)| PendingQuiz {
+                quiz_id: *quiz_id,
+                questions: quiz.questions.clone(),
+            }),
     })
 }
 
@@ -884,7 +821,7 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, tools, mcp_tools, vfs, telegram_bot_token, base_system_prompt, factories) = {
+    let (db, config, tools, mcp_tools, vfs, telegram_bot_token, base_system_prompt) = {
         let state = state.borrow();
         (
             state.db.clone(),
@@ -894,7 +831,6 @@ async fn ensure_runner(
             state.vfs.clone(),
             state.telegram_bot_token.clone(),
             state.system_prompt.clone(),
-            state.factories.clone(),
         )
     };
 
@@ -983,22 +919,11 @@ async fn ensure_runner(
         agent.register_tool(tool);
         agent.allow_tool("python");
     }
-    let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
-
-    let mut dispatchers = Vec::new();
-    for factory in &factories {
-        if let Some(dispatcher) = factory.make(thread_id, &db).await {
-            dispatchers.push(spawn_dispatcher(dispatcher));
-        }
-    }
 
     state.borrow_mut().threads.insert(
         thread_id,
         ThreadRunner {
             agent: Some(agent),
-            event_tx,
-            dispatchers,
-            event_history: VecDeque::new(),
             cancel_tx: None,
             pending_approvals: HashMap::new(),
             pending_quizzes: HashMap::new(),
@@ -1010,6 +935,11 @@ async fn ensure_runner(
             last_used: Instant::now(),
         },
     );
+
+    // Announce the new runner so the Telegram supervisor can bind a subscriber task to its
+    // lifetime. Published for every thread; the supervisor filters to Telegram-mapped ones.
+    pubsub::topic::<RunnerLifecycle>(RUNNER_LIFECYCLE_TOPIC)
+        .publish(RunnerLifecycle::Activated { thread_id });
 
     Ok(())
 }
@@ -1692,45 +1622,31 @@ async fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_
     emit(state, thread_id, Some(run_id), AgentEventKind::RunCancelled).await;
 }
 
-fn spawn_dispatcher(dispatcher: Box<dyn EventDispatcher>) -> DispatcherHandle {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    tokio::task::spawn_local(async move {
-        while let Some(event) = rx.recv().await {
-            dispatcher.dispatch(&event).await;
-        }
-    });
-    DispatcherHandle { tx }
-}
-
-/// Records an event, broadcasts it to WebSocket subscribers immediately, and queues external
-/// dispatchers. External dispatchers may hit the network, so they are drained by their own ordered
-/// tasks and cannot block the worker command loop.
+/// Stamps the event with the thread's next sequence number and publishes it to the thread's global
+/// pub/sub topic. Every consumer (WS handler, Telegram subscriber) reads from that topic, whose
+/// bounded backlog also serves reconnecting clients — so the worker only publishes and never owns
+/// per-consumer fan-out state.
 async fn emit(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
     run_id: Option<RunId>,
     kind: AgentEventKind,
 ) {
-    let mut state = state.borrow_mut();
-    let Some(runner) = state.threads.get_mut(&thread_id) else {
-        return;
+    let event = {
+        let mut state = state.borrow_mut();
+        let Some(runner) = state.threads.get_mut(&thread_id) else {
+            return;
+        };
+        runner.last_event_seq += 1;
+        AgentEvent {
+            seq: runner.last_event_seq,
+            thread_id,
+            run_id,
+            kind,
+        }
     };
-    runner.last_event_seq += 1;
-    let event = AgentEvent {
-        seq: runner.last_event_seq,
-        thread_id,
-        run_id,
-        kind,
-    };
-    runner.event_history.push_back(event.clone());
-    if runner.event_history.len() > EVENT_BUFFER {
-        runner.event_history.pop_front();
-    }
 
-    let _ = runner.event_tx.send(event.clone());
-    for dispatcher in &runner.dispatchers {
-        let _ = dispatcher.tx.send(event.clone());
-    }
+    pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(event);
 }
 
 fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
@@ -1738,10 +1654,28 @@ fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
     let mut state = state.borrow_mut();
     let idle_ttl = state.idle_ttl;
 
-    state.threads.retain(|_, runner| {
-        matches!(runner.status, ThreadStatus::Running { .. })
-            || now.duration_since(runner.last_used) < idle_ttl
+    let mut evicted = Vec::new();
+    state.threads.retain(|thread_id, runner| {
+        let keep = matches!(runner.status, ThreadStatus::Running { .. })
+            || now.duration_since(runner.last_used) < idle_ttl;
+        if !keep {
+            evicted.push(*thread_id);
+        }
+        keep
     });
+    drop(state);
+
+    for thread_id in evicted {
+        deactivate_thread(thread_id);
+    }
+}
+
+/// Tears down a thread's pub/sub presence: drops its event topic (so subscribers observe
+/// `Closed`) and announces `Deactivated` so the Telegram supervisor aborts its subscriber task.
+fn deactivate_thread(thread_id: Uuid) {
+    pubsub::remove::<AgentEvent>(&thread_events_topic(thread_id));
+    pubsub::topic::<RunnerLifecycle>(RUNNER_LIFECYCLE_TOPIC)
+        .publish(RunnerLifecycle::Deactivated { thread_id });
 }
 
 async fn thread_project_id(
@@ -1918,6 +1852,11 @@ mod tests {
     use super::*;
     use crate::db::{self, threads, users};
 
+    /// Subscribe to a thread's event topic the way real consumers do.
+    fn subscribe_events(thread_id: Uuid) -> pubsub::Subscriber<AgentEvent> {
+        pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe()
+    }
+
     #[test]
     fn configured_tools_are_registered_on_agent() {
         let agent = BaseAgent::new(
@@ -2060,7 +1999,7 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let mut subscription = pool.subscribe(thread_id, None).await.unwrap();
+        let mut subscription = subscribe_events(thread_id);
         let run_id = pool
             .send(
                 thread_id,
@@ -2074,7 +2013,7 @@ mod tests {
         let mut saw_delta = false;
         let mut saw_finished = false;
         for _ in 0..8 {
-            let event = tokio::time::timeout(Duration::from_secs(2), subscription.events.recv())
+            let event = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
                 .await
                 .unwrap()
                 .unwrap();
@@ -2163,7 +2102,7 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let mut subscription = pool.subscribe(thread_id, None).await.unwrap();
+        let mut subscription = subscribe_events(thread_id);
         pool.send(
             thread_id,
             AgentRequest {
@@ -2177,7 +2116,7 @@ mod tests {
         let mut saw_tool_finished = false;
         let mut saw_finished = false;
         for _ in 0..12 {
-            let event = tokio::time::timeout(Duration::from_secs(2), subscription.events.recv())
+            let event = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
                 .await
                 .unwrap()
                 .unwrap();
@@ -2239,14 +2178,10 @@ mod tests {
         let run_id = RunId(Uuid::now_v7());
         let approval_id = Uuid::now_v7();
         let (approved_tx, approved_rx) = futures::channel::oneshot::channel();
-        let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
-        let mut events = event_tx.subscribe();
+        let mut events = subscribe_events(thread_id);
 
         let mut runner = ThreadRunner {
             agent: None,
-            dispatchers: Vec::new(),
-            event_tx,
-            event_history: VecDeque::new(),
             cancel_tx: None,
             pending_approvals: HashMap::new(),
             pending_quizzes: HashMap::new(),
@@ -2280,14 +2215,10 @@ mod tests {
             telegram_bot_token: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
-            factories: Vec::new(),
             threads,
         }));
 
-        let snapshot = handle_subscribe(state.clone(), thread_id, None)
-            .await
-            .unwrap()
-            .snapshot;
+        let snapshot = handle_snapshot(state.clone(), thread_id).await.unwrap();
         assert_eq!(
             snapshot.pending_approval.as_ref().map(|a| a.approval_id),
             Some(approval_id)
@@ -2310,10 +2241,7 @@ mod tests {
             _ => panic!("expected approval resolution"),
         }
 
-        let snapshot = handle_subscribe(state, thread_id, None)
-            .await
-            .unwrap()
-            .snapshot;
+        let snapshot = handle_snapshot(state, thread_id).await.unwrap();
         assert!(snapshot.pending_approval.is_none());
     }
 
@@ -2330,14 +2258,10 @@ mod tests {
             options: vec!["A".to_string(), "B".to_string()],
         }];
         let (answered_tx, answered_rx) = futures::channel::oneshot::channel();
-        let (event_tx, _) = broadcast::channel(EVENT_BUFFER);
-        let mut events = event_tx.subscribe();
+        let mut events = subscribe_events(thread_id);
 
         let mut runner = ThreadRunner {
             agent: None,
-            dispatchers: Vec::new(),
-            event_tx,
-            event_history: VecDeque::new(),
             cancel_tx: None,
             pending_approvals: HashMap::new(),
             pending_quizzes: HashMap::new(),
@@ -2371,14 +2295,10 @@ mod tests {
             telegram_bot_token: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
-            factories: Vec::new(),
             threads,
         }));
 
-        let snapshot = handle_subscribe(state.clone(), thread_id, None)
-            .await
-            .unwrap()
-            .snapshot;
+        let snapshot = handle_snapshot(state.clone(), thread_id).await.unwrap();
         assert_eq!(
             snapshot.pending_quiz.as_ref().map(|q| q.quiz_id),
             Some(quiz_id)
@@ -2398,10 +2318,7 @@ mod tests {
             _ => panic!("expected quiz answer"),
         }
 
-        let snapshot = handle_subscribe(state, thread_id, None)
-            .await
-            .unwrap()
-            .snapshot;
+        let snapshot = handle_snapshot(state, thread_id).await.unwrap();
         assert!(snapshot.pending_quiz.is_none());
     }
 
@@ -2664,7 +2581,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_with_after_replays_missed_events() {
+    async fn late_subscriber_replays_backlog_within_snapshot_watermark() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
 
@@ -2722,27 +2639,25 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        // Re-subscribe from seq=0 — should replay all events.
-        let sub = pool.subscribe(thread_id, Some(0)).await.unwrap();
+        // A late subscriber replays the topic's bounded backlog before any live events.
+        let snapshot = pool.snapshot(thread_id).await.unwrap();
+        let mut sub = subscribe_events(thread_id);
+        let mut replayed = Vec::new();
+        while let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(100), sub.recv()).await
+        {
+            replayed.push(event);
+        }
         assert!(
-            !sub.replay.is_empty(),
-            "expected replayed events after re-subscribe"
-        );
-        assert!(
-            sub.replay
+            replayed
                 .iter()
                 .any(|e| matches!(e.kind, AgentEventKind::RunFinished)),
-            "replay must include RunFinished"
+            "backlog replay must include RunFinished"
         );
-
-        // Re-subscribe from latest seq — replay should be empty.
-        let sub2 = pool
-            .subscribe(thread_id, Some(sub.snapshot.last_event_seq))
-            .await
-            .unwrap();
+        // Every replayed event is at or below the snapshot watermark, so a consumer that gates on
+        // last_event_seq (as the WS handler does) discards them all and never double-applies.
         assert!(
-            sub2.replay.is_empty(),
-            "no replay needed when already up to date"
+            replayed.iter().all(|e| e.seq <= snapshot.last_event_seq),
+            "replayed events must not exceed the snapshot watermark"
         );
     }
 
@@ -2792,7 +2707,7 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let mut sub = pool.subscribe(thread_id, None).await.unwrap();
+        let mut sub = subscribe_events(thread_id);
         pool.send(
             thread_id,
             AgentRequest {
@@ -2805,7 +2720,7 @@ mod tests {
 
         let mut terminated = false;
         for _ in 0..12 {
-            let event = tokio::time::timeout(Duration::from_secs(2), sub.events.recv())
+            let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
                 .await
                 .unwrap()
                 .unwrap();
@@ -2966,7 +2881,7 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        let mut sub = pool.subscribe(thread_id, None).await.unwrap();
+        let mut sub = subscribe_events(thread_id);
         pool.send(
             thread_id,
             AgentRequest {
@@ -2978,7 +2893,7 @@ mod tests {
 
         let mut quiz_id = None;
         for _ in 0..20 {
-            let event = tokio::time::timeout(Duration::from_secs(2), sub.events.recv())
+            let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
                 .await
                 .unwrap()
                 .unwrap();
@@ -2996,7 +2911,7 @@ mod tests {
 
         let mut finished = false;
         for _ in 0..20 {
-            let event = tokio::time::timeout(Duration::from_secs(2), sub.events.recv())
+            let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
                 .await
                 .unwrap()
                 .unwrap();
@@ -3009,66 +2924,8 @@ mod tests {
         assert_eq!(pool.status(thread_id).await.unwrap(), ThreadStatus::Idle);
     }
 
-    #[derive(Default)]
-    struct RecordingFactory {
-        events: Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl DispatcherFactory for RecordingFactory {
-        async fn make(
-            &self,
-            _thread_id: Uuid,
-            _db: &ConnectionPool,
-        ) -> Option<Box<dyn EventDispatcher>> {
-            Some(Box::new(RecordingDispatcher {
-                events: self.events.clone(),
-            }))
-        }
-    }
-
-    struct RecordingDispatcher {
-        events: Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    #[async_trait::async_trait(?Send)]
-    impl EventDispatcher for RecordingDispatcher {
-        async fn dispatch(&self, event: &AgentEvent) {
-            let label = match event.kind {
-                AgentEventKind::RunStarted => "RunStarted",
-                AgentEventKind::AgentDelta { .. } => "AgentDelta",
-                AgentEventKind::RunFinished => "RunFinished",
-                _ => return,
-            };
-            self.events.lock().unwrap().push(label.to_string());
-        }
-    }
-
-    #[derive(Default)]
-    struct SlowFactory;
-
-    #[async_trait::async_trait]
-    impl DispatcherFactory for SlowFactory {
-        async fn make(
-            &self,
-            _thread_id: Uuid,
-            _db: &ConnectionPool,
-        ) -> Option<Box<dyn EventDispatcher>> {
-            Some(Box::new(SlowDispatcher))
-        }
-    }
-
-    struct SlowDispatcher;
-
-    #[async_trait::async_trait(?Send)]
-    impl EventDispatcher for SlowDispatcher {
-        async fn dispatch(&self, _event: &AgentEvent) {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
     #[tokio::test]
-    async fn slow_dispatcher_does_not_block_worker_commands() {
+    async fn slow_subscriber_does_not_block_worker_commands() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
 
@@ -3102,19 +2959,24 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_system_prompt_and_tools(
+        let pool = InProcessAgentPool::with_idle_ttl(
             db,
             Arc::new(AgentConfig {
                 model_registry: models,
                 max_iterations: 4,
             }),
             "System prompt".to_string(),
-            Tools::default(),
-            Vec::new(),
-            None,
-            None,
-            vec![Arc::new(SlowFactory)],
+            Duration::from_secs(60),
         );
+
+        // A deliberately slow consumer of the thread's events. Publishing is decoupled from
+        // consumers, so this must not slow down worker commands.
+        let mut slow = subscribe_events(thread_id);
+        tokio::spawn(async move {
+            while slow.recv().await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        });
 
         tokio::time::timeout(
             Duration::from_millis(100),
@@ -3126,17 +2988,17 @@ mod tests {
             ),
         )
         .await
-        .expect("send must not wait for external dispatchers")
+        .expect("send must not wait for a slow subscriber")
         .unwrap();
 
         tokio::time::timeout(Duration::from_millis(100), pool.status(thread_id))
             .await
-            .expect("status must not wait for external dispatchers")
+            .expect("status must not wait for a slow subscriber")
             .unwrap();
     }
 
     #[tokio::test]
-    async fn dispatcher_factory_receives_run_events() {
+    async fn pubsub_subscriber_receives_run_events() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
 
@@ -3170,25 +3032,17 @@ mod tests {
             },
         );
 
-        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let factory = Arc::new(RecordingFactory {
-            events: recorded.clone(),
-        });
-
-        let pool = InProcessAgentPool::with_system_prompt_and_tools(
+        let pool = InProcessAgentPool::with_idle_ttl(
             db.clone(),
             Arc::new(AgentConfig {
                 model_registry: models,
                 max_iterations: 4,
             }),
             "System prompt".to_string(),
-            Tools::default(),
-            Vec::new(),
-            None,
-            None,
-            vec![factory],
+            Duration::from_secs(60),
         );
 
+        let mut sub = subscribe_events(thread_id);
         pool.send(
             thread_id,
             AgentRequest {
@@ -3198,24 +3052,28 @@ mod tests {
         .await
         .unwrap();
 
-        // The factory-supplied dispatcher must see every event of the run, end to end.
+        // A pub/sub subscriber must see every event of the run, end to end.
+        let mut saw_started = false;
+        let mut saw_delta = false;
         let mut saw_finished = false;
-        for _ in 0..200 {
-            if recorded
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|label| label == "RunFinished")
-            {
-                saw_finished = true;
+        for _ in 0..50 {
+            let Ok(Ok(event)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await
+            else {
                 break;
+            };
+            match event.kind {
+                AgentEventKind::RunStarted => saw_started = true,
+                AgentEventKind::AgentDelta { .. } => saw_delta = true,
+                AgentEventKind::RunFinished => {
+                    saw_finished = true;
+                    break;
+                }
+                _ => {}
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        let events = recorded.lock().unwrap().clone();
-        assert!(saw_finished, "dispatcher must receive RunFinished");
-        assert!(events.iter().any(|label| label == "RunStarted"));
-        assert!(events.iter().any(|label| label == "AgentDelta"));
+        assert!(saw_started, "subscriber must receive RunStarted");
+        assert!(saw_delta, "subscriber must receive AgentDelta");
+        assert!(saw_finished, "subscriber must receive RunFinished");
     }
 }
