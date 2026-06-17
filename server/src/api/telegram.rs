@@ -269,12 +269,25 @@ async fn handle_topic_message(
     state: Arc<ServerState>,
     message: TelegramMessage,
 ) -> Result<(), TelegramApiError> {
+    if message.forum_topic_created.is_some() {
+        return Ok(());
+    }
+
     let Some(from) = message.from.as_ref() else {
         return Ok(());
     };
 
+    let Some(text) = message
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    else {
+        return Ok(());
+    };
+
     let Some(user_id) = user_for_telegram_id(&state, from.id).await? else {
-        if message.chat.kind == "private" {
+        if message.chat.kind == "private" && connect_help_command(text) {
             send_telegram_message(
                 &state,
                 message.chat.id,
@@ -283,19 +296,6 @@ async fn handle_topic_message(
             )
             .await;
         }
-        return Ok(());
-    };
-
-    if message.forum_topic_created.is_some() {
-        return Ok(());
-    }
-
-    let Some(text) = message
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-    else {
         return Ok(());
     };
 
@@ -505,6 +505,7 @@ struct ActiveRun {
     topic_id: Option<i64>,
     draft_id: i64,
     content: String,
+    thinking: String,
     last_draft_text: String,
     last_draft: Instant,
     finalized: bool,
@@ -534,10 +535,22 @@ impl TelegramSubscriber {
                 topic_id,
                 draft_id: telegram_draft_id(run_id),
                 content: String::new(),
+                thinking: String::new(),
                 last_draft_text: String::new(),
                 last_draft: Instant::now(),
                 finalized: false,
             });
+            if let Some(active) = self.active.as_mut() {
+                let draft = telegram_draft_markdown("", &active.thinking);
+                active.last_draft_text = draft.clone();
+                let (chat_id, topic_id, draft_id) =
+                    (active.chat_id, active.topic_id, active.draft_id);
+                let state = self.state.clone();
+                tokio::spawn(async move {
+                    send_telegram_rich_message_draft(&state, chat_id, topic_id, draft_id, &draft)
+                        .await;
+                });
+            }
             return;
         }
 
@@ -548,23 +561,50 @@ impl TelegramSubscriber {
                         return;
                     };
                     active.content.push_str(content);
-                    let text = active.content.trim().to_string();
-                    if !text.is_empty()
-                        && text != active.last_draft_text
+                    let draft = telegram_draft_markdown(&active.content, &active.thinking);
+                    if draft != active.last_draft_text
                         && active.last_draft.elapsed() >= DRAFT_INTERVAL
                     {
                         active.last_draft = Instant::now();
-                        active.last_draft_text = text.clone();
-                        Some((active.chat_id, active.topic_id, active.draft_id, text))
+                        active.last_draft_text = draft.clone();
+                        Some((active.chat_id, active.topic_id, active.draft_id, draft))
                     } else {
                         None
                     }
                 };
-                if let Some((chat_id, topic_id, draft_id, text)) = draft {
+                if let Some((chat_id, topic_id, draft_id, draft)) = draft {
                     let state = self.state.clone();
                     tokio::spawn(async move {
                         send_telegram_rich_message_draft(
-                            &state, chat_id, topic_id, draft_id, &text,
+                            &state, chat_id, topic_id, draft_id, &draft,
+                        )
+                        .await;
+                    });
+                }
+            }
+            AgentEventKind::ThinkingDelta { thinking } => {
+                let draft = {
+                    let Some(active) = self.active.as_mut().filter(|a| a.run_id == run_id) else {
+                        return;
+                    };
+                    let first_real_thinking = active.thinking.trim().is_empty();
+                    active.thinking.push_str(thinking);
+                    let draft = telegram_draft_markdown(&active.content, &active.thinking);
+                    if draft != active.last_draft_text
+                        && (first_real_thinking || active.last_draft.elapsed() >= DRAFT_INTERVAL)
+                    {
+                        active.last_draft = Instant::now();
+                        active.last_draft_text = draft.clone();
+                        Some((active.chat_id, active.topic_id, active.draft_id, draft))
+                    } else {
+                        None
+                    }
+                };
+                if let Some((chat_id, topic_id, draft_id, draft)) = draft {
+                    let state = self.state.clone();
+                    tokio::spawn(async move {
+                        send_telegram_rich_message_draft(
+                            &state, chat_id, topic_id, draft_id, &draft,
                         )
                         .await;
                     });
@@ -586,6 +626,7 @@ impl TelegramSubscriber {
                     .await;
                     if let Some(active) = self.active.as_mut() {
                         active.content = content;
+                        active.thinking.clear();
                         active.finalized = true;
                     }
                 }
@@ -1018,6 +1059,12 @@ struct QuizPrompt {
     keyboard: Option<Vec<Vec<InlineButton>>>,
 }
 
+struct AnswerQuizResult {
+    chat_id: i64,
+    topic_id: Option<i64>,
+    submit: Option<(Uuid, Vec<String>)>,
+}
+
 /// Records an answer for `question_index`, then either advances to the next question or submits the
 /// completed quiz to the agent.
 async fn answer_quiz_question(
@@ -1026,7 +1073,7 @@ async fn answer_quiz_question(
     question_index: usize,
     answer: String,
 ) {
-    let submit = {
+    let result = {
         let mut ix = state.telegram_interactions.lock().unwrap();
         let Some(quiz) = ix.quizzes.get_mut(&quiz_id) else {
             return;
@@ -1064,13 +1111,23 @@ async fn answer_quiz_question(
         if done {
             ix.quizzes.remove(&quiz_id);
             ix.awaiting_text.remove(&(chat_id, topic_id));
-            answers.map(|answers| (thread_id, answers))
+            AnswerQuizResult {
+                chat_id,
+                topic_id,
+                submit: answers.map(|answers| (thread_id, answers)),
+            }
         } else {
-            None
+            AnswerQuizResult {
+                chat_id,
+                topic_id,
+                submit: None,
+            }
         }
     };
 
-    match submit {
+    remove_telegram_keyboard(state, result.chat_id, result.topic_id).await;
+
+    match result.submit {
         Some((thread_id, answers)) => {
             tracing::info!(
                 %thread_id,
@@ -1323,6 +1380,65 @@ async fn send_telegram_buttons(
         reply_markup: ReplyKeyboardMarkup::from_inline_buttons(keyboard),
     };
     let body = telegram_post(state, "sendMessage", serde_json::to_vec(&request).ok()?).await?;
+    serde_json::from_slice::<TelegramApiResponse<TelegramSendMessageResult>>(&body)
+        .ok()
+        .and_then(|response| response.result)
+        .map(|message| TelegramSentMessage {
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+        })
+}
+
+async fn remove_telegram_keyboard(
+    state: &ServerState,
+    chat_id: i64,
+    topic_id: Option<i64>,
+) -> Option<TelegramSentMessage> {
+    let token = bot_token(state)?;
+
+    let (message_thread_id, direct_messages_topic_id) = topic_request_fields(topic_id);
+    let request = RemoveKeyboardRequest {
+        chat_id,
+        message_thread_id,
+        direct_messages_topic_id,
+        text: "Got it.",
+        reply_markup: ReplyKeyboardRemove {
+            remove_keyboard: true,
+        },
+    };
+    let Ok(body) = serde_json::to_vec(&request) else {
+        return None;
+    };
+    let uri = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let Ok(req) = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("Content-Type", "application/json")
+        .body(Full::new(Bytes::from(body)))
+    else {
+        return None;
+    };
+
+    let (status, body) = match timeout(Duration::from_secs(30), tinynet::send_request(req)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "failed to remove Telegram reply keyboard");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "timed out removing Telegram reply keyboard");
+            return None;
+        }
+    };
+    if !(200..300).contains(&status) {
+        tracing::warn!(
+            status,
+            body = %String::from_utf8_lossy(&body),
+            "Telegram reply keyboard removal returned error"
+        );
+        return None;
+    }
+
     serde_json::from_slice::<TelegramApiResponse<TelegramSendMessageResult>>(&body)
         .ok()
         .and_then(|response| response.result)
@@ -1845,6 +1961,17 @@ fn connect_code(text: Option<&str>) -> Option<&str> {
     parts.next().filter(|code| !code.is_empty())
 }
 
+fn connect_help_command(text: &str) -> bool {
+    let mut parts = text.split_whitespace();
+    let Some(command) = parts.next() else {
+        return false;
+    };
+    let command = command.split('@').next().unwrap_or(command);
+    let is_connect_command =
+        command.eq_ignore_ascii_case("/connect") || command.eq_ignore_ascii_case("/start");
+    is_connect_command && parts.next().is_none()
+}
+
 async fn telegram_bot_username(state: &ServerState) -> Option<String> {
     if let Some(username) = configured_bot_username(state) {
         return Some(username);
@@ -1917,6 +2044,34 @@ fn telegram_draft_id(run_id: Uuid) -> i64 {
 
 fn rich_markdown(text: &str) -> String {
     text.chars().take(4096).collect()
+}
+
+fn telegram_draft_markdown(text: &str, thinking: &str) -> String {
+    let text = rich_markdown(text.trim());
+    let thinking = thinking.trim();
+    let thinking = if thinking.is_empty() {
+        "Thinking..."
+    } else {
+        thinking
+    };
+    let thinking = escape_telegram_rich_html(thinking);
+    if text.is_empty() {
+        format!("<tg-thinking>{thinking}</tg-thinking>")
+    } else {
+        format!("<tg-thinking>{thinking}</tg-thinking>\n\n{text}")
+    }
+}
+
+fn escape_telegram_rich_html(text: &str) -> String {
+    text.chars()
+        .take(4096)
+        .flat_map(|c| match c {
+            '&' => "&amp;".chars().collect::<Vec<_>>(),
+            '<' => "&lt;".chars().collect(),
+            '>' => "&gt;".chars().collect(),
+            _ => vec![c],
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -2079,6 +2234,17 @@ struct SendButtonsRequest<'a> {
 }
 
 #[derive(Serialize)]
+struct RemoveKeyboardRequest<'a> {
+    chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_thread_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    direct_messages_topic_id: Option<i64>,
+    text: &'a str,
+    reply_markup: ReplyKeyboardRemove,
+}
+
+#[derive(Serialize)]
 struct InlineButton {
     text: String,
     callback_data: String,
@@ -2111,6 +2277,11 @@ impl ReplyKeyboardMarkup {
 #[derive(Serialize)]
 struct KeyboardButton {
     text: String,
+}
+
+#[derive(Serialize)]
+struct ReplyKeyboardRemove {
+    remove_keyboard: bool,
 }
 
 #[derive(Deserialize)]
@@ -2163,6 +2334,26 @@ mod tests {
     }
 
     #[test]
+    fn telegram_draft_markdown_uses_thinking_block_only_for_drafts() {
+        assert_eq!(
+            telegram_draft_markdown("", ""),
+            "<tg-thinking>Thinking...</tg-thinking>"
+        );
+        assert_eq!(
+            telegram_draft_markdown("Hello", "Reading context"),
+            "<tg-thinking>Reading context</tg-thinking>\n\nHello"
+        );
+        assert_eq!(
+            telegram_draft_markdown("Hello", "A < B && C > D"),
+            "<tg-thinking>A &lt; B &amp;&amp; C &gt; D</tg-thinking>\n\nHello"
+        );
+        assert_eq!(
+            telegram_draft_markdown("Hello", ""),
+            "<tg-thinking>Thinking...</tg-thinking>\n\nHello"
+        );
+    }
+
+    #[test]
     fn parses_connect_command() {
         assert_eq!(connect_code(Some("/connect 123456")), Some("123456"));
         assert_eq!(connect_code(Some("/start 123456")), Some("123456"));
@@ -2171,6 +2362,15 @@ mod tests {
             Some("123456")
         );
         assert_eq!(connect_code(Some("/connect")), None);
+    }
+
+    #[test]
+    fn connect_help_only_matches_bare_connect_commands() {
+        assert!(connect_help_command("/start"));
+        assert!(connect_help_command("/connect@friday_bot"));
+        assert!(!connect_help_command("hello"));
+        assert!(!connect_help_command("/start 123456"));
+        assert!(!connect_help_command("/connect 123456"));
     }
 
     use async_trait::async_trait;
@@ -2654,6 +2854,26 @@ mod tests {
 
         assert_eq!(value["direct_messages_topic_id"], 99);
         assert!(value.get("message_thread_id").is_none());
+    }
+
+    #[test]
+    fn keyboard_removal_payload_targets_topic() {
+        let (message_thread_id, direct_messages_topic_id) = topic_request_fields(Some(7));
+        let request = RemoveKeyboardRequest {
+            chat_id: 42,
+            message_thread_id,
+            direct_messages_topic_id,
+            text: "Got it.",
+            reply_markup: ReplyKeyboardRemove {
+                remove_keyboard: true,
+            },
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(value["message_thread_id"], 7);
+        assert_eq!(value["reply_markup"]["remove_keyboard"], true);
+        assert!(value.get("direct_messages_topic_id").is_none());
     }
 
     #[tokio::test]
