@@ -299,6 +299,10 @@ async fn handle_topic_message(
         return Ok(());
     };
 
+    if resolve_text_action(&state, &message, text).await? {
+        return Ok(());
+    }
+
     if text.starts_with('/') {
         return Ok(());
     }
@@ -362,12 +366,14 @@ async fn handle_topic_message(
     Ok(())
 }
 
-/// Pending interactive prompts (approvals and quizzes) shown in Telegram as inline buttons or, for
+/// Pending interactive prompts (approvals and quizzes) shown in Telegram as buttons or, for
 /// free-form quiz questions, captured from the user's next typed reply.
 #[derive(Default)]
 pub(crate) struct Interactions {
     /// Button `callback_data` token → the action that tap performs.
     callbacks: HashMap<String, CallbackAction>,
+    /// Reply keyboard text in a chat/topic → the action that text performs.
+    text_actions: HashMap<(i64, Option<i64>, String), CallbackAction>,
     /// In-flight quizzes, keyed by quiz id, collecting one answer per question.
     quizzes: HashMap<Uuid, QuizState>,
     /// (chat_id, topic_id) currently awaiting a typed free-form answer → quiz id.
@@ -585,15 +591,19 @@ impl TelegramSubscriber {
                 }
             }
             AgentEventKind::RunFinished => {
-                let info = self.active.as_ref().filter(|a| a.run_id == run_id).map(|a| {
-                    (
-                        a.user_id,
-                        a.chat_id,
-                        a.topic_id,
-                        a.content.clone(),
-                        a.finalized,
-                    )
-                });
+                let info = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.run_id == run_id)
+                    .map(|a| {
+                        (
+                            a.user_id,
+                            a.chat_id,
+                            a.topic_id,
+                            a.content.clone(),
+                            a.finalized,
+                        )
+                    });
                 if let Some((user_id, chat_id, topic_id, mut content, finalized)) = info {
                     if !finalized {
                         finalize_latest_telegram_response(
@@ -755,37 +765,114 @@ async fn present_approval(
     let deny = interaction_token();
     {
         let mut ix = state.telegram_interactions.lock().unwrap();
-        ix.callbacks.insert(
-            approve.clone(),
-            CallbackAction::Approval {
-                thread_id,
-                approval_id,
-                approved: true,
-                sibling: deny.clone(),
-            },
-        );
-        ix.callbacks.insert(
-            deny.clone(),
-            CallbackAction::Approval {
-                thread_id,
-                approval_id,
-                approved: false,
-                sibling: approve.clone(),
-            },
-        );
+        let approve_action = CallbackAction::Approval {
+            thread_id,
+            approval_id,
+            approved: true,
+            sibling: deny.clone(),
+        };
+        let deny_action = CallbackAction::Approval {
+            thread_id,
+            approval_id,
+            approved: false,
+            sibling: approve.clone(),
+        };
+        ix.callbacks.insert(approve.clone(), approve_action.clone());
+        ix.callbacks.insert(deny.clone(), deny_action.clone());
+        ix.text_actions
+            .insert((chat_id, topic_id, "Approve".to_string()), approve_action);
+        ix.text_actions
+            .insert((chat_id, topic_id, "Deny".to_string()), deny_action);
     }
 
     let keyboard = vec![vec![
         InlineButton {
-            text: "✅ Approve".to_string(),
+            text: "Approve".to_string(),
             callback_data: approve,
         },
         InlineButton {
-            text: "❌ Deny".to_string(),
+            text: "Deny".to_string(),
             callback_data: deny,
         },
     ]];
     send_telegram_buttons(state, chat_id, topic_id, &format!("⚠️ {message}"), keyboard).await;
+}
+
+async fn resolve_text_action(
+    state: &ServerState,
+    message: &TelegramMessage,
+    text: &str,
+) -> Result<bool, TelegramApiError> {
+    let topic_id = message.send_topic_id();
+    let action = {
+        let ix = state.telegram_interactions.lock().unwrap();
+        ix.text_actions
+            .get(&(message.chat.id, topic_id, text.to_string()))
+            .cloned()
+    };
+    let Some(action) = action else {
+        return Ok(false);
+    };
+
+    let thread_id = action.thread_id();
+    let owner = thread_owner(state, thread_id).await;
+    let caller = match message.from.as_ref() {
+        Some(from) => user_for_telegram_id(state, from.id).await?,
+        None => None,
+    };
+    if owner.is_none() || owner != caller {
+        tracing::warn!(
+            %thread_id,
+            ?owner,
+            ?caller,
+            "Telegram text button rejected: caller is not the thread owner"
+        );
+        send_telegram_message(state, message.chat.id, topic_id, "Not allowed.").await;
+        return Ok(true);
+    }
+
+    match action {
+        CallbackAction::Approval {
+            thread_id,
+            approval_id,
+            approved,
+            sibling,
+        } => {
+            {
+                let mut ix = state.telegram_interactions.lock().unwrap();
+                ix.callbacks.remove(&sibling);
+                ix.callbacks
+                    .retain(|_, action| action.thread_id() != thread_id);
+                ix.text_actions
+                    .retain(|_, action| action.thread_id() != thread_id);
+            }
+
+            if let Err(error) = state
+                .runner
+                .resolve_approval(thread_id, approval_id, approved)
+                .await
+            {
+                tracing::warn!(%thread_id, %approval_id, %error, "failed to resolve Telegram approval");
+            }
+            send_telegram_message(
+                state,
+                message.chat.id,
+                topic_id,
+                if approved { "Approved" } else { "Denied" },
+            )
+            .await;
+        }
+        CallbackAction::QuizOption {
+            quiz_id,
+            question_index,
+            answer,
+            ..
+        } => {
+            answer_quiz_question(state, quiz_id, question_index, answer).await;
+        }
+    }
+
+    Ok(true)
 }
 
 async fn present_quiz(
@@ -878,6 +965,15 @@ async fn send_quiz_question(state: &ServerState, quiz_id: Uuid) {
                         answer: option.clone(),
                     },
                 );
+                ix.text_actions.insert(
+                    (chat_id, topic_id, option.clone()),
+                    CallbackAction::QuizOption {
+                        thread_id,
+                        quiz_id,
+                        question_index: index,
+                        answer: option.clone(),
+                    },
+                );
                 tokens.push(token.clone());
                 keyboard.push(vec![InlineButton {
                     text: option.clone(),
@@ -955,6 +1051,16 @@ async fn answer_quiz_question(
         for token in stale_tokens {
             ix.callbacks.remove(&token);
         }
+        ix.text_actions.retain(|_, action| {
+            !matches!(
+                action,
+                CallbackAction::QuizOption {
+                    quiz_id: id,
+                    question_index: index,
+                    ..
+                } if *id == quiz_id && *index == question_index
+            )
+        });
         if done {
             ix.quizzes.remove(&quiz_id);
             ix.awaiting_text.remove(&(chat_id, topic_id));
@@ -1092,6 +1198,8 @@ fn clear_interactions(state: &ServerState, thread_id: Uuid, chat_id: i64, topic_
     let before = ix.callbacks.len();
     ix.callbacks
         .retain(|_, action| action.thread_id() != thread_id);
+    ix.text_actions
+        .retain(|_, action| action.thread_id() != thread_id);
     ix.quizzes.retain(|_, quiz| quiz.thread_id != thread_id);
     ix.awaiting_text.remove(&(chat_id, topic_id));
     tracing::info!(
@@ -1212,9 +1320,7 @@ async fn send_telegram_buttons(
         message_thread_id,
         direct_messages_topic_id,
         text: &text,
-        reply_markup: InlineKeyboardMarkup {
-            inline_keyboard: keyboard,
-        },
+        reply_markup: ReplyKeyboardMarkup::from_inline_buttons(keyboard),
     };
     let body = telegram_post(state, "sendMessage", serde_json::to_vec(&request).ok()?).await?;
     serde_json::from_slice::<TelegramApiResponse<TelegramSendMessageResult>>(&body)
@@ -1969,18 +2075,42 @@ struct SendButtonsRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     direct_messages_topic_id: Option<i64>,
     text: &'a str,
-    reply_markup: InlineKeyboardMarkup,
-}
-
-#[derive(Serialize)]
-struct InlineKeyboardMarkup {
-    inline_keyboard: Vec<Vec<InlineButton>>,
+    reply_markup: ReplyKeyboardMarkup,
 }
 
 #[derive(Serialize)]
 struct InlineButton {
     text: String,
     callback_data: String,
+}
+
+#[derive(Serialize)]
+struct ReplyKeyboardMarkup {
+    keyboard: Vec<Vec<KeyboardButton>>,
+    resize_keyboard: bool,
+    one_time_keyboard: bool,
+}
+
+impl ReplyKeyboardMarkup {
+    fn from_inline_buttons(buttons: Vec<Vec<InlineButton>>) -> Self {
+        Self {
+            keyboard: buttons
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|button| KeyboardButton { text: button.text })
+                        .collect()
+                })
+                .collect(),
+            resize_keyboard: true,
+            one_time_keyboard: true,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct KeyboardButton {
+    text: String,
 }
 
 #[derive(Deserialize)]
@@ -2235,6 +2365,27 @@ mod tests {
         }
     }
 
+    fn text_message(text: &str, from_id: i64, chat_id: i64) -> TelegramMessage {
+        TelegramMessage {
+            message_id: 11,
+            chat: TelegramChat {
+                id: chat_id,
+                kind: "private".to_string(),
+            },
+            from: Some(TelegramUser {
+                id: from_id,
+                username: None,
+                first_name: None,
+                last_name: None,
+            }),
+            text: Some(text.to_string()),
+            message_thread_id: None,
+            direct_messages_topic: None,
+            reply_to_message: None,
+            forum_topic_created: None,
+        }
+    }
+
     fn find_token(state: &ServerState, predicate: impl Fn(&CallbackAction) -> bool) -> String {
         state
             .telegram_interactions
@@ -2299,6 +2450,33 @@ mod tests {
                 .callbacks
                 .is_empty(),
             "unauthorized taps must not consume callback tokens"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_reply_keyboard_text_resolves_run() {
+        let pool = Arc::new(FakePool::default());
+        let state = build_state(pool.clone()).await;
+        let (user_id, thread_id, approval_id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        seed_owner(&state, user_id, thread_id, 555, 42).await;
+
+        present_approval(&state, thread_id, 42, None, approval_id, "Run shell?").await;
+        let handled = resolve_text_action(&state, &text_message("Approve", 555, 42), "Approve")
+            .await
+            .unwrap();
+
+        assert!(handled);
+        assert_eq!(
+            *pool.approvals.lock().unwrap(),
+            vec![(thread_id, approval_id, true)]
+        );
+        assert!(
+            state
+                .telegram_interactions
+                .lock()
+                .unwrap()
+                .text_actions
+                .is_empty()
         );
     }
 
@@ -2446,15 +2624,19 @@ mod tests {
             message_thread_id,
             direct_messages_topic_id,
             text: "Pick",
-            reply_markup: InlineKeyboardMarkup {
-                inline_keyboard: Vec::new(),
-            },
+            reply_markup: ReplyKeyboardMarkup::from_inline_buttons(vec![vec![InlineButton {
+                text: "A".to_string(),
+                callback_data: "token".to_string(),
+            }]]),
         };
 
         let value = serde_json::to_value(request).unwrap();
 
         assert_eq!(value["message_thread_id"], 7);
         assert!(value.get("direct_messages_topic_id").is_none());
+        assert_eq!(value["reply_markup"]["keyboard"][0][0]["text"], "A");
+        assert_eq!(value["reply_markup"]["one_time_keyboard"], true);
+        assert!(value["reply_markup"].get("inline_keyboard").is_none());
     }
 
     #[test]
@@ -2465,9 +2647,7 @@ mod tests {
             message_thread_id,
             direct_messages_topic_id,
             text: "Pick",
-            reply_markup: InlineKeyboardMarkup {
-                inline_keyboard: Vec::new(),
-            },
+            reply_markup: ReplyKeyboardMarkup::from_inline_buttons(Vec::new()),
         };
 
         let value = serde_json::to_value(request).unwrap();
