@@ -9,7 +9,10 @@ mod scheduler;
 mod tools;
 mod vfs;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     Router,
@@ -44,7 +47,7 @@ struct ServerState {
     pub(crate) runner: Arc<dyn AgentPool>,
     pub(crate) model_config: Arc<AgentConfig>,
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
-    pub(crate) telegram_sessions: Arc<api::telegram::TelegramSessions>,
+    pub(crate) telegram_interactions: Arc<Mutex<api::telegram::Interactions>>,
 }
 
 #[derive(Debug, Parser)]
@@ -122,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 tools,
                 mcp_tools,
                 vfs.clone(),
-                telegram_bot_token,
+                telegram_bot_token.clone(),
             ),
         )
     } else {
@@ -132,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
                 model_config.clone(),
                 tools,
                 mcp_tools,
-                telegram_bot_token,
+                telegram_bot_token.clone(),
             ),
         )
     };
@@ -144,8 +147,32 @@ async fn main() -> anyhow::Result<()> {
         runner,
         model_config,
         vfs: vfs_provider,
-        telegram_sessions: Arc::new(api::telegram::TelegramSessions::default()),
+        telegram_interactions: Arc::new(Mutex::new(api::telegram::Interactions::default())),
     });
+
+    // Bind Telegram subscriber tasks to agent runner lifetimes (created on activation, aborted on
+    // eviction) so per-thread forwarders do not accumulate.
+    tokio::spawn(api::telegram::supervise(state.clone()));
+
+    // Register the webhook with callback_query updates enabled so inline button taps are delivered.
+    if let Some(token) = telegram_bot_token {
+        let telegram = state
+            .config
+            .server
+            .as_ref()
+            .and_then(|s| s.telegram.as_ref());
+        match telegram.and_then(|t| t.webhook_url.clone()) {
+            Some(url) => {
+                let secret = telegram.and_then(|t| t.webhook_secret.clone());
+                api::telegram::register_webhook(token, url, secret).await;
+            }
+            None => tracing::warn!(
+                "telegram.webhook_url is not configured; skipping setWebhook. Inline button taps \
+                 (approvals/quizzes) will not be delivered unless the webhook was registered \
+                 externally with allowed_updates including callback_query"
+            ),
+        }
+    }
 
     let static_dir = args
         .static_dir

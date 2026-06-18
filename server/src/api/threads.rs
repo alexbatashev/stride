@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json,
@@ -25,8 +25,8 @@ use crate::{
     },
     db::{Role, messages, projects, threads},
     runner::{
-        AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadStatus,
-        ThreadSubscription,
+        AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
+        ThreadStatus, thread_events_topic,
     },
 };
 
@@ -34,6 +34,7 @@ use crate::{
 pub(crate) const DEFAULT_THREAD_TITLE: &str = "New chat";
 /// Telegram caps forum topic names at 128 characters; we cap every generated title to match.
 const MAX_TITLE_LEN: usize = 128;
+const TITLE_GENERATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Serialize)]
 pub struct ThreadResponse {
@@ -95,11 +96,6 @@ pub struct SendMessageRequest {
     project_id: Option<Uuid>,
     #[serde(default)]
     file_paths: Vec<String>,
-}
-
-#[derive(Deserialize)]
-pub struct EventsQuery {
-    after: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -419,10 +415,25 @@ pub(crate) fn spawn_title_generation(
     forum_topic: Option<(i64, i64)>,
 ) {
     tokio::spawn(async move {
-        let Some(title) = generate_title(&state.model_config, &content).await else {
-            tracing::warn!(%thread_id, "title generation produced no title");
-            return;
+        let (title, used_fallback) = match tokio::time::timeout(
+            TITLE_GENERATION_TIMEOUT,
+            generate_title(&state.model_config, &content),
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                tracing::warn!(%thread_id, %error, "title generation failed");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%thread_id, %error, "title generation timed out");
+                return;
+            }
         };
+        if used_fallback {
+            tracing::warn!(%thread_id, %title, "title generation returned no visible text; using fallback");
+        }
         match threads::update()
             .title(title.as_str())
             .where_(threads::id.eq(thread_id))
@@ -444,7 +455,9 @@ pub(crate) fn spawn_title_generation(
                         %stored,
                         "title update did not stick"
                     ),
-                    None => tracing::warn!(%thread_id, %title, "title update matched no thread row"),
+                    None => {
+                        tracing::warn!(%thread_id, %title, "title update matched no thread row")
+                    }
                 }
             }
             Err(error) => tracing::warn!(%thread_id, %error, "title update failed"),
@@ -456,36 +469,82 @@ pub(crate) fn spawn_title_generation(
     });
 }
 
-async fn generate_title(config: &Arc<friday_agent::AgentConfig>, content: &str) -> Option<String> {
+async fn generate_title(
+    config: &Arc<friday_agent::AgentConfig>,
+    content: &str,
+) -> Result<(String, bool), llm::Error> {
     let model = config.model_registry.get_or_default(DEFAULT_MODEL);
-    let prompt = format!(
-        "Generate a concise title (5-8 words) for a conversation that starts with this message. Return only the title, no quotes or trailing punctuation.\n\nMessage: {content}"
-    );
-    let request = CompletionRequest::new(
-        &model.model_name,
-        &[LlmMessage {
-            role: LlmRole::User,
-            content: prompt,
-            ..Default::default()
-        }],
-    )
-    .max_tokens(32);
+    let request = title_generation_request(&model.model_name, content);
 
-    model
-        .api
-        .get_completion(&model.token, request)
-        .await
-        .ok()
-        .and_then(|c| c.choices.into_iter().next())
-        .and_then(|choice| choice.message)
-        .map(|msg| {
-            msg.content
-                .trim()
-                .chars()
-                .take(MAX_TITLE_LEN)
-                .collect::<String>()
-        })
-        .filter(|t| !t.is_empty())
+    let completion = model.api.get_completion(&model.token, request).await?;
+
+    if let Some(title) = title_from_completion(completion) {
+        return Ok((title, false));
+    }
+
+    Ok((fallback_title(content), true))
+}
+
+fn title_generation_request(model_name: &str, content: &str) -> CompletionRequest {
+    CompletionRequest::new(
+        model_name,
+        &[
+            LlmMessage {
+                role: LlmRole::System,
+                content: "Generate a concise title (5-8 words) for a conversation. Return only the title, no quotes or trailing punctuation.".to_string(),
+                ..Default::default()
+            },
+            LlmMessage {
+                role: LlmRole::User,
+                content: format!("FIRST USER REQUEST:\n{content}"),
+                ..Default::default()
+            },
+        ],
+    )
+    .max_tokens(1024)
+}
+
+fn title_from_completion(completion: llm::Completion) -> Option<String> {
+    completion.choices.into_iter().find_map(|choice| {
+        let message_content = choice.message.map(|message| message.content);
+        [message_content, choice.text]
+            .into_iter()
+            .flatten()
+            .find_map(normalize_title)
+    })
+}
+
+fn normalize_title(text: String) -> Option<String> {
+    let title = text
+        .trim()
+        .trim_matches(title_edge_punctuation)
+        .chars()
+        .take(MAX_TITLE_LEN)
+        .collect::<String>();
+
+    (!title.is_empty()).then_some(title)
+}
+
+fn fallback_title(content: &str) -> String {
+    let mut title = content
+        .split_whitespace()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ");
+    title = title
+        .trim_matches(title_edge_punctuation)
+        .chars()
+        .take(MAX_TITLE_LEN)
+        .collect();
+    if title.is_empty() {
+        DEFAULT_THREAD_TITLE.to_string()
+    } else {
+        title
+    }
+}
+
+fn title_edge_punctuation(c: char) -> bool {
+    matches!(c, '"' | '\'' | '.' | ':' | ';' | '!' | '?')
 }
 
 pub async fn list_messages(
@@ -548,16 +607,14 @@ pub async fn events(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
-    Query(query): Query<EventsQuery>,
 ) -> Result<Response, ThreadApiError> {
     require_thread_owner(&state, &headers, thread_id).await?;
-    let subscription = state
-        .runner
-        .subscribe(thread_id, query.after)
-        .await
-        .map_err(pool_error)?;
+    // Subscribe to the live topic before reading the snapshot so no event emitted between the two
+    // is lost; the snapshot's `last_event_seq` watermark then discards any backlog already covered.
+    let events = pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe();
+    let snapshot = state.runner.snapshot(thread_id).await.map_err(pool_error)?;
 
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, subscription)))
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, snapshot, events)))
 }
 
 pub async fn cancel(
@@ -604,22 +661,17 @@ pub async fn answer_quiz(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
-    let snapshot = snapshot_event(&subscription);
-    if socket.send(Message::Text(snapshot.into())).await.is_err() {
+async fn handle_ws(
+    mut socket: WebSocket,
+    snapshot: ThreadSnapshot,
+    mut events: pubsub::Subscriber<AgentEvent>,
+) {
+    let watermark = snapshot.last_event_seq;
+    let snapshot_json = snapshot_event(&snapshot);
+    if socket.send(Message::Text(snapshot_json.into())).await.is_err() {
         return;
     }
 
-    for event in subscription.replay {
-        let Ok(data) = serde_json::to_string(&event_response(event)) else {
-            return;
-        };
-        if socket.send(Message::Text(data.into())).await.is_err() {
-            return;
-        }
-    }
-
-    let mut events = subscription.events;
     loop {
         tokio::select! {
             msg = socket.recv() => {
@@ -631,6 +683,11 @@ async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
             event = events.recv() => {
                 match event {
                     Ok(event) => {
+                        // The topic backlog replays events already reflected in the snapshot; the
+                        // watermark drops them so the client never applies an event twice.
+                        if event.seq <= watermark {
+                            continue;
+                        }
                         let Ok(data) = serde_json::to_string(&event_response(event)) else {
                             break;
                         };
@@ -638,8 +695,8 @@ async fn handle_ws(mut socket: WebSocket, subscription: ThreadSubscription) {
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(pubsub::RecvError::Lagged(_)) => {}
+                    Err(pubsub::RecvError::Closed) => break,
                 }
             }
         }
@@ -1076,40 +1133,36 @@ fn event_response(event: AgentEvent) -> EventResponse {
     }
 }
 
-fn snapshot_event(subscription: &crate::runner::ThreadSubscription) -> String {
-    let event =
-        EventResponse {
-            seq: subscription.snapshot.last_event_seq,
-            thread_id: subscription.snapshot.thread_id.to_string(),
-            run_id: None,
-            kind: EventKindResponse::Snapshot {
-                status: match subscription.snapshot.status {
-                    ThreadStatus::Idle => "idle",
-                    ThreadStatus::Running { .. } => "running",
-                },
-                in_progress: subscription.snapshot.in_progress.as_ref().map(|message| {
-                    SnapshotMessageResponse {
-                        run_id: message.run_id.0.to_string(),
-                        content: message.content.clone(),
-                        thinking: message.thinking.clone(),
-                    }
-                }),
-                pending_approval: subscription
-                    .snapshot
-                    .pending_approval
-                    .as_ref()
-                    .map(|approval| ApprovalResponse {
-                        approval_id: approval.approval_id.to_string(),
-                        message: approval.message.clone(),
-                    }),
-                pending_quiz: subscription.snapshot.pending_quiz.as_ref().map(|quiz| {
-                    QuizResponse {
-                        quiz_id: quiz.quiz_id.to_string(),
-                        questions: quiz_questions_response(quiz.questions.clone()),
-                    }
-                }),
+fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
+    let event = EventResponse {
+        seq: snapshot.last_event_seq,
+        thread_id: snapshot.thread_id.to_string(),
+        run_id: None,
+        kind: EventKindResponse::Snapshot {
+            status: match snapshot.status {
+                ThreadStatus::Idle => "idle",
+                ThreadStatus::Running { .. } => "running",
             },
-        };
+            in_progress: snapshot.in_progress.as_ref().map(|message| {
+                SnapshotMessageResponse {
+                    run_id: message.run_id.0.to_string(),
+                    content: message.content.clone(),
+                    thinking: message.thinking.clone(),
+                }
+            }),
+            pending_approval: snapshot
+                .pending_approval
+                .as_ref()
+                .map(|approval| ApprovalResponse {
+                    approval_id: approval.approval_id.to_string(),
+                    message: approval.message.clone(),
+                }),
+            pending_quiz: snapshot.pending_quiz.as_ref().map(|quiz| QuizResponse {
+                quiz_id: quiz.quiz_id.to_string(),
+                questions: quiz_questions_response(quiz.questions.clone()),
+            }),
+        },
+    };
 
     serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
 }

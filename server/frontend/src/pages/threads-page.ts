@@ -190,7 +190,17 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		this.lastEventSeq = Math.max(this.lastEventSeq, event.seq);
+		// The snapshot resets the baseline; always apply it. Any live or replayed event whose seq we
+		// have already applied is a duplicate (e.g. topic backlog overlap on reconnect) and is dropped
+		// so a message is never rendered twice.
+		if (event.kind.type === "Snapshot") {
+			this.lastEventSeq = event.seq;
+		} else {
+			if (event.seq <= this.lastEventSeq) {
+				return;
+			}
+			this.lastEventSeq = event.seq;
+		}
 
 		if (event.kind.type === "Snapshot") {
 			this.running = event.kind.status === "running";
@@ -222,6 +232,16 @@ class ThreadsPageHydrator {
 		if (event.kind.type === "RunStarted") {
 			this.running = true;
 			this.syncComposer();
+		}
+
+		if (event.kind.type === "UserMessageCommitted") {
+			const pending = this.messages.find((message) => message.pending && message.role === "user");
+			if (pending) {
+				pending.id = event.kind.message_id;
+				pending.seq = event.kind.seq;
+				pending.pending = false;
+				this.renderMessages();
+			}
 		}
 
 		if (event.kind.type === "AgentDelta") {
@@ -318,7 +338,8 @@ class ThreadsPageHydrator {
 	private upsertPendingAssistant(thinking?: string) {
 		const last = this.messages[this.messages.length - 1];
 
-		if (last?.pending && last.role === "agent") {
+		if (last?.role === "agent" && !last.tool_call_name) {
+			last.pending = true;
 			last.content = this.pendingAssistant;
 			last.thinking = thinking ? `${last.thinking ?? ""}${thinking}` : last.thinking;
 			this.updateMessageElement(last);

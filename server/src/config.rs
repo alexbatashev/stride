@@ -63,6 +63,10 @@ pub struct Telegram {
     pub bot_api_key: Option<String>,
     pub bot_username: Option<String>,
     pub webhook_secret: Option<String>,
+    /// Public HTTPS URL Telegram posts updates to, e.g. `https://host/api/telegram/webhook`. When
+    /// set with a bot token, the server registers it on startup with `callback_query` updates
+    /// enabled, so inline button taps are delivered.
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
