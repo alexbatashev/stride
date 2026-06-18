@@ -1,601 +1,806 @@
 import { Component, css, onMount } from "@frontiers-labs/argon";
 import {
-	type Automation,
-	type AutomationRun,
-	createAutomation,
-	deleteAutomation,
-	listAutomationRuns,
-	listAutomations,
-	runAutomation,
-	setAutomationEnabled,
+  type Automation,
+  type AutomationRun,
+  createAutomation,
+  deleteAutomation,
+  listAutomationRuns,
+  listAutomations,
+  runAutomation,
+  setAutomationEnabled,
 } from "../api/automations.js";
 
 type RunView = {
-	id: string;
-	status: string;
-	startedLabel: string;
-	output: string;
+  id: string;
+  status: string;
+  statusLabel: string;
+  startedLabel: string;
+  finishedLabel: string;
+  output: string;
+};
+
+type AutomationItem = Automation & {
+  kindLabel: string;
+  nameLabel: string;
+  notifyLabel: string;
+  triggerLabel: string;
+  lastRunLabel: string;
 };
 
 type AutomationsHost = HTMLElement & {
-	items: Automation[];
-	loading: boolean;
-	error: string;
-	creating: boolean;
-	formError: string;
-	detailOpen: boolean;
-	detailName: string;
-	runs: RunView[];
-	runsLoading: boolean;
-	webhookOpen: boolean;
-	webhookUrl: string;
-	webhookSecret: string;
+  items: AutomationItem[];
+  loading: boolean;
+  error: string;
+  creating: boolean;
+  formError: string;
+  selectedId: string;
+  selectedName: string;
+  runs: RunView[];
+  runsLoading: boolean;
+  webhookOpen: boolean;
+  webhookUrl: string;
+  webhookSecret: string;
 };
 
-async function load(host: AutomationsHost): Promise<void> {
-	host.loading = true;
-	host.error = "";
-	try {
-		host.items = await listAutomations();
-	} catch {
-		host.error = "Failed to load automations.";
-	} finally {
-		host.loading = false;
-	}
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
-async function openDetail(host: AutomationsHost, item: Automation): Promise<void> {
-	host.detailName = item.name;
-	host.detailOpen = true;
-	host.runsLoading = true;
-	host.runs = [];
-	try {
-		const runs = await listAutomationRuns(item.id);
-		host.runs = runs.map((run: AutomationRun): RunView => ({
-			id: run.id,
-			status: run.status,
-			startedLabel: new Date(run.started_at * 1000).toLocaleString(),
-			output: run.output || "(no output)",
-		}));
-	} catch {
-		host.runs = [];
-	} finally {
-		host.runsLoading = false;
-	}
+function formatDate(seconds: number | null): string {
+  if (!seconds) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(seconds * 1000));
+}
+
+function titleCase(value: string): string {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function describeTrigger(item: Automation): string {
+  if (item.trigger_kind === "cron") return item.schedule || "Cron schedule";
+  if (item.trigger_kind === "webhook") return "Webhook";
+  if (item.trigger_kind === "vfs_change") return "File change";
+  return "Manual";
+}
+
+function describeLastRun(item: Automation): string {
+  return item.last_run ? `Last run ${formatDate(item.last_run)}` : "Never run";
+}
+
+function toAutomationItem(item: Automation): AutomationItem {
+  return {
+    ...item,
+    kindLabel: titleCase(item.kind),
+    nameLabel: escapeHtml(item.name),
+    notifyLabel: item.notify_kind !== "none" ? `• Notify ${titleCase(item.notify_kind)}` : "",
+    triggerLabel: describeTrigger(item),
+    lastRunLabel: describeLastRun(item),
+  };
+}
+
+async function load(host: AutomationsHost): Promise<void> {
+  host.loading = true;
+  host.error = "";
+  try {
+    host.items = (await listAutomations()).map(toAutomationItem);
+    if (!host.selectedId && host.items.length > 0) {
+      await selectAutomation(host, host.items[0]);
+    } else if (host.selectedId && !host.items.some((item) => item.id === host.selectedId)) {
+      host.selectedId = "";
+      host.selectedName = "";
+      host.runs = [];
+    }
+  } catch {
+    host.error = "Failed to load automations.";
+  } finally {
+    host.loading = false;
+  }
+}
+
+async function selectAutomation(host: AutomationsHost, item: Automation): Promise<void> {
+  host.selectedId = item.id;
+  host.selectedName = item.name;
+  host.runsLoading = true;
+  host.runs = [];
+  try {
+    const runs = await listAutomationRuns(item.id);
+    host.runs = runs.map((run: AutomationRun): RunView => ({
+      id: run.id,
+      status: run.status,
+      statusLabel: titleCase(run.status),
+      startedLabel: formatDate(run.started_at),
+      finishedLabel: run.finished_at ? formatDate(run.finished_at) : "Still running",
+      output: escapeHtml(run.output.trim() || "No output was captured for this run."),
+    }));
+  } catch {
+    host.runs = [];
+    host.error = "Failed to load automation runs.";
+  } finally {
+    host.runsLoading = false;
+  }
 }
 
 const styles = css`
-	:host {
-		display: block;
-		overflow: auto;
-	}
+  :host {
+    display: block;
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+  }
 
-	.content {
-		box-sizing: border-box;
-		margin: 0 auto;
-		max-width: 760px;
-		padding: 32px 24px;
-		width: 100%;
-	}
+  .root {
+    box-sizing: border-box;
+    min-height: 100%;
+    padding: 32px;
+  }
 
-	.head-row {
-		align-items: center;
-		display: flex;
-		gap: 12px;
-		justify-content: space-between;
-	}
+  .content {
+    display: grid;
+    gap: 20px;
+    margin: 0 auto;
+    max-width: 1180px;
+    width: 100%;
+  }
 
-	h1 {
-		color: var(--foreground);
-		font-size: 26px;
-		margin: 0;
-	}
+  .hero {
+    align-items: flex-start;
+    display: flex;
+    gap: 16px;
+    justify-content: space-between;
+  }
 
-	.muted {
-		color: var(--muted-foreground);
-		font-size: 14px;
-		margin: 8px 0 0;
-	}
+  .eyebrow {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    margin: 0 0 8px;
+    text-transform: uppercase;
+  }
 
-	.list {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		margin-top: 24px;
-	}
+  h1, h2, h3, p {
+    margin: 0;
+  }
 
-	.row {
-		align-items: center;
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		display: flex;
-		gap: 12px;
-		justify-content: space-between;
-		padding: 12px 16px;
-	}
+  h1 {
+    color: var(--foreground);
+    font-size: 32px;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+  }
 
-	.info {
-		background: none;
-		border: 0;
-		cursor: pointer;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		min-width: 0;
-		padding: 0;
-		text-align: left;
-	}
+  .muted {
+    color: var(--muted-foreground);
+    font-size: 14px;
+    line-height: 1.6;
+    margin-top: 10px;
+    max-width: 720px;
+  }
 
-	.name {
-		color: var(--foreground);
-		font-weight: 600;
-	}
+  .stats {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 
-	.meta {
-		color: var(--muted-foreground);
-		font: 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-	}
+  .stat, .panel, .modal-card {
+    background: color-mix(in srgb, var(--card, var(--background)) 92%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  }
 
-	.controls {
-		align-items: center;
-		display: flex;
-		gap: 8px;
-	}
+  .stat {
+    padding: 16px;
+  }
 
-	button {
-		background: var(--secondary);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		color: var(--foreground);
-		cursor: pointer;
-		font: inherit;
-		font-size: 14px;
-		padding: 6px 12px;
-	}
+  .stat span {
+    color: var(--muted-foreground);
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+  }
 
-	button.danger {
-		color: var(--destructive);
-	}
+  .stat strong {
+    color: var(--foreground);
+    display: block;
+    font-size: 24px;
+    margin-top: 6px;
+  }
 
-	.modal {
-		align-items: center;
-		background: rgba(0, 0, 0, 0.4);
-		display: flex;
-		inset: 0;
-		justify-content: center;
-		padding: 24px;
-		position: fixed;
-		z-index: 50;
-	}
+  .workspace {
+    display: grid;
+    gap: 20px;
+    grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.05fr);
+    min-height: 520px;
+  }
 
-	.card {
-		background: var(--background);
-		border: 1px solid var(--border);
-		border-radius: 12px;
-		box-sizing: border-box;
-		max-height: 85vh;
-		max-width: 560px;
-		overflow: auto;
-		padding: 24px;
-		width: 100%;
-	}
+  .panel {
+    min-width: 0;
+    overflow: hidden;
+  }
 
-	.card h2 {
-		margin: 0 0 16px;
-	}
+  .panel-head {
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    padding: 16px 18px;
+  }
 
-	.card label {
-		color: var(--foreground);
-		display: flex;
-		flex-direction: column;
-		font-size: 14px;
-		gap: 6px;
-		margin-bottom: 14px;
-	}
+  .panel-head h2 {
+    color: var(--foreground);
+    font-size: 16px;
+  }
 
-	.card label.inline {
-		align-items: center;
-		flex-direction: row;
-	}
+  .panel-body {
+    padding: 10px;
+  }
 
-	.card input,
-	.card select,
-	.card textarea {
-		background: var(--background);
-		border: 1px solid var(--border);
-		border-radius: 8px;
-		color: var(--foreground);
-		font: inherit;
-		padding: 8px 10px;
-	}
+  button, .button {
+    align-items: center;
+    background: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--foreground);
+    cursor: pointer;
+    display: inline-flex;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    gap: 6px;
+    height: 36px;
+    justify-content: center;
+    padding: 0 12px;
+    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+    white-space: nowrap;
+  }
 
-	.card label.inline input {
-		width: auto;
-	}
+  button:hover { background: var(--accent); }
+  button.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+  button.primary:hover { opacity: 0.9; }
+  button.ghost { background: transparent; border-color: transparent; }
+  button.danger { color: var(--destructive); }
 
-	.card textarea {
-		font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-		resize: vertical;
-	}
+  .automation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
 
-	.actions {
-		display: flex;
-		gap: 8px;
-		justify-content: flex-end;
-	}
+  .automation-card {
+    align-items: stretch;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    box-sizing: border-box;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: 1fr auto;
+    height: auto;
+    justify-content: stretch;
+    padding: 14px;
+    text-align: left;
+    width: 100%;
+  }
 
-	.runs {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
+  .automation-card:hover, .automation-card.selected {
+    background: var(--accent);
+    border-color: var(--border);
+  }
 
-	.run summary {
-		cursor: pointer;
-	}
+  .automation-card > button.ghost {
+    align-items: flex-start;
+    display: block;
+    height: auto;
+    justify-content: flex-start;
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+    white-space: normal;
+  }
 
-	.run pre {
-		background: var(--muted);
-		border-radius: 8px;
-		margin: 8px 0 0;
-		max-height: 320px;
-		overflow: auto;
-		padding: 12px;
-		white-space: pre-wrap;
-	}
+  .name-row {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+  }
 
-	.status {
-		font-size: 12px;
-	}
+  .name {
+    color: var(--foreground);
+    font-size: 15px;
+    font-weight: 650;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
-	.status[data-status="success"] {
-		color: #16a34a;
-	}
+  .badge {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 4px 7px;
+  }
 
-	.status[data-status="failed"] {
-		color: var(--destructive);
-	}
+  .badge.on { color: #22c55e; }
+  .badge.off { color: var(--muted-foreground); }
+  .badge.failed { color: var(--destructive); }
+  .badge.running { color: #f59e0b; }
 
-	.time {
-		color: var(--muted-foreground);
-		font-size: 12px;
-		margin-left: 8px;
-	}
+  .meta {
+    color: var(--muted-foreground);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 13px;
+    gap: 8px;
+    margin-top: 8px;
+  }
 
-	.error {
-		color: var(--destructive);
-		font-size: 13px;
-		margin-top: 12px;
-	}
+  .row-actions {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+  }
 
-	.error:empty {
-		display: none;
-	}
+  .empty {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 280px;
+    justify-content: center;
+    padding: 24px;
+    text-align: center;
+  }
 
-	.hint {
-		color: var(--muted-foreground);
-		font-size: 12px;
-		font-weight: 400;
-	}
+  .run-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
 
-	.card input.secret {
-		font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-	}
+  .run {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
 
-	code {
-		background: var(--muted);
-		border-radius: 4px;
-		font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-		padding: 1px 4px;
-	}
+  .run summary {
+    align-items: center;
+    cursor: pointer;
+    display: flex;
+    gap: 10px;
+    list-style: none;
+    padding: 12px 14px;
+  }
+
+  .run summary::-webkit-details-marker { display: none; }
+
+  .run-meta {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    margin-left: auto;
+  }
+
+  pre {
+    background: var(--muted);
+    border-top: 1px solid var(--border);
+    color: var(--foreground);
+    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin: 0;
+    max-height: 360px;
+    overflow: auto;
+    padding: 14px;
+    white-space: pre-wrap;
+  }
+
+  .error {
+    color: var(--destructive);
+    font-size: 13px;
+    min-height: 18px;
+  }
+
+  .error:empty { display: none; }
+
+  .modal {
+    align-items: center;
+    background: rgb(0 0 0 / 58%);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    padding: 24px;
+    position: fixed;
+    z-index: 50;
+  }
+
+  .modal-card {
+    box-sizing: border-box;
+    max-height: min(860px, 90vh);
+    max-width: 720px;
+    overflow: auto;
+    padding: 24px;
+    width: 100%;
+  }
+
+  .modal-title {
+    align-items: flex-start;
+    display: flex;
+    gap: 16px;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+
+  .form-grid {
+    display: grid;
+    gap: 14px;
+  }
+
+  label {
+    color: var(--foreground);
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    font-weight: 500;
+    gap: 7px;
+  }
+
+  label.inline {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  input, select, textarea {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    box-sizing: border-box;
+    color: var(--foreground);
+    font: inherit;
+    min-height: 38px;
+    padding: 8px 10px;
+    width: 100%;
+  }
+
+  textarea {
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    min-height: 140px;
+    resize: vertical;
+  }
+
+  input[type="checkbox"] {
+    accent-color: var(--primary);
+    min-height: 0;
+    width: auto;
+  }
+
+  .hint {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.4;
+  }
+
+  .actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 18px;
+  }
+
+  code, .secret {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  code {
+    background: var(--muted);
+    border-radius: 5px;
+    padding: 2px 5px;
+  }
+
+  @media (max-width: 980px) {
+    .root { padding: 20px; }
+    .hero { flex-direction: column; }
+    .stats, .workspace { grid-template-columns: 1fr; }
+  }
 `;
 
 export function AppAutomations({
-	items = [],
-	loading = false,
-	error = "",
-	creating = false,
-	formError = "",
-	detailOpen = false,
-	detailName = "",
-	runs = [],
-	runsLoading = false,
-	webhookOpen = false,
-	webhookUrl = "",
-	webhookSecret = "",
+  items = [],
+  loading = false,
+  error = "",
+  creating = false,
+  formError = "",
+  selectedId = "",
+  selectedName = "",
+  runs = [],
+  runsLoading = false,
+  webhookOpen = false,
+  webhookUrl = "",
+  webhookSecret = "",
 }: {
-	items?: Automation[];
-	loading?: boolean;
-	error?: string;
-	creating?: boolean;
-	formError?: string;
-	detailOpen?: boolean;
-	detailName?: string;
-	runs?: RunView[];
-	runsLoading?: boolean;
-	webhookOpen?: boolean;
-	webhookUrl?: string;
-	webhookSecret?: string;
+  items?: AutomationItem[];
+  loading?: boolean;
+  error?: string;
+  creating?: boolean;
+  formError?: string;
+  selectedId?: string;
+  selectedName?: string;
+  runs?: RunView[];
+  runsLoading?: boolean;
+  webhookOpen?: boolean;
+  webhookUrl?: string;
+  webhookSecret?: string;
 }): Component {
-	onMount(() => {
-		void load(this);
-	});
+  onMount(() => {
+    void load(this);
+  });
 
-	return (
-		<>
-			<style>{styles}</style>
-			<div
-				class="root"
-				onClick={(event: Event) => {
-					const node = event.target as HTMLElement;
-					if (node.dataset.backdrop === "create") {
-						this.creating = false;
-						return;
-					}
-					if (node.dataset.backdrop === "detail") {
-						this.detailOpen = false;
-						return;
-					}
-					if (node.dataset.backdrop === "webhook") {
-						this.webhookOpen = false;
-						return;
-					}
-					const target = node.closest<HTMLElement>("[data-action]");
-					if (!target) return;
-					switch (target.dataset.action) {
-						case "open-create":
-							this.creating = true;
-							return;
-						case "close-create":
-							this.creating = false;
-							return;
-						case "close-detail":
-							this.detailOpen = false;
-							return;
-						case "close-webhook":
-							this.webhookOpen = false;
-							return;
-					}
-					const item = (this.items as Automation[]).find((it) => it.id === target.dataset.id);
-					if (!item) return;
-					switch (target.dataset.action) {
-						case "detail":
-							void openDetail(this, item);
-							break;
-						case "run":
-							void runAutomation(item.id)
-								.then(() => load(this))
-								.catch(() => {
-									this.error = "Failed to start run.";
-								});
-							break;
-						case "toggle":
-							void setAutomationEnabled(item.id, !item.enabled)
-								.then(() => load(this))
-								.catch(() => {
-									this.error = "Failed to update.";
-								});
-							break;
-						case "delete":
-							if (!window.confirm(`Delete automation "${item.name}"?`)) return;
-							void deleteAutomation(item.id)
-								.then(() => load(this))
-								.catch(() => {
-									this.error = "Failed to delete.";
-								});
-							break;
-					}
-				}}
-				onSubmit={(event: Event) => {
-					event.preventDefault();
-					const data = new FormData(event.target as HTMLFormElement);
-					this.formError = "";
-					const trigger = String(data.get("trigger") ?? "cron");
-					const notify = String(data.get("notify") ?? "none");
-					const triggerKind =
-						trigger === "webhook"
-							? "webhook"
-							: trigger === "manual"
-								? "manual"
-								: trigger === "vfs_change"
-									? "vfs_change"
-									: "cron";
-					void createAutomation({
-						name: String(data.get("name") ?? ""),
-						schedule: String(data.get("schedule") ?? ""),
-						kind: data.get("kind") === "python" ? "python" : "agent",
-						payload: String(data.get("payload") ?? ""),
-						enabled: data.get("enabled") !== null,
-						trigger_kind: triggerKind,
-						notify_kind: notify === "telegram" ? "telegram" : "none",
-						...(triggerKind === "vfs_change"
-							? { trigger_config: { path: String(data.get("watch_path") ?? "").trim() } }
-							: {}),
-					})
-						.then((created) => {
-							this.creating = false;
-							// A webhook automation returns its secret exactly once.
-							if (created.webhook_secret) {
-								this.webhookUrl = `${location.origin}/api/automations/${created.id}/webhook`;
-								this.webhookSecret = created.webhook_secret;
-								this.webhookOpen = true;
-							}
-							void load(this);
-						})
-						.catch((err: unknown) => {
-							this.formError =
-								err instanceof Error && err.message === "400"
-									? "Check the name, cron schedule and task."
-									: "Failed to create automation.";
-						});
-				}}
-			>
-				<div class="content">
-					<div class="head-row">
-						<h1>Automations</h1>
-						<button type="button" data-action="open-create">
-							New automation
-						</button>
-					</div>
-					<p class="muted">
-						Tasks Friday runs for you — on a schedule, on a webhook, on file changes, or on demand.
-					</p>
-					<div class="list">
-						{items.length === 0 ? (
-							<p class="muted">{loading ? "Loading…" : "No automations yet."}</p>
-						) : (
-							items
-								.map(
-										(item) => (
-											<div class="row" key={item.id}>
-												<button class="info" type="button" data-action="detail" data-id={item.id}>
-													<span class="name">{item.name}</span>
-													<span class="meta">
-														{item.kind} · {item.trigger_kind}
-														{item.trigger_kind === "cron" ? ` · ${item.schedule}` : ""}
-														{item.notify_kind !== "none" ? ` · ⤳ ${item.notify_kind}` : ""}
-													</span>
-												</button>
-												<div class="controls">
-													<button type="button" data-action="run" data-id={item.id}>
-														Run
-													</button>
-													<button type="button" data-action="toggle" data-id={item.id}>
-														{item.enabled ? "On" : "Off"}
-													</button>
-													<button class="danger" type="button" data-action="delete" data-id={item.id}>
-														Delete
-													</button>
-												</div>
-											</div>
-										),
-									)
-									.join("")
-						)}
-					</div>
-					<div class="error">{error}</div>
-				</div>
+  const activeCount = items.filter((item) => item.enabled).length;
+  const lastRunCount = items.filter((item) => item.last_run).length;
 
-				{creating && (
-					<div class="modal" data-backdrop="create">
-						<form class="card">
-							<h2>New automation</h2>
-							<label>
-								Name
-								<input name="name" required />
-							</label>
-							<label>
-								Trigger
-								<select name="trigger">
-									<option value="cron">Cron schedule</option>
-									<option value="webhook">Webhook (HTTP)</option>
-									<option value="vfs_change">File change</option>
-									<option value="manual">Manual (run on demand)</option>
-								</select>
-							</label>
-							<label>
-								Schedule (cron)
-								<input name="schedule" placeholder="*/30 * * * *" />
-								<span class="hint">Required for the cron trigger; ignored otherwise.</span>
-							</label>
-							<label>
-								Watch path
-								<input name="watch_path" placeholder="reports/ (leave empty for all files)" />
-								<span class="hint">
-									For the File change trigger: a file or folder in your files. Empty watches all
-									your files.
-								</span>
-							</label>
-							<label>
-								Type
-								<select name="kind">
-									<option value="agent">Agent prompt</option>
-									<option value="python">Python script</option>
-								</select>
-							</label>
-							<label>
-								Notify
-								<select name="notify">
-									<option value="none">Store only</option>
-									<option value="telegram">Telegram</option>
-								</select>
-							</label>
-							<label>
-								Task
-								<textarea name="payload" rows="6" required></textarea>
-							</label>
-							<label class="inline">
-								<input type="checkbox" name="enabled" checked /> Enabled
-							</label>
-							<div class="actions">
-								<button type="button" data-action="close-create">
-									Cancel
-								</button>
-								<button type="submit">Create</button>
-							</div>
-							<div class="error">{formError}</div>
-						</form>
-					</div>
-				)}
+  return (
+    <>
+      <style>{styles}</style>
+      <div
+        class="root"
+        onClick={(event: Event) => {
+          const node = event.target as HTMLElement;
+          if (node.dataset.backdrop === "create") {
+            this.creating = false;
+            return;
+          }
+          if (node.dataset.backdrop === "webhook") {
+            this.webhookOpen = false;
+            return;
+          }
+          const target = node.closest<HTMLElement>("[data-action]");
+          if (!target) return;
+          switch (target.dataset.action) {
+            case "open-create":
+              this.creating = true;
+              return;
+            case "close-create":
+              this.creating = false;
+              return;
+            case "close-webhook":
+              this.webhookOpen = false;
+              return;
+          }
+          const item = (this.items as AutomationItem[]).find((it) => it.id === target.dataset.id);
+          if (!item) return;
+          switch (target.dataset.action) {
+            case "select":
+              void selectAutomation(this, item);
+              break;
+            case "run":
+              void runAutomation(item.id)
+                .then(async () => {
+                  await load(this);
+                  await selectAutomation(this, item);
+                })
+                .catch(() => {
+                  this.error = "Failed to start run.";
+                });
+              break;
+            case "toggle":
+              void setAutomationEnabled(item.id, !item.enabled)
+                .then(() => load(this))
+                .catch(() => {
+                  this.error = "Failed to update automation.";
+                });
+              break;
+            case "delete":
+              if (!window.confirm(`Delete automation "${item.name}"?`)) return;
+              void deleteAutomation(item.id)
+                .then(() => load(this))
+                .catch(() => {
+                  this.error = "Failed to delete automation.";
+                });
+              break;
+          }
+        }}
+        onSubmit={(event: Event) => {
+          event.preventDefault();
+          const data = new FormData(event.target as HTMLFormElement);
+          this.formError = "";
+          const trigger = String(data.get("trigger") ?? "cron");
+          const notify = String(data.get("notify") ?? "none");
+          const triggerKind =
+            trigger === "webhook"
+              ? "webhook"
+              : trigger === "manual"
+                ? "manual"
+                : trigger === "vfs_change"
+                  ? "vfs_change"
+                  : "cron";
+          void createAutomation({
+            name: String(data.get("name") ?? "").trim(),
+            schedule: String(data.get("schedule") ?? "").trim(),
+            kind: data.get("kind") === "python" ? "python" : "agent",
+            payload: String(data.get("payload") ?? ""),
+            enabled: data.get("enabled") !== null,
+            trigger_kind: triggerKind,
+            notify_kind: notify === "telegram" ? "telegram" : "none",
+            ...(triggerKind === "vfs_change"
+              ? { trigger_config: { path: String(data.get("watch_path") ?? "").trim() } }
+              : {}),
+          })
+            .then(async (created) => {
+              this.creating = false;
+              if (created.webhook_secret) {
+                this.webhookUrl = `${location.origin}/api/automations/${created.id}/webhook`;
+                this.webhookSecret = created.webhook_secret;
+                this.webhookOpen = true;
+              }
+              await load(this);
+              await selectAutomation(this, created);
+            })
+            .catch((err: unknown) => {
+              this.formError =
+                err instanceof Error && err.message === "400"
+                  ? "Check the name, cron schedule, and task."
+                  : "Failed to create automation.";
+            });
+        }}
+      >
+        <div class="content">
+          <header class="hero">
+            <div>
+              <p class="eyebrow">Operations</p>
+              <h1>Automations</h1>
+              <p class="muted">
+                Schedule recurring work, expose webhook tasks, react to file changes, and inspect every run output in one place.
+              </p>
+            </div>
+            <button class="primary" type="button" data-action="open-create">New automation</button>
+          </header>
 
-				{detailOpen && (
-					<div class="modal" data-backdrop="detail">
-						<div class="card">
-							<div class="actions">
-								<h2>{detailName}</h2>
-								<button type="button" data-action="close-detail">
-									Close
-								</button>
-							</div>
-							<div class="runs">
-								{runs.length === 0 ? (
-									<p class="muted">{runsLoading ? "Loading…" : "No executions yet."}</p>
-								) : (
-									runs
-										.map(
-											(run) => (
-												<details class="run" key={run.id}>
-													<summary>
-														<span class="status" data-status={run.status}>{run.status}</span>
-														<span class="time">{run.startedLabel}</span>
-													</summary>
-													<pre>{run.output}</pre>
-												</details>
-											),
-										)
-										.join("")
-								)}
-							</div>
-						</div>
-					</div>
-				)}
+          <section class="stats" aria-label="Automation summary">
+            <div class="stat"><span>Total</span><strong>{items.length}</strong></div>
+            <div class="stat"><span>Enabled</span><strong>{activeCount}</strong></div>
+            <div class="stat"><span>With runs</span><strong>{lastRunCount}</strong></div>
+          </section>
 
-				{webhookOpen && (
-					<div class="modal" data-backdrop="webhook">
-						<div class="card">
-							<div class="actions">
-								<h2>Webhook created</h2>
-								<button type="button" data-action="close-webhook">
-									Close
-								</button>
-							</div>
-							<p class="muted">
-								Send a POST request to this URL to trigger the automation. The secret is shown only
-								once — copy it now. Pass it as the <code>X-Friday-Webhook-Secret</code> header or a{" "}
-								<code>?token=</code> query parameter. Any JSON body is forwarded to the task.
-							</p>
-							<label>
-								URL
-								<input class="secret" value={webhookUrl} readonly />
-							</label>
-							<label>
-								Secret
-								<input class="secret" value={webhookSecret} readonly />
-							</label>
-						</div>
-					</div>
-				)}
-			</div>
-		</>
-	);
+          <main class="workspace">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Automations</h2>
+                <span class="badge">{loading ? "Loading" : `${items.length} total`}</span>
+              </div>
+              <div class="panel-body">
+                {items.length === 0 ? (
+                  <div class="empty">
+                    <strong>{loading ? "Loading automations…" : "No automations yet"}</strong>
+                    <span>Create one to run tasks on a schedule, webhook, file change, or manually.</span>
+                  </div>
+                ) : (
+                  <div class="automation-list">
+                    {items.map((item) => (
+                      <div class={`automation-card ${item.id === selectedId ? "selected" : ""}`} key={item.id}>
+                        <button class="ghost" type="button" data-action="select" data-id={item.id}>
+                          <div>
+                            <div class="name-row">
+                              <span class="name">{item.nameLabel || item.name}</span>
+                              <span class={`badge ${item.enabled ? "on" : "off"}`}>{item.enabled ? "Enabled" : "Paused"}</span>
+                            </div>
+                            <div class="meta">
+                              <span>{item.kindLabel || item.kind}</span>
+                              <span>•</span>
+                              <span>{item.triggerLabel || item.schedule || item.trigger_kind}</span>
+                              <span>•</span>
+                              <span>{item.lastRunLabel || "Never run"}</span>
+                              {item.notifyLabel ? <span>{item.notifyLabel}</span> : item.notify_kind !== "none" ? <span>{item.notify_kind}</span> : ""}
+                            </div>
+                          </div>
+                        </button>
+                        <div class="row-actions">
+                          <button type="button" data-action="run" data-id={item.id}>Run</button>
+                          <button type="button" data-action="toggle" data-id={item.id}>{item.enabled ? "On" : "Off"}</button>
+                          <button class="danger" type="button" data-action="delete" data-id={item.id}>Delete</button>
+                        </div>
+                      </div>
+                    )).join("")}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>{selectedName || "Run output"}</h2>
+                <span class="badge">History</span>
+              </div>
+              <div class="panel-body">
+                {!selectedId ? (
+                  <div class="empty">
+                    <strong>Select an automation</strong>
+                    <span>Run logs and captured output will appear here.</span>
+                  </div>
+                ) : runs.length === 0 ? (
+                  <div class="empty">
+                    <strong>{runsLoading ? "Loading runs…" : "No executions yet"}</strong>
+                    <span>{runsLoading ? "Fetching the latest run history." : "Click Run to start it and capture output."}</span>
+                  </div>
+                ) : (
+                  <div class="run-list">
+                    {runs.map((run, index) => (
+                      <details class="run" open={index === 0} key={run.id}>
+                        <summary>
+                          <span class={`badge ${run.status}`}>{run.statusLabel}</span>
+                          <span>{run.startedLabel}</span>
+                          <span class="run-meta">Finished {run.finishedLabel}</span>
+                        </summary>
+                        <pre>{run.output}</pre>
+                      </details>
+                    )).join("")}
+                  </div>
+                )}
+              </div>
+            </section>
+          </main>
+          <div class="error">{error}</div>
+        </div>
+
+        {creating ? (
+          <div class="modal" data-backdrop="create">
+            <form class="modal-card">
+              <div class="modal-title">
+                <div>
+                  <h2>New automation</h2>
+                  <p class="muted">Define when it runs, what it does, and where notifications go.</p>
+                </div>
+                <button type="button" data-action="close-create">Close</button>
+              </div>
+              <div class="form-grid">
+                <label>Name<input name="name" required placeholder="Daily report" /></label>
+                <label>Trigger<select name="trigger"><option value="cron">Cron schedule</option><option value="webhook">Webhook (HTTP)</option><option value="vfs_change">File change</option><option value="manual">Manual only</option></select></label>
+                <label>Schedule (cron)<input name="schedule" placeholder="*/30 * * * *" /><span class="hint">Required for cron automations. Ignored for other triggers.</span></label>
+                <label>Watch path<input name="watch_path" placeholder="reports/ (empty means all files)" /><span class="hint">Used only for file change automations.</span></label>
+                <label>Type<select name="kind"><option value="agent">Agent prompt</option><option value="python">Python script</option></select></label>
+                <label>Notify<select name="notify"><option value="none">Store output only</option><option value="telegram">Telegram</option></select></label>
+                <label>Task<textarea name="payload" required placeholder="Describe the task or paste Python code..."></textarea></label>
+                <label class="inline"><input type="checkbox" name="enabled" checked /> Enabled</label>
+              </div>
+              <div class="actions">
+                <button type="button" data-action="close-create">Cancel</button>
+                <button class="primary" type="submit">Create automation</button>
+              </div>
+              <div class="error">{formError}</div>
+            </form>
+          </div>
+        ) : ""}
+
+        {webhookOpen ? (
+          <div class="modal" data-backdrop="webhook">
+            <div class="modal-card">
+              <div class="modal-title">
+                <div>
+                  <h2>Webhook created</h2>
+                  <p class="muted">Copy the secret now. It is shown only once.</p>
+                </div>
+                <button type="button" data-action="close-webhook">Close</button>
+              </div>
+              <div class="form-grid">
+                <label>URL<input class="secret" value={webhookUrl} readonly /></label>
+                <label>Secret<input class="secret" value={webhookSecret} readonly /></label>
+                <p class="muted">Send a POST request with <code>X-Friday-Webhook-Secret</code> or <code>?token=</code>. JSON bodies are forwarded to the task.</p>
+              </div>
+            </div>
+          </div>
+        ) : ""}
+      </div>
+    </>
+  );
 }
