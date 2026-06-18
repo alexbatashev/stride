@@ -389,11 +389,6 @@ pub fn render_automations_page(data: &ThreadPageData) -> String {
 pub fn render_settings_page(data: &ThreadPageData) -> String {
     let sidebar = render_sidebar(data, false, false, true);
     let toggle = AppSidebarToggle::new("").render();
-    let connect_button = with_attrs(
-        &AppButton::new().render(),
-        r#"variant="secondary" size="sm" data-action="connect-code""#,
-    )
-    .replacen("</app-button>", "Connect Telegram</app-button>", 1);
     let disconnect_button = with_attrs(
         &AppButton::new().render(),
         r#"variant="destructive" size="sm" data-action="disconnect""#,
@@ -454,33 +449,13 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
         margin-top: 16px;
     }}
 
-    #settings-page .code {{
-        background: var(--muted);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        color: var(--foreground);
-        display: none;
-        font: 600 24px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-        letter-spacing: 0;
+    #settings-page .telegram-widget {{
         margin-top: 16px;
-        padding: 14px 16px;
-        width: fit-content;
+        min-height: 40px;
     }}
 
-    #settings-page .telegram-link {{
-        align-items: center;
-        background: var(--primary);
-        border-radius: 8px;
-        color: var(--primary-foreground);
+    #settings-page .telegram-widget:empty {{
         display: none;
-        font-size: 14px;
-        font-weight: 500;
-        height: 36px;
-        justify-content: center;
-        margin-top: 12px;
-        padding: 0 14px;
-        text-decoration: none;
-        width: fit-content;
     }}
 
     #settings-page .error {{
@@ -513,13 +488,10 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
             <h2>Telegram</h2>
             <p class="muted">Connect your Telegram account with the Friday bot.</p>
             <p class="status" data-telegram-status>Loading...</p>
+            <div class="telegram-widget" data-telegram-widget></div>
             <div class="actions">
-                {connect_button}
                 {disconnect_button}
             </div>
-            <div class="code" data-connect-code></div>
-            <a class="telegram-link" data-connect-link target="_blank" rel="noreferrer">Open Telegram</a>
-            <p class="muted" data-connect-help></p>
             <div class="error" data-error></div>
         </section>
     </section>
@@ -656,7 +628,8 @@ mod tests {
 
         assert!(html.contains(r#"<body id="settings-page">"#));
         assert!(html.contains("Telegram"));
-        assert!(html.contains(r#"data-action="connect-code""#));
+        assert!(html.contains("data-telegram-widget"));
+        assert!(html.contains(r#"data-action="disconnect""#));
         assert!(html.contains(r#"href="/settings" aria-current="page""#));
         assert!(html.contains("/static/pages/settings-page.js"));
     }

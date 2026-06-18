@@ -12,12 +12,14 @@ use axum::{
 };
 use bytes::Bytes;
 use friday_agent::QuizQuestion;
+use hmac::{Hmac, Mac};
 use http_body_util::Full;
 use hyper::Request;
 use minisql::ConnectionPool;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -26,8 +28,7 @@ use crate::{
     api::auth::{self, AuthError},
     api::threads::DEFAULT_THREAD_TITLE,
     db::{
-        Role, messages, telegram_connect_codes, telegram_connections, telegram_message_links,
-        telegram_threads, threads,
+        Role, messages, telegram_connections, telegram_message_links, telegram_threads, threads,
     },
     runner::{
         AgentEvent, AgentEventKind, AgentRequest, RUNNER_LIFECYCLE_TOPIC, RunnerLifecycle,
@@ -38,7 +39,9 @@ use crate::{
 /// How long a streamed Telegram draft waits before the next update is pushed.
 const DRAFT_INTERVAL: Duration = Duration::from_millis(700);
 
-const CONNECT_CODE_TTL_SECONDS: i64 = 10 * 60;
+/// Telegram login payloads older than this are rejected to prevent replay of a
+/// captured `hash`. Matches Telegram's own recommendation in the Login Widget docs.
+const LOGIN_MAX_AGE_SECONDS: i64 = 86_400;
 const TELEGRAM_SECRET_HEADER: &str = "x-telegram-bot-api-secret-token";
 
 #[derive(Serialize)]
@@ -49,13 +52,6 @@ pub struct TelegramSettingsResponse {
     username: Option<String>,
     first_name: Option<String>,
     last_name: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct TelegramConnectCodeResponse {
-    code: String,
-    expires_at: i64,
-    start_url: Option<String>,
 }
 
 pub struct TelegramSentMessage {
@@ -94,7 +90,7 @@ pub async fn settings(
 ) -> Result<Json<TelegramSettingsResponse>, TelegramApiError> {
     let user_id = auth::authenticated_user(&state, &headers).await?;
     let connection = connection_for_user(&state, user_id).await?;
-    let bot_username = configured_bot_username(&state);
+    let bot_username = telegram_bot_username(&state).await;
 
     Ok(Json(TelegramSettingsResponse {
         bot_configured: bot_token(&state).is_some(),
@@ -106,40 +102,68 @@ pub async fn settings(
     }))
 }
 
-pub async fn create_connect_code(
+/// Completes the Telegram Login Widget flow. The browser receives a signed user
+/// object from `oauth.telegram.org`, posts it here, and we link it to the
+/// authenticated Friday account only after verifying the signature with the bot
+/// token. See https://core.telegram.org/bots/telegram-login.
+pub async fn login(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
-) -> Result<Json<TelegramConnectCodeResponse>, TelegramApiError> {
+    Json(payload): Json<Value>,
+) -> Result<StatusCode, TelegramApiError> {
     let user_id = auth::authenticated_user(&state, &headers).await?;
-    if bot_token(&state).is_none() {
+    let Some(token) = bot_token(&state) else {
         return Err(TelegramApiError::NotFound);
+    };
+
+    let Some(fields) = payload.as_object() else {
+        return Err(TelegramApiError::Unauthorized);
+    };
+
+    if !verify_login(&token, fields) {
+        return Err(TelegramApiError::Unauthorized);
     }
 
-    let code = generate_code();
-    let expires_at = now() + CONNECT_CODE_TTL_SECONDS;
-    let start_url = telegram_bot_username(&state)
-        .await
-        .map(|username| format!("https://t.me/{username}?start={code}"));
+    let auth_date = fields
+        .get("auth_date")
+        .and_then(Value::as_i64)
+        .ok_or(TelegramApiError::Unauthorized)?;
+    if (now() - auth_date).abs() > LOGIN_MAX_AGE_SECONDS {
+        return Err(TelegramApiError::Unauthorized);
+    }
 
-    telegram_connect_codes::delete()
-        .where_(telegram_connect_codes::user_id.eq(user_id))
+    let telegram_user_id = fields
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or(TelegramApiError::Unauthorized)?;
+    let username = fields.get("username").and_then(Value::as_str);
+    let first_name = fields.get("first_name").and_then(Value::as_str);
+    let last_name = fields.get("last_name").and_then(Value::as_str);
+
+    telegram_connections::delete()
+        .where_(
+            telegram_connections::user_id
+                .eq(user_id)
+                .or(telegram_connections::telegram_user_id.eq(telegram_user_id)),
+        )
         .execute(&state.db)
         .await
         .map_err(|_| TelegramApiError::Internal)?;
 
-    telegram_connect_codes::insert()
-        .code(code.as_str())
+    telegram_connections::insert()
+        .id(Uuid::now_v7())
         .user_id(user_id)
-        .expires_at(expires_at)
+        .telegram_user_id(telegram_user_id)
+        .chat_id(telegram_user_id)
+        .username(username)
+        .first_name(first_name)
+        .last_name(last_name)
+        .connected_at(now())
         .execute(&state.db)
         .await
         .map_err(|_| TelegramApiError::Internal)?;
 
-    Ok(Json(TelegramConnectCodeResponse {
-        code,
-        expires_at,
-        start_url,
-    }))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn disconnect(
@@ -150,11 +174,6 @@ pub async fn disconnect(
 
     telegram_connections::delete()
         .where_(telegram_connections::user_id.eq(user_id))
-        .execute(&state.db)
-        .await
-        .map_err(|_| TelegramApiError::Internal)?;
-    telegram_connect_codes::delete()
-        .where_(telegram_connect_codes::user_id.eq(user_id))
         .execute(&state.db)
         .await
         .map_err(|_| TelegramApiError::Internal)?;
@@ -187,82 +206,8 @@ pub async fn webhook(
         return Ok(StatusCode::OK);
     };
 
-    if let Some(code) = connect_code(message.text.as_deref()) {
-        handle_connect_command(&state, &message, code).await?;
-        return Ok(StatusCode::OK);
-    }
-
     handle_topic_message(state, message).await?;
     Ok(StatusCode::OK)
-}
-
-async fn handle_connect_command(
-    state: &ServerState,
-    message: &TelegramMessage,
-    code: &str,
-) -> Result<(), TelegramApiError> {
-    let Some(from) = message.from.as_ref() else {
-        return Ok(());
-    };
-
-    let rows = telegram_connect_codes::select_cols((telegram_connect_codes::user_id,))
-        .where_(
-            telegram_connect_codes::code
-                .eq(code)
-                .and(telegram_connect_codes::expires_at.gt(now())),
-        )
-        .all(&state.db)
-        .await
-        .map_err(|_| TelegramApiError::Internal)?;
-
-    let Some((user_id,)) = rows.into_iter().next() else {
-        send_telegram_message(
-            state,
-            message.chat.id,
-            message.send_topic_id(),
-            "Invalid or expired connect code.",
-        )
-        .await;
-        return Ok(());
-    };
-
-    telegram_connections::delete()
-        .where_(
-            telegram_connections::user_id
-                .eq(user_id)
-                .or(telegram_connections::telegram_user_id.eq(from.id)),
-        )
-        .execute(&state.db)
-        .await
-        .map_err(|_| TelegramApiError::Internal)?;
-
-    telegram_connections::insert()
-        .id(Uuid::now_v7())
-        .user_id(user_id)
-        .telegram_user_id(from.id)
-        .chat_id(message.chat.id)
-        .username(from.username.as_deref())
-        .first_name(from.first_name.as_deref())
-        .last_name(from.last_name.as_deref())
-        .connected_at(now())
-        .execute(&state.db)
-        .await
-        .map_err(|_| TelegramApiError::Internal)?;
-
-    telegram_connect_codes::delete()
-        .where_(telegram_connect_codes::user_id.eq(user_id))
-        .execute(&state.db)
-        .await
-        .map_err(|_| TelegramApiError::Internal)?;
-
-    send_telegram_message(
-        state,
-        message.chat.id,
-        message.send_topic_id(),
-        "Telegram connected to Friday.",
-    )
-    .await;
-    Ok(())
 }
 
 async fn handle_topic_message(
@@ -287,12 +232,12 @@ async fn handle_topic_message(
     };
 
     let Some(user_id) = user_for_telegram_id(&state, from.id).await? else {
-        if message.chat.kind == "private" && connect_help_command(text) {
+        if message.chat.kind == "private" && is_start_command(text) {
             send_telegram_message(
                 &state,
                 message.chat.id,
                 message.send_topic_id(),
-                "Open Friday Settings and create a Telegram connect code first.",
+                "Open Friday Settings and connect your Telegram account with the login button.",
             )
             .await;
         }
@@ -1951,26 +1896,57 @@ fn bot_token(state: &ServerState) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-fn connect_code(text: Option<&str>) -> Option<&str> {
-    let text = text?.trim();
-    let mut parts = text.split_whitespace();
-    let command = parts.next()?;
-    let command = command.split('@').next()?;
-    if !command.eq_ignore_ascii_case("/connect") && !command.eq_ignore_ascii_case("/start") {
-        return None;
-    }
-    parts.next().filter(|code| !code.is_empty())
+/// Verifies a Telegram Login Widget payload against the bot token.
+///
+/// Per https://core.telegram.org/bots/telegram-login the data is authentic when
+/// `HMAC_SHA256(data_check_string, SHA256(bot_token))` equals the received `hash`,
+/// where `data_check_string` is every field except `hash` formatted as `key=value`
+/// and joined by newlines in alphabetical key order.
+fn verify_login(token: &str, fields: &serde_json::Map<String, Value>) -> bool {
+    let Some(hash) = fields.get("hash").and_then(Value::as_str) else {
+        return false;
+    };
+    let Ok(provided) = hex::decode(hash) else {
+        return false;
+    };
+
+    let mut pairs: Vec<(&str, String)> = fields
+        .iter()
+        .filter(|(key, _)| key.as_str() != "hash")
+        .filter_map(|(key, value)| field_value(value).map(|v| (key.as_str(), v)))
+        .collect();
+    pairs.sort_by(|a, b| a.0.cmp(b.0));
+    let data_check_string = pairs
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let secret = Sha256::digest(token.as_bytes());
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(&secret) else {
+        return false;
+    };
+    mac.update(data_check_string.as_bytes());
+    mac.verify_slice(&provided).is_ok()
 }
 
-fn connect_help_command(text: &str) -> bool {
+fn field_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn is_start_command(text: &str) -> bool {
     let mut parts = text.split_whitespace();
     let Some(command) = parts.next() else {
         return false;
     };
     let command = command.split('@').next().unwrap_or(command);
-    let is_connect_command =
-        command.eq_ignore_ascii_case("/connect") || command.eq_ignore_ascii_case("/start");
-    is_connect_command && parts.next().is_none()
+    let is_start = command.eq_ignore_ascii_case("/connect") || command.eq_ignore_ascii_case("/start");
+    is_start && parts.next().is_none()
 }
 
 async fn telegram_bot_username(state: &ServerState) -> Option<String> {
@@ -2008,10 +1984,6 @@ fn configured_bot_username(state: &ServerState) -> Option<String> {
         .and_then(|t| t.read_bot_username())
         .map(|username| username.trim_start_matches('@').to_string())
         .filter(|username| !username.is_empty())
-}
-
-fn generate_code() -> String {
-    format!("{:06}", OsRng.next_u32() % 1_000_000)
 }
 
 fn now() -> i64 {
@@ -2179,9 +2151,6 @@ pub struct TelegramChat {
 #[derive(Debug, Deserialize)]
 pub struct TelegramUser {
     id: i64,
-    username: Option<String>,
-    first_name: Option<String>,
-    last_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2355,23 +2324,52 @@ mod tests {
     }
 
     #[test]
-    fn parses_connect_command() {
-        assert_eq!(connect_code(Some("/connect 123456")), Some("123456"));
-        assert_eq!(connect_code(Some("/start 123456")), Some("123456"));
-        assert_eq!(
-            connect_code(Some("/connect@friday_bot 123456")),
-            Some("123456")
-        );
-        assert_eq!(connect_code(Some("/connect")), None);
+    fn start_command_only_matches_bare_start_commands() {
+        assert!(is_start_command("/start"));
+        assert!(is_start_command("/connect@friday_bot"));
+        assert!(!is_start_command("hello"));
+        assert!(!is_start_command("/start 123456"));
+        assert!(!is_start_command("/connect 123456"));
     }
 
     #[test]
-    fn connect_help_only_matches_bare_connect_commands() {
-        assert!(connect_help_command("/start"));
-        assert!(connect_help_command("/connect@friday_bot"));
-        assert!(!connect_help_command("hello"));
-        assert!(!connect_help_command("/start 123456"));
-        assert!(!connect_help_command("/connect 123456"));
+    fn login_verification_accepts_genuine_signature_and_rejects_tampering() {
+        let token = "123456:test-bot-token";
+        let mut fields = serde_json::Map::new();
+        fields.insert("id".into(), Value::from(42_i64));
+        fields.insert("first_name".into(), Value::from("Ada"));
+        fields.insert("username".into(), Value::from("ada"));
+        fields.insert("auth_date".into(), Value::from(1_700_000_000_i64));
+
+        let hash = sign_login(token, &fields);
+        fields.insert("hash".into(), Value::from(hash));
+        assert!(verify_login(token, &fields));
+
+        // Tampered field invalidates the signature.
+        let mut tampered = fields.clone();
+        tampered.insert("id".into(), Value::from(99_i64));
+        assert!(!verify_login(token, &tampered));
+
+        // Wrong bot token invalidates the signature.
+        assert!(!verify_login("999999:other-token", &fields));
+    }
+
+    fn sign_login(token: &str, fields: &serde_json::Map<String, Value>) -> String {
+        let mut pairs: Vec<(&str, String)> = fields
+            .iter()
+            .filter(|(key, _)| key.as_str() != "hash")
+            .filter_map(|(key, value)| field_value(value).map(|v| (key.as_str(), v)))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        let data_check_string = pairs
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let secret = Sha256::digest(token.as_bytes());
+        let mut mac = Hmac::<Sha256>::new_from_slice(&secret).unwrap();
+        mac.update(data_check_string.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
     }
 
     use async_trait::async_trait;
@@ -2549,12 +2547,7 @@ mod tests {
     fn callback(token: String, from_id: i64, chat_id: i64, text: &str) -> CallbackQuery {
         CallbackQuery {
             id: "cb".to_string(),
-            from: TelegramUser {
-                id: from_id,
-                username: None,
-                first_name: None,
-                last_name: None,
-            },
+            from: TelegramUser { id: from_id },
             message: Some(CallbackMessage {
                 message_id: 10,
                 chat: TelegramChat {
@@ -2574,12 +2567,7 @@ mod tests {
                 id: chat_id,
                 kind: "private".to_string(),
             },
-            from: Some(TelegramUser {
-                id: from_id,
-                username: None,
-                first_name: None,
-                last_name: None,
-            }),
+            from: Some(TelegramUser { id: from_id }),
             text: Some(text.to_string()),
             message_thread_id: None,
             direct_messages_topic: None,
@@ -2892,12 +2880,7 @@ mod tests {
                 id: 42,
                 kind: "private".to_string(),
             },
-            from: Some(TelegramUser {
-                id: 555,
-                username: None,
-                first_name: None,
-                last_name: None,
-            }),
+            from: Some(TelegramUser { id: 555 }),
             text: Some("hello".to_string()),
             message_thread_id: None,
             direct_messages_topic: None,
@@ -2928,12 +2911,7 @@ mod tests {
                 id: 42,
                 kind: "private".to_string(),
             },
-            from: Some(TelegramUser {
-                id: 555,
-                username: None,
-                first_name: None,
-                last_name: None,
-            }),
+            from: Some(TelegramUser { id: 555 }),
             text: Some("hello".to_string()),
             message_thread_id: None,
             direct_messages_topic: Some(DirectMessagesTopic { topic_id: 99 }),

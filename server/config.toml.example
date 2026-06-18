@@ -55,6 +55,9 @@ keep_versions = 10
 enabled = true
 base = "/tmp/friday-files"
 
+# Account linking uses the Telegram Login Widget (https://core.telegram.org/bots/telegram-login).
+# Tell BotFather which domain hosts the widget with `/setdomain` (the host in `public_url`),
+# otherwise Telegram refuses to render the login button.
 [server.telegram]
 bot_api_key = "123456:telegram-bot-token"
 bot_username = "friday_bot"

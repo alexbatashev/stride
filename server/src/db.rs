@@ -181,14 +181,6 @@ migrations! {
     }
 
     telegram_integration {
-        table telegram_connect_codes {
-            code: String [PrimaryKey],
-            user_id: Uuid [Unique],
-            expires_at: i64,
-
-            foreign_key(user_id -> users.id);
-        }
-
         table telegram_connections {
             id: Uuid [PrimaryKey],
             user_id: Uuid [Unique],
