@@ -13,8 +13,114 @@ use serde_json::{Value, json};
 #[cfg(feature = "eryx")]
 pub use eryx::VolumeMount;
 
+// numpy is the only prebuilt WASI build of a native package that currently
+// exists. dicej/wasi-wheels is unmaintained but no maintained source ships
+// numpy/pandas/pillow for WASI yet; those need our own build pipeline.
 const NUMPY_WASI_URL: &str =
     "https://github.com/dicej/wasi-wheels/releases/download/v0.0.2/numpy-wasi.tar.gz";
+
+// Pure-Python wheels (py3-none-any). They carry no native extensions, so they
+// import on any CPython-WASI minor version and need no compilation.
+const BS4_URL: &str = "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl";
+const SOUPSIEVE_URL: &str = "https://files.pythonhosted.org/packages/5e/f5/0c41cb68dcae6b7de4fac4188a3a9589e21fb31df21ea3a2e888db95e6c9/soupsieve-2.8.4-py3-none-any.whl";
+const REQUESTS_URL: &str = "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl";
+const URLLIB3_URL: &str = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl";
+const CERTIFI_URL: &str = "https://files.pythonhosted.org/packages/58/fc/bce832fd4fd99766c04d1ee0eead6b0ec6486fb100ae5e74c1d91292b982/certifi-2026.6.17-py3-none-any.whl";
+const IDNA_URL: &str = "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl";
+const MARKDOWN_URL: &str = "https://files.pythonhosted.org/packages/de/1f/77fa3081e4f66ca3576c896ae5d31c3002ac6607f9747d2e3aa49227e464/markdown-3.10.2-py3-none-any.whl";
+const DATEUTIL_URL: &str = "https://files.pythonhosted.org/packages/36/7a/87837f39d0296e723bb9b62bbb257d0355c7f6128853c78955f57342a56d/python_dateutil-2.8.2-py2.py3-none-any.whl";
+const SIX_URL: &str = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl";
+
+#[derive(Clone, Copy)]
+enum ArchiveKind {
+    /// tar.gz whose root unpacks directly into site-packages.
+    TarGz,
+    /// PEP 427 wheel (a zip) whose entries unpack into site-packages.
+    Wheel,
+}
+
+struct WasiPackage {
+    /// Stable key used for the per-package install marker.
+    name: &'static str,
+    url: &'static str,
+    kind: ArchiveKind,
+    /// Module to bake into the pre-initialized snapshot. Only native packages
+    /// benefit; pure-Python ones load lazily from site-packages at runtime.
+    #[cfg_attr(not(feature = "eryx"), allow(dead_code))]
+    preinit_import: Option<&'static str>,
+}
+
+const WASI_PACKAGES: &[WasiPackage] = &[
+    WasiPackage {
+        name: "numpy",
+        url: NUMPY_WASI_URL,
+        kind: ArchiveKind::TarGz,
+        preinit_import: Some("numpy"),
+    },
+    WasiPackage {
+        name: "beautifulsoup4",
+        url: BS4_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "soupsieve",
+        url: SOUPSIEVE_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "requests",
+        url: REQUESTS_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "urllib3",
+        url: URLLIB3_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "certifi",
+        url: CERTIFI_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "idna",
+        url: IDNA_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "markdown",
+        url: MARKDOWN_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "python-dateutil",
+        url: DATEUTIL_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "six",
+        url: SIX_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+];
+
+#[cfg(feature = "eryx")]
+fn preinit_imports() -> Vec<&'static str> {
+    WASI_PACKAGES
+        .iter()
+        .filter_map(|pkg| pkg.preinit_import)
+        .collect()
+}
+
 #[cfg(feature = "eryx")]
 const ERYX_RUNTIME_CACHE_VERSION: &str = "2";
 
@@ -174,7 +280,10 @@ impl PythonTool {
 
 #[derive(ToolDesc)]
 struct PythonParams {
-    /// Python script to execute. Numpy is available as numpy/np when the Eryx backend is enabled.
+    /// Python script to execute. With the Eryx backend these packages are
+    /// available: numpy, requests, beautifulsoup4 (bs4), urllib3, certifi,
+    /// idna, markdown, python-dateutil (dateutil), six. Network access is
+    /// required for requests to reach remote hosts.
     script: String,
 }
 
@@ -192,7 +301,9 @@ impl Tool for PythonTool {
         LlmTool {
             r#type: llm::ToolType::Function,
             function: Function {
-                description: "Execute a Python script in a sandbox and return stdout and stderr."
+                description: "Execute a Python script in a sandbox and return stdout and stderr. \
+                    Available packages: numpy, requests, beautifulsoup4, urllib3, certifi, idna, \
+                    markdown, python-dateutil, six."
                     .to_string(),
                 name: self.name().to_string(),
                 parameters: Some(PythonParams::function_parameters()),
@@ -225,34 +336,47 @@ impl Tool for PythonTool {
 pub async fn ensure_wasi_dependencies(cache_dir: &Path) -> anyhow::Result<WasiDependencies> {
     tokio::fs::create_dir_all(cache_dir).await?;
     let deps_dir = cache_dir.join("deps");
-    tokio::fs::create_dir_all(&deps_dir).await?;
-
-    let numpy_tarball = deps_dir.join("numpy-wasi.tar.gz");
-    if !numpy_tarball.exists() {
-        download(NUMPY_WASI_URL, &numpy_tarball).await?;
-    }
-
     let site_packages = deps_dir.join("site-packages");
-    if !site_packages.join("numpy").is_dir() {
-        let tmp = deps_dir.join("site-packages.tmp");
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-        tokio::fs::create_dir_all(&tmp).await?;
-        extract_tar_gz(&numpy_tarball, &tmp).await?;
-        if site_packages.exists() {
-            tokio::fs::remove_dir_all(&site_packages).await?;
-        }
-        tokio::fs::rename(&tmp, &site_packages).await?;
+    let markers = deps_dir.join(".installed");
+    tokio::fs::create_dir_all(&site_packages).await?;
+    tokio::fs::create_dir_all(&markers).await?;
+
+    for pkg in WASI_PACKAGES {
+        install_package(pkg, &deps_dir, &site_packages, &markers).await?;
     }
 
-    Ok(WasiDependencies {
-        numpy_tarball,
-        site_packages,
-    })
+    Ok(WasiDependencies { site_packages })
+}
+
+async fn install_package(
+    pkg: &WasiPackage,
+    deps_dir: &Path,
+    site_packages: &Path,
+    markers: &Path,
+) -> anyhow::Result<()> {
+    let marker = markers.join(pkg.name);
+    if marker.exists() {
+        return Ok(());
+    }
+
+    let archive = deps_dir.join(archive_file_name(pkg));
+    if !archive.exists() {
+        download(pkg.url, &archive).await?;
+    }
+    match pkg.kind {
+        ArchiveKind::TarGz => extract_tar_gz(&archive, site_packages).await?,
+        ArchiveKind::Wheel => extract_zip(&archive, site_packages).await?,
+    }
+    tokio::fs::write(&marker, pkg.url).await?;
+    Ok(())
+}
+
+fn archive_file_name(pkg: &WasiPackage) -> &'static str {
+    pkg.url.rsplit('/').next().unwrap_or(pkg.name)
 }
 
 #[derive(Clone, Debug)]
 pub struct WasiDependencies {
-    pub numpy_tarball: PathBuf,
     pub site_packages: PathBuf,
 }
 
@@ -322,6 +446,18 @@ async fn extract_tar_gz(archive: &Path, target: &Path) -> anyhow::Result<()> {
         let decoder = flate2::read::GzDecoder::new(file);
         let mut archive = tar::Archive::new(decoder);
         archive.unpack(target)?;
+        Ok(())
+    })
+    .await?
+}
+
+async fn extract_zip(archive: &Path, target: &Path) -> anyhow::Result<()> {
+    let archive = archive.to_path_buf();
+    let target = target.to_path_buf();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let file = std::fs::File::open(archive)?;
+        let mut zip = zip::ZipArchive::new(file)?;
+        zip.extract(target)?;
         Ok(())
     })
     .await?
@@ -450,7 +586,8 @@ mod eryx_backend {
     async fn build_runtime(config: PythonToolConfig) -> anyhow::Result<PreinitRuntime> {
         if config.preinit {
             let deps = ensure_wasi_dependencies(&config.cache_dir).await?;
-            prepare_preinit(&config.cache_dir, Some(&deps.site_packages), &["numpy"]).await
+            let imports = crate::preinit_imports();
+            prepare_preinit(&config.cache_dir, Some(&deps.site_packages), &imports).await
         } else {
             prepare_preinit(&config.cache_dir, None, &[]).await
         }
@@ -734,6 +871,34 @@ mod tests {
         let bytes = tokio::fs::read(&path).await.unwrap();
         assert!(bytes.len() > 1024, "got {} bytes", bytes.len());
         assert_eq!(&bytes[..2], &[0x1f, 0x8b], "not a gzip stream");
+    }
+
+    #[test]
+    fn archive_file_name_uses_last_url_segment() {
+        let pkg = &WASI_PACKAGES[0];
+        assert_eq!(archive_file_name(pkg), "numpy-wasi.tar.gz");
+    }
+
+    #[test]
+    fn package_manifest_is_well_formed() {
+        let mut names = std::collections::HashSet::new();
+        for pkg in WASI_PACKAGES {
+            assert!(
+                names.insert(pkg.name),
+                "duplicate package name {}",
+                pkg.name
+            );
+            assert!(
+                pkg.url.starts_with("https://"),
+                "{} url not https",
+                pkg.name
+            );
+            assert!(
+                !archive_file_name(pkg).is_empty(),
+                "{} has empty archive name",
+                pkg.name
+            );
+        }
     }
 
     #[tokio::test]
