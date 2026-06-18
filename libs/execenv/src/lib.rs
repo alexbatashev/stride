@@ -26,12 +26,34 @@ const DATEUTIL_URL: &str = "https://files.pythonhosted.org/packages/36/7a/87837f
 const SIX_URL: &str = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl";
 const TYPING_EXTENSIONS_URL: &str = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl";
 const CHARSET_NORMALIZER_URL: &str = "https://files.pythonhosted.org/packages/db/8f/61959034484a4a7c527811f4721e75d02d653a35afb0b6054474d8185d4c/charset_normalizer-3.4.7-py3-none-any.whl";
+// Pure-Python runtime dependencies of the native packages below. pandas needs
+// pytz + tzdata; matplotlib needs cycler, fonttools, packaging and pyparsing.
+const PYTZ_URL: &str = "https://files.pythonhosted.org/packages/ec/dd/96da98f892250475bdf2328112d7468abdd4acc7b902b6af23f4ed958ea0/pytz-2026.2-py2.py3-none-any.whl";
+const TZDATA_URL: &str = "https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl";
+const CYCLER_URL: &str = "https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl";
+const FONTTOOLS_URL: &str = "https://files.pythonhosted.org/packages/2c/47/c99d5268f354002ce80f8d029cd9d7d872969da1de8b93d32de4dc56d6f4/fonttools-4.63.0-py3-none-any.whl";
+const PYPARSING_URL: &str = "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl";
+const PACKAGING_URL: &str = "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl";
+
+// Native (wasm32-wasip1) packages built against eryx-runtime's exact toolchain
+// (wasi-sdk-27 + CPython 3.14) and published by frontiers-labs/wasi-wheels.
+const NUMPY_URL: &str =
+    "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/numpy-wasi.tar.gz";
+const PILLOW_URL: &str =
+    "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/pillow-wasi.tar.gz";
+const KIWISOLVER_URL: &str =
+    "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/kiwisolver-wasi.tar.gz";
+const CONTOURPY_URL: &str =
+    "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/contourpy-wasi.tar.gz";
+const PANDAS_URL: &str =
+    "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/pandas-wasi.tar.gz";
+const MATPLOTLIB_URL: &str =
+    "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/matplotlib-wasi.tar.gz";
 
 #[derive(Clone, Copy)]
 enum ArchiveKind {
-    /// tar.gz whose root unpacks directly into site-packages. Reserved for
-    /// native packages, which are currently deferred (see WASI_PACKAGES).
-    #[allow(dead_code)]
+    /// tar.gz whose root unpacks directly into site-packages. Used by the
+    /// native packages (numpy, Pillow, pandas, ...).
     TarGz,
     /// PEP 427 wheel (a zip) whose entries unpack into site-packages.
     Wheel,
@@ -48,13 +70,14 @@ struct WasiPackage {
     preinit_import: Option<&'static str>,
 }
 
-// Native packages (numpy, Pillow, pandas, ...) are intentionally absent. The
-// prebuilt WASI wheels from bkmashiro/wasi-wheels are CPython 3.14 / wasm32-wasip1
-// but were built against a different wasi-libc than eryx-runtime 0.4.9 (which
-// links with wasi-sdk-27): their `.so` files need an unresolved `__wasi_init_tp`
-// symbol and fail preinit linking, which would break the whole runtime. A
-// working native package must be compiled against eryx-runtime's exact toolchain
-// (wasi-sdk-27 + its CPython 3.14). Add such packages here as ArchiveKind::TarGz.
+// Native packages (numpy, Pillow, pandas, matplotlib, ...) are built against
+// eryx-runtime's exact toolchain (wasi-sdk-27 + CPython 3.14) and published by
+// frontiers-labs/wasi-wheels. Their `.so` files are baked into the preinit
+// snapshot (see prepare_preinit). Earlier bkmashiro builds linked a different
+// wasi-libc and failed preinit with an unresolved `__wasi_init_tp` symbol; the
+// frontiers-labs builds fix that. Only numpy is imported at preinit time; the
+// rest load lazily so a failure surfaces at `import` in user code rather than
+// breaking the whole runtime.
 const WASI_PACKAGES: &[WasiPackage] = &[
     WasiPackage {
         name: "beautifulsoup4",
@@ -125,6 +148,83 @@ const WASI_PACKAGES: &[WasiPackage] = &[
         kind: ArchiveKind::Wheel,
         preinit_import: None,
     },
+    // pandas runtime deps.
+    WasiPackage {
+        name: "pytz",
+        url: PYTZ_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "tzdata",
+        url: TZDATA_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // matplotlib runtime deps.
+    WasiPackage {
+        name: "cycler",
+        url: CYCLER_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "fonttools",
+        url: FONTTOOLS_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "pyparsing",
+        url: PYPARSING_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "packaging",
+        url: PACKAGING_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // Native packages (wasm32-wasip1). Their `.so` files are baked into the
+    // preinit snapshot. numpy is imported at preinit to warm the snapshot; the
+    // others load lazily.
+    WasiPackage {
+        name: "numpy",
+        url: NUMPY_URL,
+        kind: ArchiveKind::TarGz,
+        preinit_import: Some("numpy"),
+    },
+    WasiPackage {
+        name: "pillow",
+        url: PILLOW_URL,
+        kind: ArchiveKind::TarGz,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "kiwisolver",
+        url: KIWISOLVER_URL,
+        kind: ArchiveKind::TarGz,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "contourpy",
+        url: CONTOURPY_URL,
+        kind: ArchiveKind::TarGz,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "pandas",
+        url: PANDAS_URL,
+        kind: ArchiveKind::TarGz,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "matplotlib",
+        url: MATPLOTLIB_URL,
+        kind: ArchiveKind::TarGz,
+        preinit_import: None,
+    },
 ];
 
 #[cfg(feature = "eryx")]
@@ -136,7 +236,7 @@ fn preinit_imports() -> Vec<&'static str> {
 }
 
 #[cfg(feature = "eryx")]
-const ERYX_RUNTIME_CACHE_VERSION: &str = "2";
+const ERYX_RUNTIME_CACHE_VERSION: &str = "3";
 
 #[derive(Clone, Debug)]
 pub enum BackendKind {
@@ -229,7 +329,7 @@ impl DirectOsFileSystem {
         std::fs::create_dir_all(&host_dir)?;
         Ok(Self {
             host_dir,
-            guest_dir: "/workspace".to_string(),
+            guest_dir: "/~workspace".to_string(),
             read_only: false,
         })
     }
@@ -316,7 +416,9 @@ impl Tool for PythonTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 description: "Execute a Python script in a sandbox and return stdout and stderr. \
-                    Available packages: requests, beautifulsoup4, urllib3, certifi, idna, \
+                    The writable workspace is mounted at /~workspace; write outputs there. \
+                    /tmp is writable scratch. Available packages: numpy, pandas, matplotlib \
+                    (Agg backend), pillow, requests, beautifulsoup4, urllib3, certifi, idna, \
                     markdown, python-dateutil, six."
                     .to_string(),
                 name: self.name().to_string(),
@@ -790,6 +892,11 @@ mod eryx_backend {
             return execute_request_with_network(request).await;
         }
 
+        // Keep the scratch dir alive for the whole execution.
+        let scratch = ScratchTmp::new()?;
+        let mut volumes = request.volumes;
+        volumes.push(scratch.volume());
+
         let mut execute = request
             .runtime
             .executor
@@ -801,27 +908,50 @@ mod eryx_backend {
         if let Some(fuel) = request.limits.max_cpu_fuel {
             execute = execute.with_fuel_limit(fuel);
         }
-        if !request.volumes.is_empty() {
-            execute = execute.with_volumes(request.volumes);
-        }
+        execute = execute.with_volumes(volumes);
 
         let result = execute.run().await.context("execute eryx script")?;
+        drop(scratch);
         Ok(ExecutionOutput {
             stdout: result.stdout,
             stderr: result.stderr,
         })
     }
 
+    /// A host-backed writable `/tmp` for the guest. CPython's `tempfile`,
+    /// matplotlib's font cache and similar code expect a writable `/tmp`; the
+    /// hybrid VFS only exposes `/data` and the mounted volumes otherwise, so
+    /// without this `mkdir`/`open` under `/tmp` fail with ENOENT.
+    struct ScratchTmp {
+        dir: tempfile::TempDir,
+    }
+
+    impl ScratchTmp {
+        fn new() -> anyhow::Result<Self> {
+            Ok(Self {
+                dir: tempfile::tempdir().context("create eryx /tmp scratch dir")?,
+            })
+        }
+
+        fn volume(&self) -> eryx::VolumeMount {
+            eryx::VolumeMount::new(self.dir.path(), "/tmp")
+        }
+    }
+
     async fn execute_request_with_network(
         request: ExecutionRequest,
     ) -> anyhow::Result<ExecutionOutput> {
+        let scratch = ScratchTmp::new()?;
+        let mut volumes = request.volumes;
+        volumes.push(scratch.volume());
+
         let mut builder = unsafe {
             eryx::Sandbox::builder()
                 .with_precompiled_file(&request.runtime.runtime)
                 .with_python_stdlib(&request.runtime.stdlib)
         }
         .with_resource_limits(to_eryx_limits(&request.limits))
-        .with_volumes(request.volumes)
+        .with_volumes(volumes)
         .with_network(eryx::NetConfig::permissive());
         if let Some(site_packages) = request.runtime.site_packages.as_ref() {
             builder = builder.with_site_packages(site_packages);
@@ -831,6 +961,7 @@ mod eryx_backend {
             .execute(&request.script)
             .await
             .context("execute eryx script")?;
+        drop(scratch);
         Ok(ExecutionOutput {
             stdout: result.stdout,
             stderr: result.stderr,
@@ -884,8 +1015,7 @@ mod tests {
     async fn download_follows_redirects_and_fetches_tarball() {
         // A GitHub release asset that 302-redirects to release-assets storage,
         // exercising the redirect-following path of `download`.
-        let url =
-            "https://github.com/bkmashiro/wasi-wheels/releases/download/latest/numpy-wasi.tar.gz";
+        let url = NUMPY_URL;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("numpy-wasi.tar.gz");
         download(url, &path).await.unwrap();
@@ -981,7 +1111,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
                 .unwrap()
-                .guest_dir("/workspace"),
+                .guest_dir("/~workspace"),
         );
         let config = PythonToolConfig {
             cache_dir: cache.path().to_path_buf(),
@@ -1021,7 +1151,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
                 .unwrap()
-                .guest_dir("/workspace"),
+                .guest_dir("/~workspace"),
         );
         let config = PythonToolConfig {
             cache_dir,
@@ -1052,5 +1182,58 @@ mod tests {
 
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["stdout"].as_str().unwrap().trim(), "Title");
+    }
+
+    #[cfg(feature = "eryx")]
+    #[tokio::test]
+    #[ignore = "downloads native WASI packages and precompiles runtime"]
+    async fn eryx_backend_imports_native_packages() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache_dir = std::env::temp_dir().join("friday-execenv-native-test-cache");
+        tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+        let fs = Arc::new(
+            DirectOsFileSystem::new(workspace.path().join("workspace"))
+                .unwrap()
+                .guest_dir("/~workspace"),
+        );
+        let config = PythonToolConfig {
+            cache_dir,
+            backend: BackendKind::Eryx,
+            threads: 1,
+            preinit: true,
+            limits: ExecutionLimits::default(),
+            network: NetworkAccess::Blocked,
+        };
+        prepare_eryx_runtime(config.clone()).await.unwrap();
+        let tool = PythonTool::new(config.clone(), fs).await.unwrap();
+
+        // Exercises native imports, a writable /tmp (matplotlib font cache lands
+        // there) and saving a figure into the /~workspace mount.
+        let script = "import numpy as np\n\
+             import pandas as pd\n\
+             from PIL import Image\n\
+             import matplotlib\n\
+             matplotlib.use('Agg')\n\
+             import matplotlib.pyplot as plt\n\
+             total = int(np.arange(5).sum())\n\
+             rows = len(pd.DataFrame({'a': [1, 2, 3]}))\n\
+             size = Image.new('RGB', (4, 2)).size\n\
+             plt.plot([1, 2, 3], [3, 1, 2])\n\
+             plt.savefig('/~workspace/sample_plot.png')\n\
+             print(total, rows, size[0])";
+        let result = tool
+            .execute(
+                Arc::new(AgentConfig {
+                    model_registry: friday_agent::ModelRegistry::new(),
+                    max_iterations: 1,
+                }),
+                json!({ "script": script }),
+            )
+            .await;
+
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(result["stdout"].as_str().unwrap().trim(), "10 3 4");
+        let png = workspace.path().join("workspace").join("sample_plot.png");
+        assert!(png.exists(), "savefig did not write to /~workspace");
     }
 }
