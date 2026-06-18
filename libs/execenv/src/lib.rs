@@ -24,6 +24,8 @@ const IDNA_URL: &str = "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599
 const MARKDOWN_URL: &str = "https://files.pythonhosted.org/packages/de/1f/77fa3081e4f66ca3576c896ae5d31c3002ac6607f9747d2e3aa49227e464/markdown-3.10.2-py3-none-any.whl";
 const DATEUTIL_URL: &str = "https://files.pythonhosted.org/packages/36/7a/87837f39d0296e723bb9b62bbb257d0355c7f6128853c78955f57342a56d/python_dateutil-2.8.2-py2.py3-none-any.whl";
 const SIX_URL: &str = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl";
+const TYPING_EXTENSIONS_URL: &str = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl";
+const CHARSET_NORMALIZER_URL: &str = "https://files.pythonhosted.org/packages/db/8f/61959034484a4a7c527811f4721e75d02d653a35afb0b6054474d8185d4c/charset_normalizer-3.4.7-py3-none-any.whl";
 
 #[derive(Clone, Copy)]
 enum ArchiveKind {
@@ -105,6 +107,21 @@ const WASI_PACKAGES: &[WasiPackage] = &[
     WasiPackage {
         name: "six",
         url: SIX_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // typing-extensions is a runtime dependency of beautifulsoup4 4.15.
+    WasiPackage {
+        name: "typing-extensions",
+        url: TYPING_EXTENSIONS_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // charset-normalizer is requests' optional encoding detector; without it
+    // requests imports but warns on every run.
+    WasiPackage {
+        name: "charset-normalizer",
+        url: CHARSET_NORMALIZER_URL,
         kind: ArchiveKind::Wheel,
         preinit_import: None,
     },
