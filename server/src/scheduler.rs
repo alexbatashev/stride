@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::config::Tools;
 use crate::db::{AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_runs, automations};
 use crate::notify::{self, RunResult};
-use crate::runner::inproc::python_tool_config;
+use crate::runner::inproc::{expert_tool_registry, python_tool_config};
 use crate::triggers;
 
 const POLL_SECS: u64 = 60;
@@ -308,7 +308,8 @@ async fn run_python(
     let fs = execenv::DirectOsFileSystem::new(dir).map_err(|e| e.to_string())?;
     let tool = execenv::PythonTool::new(config, Arc::new(fs))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .with_tools(expert_tool_registry(tools));
 
     let result = tool
         .execute(model_config, serde_json::json!({ "script": script }))

@@ -1058,7 +1058,7 @@ pub(crate) fn python_tool_config(python: &Python) -> execenv::PythonToolConfig {
     config
 }
 
-fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
+pub(crate) fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
     if let Some(web_search) = &tools.web_search {

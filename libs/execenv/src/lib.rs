@@ -1414,11 +1414,64 @@ mod eryx_backend {
         tools: Vec<PythonToolSpec>,
         calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
     ) -> anyhow::Result<ExecutionOutput> {
+        if matches!(request.network, NetworkAccess::Allowed) {
+            return execute_request_with_tools_networked(request, tools, calls).await;
+        }
+
+        // Fast path: reuse the cached, preinitialized interpreter and attach the
+        // tool callbacks directly, dispatching callback requests on a side task.
         let scratch = ScratchTmp::new()?;
         let mut volumes = request.volumes;
         volumes.push(scratch.volume());
 
-        let library = build_tools_library(&tools, calls);
+        let (callbacks, preamble) = build_tool_callbacks(&tools, calls);
+        let dispatch: HashMap<String, Arc<dyn eryx::Callback>> = callbacks
+            .iter()
+            .map(|cb| (cb.name().to_string(), cb.clone()))
+            .collect();
+        let (cb_tx, cb_rx) = tokio::sync::mpsc::channel::<eryx::CallbackRequest>(32);
+        let handler = tokio::spawn(run_tool_callback_handler(cb_rx, dispatch));
+
+        let full_code = format!("{preamble}\n{}", request.script);
+        let mut execute = request
+            .runtime
+            .executor
+            .execute(full_code)
+            .with_callbacks(&callbacks, cb_tx)
+            .with_timeout(request.limits.max_runtime);
+        if let Some(limit) = request.limits.max_memory_bytes {
+            execute = execute.with_memory_limit(limit);
+        }
+        if let Some(fuel) = request.limits.max_cpu_fuel {
+            execute = execute.with_fuel_limit(fuel);
+        }
+        execute = execute.with_volumes(volumes);
+
+        let result = execute.run().await.context("execute eryx script");
+        handler.abort();
+        drop(scratch);
+        let result = result?;
+        Ok(ExecutionOutput {
+            stdout: result.stdout,
+            stderr: result.stderr,
+        })
+    }
+
+    /// Network-enabled variant: a fresh Sandbox is required to wire the network
+    /// handler, so tools are attached through a `RuntimeLibrary`.
+    async fn execute_request_with_tools_networked(
+        request: ExecutionRequest,
+        tools: Vec<PythonToolSpec>,
+        calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
+    ) -> anyhow::Result<ExecutionOutput> {
+        let scratch = ScratchTmp::new()?;
+        let mut volumes = request.volumes;
+        volumes.push(scratch.volume());
+
+        let (callbacks, preamble) = build_tool_callbacks(&tools, calls);
+        let library = eryx::RuntimeLibrary::new()
+            .with_callbacks(callbacks.into_iter().map(boxed_callback).collect())
+            .with_preamble(preamble);
 
         let mut builder = unsafe {
             eryx::Sandbox::builder()
@@ -1427,10 +1480,8 @@ mod eryx_backend {
         }
         .with_resource_limits(to_eryx_limits(&request.limits))
         .with_volumes(volumes)
-        .with_library(library);
-        if matches!(request.network, NetworkAccess::Allowed) {
-            builder = builder.with_network(eryx::NetConfig::permissive());
-        }
+        .with_library(library)
+        .with_network(eryx::NetConfig::permissive());
         if let Some(site_packages) = request.runtime.site_packages.as_ref() {
             builder = builder.with_site_packages(site_packages);
         }
@@ -1446,58 +1497,120 @@ mod eryx_backend {
         })
     }
 
-    /// Build the eryx library that exposes each tool as a callback and assembles
-    /// the `tools` Python package that forwards calls to the host.
-    fn build_tools_library(
-        tools: &[PythonToolSpec],
-        calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
-    ) -> eryx::RuntimeLibrary {
-        let mut library = eryx::RuntimeLibrary::new();
-        let mut entries = Vec::new();
+    /// `Arc<dyn Callback>` cannot be turned into `Box<dyn Callback>`, so wrap it
+    /// in a thin forwarding type for `RuntimeLibrary::with_callbacks`.
+    fn boxed_callback(callback: Arc<dyn eryx::Callback>) -> Box<dyn eryx::Callback> {
+        Box::new(SharedCallback(callback))
+    }
 
-        for (index, spec) in tools.iter().enumerate() {
-            let callback_name = format!("__tool_{index}");
-            let attribute = python_attribute(&spec.name);
-            entries.push((attribute, callback_name.clone()));
+    struct SharedCallback(Arc<dyn eryx::Callback>);
 
-            let schema = eryx::Schema::try_from_value(spec.parameters.clone())
-                .or_else(|_| eryx::Schema::try_from_value(json!({ "type": "object" })))
-                .unwrap_or_else(|_| eryx::Schema::empty());
-            let tool_name = spec.name.clone();
-            let calls = calls.clone();
-            let callback = eryx::DynamicCallback::builder(
-                callback_name,
-                spec.description.clone(),
-                move |args| {
-                    let calls = calls.clone();
-                    let tool_name = tool_name.clone();
-                    Box::pin(async move {
-                        let (reply, response) = tokio::sync::oneshot::channel();
-                        calls
-                            .send(HostToolCall {
-                                name: tool_name,
-                                args,
-                                reply,
-                            })
-                            .map_err(|_| {
-                                eryx::CallbackError::ExecutionFailed(
-                                    "host tool channel closed".to_string(),
-                                )
-                            })?;
-                        response.await.map_err(|_| {
-                            eryx::CallbackError::ExecutionFailed(
-                                "host tool dispatch dropped".to_string(),
-                            )
-                        })
-                    })
-                },
-            )
-            .schema(schema)
-            .build();
-            library = library.with_callback(callback);
+    impl eryx::Callback for SharedCallback {
+        fn name(&self) -> &str {
+            self.0.name()
         }
 
-        library.with_preamble(build_tools_preamble(&entries))
+        fn description(&self) -> &str {
+            self.0.description()
+        }
+
+        fn parameters_schema(&self) -> eryx::Schema {
+            self.0.parameters_schema()
+        }
+
+        fn invoke(
+            &self,
+            args: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<serde_json::Value, eryx::CallbackError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.0.invoke(args)
+        }
+    }
+
+    /// Service callback requests from a running script: look up the callback by
+    /// name, invoke it, and return the JSON-encoded result to the guest.
+    async fn run_tool_callback_handler(
+        mut rx: tokio::sync::mpsc::Receiver<eryx::CallbackRequest>,
+        callbacks: HashMap<String, Arc<dyn eryx::Callback>>,
+    ) {
+        while let Some(request) = rx.recv().await {
+            let args = serde_json::from_str(&request.arguments_json).unwrap_or(serde_json::Value::Null);
+            let response = match callbacks.get(&request.name) {
+                Some(callback) => callback
+                    .invoke(args)
+                    .await
+                    .map(|value| value.to_string())
+                    .map_err(|err| err.to_string()),
+                None => Err(format!("unknown callback: {}", request.name)),
+            };
+            let _ = request.response_tx.send(response);
+        }
+    }
+
+    /// Build one tool callback plus its `(attribute, callback_name)` mapping for
+    /// the Python preamble.
+    fn tool_callback(
+        index: usize,
+        spec: &PythonToolSpec,
+        calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
+    ) -> (Arc<dyn eryx::Callback>, (String, String)) {
+        let callback_name = format!("__tool_{index}");
+        let attribute = python_attribute(&spec.name);
+        let schema = eryx::Schema::try_from_value(spec.parameters.clone())
+            .or_else(|_| eryx::Schema::try_from_value(json!({ "type": "object" })))
+            .unwrap_or_else(|_| eryx::Schema::empty());
+        let tool_name = spec.name.clone();
+        let callback = eryx::DynamicCallback::builder(
+            callback_name.clone(),
+            spec.description.clone(),
+            move |args| {
+                let calls = calls.clone();
+                let tool_name = tool_name.clone();
+                Box::pin(async move {
+                    let (reply, response) = tokio::sync::oneshot::channel();
+                    calls
+                        .send(HostToolCall {
+                            name: tool_name,
+                            args,
+                            reply,
+                        })
+                        .map_err(|_| {
+                            eryx::CallbackError::ExecutionFailed(
+                                "host tool channel closed".to_string(),
+                            )
+                        })?;
+                    response.await.map_err(|_| {
+                        eryx::CallbackError::ExecutionFailed(
+                            "host tool dispatch dropped".to_string(),
+                        )
+                    })
+                })
+            },
+        )
+        .schema(schema)
+        .build();
+        (Arc::new(callback), (attribute, callback_name))
+    }
+
+    /// Build the tool callbacks and the Python preamble that exposes them under
+    /// the `tools` package.
+    fn build_tool_callbacks(
+        tools: &[PythonToolSpec],
+        calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
+    ) -> (Vec<Arc<dyn eryx::Callback>>, String) {
+        let mut callbacks = Vec::with_capacity(tools.len());
+        let mut entries = Vec::with_capacity(tools.len());
+        for (index, spec) in tools.iter().enumerate() {
+            let (callback, entry) = tool_callback(index, spec, calls.clone());
+            callbacks.push(callback);
+            entries.push(entry);
+        }
+        (callbacks, build_tools_preamble(&entries))
     }
 
     use crate::python_attribute;
