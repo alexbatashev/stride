@@ -11,6 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use friday_agent::{AgentConfig, AgentResponseChunk, BaseAgent, Tool};
 use futures::StreamExt;
+use llm::StreamResponseChunk;
 use minisql::ConnectionPool;
 use serde_json::Value as JsonValue;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -337,11 +338,13 @@ async fn run_agent(model_config: Arc<AgentConfig>, prompt: &str) -> Result<Strin
     let mut output = String::new();
     while let Some(item) = stream.next().await {
         match item {
-            Ok(AgentResponseChunk::Chunk(chunk)) => {
-                for choice in &chunk.choices {
-                    if let Some(message) = &choice.message {
-                        output.push_str(&message.content);
+            Ok(AgentResponseChunk::Chunk(chunk)) => collect_agent_output(&chunk, &mut output),
+            Ok(AgentResponseChunk::ToolFinished { name, result, .. }) => {
+                if !result.trim().is_empty() {
+                    if !output.is_empty() {
+                        output.push_str("\n\n");
                     }
+                    output.push_str(&format!("{name} output:\n{result}"));
                 }
             }
             Ok(_) => {}
@@ -349,6 +352,29 @@ async fn run_agent(model_config: Arc<AgentConfig>, prompt: &str) -> Result<Strin
         }
     }
     Ok(output)
+}
+
+fn collect_agent_output(chunk: &StreamResponseChunk, output: &mut String) {
+    for choice in &chunk.choices {
+        if let Some(message) = &choice.message
+            && !message.content.is_empty()
+        {
+            output.push_str(&message.content);
+        }
+
+        if let Some(text) = &choice.text
+            && !text.is_empty()
+        {
+            output.push_str(text);
+        }
+
+        if let Some(delta) = &choice.delta
+            && let Some(content) = &delta.content
+            && !content.is_empty()
+        {
+            output.push_str(content);
+        }
+    }
 }
 
 fn unix_now() -> i64 {
@@ -414,6 +440,52 @@ mod tests {
         assert!(script.contains("PAYLOAD = _json.loads"));
         assert!(script.ends_with("print(PAYLOAD)"));
         assert_eq!(python_script("noop", None), "noop");
+    }
+
+    #[test]
+    fn collect_agent_output_reads_all_stream_shapes() {
+        let chunk = llm::StreamResponseChunk {
+            id: "chunk".to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: 1,
+            model: "mock".to_string(),
+            system_fingerprint: None,
+            choices: vec![
+                llm::CompletionChoice {
+                    message: Some(llm::Message {
+                        role: llm::Role::Assistant,
+                        content: "message ".to_string(),
+                        images: None,
+                        thinking: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    }),
+                    text: None,
+                    index: 0,
+                    delta: None,
+                    logprobs: None,
+                    tool_calls: None,
+                    finish_reason: None,
+                },
+                llm::CompletionChoice {
+                    message: None,
+                    text: Some("text ".to_string()),
+                    index: 0,
+                    delta: Some(llm::Delta {
+                        content: Some("delta".to_string()),
+                        thinking: None,
+                        tool_calls: None,
+                    }),
+                    logprobs: None,
+                    tool_calls: None,
+                    finish_reason: None,
+                },
+            ],
+        };
+
+        let mut output = String::new();
+        collect_agent_output(&chunk, &mut output);
+        assert_eq!(output, "message text delta");
     }
 
     #[tokio::test]
