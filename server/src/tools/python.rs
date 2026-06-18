@@ -61,7 +61,8 @@ impl FileSystemBackend for VfsExecFileSystem {
     }
 
     fn volumes(&self) -> Vec<execenv::VolumeMount> {
-        vec![execenv::VolumeMount::new(&self.host_dir, "/workspace")]
+        let guest = format!("/{}", crate::vfs::WORKSPACE_MOUNT);
+        vec![execenv::VolumeMount::new(&self.host_dir, guest)]
     }
 }
 

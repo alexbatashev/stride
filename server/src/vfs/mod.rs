@@ -2,7 +2,7 @@ mod local;
 mod mounted;
 
 pub use local::LocalFileProvider;
-pub use mounted::MountedVfs;
+pub use mounted::{MountedVfs, WORKSPACE_MOUNT};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
