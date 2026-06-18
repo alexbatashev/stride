@@ -104,11 +104,13 @@ async function load(host: AutomationsHost): Promise<void> {
   }
 }
 
-async function selectAutomation(host: AutomationsHost, item: Automation): Promise<void> {
+async function selectAutomation(host: AutomationsHost, item: Automation, clearRuns = true): Promise<void> {
   host.selectedId = item.id;
   host.selectedName = item.name;
   host.runsLoading = true;
-  host.runs = [];
+  if (clearRuns) {
+    host.runs = [];
+  }
   try {
     const runs = await listAutomationRuns(item.id);
     host.runs = runs.map((run: AutomationRun): RunView => ({
@@ -125,6 +127,45 @@ async function selectAutomation(host: AutomationsHost, item: Automation): Promis
   } finally {
     host.runsLoading = false;
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function runAndRefresh(host: AutomationsHost, item: Automation): Promise<void> {
+  host.error = "";
+  if (host.selectedId !== item.id) {
+    await selectAutomation(host, item);
+  }
+
+  const previousLatestRunId = host.runs[0]?.id ?? "";
+  const pendingRun: RunView = {
+    id: `pending-${Date.now()}`,
+    status: "running",
+    statusLabel: "Running",
+    startedLabel: "Starting now",
+    finishedLabel: "Still running",
+    output: "Waiting for scheduler output…",
+  };
+
+  host.selectedId = item.id;
+  host.selectedName = item.name;
+  host.runs = [pendingRun, ...host.runs];
+
+  await runAutomation(item.id);
+
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    await delay(attempt < 4 ? 500 : 1000);
+    await selectAutomation(host, item, false);
+    const latest = host.runs[0];
+    if (latest && latest.id !== previousLatestRunId && latest.status !== "running") {
+      break;
+    }
+  }
+
+  await load(host);
+  await selectAutomation(host, item, false);
 }
 
 const styles = css`
@@ -585,14 +626,9 @@ export function AppAutomations({
               void selectAutomation(this, item);
               break;
             case "run":
-              void runAutomation(item.id)
-                .then(async () => {
-                  await load(this);
-                  await selectAutomation(this, item);
-                })
-                .catch(() => {
-                  this.error = "Failed to start run.";
-                });
+              void runAndRefresh(this, item).catch(() => {
+                this.error = "Failed to start run.";
+              });
               break;
             case "toggle":
               void setAutomationEnabled(item.id, !item.enabled)
