@@ -16,6 +16,9 @@ url = "http://localhost:11434/v1"
 slug = "gpt-4.1"
 provider = "openai"
 thinking = true
+# Set when the model accepts image inputs. Enables attached images and the
+# attach_image tool. Defaults to false.
+vision = true
 
 [models.claude_sonnet_4]
 slug = "claude-sonnet-4-20250514"
@@ -31,6 +34,10 @@ thinking = false
 db_path = "/tmp/server.db"
 listen_addr = "0.0.0.0:3000"
 allow_registration = true
+# Public base URL the server is reachable at. When set, image attachments are
+# served to vision models via capability URLs under this host instead of being
+# embedded inline as base64.
+public_url = "https://friday.example.com"
 
 [server.files]
 keep_versions = 10

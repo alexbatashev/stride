@@ -52,9 +52,10 @@ pub trait AgentPool: Send + Sync + 'static {
     async fn shutdown_thread(&self, thread_id: Uuid) -> Result<(), AgentPoolError>;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AgentRequest {
     pub content: String,
+    pub images: Vec<llm::ImageSource>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

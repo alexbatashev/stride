@@ -386,6 +386,7 @@ fn request(model: &str) -> CompletionRequest {
         &[Message {
             role: Role::User,
             content: "Reply with exactly this token and no other text: friday-llm-e2e".to_string(),
+            images: None,
             thinking: None,
             tool_calls: None,
             tool_call_id: None,

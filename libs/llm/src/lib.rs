@@ -23,6 +23,8 @@ pub struct Message {
     pub role: Role,
     #[serde(default, deserialize_with = "deserialize_null_string_default")]
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<ImageSource>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

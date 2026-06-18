@@ -333,7 +333,7 @@ async fn run_agent(model_config: Arc<AgentConfig>, prompt: &str) -> Result<Strin
         AGENT_SYSTEM_PROMPT.to_string(),
         Vec::new(),
     );
-    let mut stream = agent.make_turn(prompt.to_string()).await;
+    let mut stream = agent.make_turn(prompt.to_string(), Vec::new()).await;
     let mut output = String::new();
     while let Some(item) = stream.next().await {
         match item {

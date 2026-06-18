@@ -1,3 +1,4 @@
+pub mod attach_image;
 pub mod automations;
 pub mod personality;
 pub mod presentation_draft;

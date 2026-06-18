@@ -1,5 +1,6 @@
 use crate::{
-    Completion, CompletionRequest, EmbeddingResponse, Error, ModelDesc, StreamResponseChunk,
+    Completion, CompletionRequest, EmbeddingResponse, Error, ImageSource, ModelDesc,
+    StreamResponseChunk,
 };
 
 use async_stream::stream;
@@ -44,6 +45,57 @@ mod tests {
     }
 
     #[test]
+    fn serializes_message_images_as_content_parts() {
+        use crate::{ImageSource, Message, Role};
+
+        let request = CompletionRequest {
+            model: "gpt-vision".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: "describe".to_string(),
+                images: Some(vec![
+                    ImageSource::url("https://example.com/a.png"),
+                    ImageSource::base64("image/jpeg", "QUJD"),
+                ]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let body = serialize_request(&request).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let message = &value["messages"][0];
+
+        assert!(message.get("images").is_none());
+        let parts = message["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "describe");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "https://example.com/a.png");
+        assert_eq!(parts[2]["type"], "image_url");
+        assert_eq!(parts[2]["image_url"]["url"], "data:image/jpeg;base64,QUJD");
+    }
+
+    #[test]
+    fn leaves_text_only_messages_unchanged() {
+        use crate::{Message, Role};
+
+        let request = CompletionRequest {
+            model: "gpt".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: "hello".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let body = serialize_request(&request).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["messages"][0]["content"], "hello");
+    }
+
+    #[test]
     fn parses_models_without_supported_parameters() {
         let body = br#"{"object":"list","data":[{"id":"openai/gpt-5.4","object":"model","created":1777057381,"owned_by":"proxy"}]}"#;
         let parsed: ModelListResponse = serde_json::from_slice(body).unwrap();
@@ -56,6 +108,55 @@ mod tests {
 #[derive(Debug, Deserialize)]
 struct ModelListResponse {
     data: Vec<ModelDesc>,
+}
+
+/// Serializes a request to OpenAI's wire format, rewriting any message that
+/// carries images into the `content` parts array (text part plus one
+/// `image_url` part per image) that the chat completions API expects.
+fn serialize_request(request: &CompletionRequest) -> Result<Vec<u8>, Error> {
+    let mut body =
+        serde_json::to_value(request).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for message in messages {
+            rewrite_message_images(message);
+        }
+    }
+
+    serde_json::to_vec(&body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+}
+
+fn rewrite_message_images(message: &mut serde_json::Value) {
+    let Some(object) = message.as_object_mut() else {
+        return;
+    };
+    let Some(images) = object.remove("images") else {
+        return;
+    };
+    let images: Vec<ImageSource> = match serde_json::from_value(images) {
+        Ok(images) => images,
+        Err(_) => return,
+    };
+    if images.is_empty() {
+        return;
+    }
+
+    let mut parts = Vec::new();
+    if let Some(text) = object.get("content").and_then(|c| c.as_str())
+        && !text.is_empty()
+    {
+        parts.push(serde_json::json!({ "type": "text", "text": text }));
+    }
+    for image in images {
+        if let Some(url) = image.as_request_url() {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": url },
+            }));
+        }
+    }
+
+    object.insert("content".to_string(), serde_json::Value::Array(parts));
 }
 
 impl OpenAI {
@@ -146,8 +247,7 @@ impl OpenAI {
         token: &str,
         request: CompletionRequest,
     ) -> Result<Completion, Error> {
-        let body =
-            serde_json::to_vec(&request).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+        let body = serialize_request(&request)?;
 
         let base = self.base_url.trim_end_matches('/');
         let path = if base.ends_with("/v1") {
@@ -177,12 +277,10 @@ impl OpenAI {
         token: &str,
         request: CompletionRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
-        let req_body = match serde_json::to_vec(&request) {
+        let req_body = match serialize_request(&request) {
             Ok(v) => v,
             Err(err) => {
-                return Box::pin(futures::stream::once(async move {
-                    Err(Error::ParsingError(format!("{}", err)))
-                }));
+                return Box::pin(futures::stream::once(async move { Err(err) }));
             }
         };
 

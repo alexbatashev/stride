@@ -349,6 +349,7 @@ async fn handle_topic_message(
             thread_id,
             AgentRequest {
                 content: text.to_string(),
+                images: Vec::new(),
             },
         )
         .await

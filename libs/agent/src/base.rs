@@ -6,7 +6,10 @@ use std::{cell::RefCell, rc::Rc};
 use async_stream::stream;
 use futures::channel::oneshot;
 use futures::{Stream, StreamExt};
-use llm::{API, CompletionRequest, Message, StreamResponseChunk, ToolCallChunk, ToolCallFunction};
+use llm::{
+    API, CompletionRequest, ImageSource, Message, StreamResponseChunk, ToolCallChunk,
+    ToolCallFunction,
+};
 use serde_json::Value;
 use serde_json::json;
 use thiserror::Error;
@@ -73,6 +76,9 @@ pub struct ModelRegEntry {
     pub token: String,
     pub model_name: String,
     pub thinking: bool,
+    /// Whether the model accepts image inputs. Gates image attachment and the
+    /// `attach_image` tool on the server side.
+    pub vision: bool,
 }
 
 struct BaseAgentInner {
@@ -196,6 +202,7 @@ impl BaseAgent {
     pub async fn make_turn(
         &self,
         request: String,
+        images: Vec<ImageSource>,
     ) -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>> {
         let (config, model, max_iterations) = {
             let lock = self.0.borrow();
@@ -213,6 +220,7 @@ impl BaseAgent {
         self.0.borrow_mut().thread.push(Message {
             role: llm::Role::User,
             content: request,
+            images: (!images.is_empty()).then_some(images),
             ..Default::default()
         });
 
@@ -276,6 +284,8 @@ impl BaseAgent {
                     return;
                 }
 
+                let mut pending_images: Vec<ImageSource> = Vec::new();
+
                 for (id, name, arguments) in tool_calls {
                     tracing::info!(tool = %name, arguments = %arguments, "tool call requested");
 
@@ -299,7 +309,7 @@ impl BaseAgent {
                         Err(err) => {
                             let result = json!({ "error": err.to_string() });
                             log_tool_error(&name, &result);
-                            let content = append_tool_result(&agent, id.clone(), result, "tool error".to_string());
+                            let content = append_tool_result(&agent, id.clone(), result, "tool error".to_string(), &mut pending_images);
                             yield Ok(AgentResponseChunk::ToolFinished {
                                 tool_call_id: id,
                                 name: readable_name,
@@ -327,7 +337,7 @@ impl BaseAgent {
                                     }).collect::<Vec<_>>()
                                 });
                                 log_tool_result(&name, &result);
-                                let content = append_tool_result(&agent, id.clone(), result, readable_name.clone());
+                                let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
                                 yield Ok(AgentResponseChunk::ToolFinished {
                                     tool_call_id: id,
                                     name: readable_name,
@@ -349,7 +359,7 @@ impl BaseAgent {
                                 if !response.await.unwrap_or(false) {
                                     let result = json!({ "error": "tool execution denied by user" });
                                     log_tool_error(&name, &result);
-                                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone());
+                                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
                                     yield Ok(AgentResponseChunk::ToolFinished {
                                         tool_call_id: id,
                                         name: readable_name,
@@ -369,11 +379,23 @@ impl BaseAgent {
                     };
 
                     log_tool_result(&name, &result);
-                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone());
+                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
                     yield Ok(AgentResponseChunk::ToolFinished {
                         tool_call_id: id,
                         name: readable_name,
                         result: content,
+                    });
+                }
+
+                // Images produced by tools this turn are surfaced as a single
+                // user message after every tool result is committed, keeping the
+                // assistant/tool-call ordering valid for the provider API.
+                if !pending_images.is_empty() {
+                    agent.borrow_mut().thread.push(Message {
+                        role: llm::Role::User,
+                        content: "Attached image(s) for you to view.".to_string(),
+                        images: Some(pending_images),
+                        ..Default::default()
                     });
                 }
             }
@@ -518,12 +540,28 @@ fn finish_tool_calls(
     tool_calls
 }
 
+/// Removes the `__images` convention key from a tool result, returning any
+/// images the tool wants shown to the model. They are surfaced as a follow-up
+/// user message after all tool results for the turn are committed.
+fn take_tool_images(result: &mut Value) -> Vec<ImageSource> {
+    let Some(object) = result.as_object_mut() else {
+        return Vec::new();
+    };
+    let Some(images) = object.remove("__images") else {
+        return Vec::new();
+    };
+    serde_json::from_value(images).unwrap_or_default()
+}
+
 fn append_tool_result(
     agent: &Rc<RefCell<BaseAgentInner>>,
     id: String,
-    result: Value,
+    mut result: Value,
     readable_name: String,
+    pending_images: &mut Vec<ImageSource>,
 ) -> String {
+    pending_images.extend(take_tool_images(&mut result));
+
     let content =
         serde_json::to_string(&result).unwrap_or_else(|err| format!(r#"{{"error":"{}"}}"#, err));
 
@@ -607,6 +645,7 @@ mod tests {
                 token: String::new(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
         let agent = BaseAgent::new(
@@ -620,6 +659,53 @@ mod tests {
         );
         agent.register_tool(ApprovalTool { calls });
         agent
+    }
+
+    #[test]
+    fn take_tool_images_strips_and_returns_images() {
+        let mut result = json!({
+            "success": true,
+            "__images": [{ "url": "https://example.com/a.png" }],
+        });
+        let images = take_tool_images(&mut result);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].url.as_deref(), Some("https://example.com/a.png"));
+        assert!(result.get("__images").is_none());
+        assert_eq!(result["success"], true);
+    }
+
+    #[test]
+    fn make_turn_attaches_images_to_user_message() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("done")]]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 50,
+                }),
+                String::new(),
+                vec![],
+            );
+
+            let stream = agent
+                .make_turn(
+                    "look".to_string(),
+                    vec![ImageSource::url("https://example.com/a.png")],
+                )
+                .await;
+            pin_mut!(stream);
+            while stream.next().await.is_some() {}
+
+            let requests = mock.stream_requests();
+            let user = requests[0]
+                .messages
+                .iter()
+                .find(|message| message.role == llm::Role::User)
+                .unwrap();
+            let images = user.images.as_ref().unwrap();
+            assert_eq!(images[0].url.as_deref(), Some("https://example.com/a.png"));
+        });
     }
 
     #[test]
@@ -642,7 +728,7 @@ mod tests {
             );
             agent.register_tool(ApprovalTool { calls });
 
-            let stream = agent.make_turn("next".to_string()).await;
+            let stream = agent.make_turn("next".to_string(), vec![]).await;
             pin_mut!(stream);
             while stream.next().await.is_some() {}
 
@@ -664,7 +750,7 @@ mod tests {
             ]);
             let agent = make_agent(&mock, calls.clone());
 
-            let stream = agent.make_turn("run tool".to_string()).await;
+            let stream = agent.make_turn("run tool".to_string(), vec![]).await;
             pin_mut!(stream);
 
             assert!(matches!(
@@ -722,7 +808,7 @@ mod tests {
             ]);
             let agent = make_agent(&mock, calls.clone());
 
-            let stream = agent.make_turn("run tool".to_string()).await;
+            let stream = agent.make_turn("run tool".to_string(), vec![]).await;
             pin_mut!(stream);
 
             stream.next().await.unwrap().unwrap();
@@ -830,6 +916,7 @@ mod tests {
                 token: String::new(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
         registry
@@ -920,7 +1007,7 @@ mod tests {
             );
             agent.register_searchable_tool(EchoTool);
 
-            let stream = agent.make_turn("go".to_string()).await;
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
             pin_mut!(stream);
             while stream.next().await.is_some() {}
 

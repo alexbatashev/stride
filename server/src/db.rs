@@ -266,6 +266,25 @@ migrations! {
         raw "UPDATE automations SET trigger_kind = 'cron' WHERE trigger_kind IS NULL";
         raw "UPDATE automations SET notify_kind = 'none' WHERE notify_kind IS NULL";
     }
+
+    message_images {
+        alter table messages {
+            add images: Option<String>;
+        }
+    }
+
+    public_images {
+        table public_images {
+            id: Uuid [PrimaryKey],
+            token: String [Unique],
+            owner: Uuid,
+            location: String,
+            mime_type: Option<String>,
+            created_at: i64,
+
+            foreign_key(owner -> users.id);
+        }
+    }
 }
 
 impl FromValue for Role {
