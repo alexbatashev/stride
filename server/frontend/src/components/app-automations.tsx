@@ -14,9 +14,12 @@ type RunView = {
   id: string;
   status: string;
   statusLabel: string;
+  startedAt: number;
+  finishedAt: number | null;
   startedLabel: string;
   finishedLabel: string;
   output: string;
+  outputText: string;
 };
 
 type AutomationItem = Automation & {
@@ -113,14 +116,20 @@ async function selectAutomation(host: AutomationsHost, item: Automation, clearRu
   }
   try {
     const runs = await listAutomationRuns(item.id);
-    host.runs = runs.map((run: AutomationRun): RunView => ({
-      id: run.id,
-      status: run.status,
-      statusLabel: titleCase(run.status),
-      startedLabel: formatDate(run.started_at),
-      finishedLabel: run.finished_at ? formatDate(run.finished_at) : "Still running",
-      output: escapeHtml(run.output.trim() || "No output was captured for this run."),
-    }));
+    host.runs = runs.map((run: AutomationRun): RunView => {
+      const outputText = run.output.trim();
+      return {
+        id: run.id,
+        status: run.status,
+        statusLabel: titleCase(run.status),
+        startedAt: run.started_at,
+        finishedAt: run.finished_at,
+        startedLabel: formatDate(run.started_at),
+        finishedLabel: run.finished_at ? formatDate(run.finished_at) : "Still running",
+        output: escapeHtml(outputText || "Run completed, but it did not produce text output."),
+        outputText,
+      };
+    });
   } catch {
     host.runs = [];
     host.error = "Failed to load automation runs.";
@@ -139,14 +148,18 @@ async function runAndRefresh(host: AutomationsHost, item: Automation): Promise<v
     await selectAutomation(host, item);
   }
 
+  const requestedAt = Math.floor(Date.now() / 1000);
   const previousLatestRunId = host.runs[0]?.id ?? "";
   const pendingRun: RunView = {
     id: `pending-${Date.now()}`,
     status: "running",
     statusLabel: "Running",
+    startedAt: requestedAt,
+    finishedAt: null,
     startedLabel: "Starting now",
     finishedLabel: "Still running",
-    output: "Waiting for scheduler output…",
+    output: "Run request accepted. Waiting for scheduler output…",
+    outputText: "",
   };
 
   host.selectedId = item.id;
@@ -159,7 +172,10 @@ async function runAndRefresh(host: AutomationsHost, item: Automation): Promise<v
     await delay(attempt < 4 ? 500 : 1000);
     await selectAutomation(host, item, false);
     const latest = host.runs[0];
-    if (latest && latest.id !== previousLatestRunId && latest.status !== "running") {
+    const isRequestedRun = latest && latest.id !== previousLatestRunId && latest.startedAt >= requestedAt - 1;
+    const hasFinishedWithOutput = isRequestedRun && latest.finishedAt !== null && latest.outputText.length > 0;
+    const hasSettledWithoutOutput = isRequestedRun && latest.finishedAt !== null && attempt === 15;
+    if (hasFinishedWithOutput || hasSettledWithoutOutput) {
       break;
     }
   }

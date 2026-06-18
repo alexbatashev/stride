@@ -193,3 +193,54 @@ test('app-automations lists tasks and toggles enable through delegation', () => 
   const toggle = el.shadowRoot.querySelector('[data-action="toggle"][data-id="a1"]');
   assert.equal(toggle.textContent.trim(), 'On');
 });
+
+
+test('app-automations run button posts and renders returned output', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = window.setTimeout;
+  const calls = [];
+  let runPolls = 0;
+
+  window.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 0;
+  };
+
+  globalThis.fetch = async (input, init = {}) => {
+    const path = String(input);
+    calls.push({ path, method: init.method ?? 'GET' });
+    if (path === '/api/automations') {
+      return Response.json([{ id: 'a1', name: 'Daily', schedule: '0 9 * * *', kind: 'agent', payload: 'x', enabled: true, created_at: 1, last_run: null, trigger_kind: 'cron', notify_kind: 'none' }]);
+    }
+    if (path.endsWith('/run')) {
+      return new Response('', { status: 202 });
+    }
+    if (path.endsWith('/runs')) {
+      runPolls += 1;
+      return Response.json(runPolls < 2 ? [] : [{
+        id: 'r1',
+        started_at: Math.floor(Date.now() / 1000),
+        finished_at: Math.floor(Date.now() / 1000),
+        status: 'success',
+        output: 'automation output',
+      }]);
+    }
+    return Response.json({});
+  };
+
+  try {
+    const el = mount('app-automations', {
+      items: [{ id: 'a1', name: 'Daily', schedule: '0 9 * * *', kind: 'agent', payload: 'x', enabled: true, created_at: 1, last_run: null, trigger_kind: 'cron', notify_kind: 'none' }],
+    });
+    el.shadowRoot.querySelector('[data-action="run"][data-id="a1"]').click();
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    assert.ok(calls.some((call) => call.path === '/api/automations/a1/run' && call.method === 'POST'));
+    assert.match(el.shadowRoot.innerHTML, /automation output/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    window.setTimeout = originalSetTimeout;
+  }
+});
