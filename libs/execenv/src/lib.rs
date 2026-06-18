@@ -55,6 +55,21 @@ const ANYIO_URL: &str = "https://files.pythonhosted.org/packages/ba/16/9826f0893
 const BABEL_URL: &str = "https://files.pythonhosted.org/packages/77/f5/21d2de20e8b8b0408f0681956ca2c69f1320a3848ac50e6e7f39c6159675/babel-2.18.0-py3-none-any.whl";
 const EMAIL_VALIDATOR_URL: &str = "https://files.pythonhosted.org/packages/de/15/545e2b6cf2e3be84bc1ed85613edd75b8aea69807a71c26f4ca6a9258e82/email_validator-2.3.0-py3-none-any.whl";
 const DNSPYTHON_URL: &str = "https://files.pythonhosted.org/packages/ba/5a/18ad964b0086c6e62e2e7500f7edc89e3faa45033c71c1893d34eed2b2de/dnspython-2.8.0-py3-none-any.whl";
+// Office-document authoring (python-docx, python-pptx, fpdf2). python-docx
+// reuses lxml; python-pptx adds xlsxwriter and reuses lxml + pillow; fpdf2 adds
+// defusedxml and reuses fonttools + pillow.
+const PYTHON_DOCX_URL: &str = "https://files.pythonhosted.org/packages/d0/00/1e03a4989fa5795da308cd774f05b704ace555a70f9bf9d3be057b680bcf/python_docx-1.2.0-py3-none-any.whl";
+const PYTHON_PPTX_URL: &str = "https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl";
+const FPDF2_URL: &str = "https://files.pythonhosted.org/packages/66/0a/cf50ecffa1e3747ed9380a3adfc829259f1f86b3fdbd9e505af789003141/fpdf2-2.8.7-py3-none-any.whl";
+const XLSXWRITER_URL: &str = "https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl";
+const DEFUSEDXML_URL: &str = "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl";
+
+// CPython 3.14 WASI standard library, downloaded on first run instead of being
+// embedded in the binary (eryx's `embedded-stdlib` feature). The archive root is
+// `cpython/`, so the stdlib lands at `cpython/lib/python3.14`.
+#[cfg(feature = "eryx")]
+const CPYTHON_STDLIB_URL: &str =
+    "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/cpython-wasi.tar.gz";
 
 // Native (wasm32-wasip1) packages built against eryx-runtime's exact toolchain
 // (wasi-sdk-27 + CPython 3.14) and published by frontiers-labs/wasi-wheels.
@@ -70,6 +85,8 @@ const PANDAS_URL: &str =
     "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/pandas-wasi.tar.gz";
 const MATPLOTLIB_URL: &str =
     "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/matplotlib-wasi.tar.gz";
+const LXML_URL: &str =
+    "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/lxml-wasi.tar.gz";
 
 #[derive(Clone, Copy)]
 enum ArchiveKind {
@@ -304,6 +321,39 @@ const WASI_PACKAGES: &[WasiPackage] = &[
         kind: ArchiveKind::Wheel,
         preinit_import: None,
     },
+    // Office-document authoring.
+    WasiPackage {
+        name: "python-docx",
+        url: PYTHON_DOCX_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "python-pptx",
+        url: PYTHON_PPTX_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // xlsxwriter is python-pptx's chart-data writer dependency.
+    WasiPackage {
+        name: "xlsxwriter",
+        url: XLSXWRITER_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "fpdf2",
+        url: FPDF2_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // defusedxml is fpdf2's hardened XML parser dependency.
+    WasiPackage {
+        name: "defusedxml",
+        url: DEFUSEDXML_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
     // Native packages (wasm32-wasip1). Their `.so` files are baked into the
     // preinit snapshot. numpy is imported at preinit to warm the snapshot; the
     // others load lazily.
@@ -343,7 +393,42 @@ const WASI_PACKAGES: &[WasiPackage] = &[
         kind: ArchiveKind::TarGz,
         preinit_import: None,
     },
+    // lxml is a native libxml2/libxslt-backed XML/HTML parser. It loads lazily.
+    WasiPackage {
+        name: "lxml",
+        url: LXML_URL,
+        kind: ArchiveKind::TarGz,
+        preinit_import: None,
+    },
 ];
+
+/// Import name to show next to a distribution whose import differs from its
+/// package name, so the tool prompt tells the model what to actually `import`.
+fn import_alias(name: &str) -> Option<&'static str> {
+    match name {
+        "beautifulsoup4" => Some("bs4"),
+        "pillow" => Some("PIL"),
+        "python-dateutil" => Some("dateutil"),
+        "python-docx" => Some("docx"),
+        "python-pptx" => Some("pptx"),
+        "fpdf2" => Some("fpdf"),
+        "dnspython" => Some("dns"),
+        _ => None,
+    }
+}
+
+/// Comma-separated list of every installed package for the tool prompt, built
+/// from `WASI_PACKAGES` so it never drifts as packages are added.
+fn installed_packages_list() -> String {
+    WASI_PACKAGES
+        .iter()
+        .map(|pkg| match import_alias(pkg.name) {
+            Some(alias) => format!("{} (import {alias})", pkg.name),
+            None => pkg.name.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 #[cfg(feature = "eryx")]
 fn preinit_imports() -> Vec<&'static str> {
@@ -512,12 +597,8 @@ impl PythonTool {
 
 #[derive(ToolDesc)]
 struct PythonParams {
-    /// Python script to execute. With the Eryx backend these packages are
-    /// available: numpy, pandas, matplotlib (Agg), pillow (PIL); requests,
-    /// httpx, beautifulsoup4 (bs4), urllib3, certifi, idna, markdown,
-    /// markdownify; pypdf, openpyxl, icalendar, tabulate, babel, humanize,
-    /// tzlocal, email-validator, dnspython (dns), python-dateutil (dateutil),
-    /// six. Network access is required to reach remote hosts.
+    /// Python script to execute. The sandbox preinstalls many packages; the tool
+    /// description lists them. Network access is required to reach remote hosts.
     script: String,
 }
 
@@ -535,14 +616,17 @@ impl Tool for PythonTool {
         LlmTool {
             r#type: llm::ToolType::Function,
             function: Function {
-                description: "Execute a Python script in a sandbox and return stdout and stderr. \
+                description: format!(
+                    "Execute a Python script in a sandbox and return stdout and stderr. \
                     The writable workspace is mounted at /~workspace; write outputs there. \
-                    /tmp is writable scratch. Available packages: numpy, pandas, matplotlib \
-                    (Agg backend), pillow; requests, httpx, beautifulsoup4, urllib3, certifi, \
-                    idna, markdown, markdownify; pypdf (PDF), openpyxl (xlsx), icalendar (ics), \
-                    tabulate, babel, humanize, tzlocal, email-validator, dnspython, \
-                    python-dateutil, six."
-                    .to_string(),
+                    /tmp is writable scratch. matplotlib uses the Agg backend. \
+                    No system fonts are installed: for Unicode text in fpdf2 or Pillow, \
+                    register a bundled TTF such as \
+                    /site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf \
+                    instead of a system path like /usr/share/fonts/.... \
+                    Installed packages: {}.",
+                    installed_packages_list()
+                ),
                 name: self.name().to_string(),
                 parameters: Some(PythonParams::function_parameters()),
             },
@@ -584,6 +668,29 @@ pub async fn ensure_wasi_dependencies(cache_dir: &Path) -> anyhow::Result<WasiDe
     }
 
     Ok(WasiDependencies { site_packages })
+}
+
+/// Downloads and extracts the CPython WASI stdlib into the cache dir on first
+/// run, returning the path to the stdlib directory. Re-downloads if the source
+/// URL changes. Replaces eryx's embedded stdlib.
+#[cfg(feature = "eryx")]
+async fn ensure_cpython_stdlib(cache_dir: &Path) -> anyhow::Result<PathBuf> {
+    let runtime_dir = cache_dir.join("runtime");
+    let stdlib = runtime_dir.join("cpython").join("lib").join("python3.14");
+    let marker = runtime_dir.join(".stdlib");
+    tokio::fs::create_dir_all(&runtime_dir).await?;
+
+    let installed = tokio::fs::read_to_string(&marker).await.ok();
+    if installed.as_deref() == Some(CPYTHON_STDLIB_URL) && stdlib.join("encodings").exists() {
+        return Ok(stdlib);
+    }
+
+    let archive = runtime_dir.join("cpython-wasi.tar.gz");
+    let _ = tokio::fs::remove_file(&archive).await;
+    download(CPYTHON_STDLIB_URL, &archive).await?;
+    extract_tar_gz(&archive, &runtime_dir).await?;
+    tokio::fs::write(&marker, CPYTHON_STDLIB_URL).await?;
+    Ok(stdlib)
 }
 
 async fn install_package(
@@ -855,9 +962,7 @@ mod eryx_backend {
             "python-numpy.cwasm"
         });
         let marker = runtime.with_extension("version");
-        let stdlib = eryx::embedded_stdlib::EmbeddedStdlib::get()?
-            .path()
-            .to_path_buf();
+        let stdlib = crate::ensure_cpython_stdlib(cache_dir).await?;
 
         if runtime.exists() && cache_marker_matches(&marker).await? {
             return preinit_runtime(
