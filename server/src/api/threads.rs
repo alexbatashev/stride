@@ -379,7 +379,6 @@ pub async fn create_thread(
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let content = normalize_content(build_content(request.content, request.file_paths))?;
     let project_id = request.project_id;
     let thread_id = Uuid::now_v7();
 
@@ -395,7 +394,17 @@ pub async fn create_thread(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
-    let run_id = send_to_runner(&state, thread_id, content.clone()).await?;
+    let (content, images) = prepare_message(
+        &state,
+        thread_id,
+        owner,
+        request.content,
+        request.file_paths,
+    )
+    .await?;
+    let content = normalize_content(content)?;
+
+    let run_id = send_to_runner_with_images(&state, thread_id, content.clone(), images).await?;
 
     spawn_title_generation(state.clone(), thread_id, content, None);
 
@@ -592,9 +601,18 @@ pub async fn send_message(
     Path(thread_id): Path<Uuid>,
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
-    require_thread_owner(&state, &headers, thread_id).await?;
-    let content = normalize_content(build_content(request.content, request.file_paths))?;
-    let run_id = send_to_runner(&state, thread_id, content).await?;
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    require_thread_owner_for_user(&state, owner, thread_id).await?;
+    let (content, images) = prepare_message(
+        &state,
+        thread_id,
+        owner,
+        request.content,
+        request.file_paths,
+    )
+    .await?;
+    let content = normalize_content(content)?;
+    let run_id = send_to_runner_with_images(&state, thread_id, content, images).await?;
 
     Ok(Json(SendMessageResponse {
         thread_id: thread_id.to_string(),
@@ -734,16 +752,80 @@ async fn require_thread_owner_for_user(
     }
 }
 
-async fn send_to_runner(
+async fn send_to_runner_with_images(
     state: &ServerState,
     thread_id: Uuid,
     content: String,
+    images: Vec<llm::ImageSource>,
 ) -> Result<RunId, ThreadApiError> {
     state
         .runner
-        .send(thread_id, AgentRequest { content })
+        .send(thread_id, AgentRequest { content, images })
         .await
         .map_err(pool_error)
+}
+
+/// True when the default model accepts image inputs.
+fn vision_enabled(state: &ServerState) -> bool {
+    state
+        .model_config
+        .model_registry
+        .get_or_default(DEFAULT_MODEL)
+        .vision
+}
+
+/// Splits attachments into images (sent to a vision model) and other files
+/// (listed in the message text as before). Image bytes are published via
+/// [`crate::api::images::publish_image`]. When the model has no vision support
+/// every attachment is treated as a plain file reference.
+async fn prepare_message(
+    state: &ServerState,
+    thread_id: Uuid,
+    owner: Uuid,
+    content: String,
+    file_paths: Vec<String>,
+) -> Result<(String, Vec<llm::ImageSource>), ThreadApiError> {
+    if file_paths.is_empty() || !vision_enabled(state) {
+        return Ok((build_content(content, file_paths), Vec::new()));
+    }
+
+    let Some(ref vfs) = state.vfs else {
+        return Ok((build_content(content, file_paths), Vec::new()));
+    };
+    let Ok(workspace_id) = thread_workspace_id(state, thread_id, owner).await else {
+        return Ok((build_content(content, file_paths), Vec::new()));
+    };
+
+    let fs = crate::vfs::MountedVfs::new(vfs.clone(), workspace_id, owner);
+    let public_url = state.config.public_url();
+
+    let mut images = Vec::new();
+    let mut other_files = Vec::new();
+    for path in file_paths {
+        match fs.read_bytes(&path).await {
+            Ok((bytes, mime)) if mime.as_deref().is_some_and(|m| m.starts_with("image/")) => {
+                match crate::api::images::publish_image(
+                    vfs,
+                    &state.db,
+                    owner,
+                    public_url.as_deref(),
+                    &bytes,
+                    mime.as_deref(),
+                )
+                .await
+                {
+                    Ok(image) => images.push(image),
+                    Err(error) => {
+                        tracing::warn!(%path, %error, "failed to publish attached image");
+                        other_files.push(path);
+                    }
+                }
+            }
+            _ => other_files.push(path),
+        }
+    }
+
+    Ok((build_content(content, other_files), images))
 }
 
 fn build_content(content: String, file_paths: Vec<String>) -> String {

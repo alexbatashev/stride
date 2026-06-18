@@ -125,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         telegram_bot_token.clone(),
     );
 
+    let public_url = config.public_url();
     let runner: Arc<dyn runner::AgentPool> = if let Some(ref vfs) = vfs_provider {
         Arc::new(
             runner::inproc::InProcessAgentPool::with_file_provider_and_telegram(
@@ -134,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
                 mcp_tools,
                 vfs.clone(),
                 telegram_bot_token.clone(),
+                public_url,
             ),
         )
     } else {
@@ -144,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
                 tools,
                 mcp_tools,
                 telegram_bot_token.clone(),
+                public_url,
             ),
         )
     };
@@ -281,6 +284,7 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             "/api/files/{*path}",
             get(api::files::download_file).delete(api::files::delete_file),
         )
+        .route("/api/public/images/{token}", get(api::images::serve))
         .route("/auth/login", get(pages::auth::login))
         .route("/auth/register", get(pages::auth::register))
         .route("/threads", get(pages::agent::new_thread))
@@ -342,6 +346,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
                     .unwrap_or("-".to_string()),
                 model_name: model.slug.clone(),
                 thinking: model.thinking.unwrap_or(true),
+                vision: model.vision.unwrap_or(false),
             },
         );
     }
@@ -364,6 +369,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
                     .unwrap_or("-".to_string()),
                 model_name: model.slug.clone(),
                 thinking: model.thinking.unwrap_or(true),
+                vision: model.vision.unwrap_or(false),
             },
         );
     }

@@ -27,6 +27,7 @@ pub struct Model {
     pub slug: String,
     pub provider: String,
     pub thinking: Option<bool>,
+    pub vision: Option<bool>,
 }
 
 impl Config {

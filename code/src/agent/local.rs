@@ -155,6 +155,7 @@ fn create_model_registry(config: &Config) -> ModelRegistry {
             token: p.read_token(&m.provider).unwrap_or("-".to_string()),
             model_name: m.slug.clone(),
             thinking: m.thinking.unwrap_or(true),
+            vision: m.vision.unwrap_or(false),
         };
         model_registry.add_model(name, entry);
     }
@@ -192,7 +193,7 @@ impl CodeAgent for LocalAgent {
             return Box::pin(stream::once(async { Err(err) }));
         }
 
-        let stream = self.agent.make_turn(message.to_string()).await;
+        let stream = self.agent.make_turn(message.to_string(), Vec::new()).await;
         let db = self.db.clone();
         let thread_state = self.thread.clone();
         let assistant_state = Rc::new(RefCell::new(AssistantMessageState::default()));

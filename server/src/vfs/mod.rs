@@ -109,6 +109,17 @@ impl Vfs {
         }
     }
 
+    /// Stores raw bytes in the backend and returns an opaque location key. Used
+    /// for content (such as published images) that lives outside the node tree.
+    pub async fn store_blob(&self, content: &[u8]) -> anyhow::Result<String> {
+        self.storage.store(content).await
+    }
+
+    /// Loads raw bytes previously stored via [`Vfs::store_blob`].
+    pub async fn load_blob(&self, location: &str) -> anyhow::Result<Vec<u8>> {
+        self.storage.load(location).await
+    }
+
     /// Returns workspace id for the given thread, creating one if needed.
     pub async fn get_or_create_workspace(
         &self,

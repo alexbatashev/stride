@@ -16,6 +16,7 @@ fn registry(mock: &llm::Mock) -> ModelRegistry {
             token: String::new(),
             model_name: "mock-model".to_string(),
             thinking: false,
+            vision: false,
         },
     );
     registry
@@ -100,7 +101,7 @@ fn quiz_yields_questions_and_returns_answers() {
         );
         agent.register_tool(QuizTool);
 
-        let stream = agent.make_turn("ask".to_string()).await;
+        let stream = agent.make_turn("ask".to_string(), vec![]).await;
         pin_mut!(stream);
 
         // First chunk is the tool call delta

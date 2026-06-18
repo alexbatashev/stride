@@ -40,6 +40,7 @@ use crate::{
         ThreadSnapshot, ThreadStatus, thread_events_topic,
     },
     tools::{
+        attach_image::AttachImageTool,
         automations::ScheduleAutomationTool,
         personality::UpdatePersonalityTool,
         presentation_draft::{PRESENTATION_DRAFT_NAME, make_presentation_draft},
@@ -167,6 +168,7 @@ struct WorkerInit {
     mcp_tools: Vec<McpTool>,
     vfs: Option<Arc<Vfs>>,
     telegram_bot_token: Option<String>,
+    public_url: Option<String>,
     system_prompt: String,
     idle_ttl: Duration,
 }
@@ -178,6 +180,7 @@ struct WorkerState {
     mcp_tools: Vec<McpTool>,
     vfs: Option<Arc<Vfs>>,
     telegram_bot_token: Option<String>,
+    public_url: Option<String>,
     system_prompt: String,
     idle_ttl: Duration,
     threads: HashMap<Uuid, ThreadRunner>,
@@ -189,7 +192,7 @@ struct ThreadRunner {
     pending_approvals: HashMap<Uuid, PendingApprovalState>,
     pending_quizzes: HashMap<Uuid, PendingQuizState>,
     /// Requests received while a run is in progress, started in order once the thread goes idle.
-    queued: VecDeque<(RunId, String)>,
+    queued: VecDeque<(RunId, String, Vec<llm::ImageSource>)>,
     last_event_seq: u64,
     next_message_seq: u64,
     status: ThreadStatus,
@@ -243,6 +246,7 @@ impl InProcessAgentPool {
             mcp_tools,
             None,
             None,
+            None,
         )
     }
 
@@ -252,6 +256,7 @@ impl InProcessAgentPool {
         tools: Tools,
         mcp_tools: Vec<McpTool>,
         telegram_bot_token: Option<String>,
+        public_url: Option<String>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -261,6 +266,7 @@ impl InProcessAgentPool {
             mcp_tools,
             None,
             telegram_bot_token,
+            public_url,
         )
     }
 
@@ -279,6 +285,7 @@ impl InProcessAgentPool {
             mcp_tools,
             Some(vfs),
             None,
+            None,
         )
     }
 
@@ -289,6 +296,7 @@ impl InProcessAgentPool {
         mcp_tools: Vec<McpTool>,
         vfs: Arc<Vfs>,
         telegram_bot_token: Option<String>,
+        public_url: Option<String>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -298,6 +306,7 @@ impl InProcessAgentPool {
             mcp_tools,
             Some(vfs),
             telegram_bot_token,
+            public_url,
         )
     }
 
@@ -318,6 +327,7 @@ impl InProcessAgentPool {
         mcp_tools: Vec<McpTool>,
         vfs: Option<Arc<Vfs>>,
         telegram_bot_token: Option<String>,
+        public_url: Option<String>,
     ) -> Self {
         Self::from_init(WorkerInit {
             db,
@@ -326,6 +336,7 @@ impl InProcessAgentPool {
             mcp_tools,
             vfs,
             telegram_bot_token,
+            public_url,
             system_prompt,
             idle_ttl: DEFAULT_IDLE_TTL,
         })
@@ -364,6 +375,7 @@ impl InProcessAgentPool {
             mcp_tools,
             vfs,
             telegram_bot_token: None,
+            public_url: None,
             system_prompt,
             idle_ttl,
         })
@@ -491,6 +503,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 mcp_tools,
                 vfs,
                 telegram_bot_token,
+                public_url,
                 system_prompt,
                 idle_ttl,
             } = init;
@@ -501,6 +514,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 mcp_tools,
                 vfs,
                 telegram_bot_token,
+                public_url,
                 system_prompt,
                 idle_ttl,
                 threads: HashMap::new(),
@@ -596,12 +610,18 @@ async fn handle_send(
     let user_message_id = Uuid::now_v7();
     let db = state.borrow().db.clone();
 
+    let images_json = (!request.images.is_empty())
+        .then(|| serde_json::to_string(&request.images))
+        .transpose()
+        .map_err(|e| AgentPoolError::Internal(anyhow::anyhow!(e)))?;
+
     messages::insert()
         .id(user_message_id)
         .parent_thread(thread_id)
         .seq(user_message_seq)
         .role(Role::User)
         .content(request.content.as_str())
+        .images(images_json.as_deref())
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Option::<&str>::None)
@@ -632,10 +652,12 @@ async fn handle_send(
     };
 
     if start_now {
-        start_run(&state, thread_id, run_id, request.content).await;
+        start_run(&state, thread_id, run_id, request.content, request.images).await;
     } else {
         with_runner(&state, thread_id, |runner| {
-            runner.queued.push_back((run_id, request.content));
+            runner
+                .queued
+                .push_back((run_id, request.content, request.images));
         });
     }
 
@@ -649,6 +671,7 @@ async fn start_run(
     thread_id: Uuid,
     run_id: RunId,
     content: String,
+    images: Vec<llm::ImageSource>,
 ) {
     let cancel_rx = {
         let mut state = state.borrow_mut();
@@ -668,6 +691,7 @@ async fn start_run(
         thread_id,
         run_id,
         content,
+        images,
         cancel_rx,
     ));
 }
@@ -685,8 +709,8 @@ async fn drain_queue(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) {
         runner.queued.pop_front()
     };
 
-    if let Some((run_id, content)) = next {
-        start_run(state, thread_id, run_id, content).await;
+    if let Some((run_id, content, images)) = next {
+        start_run(state, thread_id, run_id, content, images).await;
     }
 }
 
@@ -823,7 +847,7 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, tools, mcp_tools, vfs, telegram_bot_token, base_system_prompt) = {
+    let (db, config, tools, mcp_tools, vfs, telegram_bot_token, public_url, base_system_prompt) = {
         let state = state.borrow();
         (
             state.db.clone(),
@@ -832,9 +856,12 @@ async fn ensure_runner(
             state.mcp_tools.clone(),
             state.vfs.clone(),
             state.telegram_bot_token.clone(),
+            state.public_url.clone(),
             state.system_prompt.clone(),
         )
     };
+
+    let vision = config.model_registry.get_or_default("default").vision;
 
     ensure_thread_exists(&db, thread_id).await?;
     let user_id = thread_owner(&db, thread_id).await?;
@@ -893,6 +920,16 @@ async fn ensure_runner(
             .map_err(AgentPoolError::Internal)?;
         python_workspace = Some((provider.clone(), workspace_id));
         let fs = MountedVfs::new(provider.clone(), workspace_id, user_id);
+        if vision {
+            agent.register_tool(AttachImageTool {
+                fs: fs.clone(),
+                vfs: provider.clone(),
+                db: db.clone(),
+                owner: user_id,
+                public_url: public_url.clone(),
+            });
+            agent.allow_tool("attach_image");
+        }
         agent.register_tool(ListFilesTool { fs: fs.clone() });
         agent.allow_tool("list_files");
         agent.register_tool(ReadTextFileTool { fs: fs.clone() });
@@ -1086,6 +1123,7 @@ async fn run_agent_turn(
     thread_id: Uuid,
     run_id: RunId,
     content: String,
+    images: Vec<llm::ImageSource>,
     mut cancel_rx: watch::Receiver<bool>,
 ) {
     let agent = {
@@ -1107,7 +1145,7 @@ async fn run_agent_turn(
         return;
     };
 
-    let mut stream = agent.make_turn(content).await;
+    let mut stream = agent.make_turn(content, images).await;
     let mut assistant = AssistantMessageState {
         id: None,
         seq: None,
@@ -1521,6 +1559,7 @@ async fn ensure_assistant_message(
         .seq(seq)
         .role(Role::Agent)
         .content("")
+        .images(Option::<&str>::None)
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Option::<&str>::None)
@@ -1553,6 +1592,7 @@ async fn persist_tool_message(
         .seq(seq)
         .role(Role::Tool)
         .content(content)
+        .images(Option::<&str>::None)
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Some(tool_call_id))
@@ -1765,7 +1805,7 @@ async fn load_thread(
 ) -> Result<(Vec<llm::Message>, u64), AgentPoolError> {
     let result = db
         .query_with_params(
-            "SELECT seq, role, content, thinking, tool_calls, tool_call_id FROM messages WHERE parent_thread = ? ORDER BY seq ASC",
+            "SELECT seq, role, content, images, thinking, tool_calls, tool_call_id FROM messages WHERE parent_thread = ? ORDER BY seq ASC",
             vec![Value::Uuid(thread_id)],
         )
         .await
@@ -1799,6 +1839,11 @@ async fn load_thread(
         thread.push(llm::Message {
             role,
             content: row.get_text("content").unwrap_or_default().to_string(),
+            images: match row.get("images") {
+                Some(Value::Text(images)) => serde_json::from_str(images)
+                    .map_err(|error| AgentPoolError::Internal(anyhow::anyhow!(error)))?,
+                _ => None,
+            },
             thinking: match row.get("thinking") {
                 Some(Value::Text(thinking)) => Some(thinking.clone()),
                 _ => None,
@@ -1988,6 +2033,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2007,6 +2053,7 @@ mod tests {
                 thread_id,
                 AgentRequest {
                     content: "ping".to_string(),
+                    images: Vec::new(),
                 },
             )
             .await
@@ -2091,6 +2138,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2109,6 +2157,7 @@ mod tests {
             thread_id,
             AgentRequest {
                 content: "run tool".to_string(),
+                images: Vec::new(),
             },
         )
         .await
@@ -2215,6 +2264,7 @@ mod tests {
             mcp_tools: Vec::new(),
             vfs: None,
             telegram_bot_token: None,
+            public_url: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
             threads,
@@ -2295,6 +2345,7 @@ mod tests {
             mcp_tools: Vec::new(),
             vfs: None,
             telegram_bot_token: None,
+            public_url: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
             threads,
@@ -2357,6 +2408,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2374,6 +2426,7 @@ mod tests {
             thread_id,
             AgentRequest {
                 content: "ping".to_string(),
+                images: Vec::new(),
             },
         )
         .await
@@ -2440,6 +2493,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2457,6 +2511,7 @@ mod tests {
             thread_id,
             AgentRequest {
                 content: "ping".to_string(),
+                images: Vec::new(),
             },
         )
         .await
@@ -2615,6 +2670,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2633,6 +2689,7 @@ mod tests {
             thread_id,
             AgentRequest {
                 content: "ping".to_string(),
+                images: Vec::new(),
             },
         )
         .await
@@ -2696,6 +2753,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2714,6 +2772,7 @@ mod tests {
             thread_id,
             AgentRequest {
                 content: "ping".to_string(),
+                images: Vec::new(),
             },
         )
         .await
@@ -2775,6 +2834,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2794,6 +2854,7 @@ mod tests {
                 thread_id,
                 AgentRequest {
                     content: content.to_string(),
+                    images: Vec::new(),
                 },
             )
             .await
@@ -2870,6 +2931,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2888,6 +2950,7 @@ mod tests {
             thread_id,
             AgentRequest {
                 content: "ask".to_string(),
+                images: Vec::new(),
             },
         )
         .await
@@ -2958,6 +3021,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -2986,6 +3050,7 @@ mod tests {
                 thread_id,
                 AgentRequest {
                     content: "ping".to_string(),
+                    images: Vec::new(),
                 },
             ),
         )
@@ -3031,6 +3096,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
 
@@ -3049,6 +3115,7 @@ mod tests {
             thread_id,
             AgentRequest {
                 content: "ping".to_string(),
+                images: Vec::new(),
             },
         )
         .await

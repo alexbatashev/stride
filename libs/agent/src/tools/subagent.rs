@@ -86,7 +86,7 @@ impl Tool for SubAgentTool {
             vec![],
             self.tool_registry.clone(),
         );
-        let mut stream = agent.make_turn(args.prompt).await;
+        let mut stream = agent.make_turn(args.prompt, Vec::new()).await;
         let mut content = String::new();
 
         while let Some(chunk) = stream.next().await {
@@ -264,6 +264,7 @@ mod tests {
                 token: String::new(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
         Arc::new(AgentConfig {

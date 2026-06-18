@@ -52,6 +52,7 @@ impl Mock {
         let message = Some(Message {
             role: Role::Assistant,
             content: format!("Echo: {:?}", request.messages),
+            images: None,
             thinking: None,
             tool_calls: None,
             tool_call_id: None,

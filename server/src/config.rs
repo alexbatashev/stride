@@ -39,6 +39,9 @@ pub struct Model {
     pub slug: String,
     pub provider: String,
     pub thinking: Option<bool>,
+    /// Whether this model accepts image inputs. When true, attached images are
+    /// sent to the model and the `attach_image` tool is offered to the agent.
+    pub vision: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +59,10 @@ pub struct Server {
     pub ldap: Option<Ldap>,
     pub files: Option<Files>,
     pub telegram: Option<Telegram>,
+    /// Public base URL the server is reachable at, e.g. `https://friday.example.com`.
+    /// Used to build capability URLs for image attachments served to vision
+    /// models. When unset, images are sent inline as base64 instead.
+    pub public_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -163,6 +170,15 @@ impl Config {
             .and_then(|server| server.allow_registration)
             .unwrap_or(true)
     }
+
+    /// Public base URL (without trailing slash) used to build externally
+    /// reachable links such as image capability URLs.
+    pub fn public_url(&self) -> Option<String> {
+        self.server
+            .as_ref()
+            .and_then(|server| server.public_url.as_deref())
+            .map(|url| url.trim_end_matches('/').to_string())
+    }
 }
 
 impl Provider {
@@ -254,6 +270,7 @@ mod tests {
                 ldap: None,
                 files: None,
                 telegram: None,
+                public_url: None,
             }),
             tools: None,
             mcp: HashMap::new(),

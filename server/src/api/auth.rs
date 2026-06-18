@@ -450,6 +450,7 @@ mod tests {
                     ldap: None,
                     files: None,
                     telegram: None,
+                    public_url: None,
                 }),
                 ..empty_config()
             },
@@ -483,6 +484,7 @@ mod tests {
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
                 thinking: false,
+                vision: false,
             },
         );
         registry
