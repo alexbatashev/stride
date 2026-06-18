@@ -13,19 +13,13 @@ use serde_json::{Value, json};
 #[cfg(feature = "eryx")]
 pub use eryx::VolumeMount;
 
-// numpy is the only prebuilt WASI build of a native package that currently
-// exists. dicej/wasi-wheels is unmaintained but no maintained source ships
-// numpy/pandas/pillow for WASI yet; those need our own build pipeline.
-const NUMPY_WASI_URL: &str =
-    "https://github.com/dicej/wasi-wheels/releases/download/v0.0.2/numpy-wasi.tar.gz";
-
 // Pure-Python wheels (py3-none-any). They carry no native extensions, so they
 // import on any CPython-WASI minor version and need no compilation.
 const BS4_URL: &str = "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl";
 const SOUPSIEVE_URL: &str = "https://files.pythonhosted.org/packages/5e/f5/0c41cb68dcae6b7de4fac4188a3a9589e21fb31df21ea3a2e888db95e6c9/soupsieve-2.8.4-py3-none-any.whl";
 const REQUESTS_URL: &str = "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl";
 const URLLIB3_URL: &str = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl";
-const CERTIFI_URL: &str = "https://files.pythonhosted.org/packages/58/fc/bce832fd4fd99766c04d1ee0eead6b0ec6486fb100ae5e74c1d91292b982/certifi-2026.6.17-py3-none-any.whl";
+const CERTIFI_URL: &str = "https://files.pythonhosted.org/packages/ef/2f/c5464532e965badff2f4c4c1a3a83f5697f0d7c407ed0cda44aaa99bb451/certifi-2026.6.17-py3-none-any.whl";
 const IDNA_URL: &str = "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl";
 const MARKDOWN_URL: &str = "https://files.pythonhosted.org/packages/de/1f/77fa3081e4f66ca3576c896ae5d31c3002ac6607f9747d2e3aa49227e464/markdown-3.10.2-py3-none-any.whl";
 const DATEUTIL_URL: &str = "https://files.pythonhosted.org/packages/36/7a/87837f39d0296e723bb9b62bbb257d0355c7f6128853c78955f57342a56d/python_dateutil-2.8.2-py2.py3-none-any.whl";
@@ -33,7 +27,9 @@ const SIX_URL: &str = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f
 
 #[derive(Clone, Copy)]
 enum ArchiveKind {
-    /// tar.gz whose root unpacks directly into site-packages.
+    /// tar.gz whose root unpacks directly into site-packages. Reserved for
+    /// native packages, which are currently deferred (see WASI_PACKAGES).
+    #[allow(dead_code)]
     TarGz,
     /// PEP 427 wheel (a zip) whose entries unpack into site-packages.
     Wheel,
@@ -50,13 +46,14 @@ struct WasiPackage {
     preinit_import: Option<&'static str>,
 }
 
+// Native packages (numpy, Pillow, pandas, ...) are intentionally absent. The
+// prebuilt WASI wheels from bkmashiro/wasi-wheels are CPython 3.14 / wasm32-wasip1
+// but were built against a different wasi-libc than eryx-runtime 0.4.9 (which
+// links with wasi-sdk-27): their `.so` files need an unresolved `__wasi_init_tp`
+// symbol and fail preinit linking, which would break the whole runtime. A
+// working native package must be compiled against eryx-runtime's exact toolchain
+// (wasi-sdk-27 + its CPython 3.14). Add such packages here as ArchiveKind::TarGz.
 const WASI_PACKAGES: &[WasiPackage] = &[
-    WasiPackage {
-        name: "numpy",
-        url: NUMPY_WASI_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: Some("numpy"),
-    },
     WasiPackage {
         name: "beautifulsoup4",
         url: BS4_URL,
@@ -281,9 +278,9 @@ impl PythonTool {
 #[derive(ToolDesc)]
 struct PythonParams {
     /// Python script to execute. With the Eryx backend these packages are
-    /// available: numpy, requests, beautifulsoup4 (bs4), urllib3, certifi,
-    /// idna, markdown, python-dateutil (dateutil), six. Network access is
-    /// required for requests to reach remote hosts.
+    /// available: requests, beautifulsoup4 (bs4), urllib3, certifi, idna,
+    /// markdown, python-dateutil (dateutil), six. Network access is required
+    /// for requests to reach remote hosts.
     script: String,
 }
 
@@ -302,7 +299,7 @@ impl Tool for PythonTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 description: "Execute a Python script in a sandbox and return stdout and stderr. \
-                    Available packages: numpy, requests, beautifulsoup4, urllib3, certifi, idna, \
+                    Available packages: requests, beautifulsoup4, urllib3, certifi, idna, \
                     markdown, python-dateutil, six."
                     .to_string(),
                 name: self.name().to_string(),
@@ -355,14 +352,17 @@ async fn install_package(
     markers: &Path,
 ) -> anyhow::Result<()> {
     let marker = markers.join(pkg.name);
-    if marker.exists() {
+    let installed = tokio::fs::read_to_string(&marker).await.ok();
+    if installed.as_deref() == Some(pkg.url) {
         return Ok(());
     }
 
+    // First install or the source URL changed: fetch fresh. The cached archive
+    // is removed first because different sources can share a filename (both
+    // dicej and bkmashiro publish `numpy-wasi.tar.gz`).
     let archive = deps_dir.join(archive_file_name(pkg));
-    if !archive.exists() {
-        download(pkg.url, &archive).await?;
-    }
+    let _ = tokio::fs::remove_file(&archive).await;
+    download(pkg.url, &archive).await?;
     match pkg.kind {
         ArchiveKind::TarGz => extract_tar_gz(&archive, site_packages).await?,
         ArchiveKind::Wheel => extract_zip(&archive, site_packages).await?,
@@ -863,11 +863,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "network: downloads numpy WASI tarball"]
+    #[ignore = "network: downloads a tarball through a GitHub release redirect"]
     async fn download_follows_redirects_and_fetches_tarball() {
+        // A GitHub release asset that 302-redirects to release-assets storage,
+        // exercising the redirect-following path of `download`.
+        let url =
+            "https://github.com/bkmashiro/wasi-wheels/releases/download/latest/numpy-wasi.tar.gz";
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("numpy-wasi.tar.gz");
-        download(NUMPY_WASI_URL, &path).await.unwrap();
+        download(url, &path).await.unwrap();
         let bytes = tokio::fs::read(&path).await.unwrap();
         assert!(bytes.len() > 1024, "got {} bytes", bytes.len());
         assert_eq!(&bytes[..2], &[0x1f, 0x8b], "not a gzip stream");
@@ -875,8 +879,13 @@ mod tests {
 
     #[test]
     fn archive_file_name_uses_last_url_segment() {
-        let pkg = &WASI_PACKAGES[0];
-        assert_eq!(archive_file_name(pkg), "numpy-wasi.tar.gz");
+        let pkg = WasiPackage {
+            name: "demo",
+            url: "https://example.com/path/demo-1.0-py3-none-any.whl",
+            kind: ArchiveKind::Wheel,
+            preinit_import: None,
+        };
+        assert_eq!(archive_file_name(&pkg), "demo-1.0-py3-none-any.whl");
     }
 
     #[test]
@@ -987,10 +996,10 @@ mod tests {
 
     #[cfg(feature = "eryx")]
     #[tokio::test]
-    #[ignore = "downloads numpy WASI package"]
-    async fn eryx_backend_executes_numpy() {
+    #[ignore = "downloads pure-Python wheels and precompiles runtime"]
+    async fn eryx_backend_imports_pure_python_packages() {
         let workspace = tempfile::tempdir().unwrap();
-        let cache_dir = std::env::temp_dir().join("friday-execenv-test-cache");
+        let cache_dir = std::env::temp_dir().join("friday-execenv-pure-test-cache");
         tokio::fs::create_dir_all(&cache_dir).await.unwrap();
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
@@ -1008,17 +1017,23 @@ mod tests {
         prepare_eryx_runtime(config.clone()).await.unwrap();
         let tool = PythonTool::new(config, fs).await.unwrap();
 
+        // No network needed: exercise imports and offline behaviour only.
+        let script = "import markdown, dateutil, requests\n\
+             from bs4 import BeautifulSoup\n\
+             html = markdown.markdown('# Title')\n\
+             text = BeautifulSoup(html, 'html.parser').get_text().strip()\n\
+             print(text)";
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
                     model_registry: friday_agent::ModelRegistry::new(),
                     max_iterations: 1,
                 }),
-                json!({ "script": "import numpy as np\nprint(np.array([1, 2, 3]).sum())" }),
+                json!({ "script": script }),
             )
             .await;
 
         assert_eq!(result["success"], true, "{result}");
-        assert_eq!(result["stdout"].as_str().unwrap().trim(), "6");
+        assert_eq!(result["stdout"].as_str().unwrap().trim(), "Title");
     }
 }
