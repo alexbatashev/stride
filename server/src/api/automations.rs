@@ -193,8 +193,20 @@ pub async fn create(
     }
 
     // Cron is the only trigger that needs a valid schedule; the rest ignore it.
-    let trigger_config =
-        validate_trigger(trigger_kind, &schedule, request.trigger_config.as_ref())?;
+    let trigger_config = match trigger_kind {
+        TriggerKind::Cron => {
+            if Cron::parse(&schedule).is_err() {
+                return Err(AutomationApiError::BadRequest);
+            }
+            None
+        }
+        TriggerKind::VfsChange => {
+            Some(resolve_vfs_config(&state, owner, request.trigger_config.as_ref()).await?)
+        }
+        TriggerKind::Webhook | TriggerKind::Manual => {
+            request.trigger_config.as_ref().map(|c| c.to_string())
+        }
+    };
 
     // Webhook automations get an opaque secret; vfs_change is baselined so
     // pre-existing files do not fire.
@@ -246,28 +258,39 @@ pub async fn create(
     ))
 }
 
-/// Validate the trigger configuration and return the JSON to persist (if any).
-fn validate_trigger(
-    kind: TriggerKind,
-    schedule: &str,
+/// Resolve a vfs_change UI config into the canonical stored form. The UI sends
+/// `{"path": "..."}` (empty path = all global files); we pin it to a node id or
+/// the owner-wide global watch. A pre-canonical `{node|workspace|global}` config
+/// (e.g. from an agent) is accepted as-is.
+async fn resolve_vfs_config(
+    state: &ServerState,
+    owner: Uuid,
     config: Option<&JsonValue>,
-) -> Result<Option<String>, AutomationApiError> {
-    match kind {
-        TriggerKind::Cron => {
-            if Cron::parse(schedule).is_err() {
-                return Err(AutomationApiError::BadRequest);
-            }
-            Ok(None)
+) -> Result<String, AutomationApiError> {
+    let path = config
+        .and_then(|c| c.get("path"))
+        .and_then(|p| p.as_str())
+        .map(str::trim);
+
+    let canonical = match path {
+        Some(path) if !path.is_empty() => {
+            let vfs = state.vfs.as_ref().ok_or(AutomationApiError::BadRequest)?;
+            let node = vfs
+                .resolve_global_node(owner, path)
+                .await
+                .map_err(|_| AutomationApiError::BadRequest)?;
+            format!(r#"{{"node":"{node}"}}"#)
         }
-        TriggerKind::VfsChange => {
-            let raw = config
-                .map(|c| c.to_string())
-                .ok_or(AutomationApiError::BadRequest)?;
-            VfsChangeTrigger::parse(Some(&raw)).map_err(|_| AutomationApiError::BadRequest)?;
-            Ok(Some(raw))
-        }
-        TriggerKind::Webhook | TriggerKind::Manual => Ok(config.map(|c| c.to_string())),
-    }
+        // Explicit empty path, or a config with no path key, defaults to the
+        // owner's whole global area; a pre-canonical config passes through.
+        Some(_) | None => match config {
+            Some(config) if config.get("path").is_none() => config.to_string(),
+            _ => r#"{"global":true}"#.to_string(),
+        },
+    };
+
+    VfsChangeTrigger::parse(Some(&canonical), owner).map_err(|_| AutomationApiError::BadRequest)?;
+    Ok(canonical)
 }
 
 pub async fn update(
@@ -636,5 +659,38 @@ mod tests {
         let fired = rx.try_recv().expect("a fire request");
         assert_eq!(fired.automation_id, id);
         assert!(fired.payload.is_some());
+    }
+
+    #[tokio::test]
+    async fn vfs_change_config_defaults_to_global_and_requires_vfs_for_paths() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+        let (handle, _rx) = ExecutorHandle::channel();
+        let state = build_state(db, handle);
+        let owner = Uuid::now_v7();
+
+        // No config and an empty path both watch the whole global area.
+        let global = r#"{"global":true}"#;
+        assert_eq!(
+            super::resolve_vfs_config(&state, owner, None)
+                .await
+                .unwrap(),
+            global
+        );
+        let empty = serde_json::json!({ "path": "" });
+        assert_eq!(
+            super::resolve_vfs_config(&state, owner, Some(&empty))
+                .await
+                .unwrap(),
+            global
+        );
+
+        // A real path needs a configured VFS (none in this test) -> rejected.
+        let with_path = serde_json::json!({ "path": "reports" });
+        assert!(
+            super::resolve_vfs_config(&state, owner, Some(&with_path))
+                .await
+                .is_err()
+        );
     }
 }

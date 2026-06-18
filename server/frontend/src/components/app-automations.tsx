@@ -392,14 +392,25 @@ export function AppAutomations({
 					this.formError = "";
 					const trigger = String(data.get("trigger") ?? "cron");
 					const notify = String(data.get("notify") ?? "none");
+					const triggerKind =
+						trigger === "webhook"
+							? "webhook"
+							: trigger === "manual"
+								? "manual"
+								: trigger === "vfs_change"
+									? "vfs_change"
+									: "cron";
 					void createAutomation({
 						name: String(data.get("name") ?? ""),
 						schedule: String(data.get("schedule") ?? ""),
 						kind: data.get("kind") === "python" ? "python" : "agent",
 						payload: String(data.get("payload") ?? ""),
 						enabled: data.get("enabled") !== null,
-						trigger_kind: trigger === "webhook" ? "webhook" : trigger === "manual" ? "manual" : "cron",
+						trigger_kind: triggerKind,
 						notify_kind: notify === "telegram" ? "telegram" : "none",
+						...(triggerKind === "vfs_change"
+							? { trigger_config: { path: String(data.get("watch_path") ?? "").trim() } }
+							: {}),
 					})
 						.then((created) => {
 							this.creating = false;
@@ -478,6 +489,7 @@ export function AppAutomations({
 								<select name="trigger">
 									<option value="cron">Cron schedule</option>
 									<option value="webhook">Webhook (HTTP)</option>
+									<option value="vfs_change">File change</option>
 									<option value="manual">Manual (run on demand)</option>
 								</select>
 							</label>
@@ -485,6 +497,14 @@ export function AppAutomations({
 								Schedule (cron)
 								<input name="schedule" placeholder="*/30 * * * *" />
 								<span class="hint">Required for the cron trigger; ignored otherwise.</span>
+							</label>
+							<label>
+								Watch path
+								<input name="watch_path" placeholder="reports/ (leave empty for all files)" />
+								<span class="hint">
+									For the File change trigger: a file or folder in your files. Empty watches all
+									your files.
+								</span>
 							</label>
 							<label>
 								Type

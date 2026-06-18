@@ -9,6 +9,7 @@ pub mod webhook;
 
 use async_trait::async_trait;
 use minisql::ConnectionPool;
+use uuid::Uuid;
 
 use crate::db::TriggerKind;
 
@@ -25,6 +26,7 @@ pub fn polled(
     kind: TriggerKind,
     schedule: &str,
     trigger_config: Option<&str>,
+    owner: Uuid,
 ) -> Option<Box<dyn PolledTrigger>> {
     match kind {
         TriggerKind::Cron => match cron::CronTrigger::parse(schedule) {
@@ -34,13 +36,15 @@ pub fn polled(
                 None
             }
         },
-        TriggerKind::VfsChange => match vfs_change::VfsChangeTrigger::parse(trigger_config) {
-            Ok(trigger) => Some(Box::new(trigger)),
-            Err(error) => {
-                tracing::warn!(%error, "skipping vfs_change automation with invalid config");
-                None
+        TriggerKind::VfsChange => {
+            match vfs_change::VfsChangeTrigger::parse(trigger_config, owner) {
+                Ok(trigger) => Some(Box::new(trigger)),
+                Err(error) => {
+                    tracing::warn!(%error, "skipping vfs_change automation with invalid config");
+                    None
+                }
             }
-        },
+        }
         TriggerKind::Webhook | TriggerKind::Manual => None,
     }
 }

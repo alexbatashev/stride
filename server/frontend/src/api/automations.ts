@@ -35,6 +35,8 @@ export type NewAutomation = {
 	enabled: boolean;
 	trigger_kind: TriggerKind;
 	notify_kind: NotifyKind;
+	// For the vfs_change trigger: { path } (empty path = all global files).
+	trigger_config?: Record<string, unknown>;
 };
 
 export async function listAutomations(): Promise<Automation[]> {

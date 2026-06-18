@@ -138,8 +138,12 @@ async fn poll_due(ctx: &ExecutorCtx) {
 
     for row in rows {
         let kind = TriggerKind::from_opt(row.trigger_kind.as_deref());
-        let Some(trigger) = triggers::polled(kind, &row.schedule, row.trigger_config.as_deref())
-        else {
+        let Some(trigger) = triggers::polled(
+            kind,
+            &row.schedule,
+            row.trigger_config.as_deref(),
+            row.owner,
+        ) else {
             continue;
         };
         if !trigger.due(&ctx.db, now, row.last_run).await {
