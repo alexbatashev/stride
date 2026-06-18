@@ -6,6 +6,7 @@ import {
 	deleteAutomation,
 	listAutomationRuns,
 	listAutomations,
+	runAutomation,
 	setAutomationEnabled,
 } from "../api/automations.js";
 
@@ -26,6 +27,9 @@ type AutomationsHost = HTMLElement & {
 	detailName: string;
 	runs: RunView[];
 	runsLoading: boolean;
+	webhookOpen: boolean;
+	webhookUrl: string;
+	webhookSecret: string;
 };
 
 async function load(host: AutomationsHost): Promise<void> {
@@ -267,6 +271,23 @@ const styles = css`
 	.error:empty {
 		display: none;
 	}
+
+	.hint {
+		color: var(--muted-foreground);
+		font-size: 12px;
+		font-weight: 400;
+	}
+
+	.card input.secret {
+		font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+	}
+
+	code {
+		background: var(--muted);
+		border-radius: 4px;
+		font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+		padding: 1px 4px;
+	}
 `;
 
 export function AppAutomations({
@@ -279,6 +300,9 @@ export function AppAutomations({
 	detailName = "",
 	runs = [],
 	runsLoading = false,
+	webhookOpen = false,
+	webhookUrl = "",
+	webhookSecret = "",
 }: {
 	items?: Automation[];
 	loading?: boolean;
@@ -289,6 +313,9 @@ export function AppAutomations({
 	detailName?: string;
 	runs?: RunView[];
 	runsLoading?: boolean;
+	webhookOpen?: boolean;
+	webhookUrl?: string;
+	webhookSecret?: string;
 }): Component {
 	onMount(() => {
 		void load(this);
@@ -309,6 +336,10 @@ export function AppAutomations({
 						this.detailOpen = false;
 						return;
 					}
+					if (node.dataset.backdrop === "webhook") {
+						this.webhookOpen = false;
+						return;
+					}
 					const target = node.closest<HTMLElement>("[data-action]");
 					if (!target) return;
 					switch (target.dataset.action) {
@@ -321,12 +352,22 @@ export function AppAutomations({
 						case "close-detail":
 							this.detailOpen = false;
 							return;
+						case "close-webhook":
+							this.webhookOpen = false;
+							return;
 					}
 					const item = (this.items as Automation[]).find((it) => it.id === target.dataset.id);
 					if (!item) return;
 					switch (target.dataset.action) {
 						case "detail":
 							void openDetail(this, item);
+							break;
+						case "run":
+							void runAutomation(item.id)
+								.then(() => load(this))
+								.catch(() => {
+									this.error = "Failed to start run.";
+								});
 							break;
 						case "toggle":
 							void setAutomationEnabled(item.id, !item.enabled)
@@ -349,15 +390,25 @@ export function AppAutomations({
 					event.preventDefault();
 					const data = new FormData(event.target as HTMLFormElement);
 					this.formError = "";
+					const trigger = String(data.get("trigger") ?? "cron");
+					const notify = String(data.get("notify") ?? "none");
 					void createAutomation({
 						name: String(data.get("name") ?? ""),
 						schedule: String(data.get("schedule") ?? ""),
 						kind: data.get("kind") === "python" ? "python" : "agent",
 						payload: String(data.get("payload") ?? ""),
 						enabled: data.get("enabled") !== null,
+						trigger_kind: trigger === "webhook" ? "webhook" : trigger === "manual" ? "manual" : "cron",
+						notify_kind: notify === "telegram" ? "telegram" : "none",
 					})
-						.then(() => {
+						.then((created) => {
 							this.creating = false;
+							// A webhook automation returns its secret exactly once.
+							if (created.webhook_secret) {
+								this.webhookUrl = `${location.origin}/api/automations/${created.id}/webhook`;
+								this.webhookSecret = created.webhook_secret;
+								this.webhookOpen = true;
+							}
 							void load(this);
 						})
 						.catch((err: unknown) => {
@@ -375,7 +426,9 @@ export function AppAutomations({
 							New automation
 						</button>
 					</div>
-					<p class="muted">Scheduled tasks Friday runs for you on a cron schedule.</p>
+					<p class="muted">
+						Tasks Friday runs for you — on a schedule, on a webhook, on file changes, or on demand.
+					</p>
 					<div class="list">
 						{items.length === 0 ? (
 							<p class="muted">{loading ? "Loading…" : "No automations yet."}</p>
@@ -387,10 +440,15 @@ export function AppAutomations({
 												<button class="info" type="button" data-action="detail" data-id={item.id}>
 													<span class="name">{item.name}</span>
 													<span class="meta">
-														{item.kind} · {item.schedule}
+														{item.kind} · {item.trigger_kind}
+														{item.trigger_kind === "cron" ? ` · ${item.schedule}` : ""}
+														{item.notify_kind !== "none" ? ` · ⤳ ${item.notify_kind}` : ""}
 													</span>
 												</button>
 												<div class="controls">
+													<button type="button" data-action="run" data-id={item.id}>
+														Run
+													</button>
 													<button type="button" data-action="toggle" data-id={item.id}>
 														{item.enabled ? "On" : "Off"}
 													</button>
@@ -416,14 +474,30 @@ export function AppAutomations({
 								<input name="name" required />
 							</label>
 							<label>
+								Trigger
+								<select name="trigger">
+									<option value="cron">Cron schedule</option>
+									<option value="webhook">Webhook (HTTP)</option>
+									<option value="manual">Manual (run on demand)</option>
+								</select>
+							</label>
+							<label>
 								Schedule (cron)
-								<input name="schedule" placeholder="*/30 * * * *" required />
+								<input name="schedule" placeholder="*/30 * * * *" />
+								<span class="hint">Required for the cron trigger; ignored otherwise.</span>
 							</label>
 							<label>
 								Type
 								<select name="kind">
 									<option value="agent">Agent prompt</option>
 									<option value="python">Python script</option>
+								</select>
+							</label>
+							<label>
+								Notify
+								<select name="notify">
+									<option value="none">Store only</option>
+									<option value="telegram">Telegram</option>
 								</select>
 							</label>
 							<label>
@@ -472,6 +546,32 @@ export function AppAutomations({
 										.join("")
 								)}
 							</div>
+						</div>
+					</div>
+				)}
+
+				{webhookOpen && (
+					<div class="modal" data-backdrop="webhook">
+						<div class="card">
+							<div class="actions">
+								<h2>Webhook created</h2>
+								<button type="button" data-action="close-webhook">
+									Close
+								</button>
+							</div>
+							<p class="muted">
+								Send a POST request to this URL to trigger the automation. The secret is shown only
+								once — copy it now. Pass it as the <code>X-Friday-Webhook-Secret</code> header or a{" "}
+								<code>?token=</code> query parameter. Any JSON body is forwarded to the task.
+							</p>
+							<label>
+								URL
+								<input class="secret" value={webhookUrl} readonly />
+							</label>
+							<label>
+								Secret
+								<input class="secret" value={webhookSecret} readonly />
+							</label>
 						</div>
 					</div>
 				)}
