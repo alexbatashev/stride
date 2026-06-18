@@ -28,7 +28,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dependencies.eryx]
 version = "0.4.9"
-features = ["embedded-stdlib", "native-extensions", "preinit", "vfs"]
+features = ["native-extensions", "preinit", "vfs"]
 optional = true
 
 [dev-dependencies]
