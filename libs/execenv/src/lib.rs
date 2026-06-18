@@ -35,6 +35,27 @@ const FONTTOOLS_URL: &str = "https://files.pythonhosted.org/packages/2c/47/c99d5
 const PYPARSING_URL: &str = "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl";
 const PACKAGING_URL: &str = "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl";
 
+// Task-oriented pure-Python packages for autonomous agents: document I/O
+// (pypdf, openpyxl + et-xmlfile, markdownify, tabulate), calendar (icalendar,
+// tzlocal, humanize), HTTP (httpx + httpcore + h11 + anyio), locale formatting
+// (babel) and email handling (email-validator + dnspython). All py3-none-any,
+// so they need no compilation and load lazily from site-packages.
+const PYPDF_URL: &str = "https://files.pythonhosted.org/packages/94/56/2967e621598987905fb8cdfadd8f8de6b5c68c9351f0523c4df8409f28f1/pypdf-6.13.3-py3-none-any.whl";
+const OPENPYXL_URL: &str = "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl";
+const ET_XMLFILE_URL: &str = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl";
+const MARKDOWNIFY_URL: &str = "https://files.pythonhosted.org/packages/43/ce/f1e3e9d959db134cedf06825fae8d5b294bd368aacdd0831a3975b7c4d55/markdownify-1.2.2-py3-none-any.whl";
+const TABULATE_URL: &str = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl";
+const ICALENDAR_URL: &str = "https://files.pythonhosted.org/packages/a0/57/aa44e7af1244856d92a700dca5089777a334fecd328f82d5faa5c2696e2e/icalendar-7.1.3-py3-none-any.whl";
+const TZLOCAL_URL: &str = "https://files.pythonhosted.org/packages/42/28/fc144409c71569e928585f8f3c629d80d1ca3ef40175e9222f01588f98c9/tzlocal-5.4.3-py3-none-any.whl";
+const HUMANIZE_URL: &str = "https://files.pythonhosted.org/packages/c5/7b/bca5613a0c3b542420cf92bd5e5fb8ebd5435ce1011a091f66bb7693285e/humanize-4.15.0-py3-none-any.whl";
+const HTTPX_URL: &str = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl";
+const HTTPCORE_URL: &str = "https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl";
+const H11_URL: &str = "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl";
+const ANYIO_URL: &str = "https://files.pythonhosted.org/packages/ba/16/9826f089383c593cdfc4a6e5aca94d9e91ae1692c57af82c3b2aa5e810f7/anyio-4.14.0-py3-none-any.whl";
+const BABEL_URL: &str = "https://files.pythonhosted.org/packages/77/f5/21d2de20e8b8b0408f0681956ca2c69f1320a3848ac50e6e7f39c6159675/babel-2.18.0-py3-none-any.whl";
+const EMAIL_VALIDATOR_URL: &str = "https://files.pythonhosted.org/packages/de/15/545e2b6cf2e3be84bc1ed85613edd75b8aea69807a71c26f4ca6a9258e82/email_validator-2.3.0-py3-none-any.whl";
+const DNSPYTHON_URL: &str = "https://files.pythonhosted.org/packages/ba/5a/18ad964b0086c6e62e2e7500f7edc89e3faa45033c71c1893d34eed2b2de/dnspython-2.8.0-py3-none-any.whl";
+
 // Native (wasm32-wasip1) packages built against eryx-runtime's exact toolchain
 // (wasi-sdk-27 + CPython 3.14) and published by frontiers-labs/wasi-wheels.
 const NUMPY_URL: &str =
@@ -183,6 +204,103 @@ const WASI_PACKAGES: &[WasiPackage] = &[
     WasiPackage {
         name: "packaging",
         url: PACKAGING_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // Task-oriented pure-Python packages.
+    WasiPackage {
+        name: "pypdf",
+        url: PYPDF_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "openpyxl",
+        url: OPENPYXL_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // et-xmlfile is openpyxl's XML streaming writer dependency.
+    WasiPackage {
+        name: "et-xmlfile",
+        url: ET_XMLFILE_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // markdownify turns fetched HTML into Markdown; it reuses beautifulsoup4.
+    WasiPackage {
+        name: "markdownify",
+        url: MARKDOWNIFY_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "tabulate",
+        url: TABULATE_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // icalendar parses/builds .ics; it relies on python-dateutil and tzdata.
+    WasiPackage {
+        name: "icalendar",
+        url: ICALENDAR_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "tzlocal",
+        url: TZLOCAL_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "humanize",
+        url: HUMANIZE_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // httpx is a modern HTTP client; httpcore, h11 and anyio are its transport
+    // stack. It reuses the existing certifi and idna wheels.
+    WasiPackage {
+        name: "httpx",
+        url: HTTPX_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "httpcore",
+        url: HTTPCORE_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "h11",
+        url: H11_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "anyio",
+        url: ANYIO_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "babel",
+        url: BABEL_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    // email-validator checks address syntax; dnspython is its resolver backend.
+    WasiPackage {
+        name: "email-validator",
+        url: EMAIL_VALIDATOR_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "dnspython",
+        url: DNSPYTHON_URL,
         kind: ArchiveKind::Wheel,
         preinit_import: None,
     },
@@ -395,9 +513,11 @@ impl PythonTool {
 #[derive(ToolDesc)]
 struct PythonParams {
     /// Python script to execute. With the Eryx backend these packages are
-    /// available: requests, beautifulsoup4 (bs4), urllib3, certifi, idna,
-    /// markdown, python-dateutil (dateutil), six. Network access is required
-    /// for requests to reach remote hosts.
+    /// available: numpy, pandas, matplotlib (Agg), pillow (PIL); requests,
+    /// httpx, beautifulsoup4 (bs4), urllib3, certifi, idna, markdown,
+    /// markdownify; pypdf, openpyxl, icalendar, tabulate, babel, humanize,
+    /// tzlocal, email-validator, dnspython (dns), python-dateutil (dateutil),
+    /// six. Network access is required to reach remote hosts.
     script: String,
 }
 
@@ -418,8 +538,10 @@ impl Tool for PythonTool {
                 description: "Execute a Python script in a sandbox and return stdout and stderr. \
                     The writable workspace is mounted at /~workspace; write outputs there. \
                     /tmp is writable scratch. Available packages: numpy, pandas, matplotlib \
-                    (Agg backend), pillow, requests, beautifulsoup4, urllib3, certifi, idna, \
-                    markdown, python-dateutil, six."
+                    (Agg backend), pillow; requests, httpx, beautifulsoup4, urllib3, certifi, \
+                    idna, markdown, markdownify; pypdf (PDF), openpyxl (xlsx), icalendar (ics), \
+                    tabulate, babel, humanize, tzlocal, email-validator, dnspython, \
+                    python-dateutil, six."
                     .to_string(),
                 name: self.name().to_string(),
                 parameters: Some(PythonParams::function_parameters()),
