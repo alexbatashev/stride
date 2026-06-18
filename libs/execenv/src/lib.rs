@@ -5,10 +5,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use friday_agent::{AgentConfig, Tool, ToolDesc};
+use friday_agent::{AgentConfig, Tool, ToolDesc, ToolRegistry};
 use llm::{Function, Tool as LlmTool};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::{mpsc, oneshot};
 
 #[cfg(feature = "eryx")]
 pub use eryx::VolumeMount;
@@ -499,9 +500,40 @@ pub struct ExecutionOutput {
     pub stderr: String,
 }
 
+/// A tool advertised to Python scripts as `tools.<name>(...)`. Built from a
+/// registered agent tool's definition.
+#[derive(Clone, Debug)]
+pub struct PythonToolSpec {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema for the tool arguments (the `parameters` object).
+    pub parameters: Value,
+}
+
+/// A tool invocation requested by a running Python script. The sandbox runs on a
+/// worker thread; the call is forwarded to the agent thread, which executes the
+/// tool against its registry and sends the JSON result back through `reply`.
+pub struct HostToolCall {
+    pub name: String,
+    pub args: Value,
+    pub reply: oneshot::Sender<Value>,
+}
+
 #[async_trait]
 pub trait ExecutionService: Send + Sync {
     async fn execute_python(&self, script: &str) -> anyhow::Result<ExecutionOutput>;
+
+    /// Execute a script with agent tools exposed to it. `tools` are advertised
+    /// as callables and each invocation is sent over `calls` for the host to
+    /// run. The default implementation ignores the tools.
+    async fn execute_python_with_tools(
+        &self,
+        script: &str,
+        _tools: &[PythonToolSpec],
+        _calls: mpsc::UnboundedSender<HostToolCall>,
+    ) -> anyhow::Result<ExecutionOutput> {
+        self.execute_python(script).await
+    }
 }
 
 #[async_trait]
@@ -576,6 +608,8 @@ impl ExecutionService for MockExecutionService {
 
 pub struct PythonTool {
     service: Arc<dyn ExecutionService>,
+    registry: Option<Arc<ToolRegistry>>,
+    specs: Vec<PythonToolSpec>,
 }
 
 impl PythonTool {
@@ -587,12 +621,79 @@ impl PythonTool {
             BackendKind::Mock => Arc::new(MockExecutionService),
             BackendKind::Eryx => make_eryx_service(config, fs).await?,
         };
-        Ok(Self { service })
+        Ok(Self {
+            service,
+            registry: None,
+            specs: Vec::new(),
+        })
     }
 
     pub fn from_service(service: Arc<dyn ExecutionService>) -> Self {
-        Self { service }
+        Self {
+            service,
+            registry: None,
+            specs: Vec::new(),
+        }
     }
+
+    /// Expose the agent's auto-approved tools to executed scripts under the
+    /// `tools` package. The registry should not contain this Python tool itself.
+    pub fn with_tools(mut self, registry: ToolRegistry) -> Self {
+        self.specs = registry.auto_approved().iter().map(tool_spec).collect();
+        self.specs.sort_by(|a, b| a.name.cmp(&b.name));
+        self.registry = Some(Arc::new(registry));
+        self
+    }
+}
+
+fn tool_spec(tool: &Arc<dyn Tool>) -> PythonToolSpec {
+    let definition = tool.definition();
+    let parameters = definition
+        .function
+        .parameters
+        .as_ref()
+        .and_then(|params| serde_json::to_value(params).ok())
+        .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+    PythonToolSpec {
+        name: definition.function.name,
+        description: definition.function.description,
+        parameters,
+    }
+}
+
+/// Run a single tool call from a script against the registry, refusing tools
+/// that would otherwise need interactive approval.
+async fn dispatch_tool_call(
+    registry: &ToolRegistry,
+    config: Arc<AgentConfig>,
+    name: String,
+    args: Value,
+) -> Value {
+    match registry.get(&name) {
+        Some(_) if registry.needs_approval(&name, &args) => {
+            json!({ "error": format!("tool '{name}' requires approval and cannot be called from python") })
+        }
+        Some(tool) => tool.execute(config, args).await,
+        None => json!({ "error": format!("unknown tool: {name}") }),
+    }
+}
+
+/// Lines describing the `tools` package for the model, one per exposed tool.
+fn tools_catalog(specs: &[PythonToolSpec]) -> String {
+    specs
+        .iter()
+        .map(|spec| {
+            let params = spec
+                .parameters
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|props| props.keys().cloned().collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            let summary = spec.description.lines().next().unwrap_or_default();
+            format!("- await tools.{}({params}): {summary}", spec.name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(ToolDesc)]
@@ -613,33 +714,51 @@ impl Tool for PythonTool {
     }
 
     fn definition(&self) -> LlmTool {
+        let mut description = format!(
+            "Execute a Python script in a sandbox and return stdout and stderr. \
+            The writable workspace is mounted at /~workspace; write outputs there. \
+            /tmp is writable scratch. matplotlib uses the Agg backend. \
+            No system fonts are installed: for Unicode text in fpdf2 or Pillow, \
+            register a bundled TTF such as \
+            /site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf \
+            instead of a system path like /usr/share/fonts/.... \
+            Installed packages: {}.",
+            installed_packages_list()
+        );
+        if !self.specs.is_empty() {
+            description.push_str(
+                "\n\nThe agent's tools are available in the `tools` package \
+                (also a global). Call them as awaitable functions with keyword \
+                arguments matching the tool schema; each returns the tool's JSON \
+                result as a Python object. Top-level await is supported.\n",
+            );
+            description.push_str(&tools_catalog(&self.specs));
+        }
         LlmTool {
             r#type: llm::ToolType::Function,
             function: Function {
-                description: format!(
-                    "Execute a Python script in a sandbox and return stdout and stderr. \
-                    The writable workspace is mounted at /~workspace; write outputs there. \
-                    /tmp is writable scratch. matplotlib uses the Agg backend. \
-                    No system fonts are installed: for Unicode text in fpdf2 or Pillow, \
-                    register a bundled TTF such as \
-                    /site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf \
-                    instead of a system path like /usr/share/fonts/.... \
-                    Installed packages: {}.",
-                    installed_packages_list()
-                ),
+                description,
                 name: self.name().to_string(),
                 parameters: Some(PythonParams::function_parameters()),
             },
         }
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
+    async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value {
         let params = match PythonParams::decode(args) {
             Ok(params) => params,
             Err(err) => return json!({ "error": err }),
         };
 
-        match self.service.execute_python(&params.script).await {
+        let result = match self.registry.clone() {
+            Some(registry) if !self.specs.is_empty() => {
+                self.execute_with_tools(config, registry, &params.script)
+                    .await
+            }
+            _ => self.service.execute_python(&params.script).await,
+        };
+
+        match result {
             Ok(output) => json!({
                 "success": true,
                 "stdout": output.stdout,
@@ -651,6 +770,34 @@ impl Tool for PythonTool {
                 "stderr": "",
                 "error": format!("{err:#}"),
             }),
+        }
+    }
+}
+
+impl PythonTool {
+    /// Run a script with the registry's tools exposed, servicing each tool call
+    /// on this (agent) thread while the sandbox runs on its worker thread.
+    async fn execute_with_tools(
+        &self,
+        config: Arc<AgentConfig>,
+        registry: Arc<ToolRegistry>,
+        script: &str,
+    ) -> anyhow::Result<ExecutionOutput> {
+        let (calls_tx, mut calls_rx) = mpsc::unbounded_channel::<HostToolCall>();
+        let execution = self
+            .service
+            .execute_python_with_tools(script, &self.specs, calls_tx);
+        tokio::pin!(execution);
+
+        loop {
+            tokio::select! {
+                output = &mut execution => return output,
+                Some(call) = calls_rx.recv() => {
+                    let result =
+                        dispatch_tool_call(&registry, config.clone(), call.name, call.args).await;
+                    let _ = call.reply.send(result);
+                }
+            }
         }
     }
 }
@@ -821,11 +968,13 @@ mod eryx_backend {
 
     use anyhow::Context;
     use async_trait::async_trait;
+    use serde_json::json;
     use tokio::sync::{OnceCell, oneshot};
 
     use crate::{
         ERYX_RUNTIME_CACHE_VERSION, ExecutionLimits, ExecutionOutput, ExecutionService,
-        FileSystemBackend, NetworkAccess, PythonToolConfig, ensure_wasi_dependencies,
+        FileSystemBackend, HostToolCall, NetworkAccess, PythonToolConfig, PythonToolSpec,
+        ensure_wasi_dependencies,
     };
 
     pub struct EryxExecutionService {
@@ -860,31 +1009,54 @@ mod eryx_backend {
             .map(|_| ())
     }
 
-    #[async_trait]
-    impl ExecutionService for EryxExecutionService {
-        async fn execute_python(&self, script: &str) -> anyhow::Result<ExecutionOutput> {
+    impl EryxExecutionService {
+        async fn prepared_request(&self, script: &str) -> anyhow::Result<ExecutionRequest> {
             let runtime = self
                 .runtime
                 .get_or_try_init(|| self.hub.prepare(self.config.clone()))
                 .await?;
-            self.fs.before_execute().await?;
-            let result = self
-                .hub
-                .execute(ExecutionRequest {
-                    runtime: Arc::new(runtime.clone()),
-                    script: script.to_string(),
-                    limits: self.config.limits.clone(),
-                    volumes: self.fs.volumes(),
-                    network: self.config.network.clone(),
-                })
-                .await;
-            let after = self.fs.after_execute().await;
+            Ok(ExecutionRequest {
+                runtime: Arc::new(runtime.clone()),
+                script: script.to_string(),
+                limits: self.config.limits.clone(),
+                volumes: self.fs.volumes(),
+                network: self.config.network.clone(),
+            })
+        }
+    }
 
-            match (result, after) {
-                (Ok(output), Ok(())) => Ok(output),
-                (Err(err), _) => Err(err),
-                (Ok(_), Err(err)) => Err(err).context("sync eryx filesystem after execute"),
-            }
+    fn join_results(
+        result: anyhow::Result<ExecutionOutput>,
+        after: anyhow::Result<()>,
+    ) -> anyhow::Result<ExecutionOutput> {
+        match (result, after) {
+            (Ok(output), Ok(())) => Ok(output),
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err).context("sync eryx filesystem after execute"),
+        }
+    }
+
+    #[async_trait]
+    impl ExecutionService for EryxExecutionService {
+        async fn execute_python(&self, script: &str) -> anyhow::Result<ExecutionOutput> {
+            let request = self.prepared_request(script).await?;
+            self.fs.before_execute().await?;
+            let result = self.hub.execute(request).await;
+            let after = self.fs.after_execute().await;
+            join_results(result, after)
+        }
+
+        async fn execute_python_with_tools(
+            &self,
+            script: &str,
+            tools: &[PythonToolSpec],
+            calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
+        ) -> anyhow::Result<ExecutionOutput> {
+            let request = self.prepared_request(script).await?;
+            self.fs.before_execute().await?;
+            let result = self.hub.execute_with_tools(request, tools.to_vec(), calls).await;
+            let after = self.fs.after_execute().await;
+            join_results(result, after)
         }
     }
 
@@ -1059,6 +1231,24 @@ mod eryx_backend {
             rx.await.context("eryx worker stopped")?
         }
 
+        async fn execute_with_tools(
+            &self,
+            request: ExecutionRequest,
+            tools: Vec<PythonToolSpec>,
+            calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
+        ) -> anyhow::Result<ExecutionOutput> {
+            let (tx, rx) = oneshot::channel();
+            self.tx
+                .send(ExecutionJob::ExecuteWithTools {
+                    request,
+                    tools,
+                    calls,
+                    tx,
+                })
+                .map_err(|_| anyhow::anyhow!("eryx execution queue stopped"))?;
+            rx.await.context("eryx worker stopped")?
+        }
+
         async fn prepare(&self, config: PythonToolConfig) -> anyhow::Result<PreinitRuntime> {
             let (tx, rx) = oneshot::channel();
             self.tx
@@ -1075,6 +1265,12 @@ mod eryx_backend {
         },
         Execute {
             request: ExecutionRequest,
+            tx: oneshot::Sender<anyhow::Result<ExecutionOutput>>,
+        },
+        ExecuteWithTools {
+            request: ExecutionRequest,
+            tools: Vec<PythonToolSpec>,
+            calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
             tx: oneshot::Sender<anyhow::Result<ExecutionOutput>>,
         },
     }
@@ -1108,6 +1304,15 @@ mod eryx_backend {
                 }
                 ExecutionJob::Execute { request, tx } => {
                     let result = runtime.block_on(execute_request(request));
+                    let _ = tx.send(result);
+                }
+                ExecutionJob::ExecuteWithTools {
+                    request,
+                    tools,
+                    calls,
+                    tx,
+                } => {
+                    let result = runtime.block_on(execute_request_with_tools(request, tools, calls));
                     let _ = tx.send(result);
                 }
             }
@@ -1203,6 +1408,134 @@ mod eryx_backend {
             ..Default::default()
         }
     }
+
+    async fn execute_request_with_tools(
+        request: ExecutionRequest,
+        tools: Vec<PythonToolSpec>,
+        calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
+    ) -> anyhow::Result<ExecutionOutput> {
+        let scratch = ScratchTmp::new()?;
+        let mut volumes = request.volumes;
+        volumes.push(scratch.volume());
+
+        let library = build_tools_library(&tools, calls);
+
+        let mut builder = unsafe {
+            eryx::Sandbox::builder()
+                .with_precompiled_file(&request.runtime.runtime)
+                .with_python_stdlib(&request.runtime.stdlib)
+        }
+        .with_resource_limits(to_eryx_limits(&request.limits))
+        .with_volumes(volumes)
+        .with_library(library);
+        if matches!(request.network, NetworkAccess::Allowed) {
+            builder = builder.with_network(eryx::NetConfig::permissive());
+        }
+        if let Some(site_packages) = request.runtime.site_packages.as_ref() {
+            builder = builder.with_site_packages(site_packages);
+        }
+        let sandbox = builder.build().context("build eryx sandbox")?;
+        let result = sandbox
+            .execute(&request.script)
+            .await
+            .context("execute eryx script")?;
+        drop(scratch);
+        Ok(ExecutionOutput {
+            stdout: result.stdout,
+            stderr: result.stderr,
+        })
+    }
+
+    /// Build the eryx library that exposes each tool as a callback and assembles
+    /// the `tools` Python package that forwards calls to the host.
+    fn build_tools_library(
+        tools: &[PythonToolSpec],
+        calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
+    ) -> eryx::RuntimeLibrary {
+        let mut library = eryx::RuntimeLibrary::new();
+        let mut entries = Vec::new();
+
+        for (index, spec) in tools.iter().enumerate() {
+            let callback_name = format!("__tool_{index}");
+            let attribute = python_attribute(&spec.name);
+            entries.push((attribute, callback_name.clone()));
+
+            let schema = eryx::Schema::try_from_value(spec.parameters.clone())
+                .or_else(|_| eryx::Schema::try_from_value(json!({ "type": "object" })))
+                .unwrap_or_else(|_| eryx::Schema::empty());
+            let tool_name = spec.name.clone();
+            let calls = calls.clone();
+            let callback = eryx::DynamicCallback::builder(
+                callback_name,
+                spec.description.clone(),
+                move |args| {
+                    let calls = calls.clone();
+                    let tool_name = tool_name.clone();
+                    Box::pin(async move {
+                        let (reply, response) = tokio::sync::oneshot::channel();
+                        calls
+                            .send(HostToolCall {
+                                name: tool_name,
+                                args,
+                                reply,
+                            })
+                            .map_err(|_| {
+                                eryx::CallbackError::ExecutionFailed(
+                                    "host tool channel closed".to_string(),
+                                )
+                            })?;
+                        response.await.map_err(|_| {
+                            eryx::CallbackError::ExecutionFailed(
+                                "host tool dispatch dropped".to_string(),
+                            )
+                        })
+                    })
+                },
+            )
+            .schema(schema)
+            .build();
+            library = library.with_callback(callback);
+        }
+
+        library.with_preamble(build_tools_preamble(&entries))
+    }
+
+    use crate::python_attribute;
+
+    /// Python preamble registering the `tools` package (and global) whose members
+    /// forward to the registered callbacks via `invoke`.
+    fn build_tools_preamble(entries: &[(String, String)]) -> String {
+        let mut mapping = String::new();
+        for (attribute, callback) in entries {
+            mapping.push_str(&format!("    ({attribute:?}, {callback:?}),\n"));
+        }
+        format!(
+            "import sys as _sys, types as _types\n\
+             _tools_pkg = _types.ModuleType(\"tools\")\n\
+             def _tools_make(_cb):\n\
+             \x20   async def _call(**kwargs):\n\
+             \x20       return await invoke(_cb, **kwargs)\n\
+             \x20   return _call\n\
+             for _attr, _cb in [\n{mapping}]:\n\
+             \x20   setattr(_tools_pkg, _attr, _tools_make(_cb))\n\
+             _sys.modules[\"tools\"] = _tools_pkg\n\
+             tools = _tools_pkg\n"
+        )
+    }
+}
+
+/// Sanitize a tool name into a valid Python identifier for the `tools` package
+/// attribute. Tool names are normally already valid; this guards MCP names.
+#[cfg_attr(not(feature = "eryx"), allow(dead_code))]
+fn python_attribute(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if out.is_empty() || out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    out
 }
 
 #[cfg(feature = "eryx")]
@@ -1327,6 +1660,130 @@ mod tests {
 
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["stdout"], "print(1)");
+    }
+
+    struct TestTool {
+        name: &'static str,
+        confirm: bool,
+    }
+
+    #[async_trait(?Send)]
+    impl Tool for TestTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn readable_name(&self) -> &str {
+            self.name
+        }
+
+        fn definition(&self) -> LlmTool {
+            LlmTool {
+                r#type: llm::ToolType::Function,
+                function: Function {
+                    description: format!("{} tool", self.name),
+                    name: self.name.to_string(),
+                    parameters: Some(llm::FunctionParameters {
+                        param_type: "object".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            }
+        }
+
+        async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
+            json!({ "echoed": args })
+        }
+
+        fn requires_confirmation(&self) -> bool {
+            self.confirm
+        }
+    }
+
+    fn test_config() -> Arc<AgentConfig> {
+        Arc::new(AgentConfig {
+            model_registry: friday_agent::ModelRegistry::new(),
+            max_iterations: 1,
+        })
+    }
+
+    #[test]
+    fn with_tools_exposes_only_auto_approved_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(TestTool {
+            name: "echo",
+            confirm: false,
+        });
+        registry.register(TestTool {
+            name: "danger",
+            confirm: true,
+        });
+        registry.register(TestTool {
+            name: "allowed",
+            confirm: true,
+        });
+        registry.allow_tool("allowed");
+
+        let tool = PythonTool::from_service(Arc::new(MockExecutionService)).with_tools(registry);
+        let names: Vec<&str> = tool.specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"echo"));
+        assert!(names.contains(&"allowed"));
+        assert!(!names.contains(&"danger"));
+    }
+
+    #[tokio::test]
+    async fn execute_with_tools_dispatches_calls_to_registry() {
+        // A service that simulates a script invoking the `echo` tool once.
+        struct CallingService;
+
+        #[async_trait]
+        impl ExecutionService for CallingService {
+            async fn execute_python(&self, _script: &str) -> anyhow::Result<ExecutionOutput> {
+                unreachable!("tools path should be used")
+            }
+
+            async fn execute_python_with_tools(
+                &self,
+                _script: &str,
+                tools: &[PythonToolSpec],
+                calls: mpsc::UnboundedSender<HostToolCall>,
+            ) -> anyhow::Result<ExecutionOutput> {
+                assert!(tools.iter().any(|t| t.name == "echo"));
+                let (reply, response) = oneshot::channel();
+                calls
+                    .send(HostToolCall {
+                        name: "echo".to_string(),
+                        args: json!({ "msg": "hi" }),
+                        reply,
+                    })
+                    .map_err(|_| anyhow::anyhow!("send"))?;
+                let result = response.await?;
+                Ok(ExecutionOutput {
+                    stdout: result.to_string(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        let mut registry = ToolRegistry::new();
+        registry.register(TestTool {
+            name: "echo",
+            confirm: false,
+        });
+        let tool = PythonTool::from_service(Arc::new(CallingService)).with_tools(registry);
+
+        let result = tool.execute(test_config(), json!({ "script": "x" })).await;
+        assert_eq!(result["success"], true, "{result}");
+        let stdout = result["stdout"].as_str().unwrap();
+        assert!(stdout.contains("echoed"), "{stdout}");
+        assert!(stdout.contains("hi"), "{stdout}");
+    }
+
+    #[test]
+    fn python_attribute_sanitizes_non_identifiers() {
+        assert_eq!(python_attribute("web_search"), "web_search");
+        assert_eq!(python_attribute("github.search-code"), "github_search_code");
+        assert_eq!(python_attribute("3d"), "_3d");
     }
 
     #[cfg(feature = "eryx")]

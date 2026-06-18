@@ -177,6 +177,12 @@ impl BaseAgent {
         self.0.borrow_mut().tool_registry.allow_tool(name);
     }
 
+    /// Clone the current tool registry. Used to hand the registered tools to the
+    /// Python sandbox so they can be invoked from scripts.
+    pub fn registry_snapshot(&self) -> ToolRegistry {
+        self.0.borrow().tool_registry.clone()
+    }
+
     pub fn set_config(&self, config: Arc<AgentConfig>) {
         self.0.borrow_mut().config = config;
     }

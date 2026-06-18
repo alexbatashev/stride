@@ -955,7 +955,7 @@ async fn ensure_runner(
         .await
         .map_err(AgentPoolError::Internal)?
     {
-        agent.register_tool(tool);
+        agent.register_tool(tool.with_tools(agent.registry_snapshot()));
         agent.allow_tool("python");
     }
 

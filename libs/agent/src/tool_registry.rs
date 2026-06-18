@@ -54,6 +54,20 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.definition()).collect()
     }
 
+    /// Tools (primary and searchable) that can be invoked without interactive
+    /// approval. Used to advertise the agent's tools inside the Python sandbox,
+    /// where mid-execution approval is not available.
+    pub fn auto_approved(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools
+            .values()
+            .chain(self.searchable.values())
+            .filter(|tool| {
+                self.allowed_tools.contains(tool.name()) || !tool.requires_confirmation()
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Check if a tool requires confirmation
     pub fn requires_confirmation(&self, name: &str) -> bool {
         self.tools
