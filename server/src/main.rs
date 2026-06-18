@@ -3,10 +3,12 @@ mod components;
 mod config;
 mod cron;
 mod db;
+mod notify;
 mod pages;
 pub mod runner;
 mod scheduler;
 mod tools;
+mod triggers;
 mod vfs;
 
 use std::{
@@ -48,6 +50,7 @@ struct ServerState {
     pub(crate) model_config: Arc<AgentConfig>,
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
     pub(crate) telegram_interactions: Arc<Mutex<api::telegram::Interactions>>,
+    pub(crate) executor: scheduler::ExecutorHandle,
 }
 
 #[derive(Debug, Parser)]
@@ -115,7 +118,12 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e: anyhow::Error| e)?
         .map(Arc::new);
 
-    scheduler::spawn(db.clone(), model_config.clone(), tools.clone());
+    let executor = scheduler::spawn(
+        db.clone(),
+        model_config.clone(),
+        tools.clone(),
+        telegram_bot_token.clone(),
+    );
 
     let runner: Arc<dyn runner::AgentPool> = if let Some(ref vfs) = vfs_provider {
         Arc::new(
@@ -148,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
         model_config,
         vfs: vfs_provider,
         telegram_interactions: Arc::new(Mutex::new(api::telegram::Interactions::default())),
+        executor,
     });
 
     // Bind Telegram subscriber tasks to agent runner lifetimes (created on activation, aborted on
@@ -263,6 +272,11 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             patch(api::automations::update).delete(api::automations::delete),
         )
         .route("/api/automations/{id}/runs", get(api::automations::runs))
+        .route("/api/automations/{id}/run", post(api::automations::run_now))
+        .route(
+            "/api/automations/{id}/webhook",
+            post(api::automations::webhook),
+        )
         .route(
             "/api/files/{*path}",
             get(api::files::download_file).delete(api::files::delete_file),

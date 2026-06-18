@@ -1,26 +1,96 @@
-//! In-process cron watcher. Runs on a dedicated current-thread runtime because
-//! agent and python execution futures are `!Send`. Polls the `automations`
-//! table once a minute and fires anything whose schedule matches the current
-//! wall-clock minute. Five-minute accuracy is plenty, so a coarse poll is fine.
+//! Automation executor. Runs on a dedicated current-thread runtime because
+//! agent and python execution futures are `!Send`. It owns a fire-request
+//! channel that unifies every trigger source: the cron/vfs poll loop produces
+//! requests internally, and webhook/manual API handlers produce them through an
+//! [`ExecutorHandle`]. Each request runs the same [`run_automation`] pipeline.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use friday_agent::{AgentConfig, AgentResponseChunk, BaseAgent, Tool};
 use futures::StreamExt;
 use minisql::ConnectionPool;
+use serde_json::Value as JsonValue;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use uuid::Uuid;
 
 use crate::config::Tools;
-use crate::cron::Cron;
-use crate::db::{AutomationKind, RunStatus, automation_runs, automations};
+use crate::db::{AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_runs, automations};
+use crate::notify::{self, RunResult};
 use crate::runner::inproc::python_tool_config;
+use crate::triggers;
 
 const POLL_SECS: u64 = 60;
 const AGENT_SYSTEM_PROMPT: &str = "You are Friday, running a scheduled automation with no interactive user. \
      Complete the task and produce a concise final report. You cannot ask questions.";
 
-pub fn spawn(db: ConnectionPool, model_config: Arc<AgentConfig>, tools: Tools) {
+/// What caused a fire request, kept for logging and run metadata.
+#[derive(Clone, Copy, Debug)]
+pub enum TriggerSource {
+    Cron,
+    Webhook,
+    Manual,
+    VfsChange,
+}
+
+/// A request to run one automation now, optionally with a trigger payload.
+pub struct FireRequest {
+    pub automation_id: Uuid,
+    pub payload: Option<JsonValue>,
+    pub source: TriggerSource,
+}
+
+#[derive(Debug)]
+pub enum ExecutorError {
+    Closed,
+}
+
+/// Cloneable handle for producing fire requests from other threads (Axum
+/// handlers). `send` is non-blocking and `Send`, so it never crosses the
+/// executor's `!Send` boundary.
+#[derive(Clone)]
+pub struct ExecutorHandle {
+    tx: UnboundedSender<FireRequest>,
+}
+
+impl ExecutorHandle {
+    pub fn fire(&self, req: FireRequest) -> Result<(), ExecutorError> {
+        self.tx.send(req).map_err(|_| ExecutorError::Closed)
+    }
+
+    /// Build a handle plus its receiver without spawning the executor thread.
+    /// Useful for tests and for wiring the channel manually.
+    #[cfg(test)]
+    pub fn channel() -> (ExecutorHandle, UnboundedReceiver<FireRequest>) {
+        let (tx, rx) = unbounded_channel();
+        (ExecutorHandle { tx }, rx)
+    }
+}
+
+/// Shared dependencies every run needs.
+#[derive(Clone)]
+struct ExecutorCtx {
+    db: ConnectionPool,
+    model_config: Arc<AgentConfig>,
+    tools: Tools,
+    telegram_bot_token: Option<String>,
+}
+
+pub fn spawn(
+    db: ConnectionPool,
+    model_config: Arc<AgentConfig>,
+    tools: Tools,
+    telegram_bot_token: Option<String>,
+) -> ExecutorHandle {
+    let (tx, rx) = unbounded_channel();
+    let ctx = ExecutorCtx {
+        db,
+        model_config,
+        tools,
+        telegram_bot_token,
+    };
     std::thread::Builder::new()
         .name("friday-scheduler".to_string())
         .spawn(move || {
@@ -29,82 +99,102 @@ pub fn spawn(db: ConnectionPool, model_config: Arc<AgentConfig>, tools: Tools) {
                 .build()
                 .expect("scheduler runtime");
             let local = tokio::task::LocalSet::new();
-            local.block_on(&runtime, run(db, model_config, tools));
+            local.block_on(&runtime, run(ctx, rx));
         })
         .expect("scheduler thread");
+    ExecutorHandle { tx }
 }
 
-async fn run(db: ConnectionPool, model_config: Arc<AgentConfig>, tools: Tools) {
+async fn run(ctx: ExecutorCtx, mut rx: UnboundedReceiver<FireRequest>) {
     let mut tick = tokio::time::interval(Duration::from_secs(POLL_SECS));
     loop {
-        tick.tick().await;
-        let now = unix_now();
-        let due = match due_automations(&db, now).await {
-            Ok(due) => due,
-            Err(error) => {
-                tracing::warn!(%error, "scheduler failed to load automations");
-                continue;
-            }
-        };
-        for automation in due {
-            // Mark before dispatch so a slow run is not retriggered next tick.
-            if let Err(error) = automations::update()
-                .last_run(Some(now))
-                .where_(automations::id.eq(automation.id))
-                .execute(&db)
-                .await
-            {
-                tracing::warn!(%error, "scheduler failed to mark automation");
-                continue;
-            }
-            let db = db.clone();
-            let model_config = model_config.clone();
-            let tools = tools.clone();
-            tokio::task::spawn_local(async move {
-                execute(db, model_config, tools, automation).await;
-            });
+        tokio::select! {
+            _ = tick.tick() => poll_due(&ctx).await,
+            request = rx.recv() => match request {
+                Some(request) => {
+                    let ctx = ctx.clone();
+                    tokio::task::spawn_local(async move { run_automation(ctx, request).await });
+                }
+                None => break,
+            },
         }
     }
 }
 
-struct DueAutomation {
-    id: Uuid,
-    kind: AutomationKind,
-    payload: String,
-}
-
-async fn due_automations(
-    db: &ConnectionPool,
-    now: i64,
-) -> Result<Vec<DueAutomation>, Box<dyn std::error::Error + Send + Sync>> {
-    let rows = automations::select()
+/// Evaluate polled triggers (cron, vfs change) and fire the due ones.
+async fn poll_due(ctx: &ExecutorCtx) {
+    let now = unix_now();
+    let rows = match automations::select()
         .where_(automations::enabled.eq(true))
-        .all(db)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .filter(|row| {
-            let Ok(cron) = Cron::parse(&row.schedule) else {
-                tracing::warn!(schedule = %row.schedule, "skipping automation with invalid schedule");
-                return false;
-            };
-            let fresh = row.last_run.is_none_or(|last| last / 60 != now / 60);
-            fresh && cron.matches_at(now)
-        })
-        .map(|row| DueAutomation {
-            id: row.id,
-            kind: row.kind,
-            payload: row.payload,
-        })
-        .collect())
+        .all(&ctx.db)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(%error, "scheduler failed to load automations");
+            return;
+        }
+    };
+
+    for row in rows {
+        let kind = TriggerKind::from_opt(row.trigger_kind.as_deref());
+        let Some(trigger) = triggers::polled(kind, &row.schedule, row.trigger_config.as_deref())
+        else {
+            continue;
+        };
+        if !trigger.due(&ctx.db, now, row.last_run).await {
+            continue;
+        }
+        // Mark before dispatch so a slow run is not retriggered next tick, and so
+        // the vfs watermark advances.
+        if let Err(error) = automations::update()
+            .last_run(Some(now))
+            .where_(automations::id.eq(row.id))
+            .execute(&ctx.db)
+            .await
+        {
+            tracing::warn!(%error, "scheduler failed to mark automation");
+            continue;
+        }
+        let ctx = ctx.clone();
+        let source = match kind {
+            TriggerKind::VfsChange => TriggerSource::VfsChange,
+            _ => TriggerSource::Cron,
+        };
+        tokio::task::spawn_local(async move {
+            run_automation(
+                ctx,
+                FireRequest {
+                    automation_id: row.id,
+                    payload: None,
+                    source,
+                },
+            )
+            .await
+        });
+    }
 }
 
-async fn execute(
-    db: ConnectionPool,
-    model_config: Arc<AgentConfig>,
-    tools: Tools,
-    automation: DueAutomation,
-) {
+async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
+    let rows = match automations::select()
+        .where_(automations::id.eq(request.automation_id))
+        .all(&ctx.db)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(%error, "scheduler failed to load automation");
+            return;
+        }
+    };
+    let Some(automation) = rows.into_iter().next() else {
+        tracing::warn!(automation_id = %request.automation_id, "automation not found");
+        return;
+    };
+    if !automation.enabled {
+        return;
+    }
+
     let run_id = Uuid::now_v7();
     let started_at = unix_now();
     if let Err(error) = automation_runs::insert()
@@ -113,16 +203,28 @@ async fn execute(
         .started_at(started_at)
         .status(RunStatus::Running)
         .output("")
-        .execute(&db)
+        .execute(&ctx.db)
         .await
     {
         tracing::warn!(%error, "scheduler failed to record run start");
         return;
     }
 
+    tracing::info!(
+        automation = %automation.name,
+        source = ?request.source,
+        "running automation"
+    );
+
     let result = match automation.kind {
-        AutomationKind::Python => run_python(&tools, model_config, &automation.payload).await,
-        AutomationKind::Agent => run_agent(model_config, &automation.payload).await,
+        AutomationKind::Python => {
+            let script = python_script(&automation.payload, request.payload.as_ref());
+            run_python(&ctx.tools, ctx.model_config.clone(), &script).await
+        }
+        AutomationKind::Agent => {
+            let prompt = agent_prompt(&automation.payload, request.payload.as_ref());
+            run_agent(ctx.model_config.clone(), &prompt).await
+        }
     };
     let (status, output) = match result {
         Ok(output) => (RunStatus::Success, output),
@@ -132,12 +234,57 @@ async fn execute(
     if let Err(error) = automation_runs::update()
         .finished_at(Some(unix_now()))
         .status(status)
-        .output(output)
+        .output(output.as_str())
         .where_(automation_runs::id.eq(run_id))
-        .execute(&db)
+        .execute(&ctx.db)
         .await
     {
         tracing::warn!(%error, "scheduler failed to record run result");
+    }
+
+    // Conversation is stored above; notify is additive and best-effort.
+    let notify_kind = NotifyKind::from_opt(automation.notify_kind.as_deref());
+    let notifier = notify::build(
+        notify_kind,
+        automation.owner,
+        &ctx.db,
+        ctx.telegram_bot_token.as_deref(),
+    );
+    let run_result = RunResult {
+        name: &automation.name,
+        status,
+        output: &output,
+    };
+    if let Err(error) = notifier.notify(&run_result).await {
+        tracing::warn!(%error, "automation notification failed");
+    }
+}
+
+/// Append the trigger payload to the agent prompt as a fenced data block.
+fn agent_prompt(base: &str, payload: Option<&JsonValue>) -> String {
+    match payload {
+        Some(value) => {
+            let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
+            format!("{base}\n\n---\nTrigger payload (JSON):\n```json\n{pretty}\n```")
+        }
+        None => base.to_string(),
+    }
+}
+
+/// Expose the trigger payload to the python script as a `PAYLOAD` dict. The JSON
+/// is base64-encoded to sidestep any string-escaping hazards.
+fn python_script(base: &str, payload: Option<&JsonValue>) -> String {
+    match payload {
+        Some(value) => {
+            let json = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+            let encoded = BASE64.encode(json.as_bytes());
+            format!(
+                "import json as _json, base64 as _b64\n\
+                 PAYLOAD = _json.loads(_b64.b64decode(\"{encoded}\").decode())\n\
+                 {base}"
+            )
+        }
+        None => base.to_string(),
     }
 }
 
@@ -205,4 +352,116 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{self, AutomationKind, RunStatus, automation_runs, automations, users};
+
+    async fn seed_user(db: &ConnectionPool) -> Uuid {
+        let owner = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username(format!("u{}", owner.as_simple()).as_str())
+            .password_hash("x")
+            .execute(db)
+            .await
+            .unwrap();
+        owner
+    }
+
+    fn python_tools() -> Tools {
+        Tools {
+            python: Some(crate::config::Python {
+                enabled: Some(true),
+                cache_dir: None,
+                backend: Some(crate::config::PythonBackend::Mock),
+                threads: Some(1),
+                preinit: Some(false),
+                max_runtime_seconds: None,
+                max_memory_bytes: None,
+                max_cpu_fuel: None,
+                network: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn mock_model_config() -> Arc<AgentConfig> {
+        Arc::new(AgentConfig {
+            model_registry: friday_agent::ModelRegistry::new(),
+            max_iterations: 2,
+        })
+    }
+
+    #[test]
+    fn agent_prompt_injects_payload() {
+        let prompt = agent_prompt("do it", Some(&serde_json::json!({"a": 1})));
+        assert!(prompt.contains("do it"));
+        assert!(prompt.contains("Trigger payload"));
+        assert!(prompt.contains("\"a\""));
+        assert_eq!(agent_prompt("plain", None), "plain");
+    }
+
+    #[test]
+    fn python_script_injects_payload() {
+        let script = python_script("print(PAYLOAD)", Some(&serde_json::json!({"k": "v"})));
+        assert!(script.contains("PAYLOAD = _json.loads"));
+        assert!(script.ends_with("print(PAYLOAD)"));
+        assert_eq!(python_script("noop", None), "noop");
+    }
+
+    #[tokio::test]
+    async fn run_automation_executes_python_and_records_run() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let db = ConnectionPool::new("sqlite::memory:").unwrap();
+                db.initialize_database(db::get_migrations()).await.unwrap();
+                let owner = seed_user(&db).await;
+
+                let id = Uuid::now_v7();
+                automations::insert()
+                    .id(id)
+                    .owner(owner)
+                    .name("echo")
+                    .schedule("")
+                    .kind(AutomationKind::Python)
+                    .payload("print('hello')")
+                    .enabled(true)
+                    .created_at(1)
+                    .trigger_kind(Some("webhook"))
+                    .notify_kind(Some("none"))
+                    .execute(&db)
+                    .await
+                    .unwrap();
+
+                let ctx = ExecutorCtx {
+                    db: db.clone(),
+                    model_config: mock_model_config(),
+                    tools: python_tools(),
+                    telegram_bot_token: None,
+                };
+                run_automation(
+                    ctx,
+                    FireRequest {
+                        automation_id: id,
+                        payload: Some(serde_json::json!({"n": 7})),
+                        source: TriggerSource::Webhook,
+                    },
+                )
+                .await;
+
+                let runs = automation_runs::select()
+                    .where_(automation_runs::automation_id.eq(id))
+                    .all(&db)
+                    .await
+                    .unwrap();
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].status, RunStatus::Success);
+                assert!(runs[0].finished_at.is_some());
+            })
+            .await;
+    }
 }

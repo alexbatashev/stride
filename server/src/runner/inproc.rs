@@ -36,8 +36,8 @@ use crate::{
     db::{Role, messages},
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
-        PendingApproval, PendingQuiz, RunId, RunnerLifecycle, ThreadSnapshot, ThreadStatus,
-        RUNNER_LIFECYCLE_TOPIC, thread_events_topic,
+        PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId, RunnerLifecycle,
+        ThreadSnapshot, ThreadStatus, thread_events_topic,
     },
     tools::{
         automations::ScheduleAutomationTool,
@@ -708,12 +708,14 @@ async fn handle_snapshot(
         last_event_seq: runner.last_event_seq,
         status: runner.status.clone(),
         in_progress: runner.in_progress.clone(),
-        pending_approval: runner.pending_approvals.iter().next().map(
-            |(approval_id, approval)| PendingApproval {
+        pending_approval: runner
+            .pending_approvals
+            .iter()
+            .next()
+            .map(|(approval_id, approval)| PendingApproval {
                 approval_id: *approval_id,
                 message: approval.message.clone(),
-            },
-        ),
+            }),
         pending_quiz: runner
             .pending_quizzes
             .iter()

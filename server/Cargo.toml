@@ -8,6 +8,7 @@ anyhow = "1.0.102"
 async-trait = "0.1"
 argon2 = "0.5"
 axum = { version = "0.8.9", features = ["ws", "multipart"] }
+base64 = "0.22"
 bytes = "1.11.1"
 clap = { version = "4", features = ["derive"] }
 execenv = { path = "../libs/execenv", features = ["eryx"] }

@@ -31,6 +31,63 @@ pub enum RunStatus {
     Failed,
 }
 
+/// What causes an automation to run. Stored as a nullable text column so old
+/// rows (created before triggers existed) decode as `None` and fall back to
+/// `Cron`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TriggerKind {
+    Cron,
+    Webhook,
+    Manual,
+    VfsChange,
+}
+
+impl TriggerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TriggerKind::Cron => "cron",
+            TriggerKind::Webhook => "webhook",
+            TriggerKind::Manual => "manual",
+            TriggerKind::VfsChange => "vfs_change",
+        }
+    }
+
+    /// Parse a stored value, defaulting unknown or absent values to `Cron`.
+    pub fn from_opt(value: Option<&str>) -> TriggerKind {
+        match value {
+            Some("webhook") => TriggerKind::Webhook,
+            Some("manual") => TriggerKind::Manual,
+            Some("vfs_change") => TriggerKind::VfsChange,
+            _ => TriggerKind::Cron,
+        }
+    }
+}
+
+/// Where the result of a run is pushed, on top of the always-stored
+/// conversation. Stored as nullable text; absent decodes as `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyKind {
+    None,
+    Telegram,
+}
+
+impl NotifyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotifyKind::None => "none",
+            NotifyKind::Telegram => "telegram",
+        }
+    }
+
+    /// Parse a stored value, defaulting unknown or absent values to `None`.
+    pub fn from_opt(value: Option<&str>) -> NotifyKind {
+        match value {
+            Some("telegram") => NotifyKind::Telegram,
+            _ => NotifyKind::None,
+        }
+    }
+}
+
 migrations! {
     schema {
         table users {
@@ -196,6 +253,18 @@ migrations! {
 
             foreign_key(automation_id -> automations.id);
         }
+    }
+
+    automations_triggers {
+        alter table automations {
+            add trigger_kind: Option<String>;
+            add trigger_config: Option<String>;
+            add webhook_secret: Option<String>;
+            add notify_kind: Option<String>;
+        }
+
+        raw "UPDATE automations SET trigger_kind = 'cron' WHERE trigger_kind IS NULL";
+        raw "UPDATE automations SET notify_kind = 'none' WHERE notify_kind IS NULL";
     }
 }
 

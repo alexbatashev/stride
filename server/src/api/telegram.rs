@@ -2485,6 +2485,7 @@ mod tests {
             }),
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
+            executor: crate::scheduler::ExecutorHandle::channel().0,
         })
     }
 
