@@ -1,6 +1,8 @@
 import { readToken } from "./auth.js";
 
 export type AutomationKind = "python" | "agent";
+export type TriggerKind = "cron" | "webhook" | "manual" | "vfs_change";
+export type NotifyKind = "none" | "telegram";
 
 export type Automation = {
 	id: string;
@@ -11,6 +13,10 @@ export type Automation = {
 	enabled: boolean;
 	created_at: number;
 	last_run: number | null;
+	trigger_kind: TriggerKind;
+	notify_kind: NotifyKind;
+	// Returned only when a webhook automation is created.
+	webhook_secret?: string | null;
 };
 
 export type AutomationRun = {
@@ -27,6 +33,10 @@ export type NewAutomation = {
 	kind: AutomationKind;
 	payload: string;
 	enabled: boolean;
+	trigger_kind: TriggerKind;
+	notify_kind: NotifyKind;
+	// For the vfs_change trigger: { path } (empty path = all global files).
+	trigger_config?: Record<string, unknown>;
 };
 
 export async function listAutomations(): Promise<Automation[]> {
@@ -35,6 +45,10 @@ export async function listAutomations(): Promise<Automation[]> {
 
 export async function createAutomation(input: NewAutomation): Promise<Automation> {
 	return request("/api/automations", { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function runAutomation(id: string): Promise<void> {
+	await request(`/api/automations/${id}/run`, { method: "POST" });
 }
 
 export async function setAutomationEnabled(id: string, enabled: boolean): Promise<void> {

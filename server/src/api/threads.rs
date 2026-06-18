@@ -668,7 +668,11 @@ async fn handle_ws(
 ) {
     let watermark = snapshot.last_event_seq;
     let snapshot_json = snapshot_event(&snapshot);
-    if socket.send(Message::Text(snapshot_json.into())).await.is_err() {
+    if socket
+        .send(Message::Text(snapshot_json.into()))
+        .await
+        .is_err()
+    {
         return;
     }
 
@@ -1143,13 +1147,14 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
                 ThreadStatus::Idle => "idle",
                 ThreadStatus::Running { .. } => "running",
             },
-            in_progress: snapshot.in_progress.as_ref().map(|message| {
-                SnapshotMessageResponse {
+            in_progress: snapshot
+                .in_progress
+                .as_ref()
+                .map(|message| SnapshotMessageResponse {
                     run_id: message.run_id.0.to_string(),
                     content: message.content.clone(),
                     thinking: message.thinking.clone(),
-                }
-            }),
+                }),
             pending_approval: snapshot
                 .pending_approval
                 .as_ref()

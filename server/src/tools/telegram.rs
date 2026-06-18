@@ -96,7 +96,10 @@ impl Tool for SendTelegramMessageTool {
     }
 }
 
-async fn connected_chat(db: &ConnectionPool, user_id: Uuid) -> Result<Option<i64>, String> {
+pub(crate) async fn connected_chat(
+    db: &ConnectionPool,
+    user_id: Uuid,
+) -> Result<Option<i64>, String> {
     telegram_connections::select_cols((telegram_connections::chat_id,))
         .where_(telegram_connections::user_id.eq(user_id))
         .all(db)
@@ -135,7 +138,11 @@ async fn link_message(
     Ok(())
 }
 
-async fn send_message(bot_token: &str, chat_id: i64, text: &str) -> Option<TelegramSentMessage> {
+pub(crate) async fn send_message(
+    bot_token: &str,
+    chat_id: i64,
+    text: &str,
+) -> Option<TelegramSentMessage> {
     let text: String = text.chars().take(4096).collect();
     let body = serde_json::to_vec(&SendMessageRequest {
         chat_id,
@@ -164,9 +171,9 @@ async fn send_message(bot_token: &str, chat_id: i64, text: &str) -> Option<Teleg
         })
 }
 
-struct TelegramSentMessage {
-    chat_id: i64,
-    message_id: i64,
+pub(crate) struct TelegramSentMessage {
+    pub(crate) chat_id: i64,
+    pub(crate) message_id: i64,
 }
 
 #[derive(Serialize)]

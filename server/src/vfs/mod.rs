@@ -139,6 +139,21 @@ impl Vfs {
         self.list_scoped(Scope::Global(owner), path).await
     }
 
+    /// Resolves a file or directory `path` in the user's global space to its
+    /// node id. Used to pin a vfs_change watch target.
+    pub async fn resolve_global_node(&self, owner: Uuid, path: &str) -> anyhow::Result<Uuid> {
+        let scope = Scope::Global(owner);
+        let segments = split_path(path);
+        let Some(last) = segments.last().copied() else {
+            bail!("path is empty");
+        };
+        let dirs = &segments[..segments.len() - 1];
+        let parent = self.resolve_dir(scope, dirs).await?;
+        self.find_child(scope, parent, last)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("path not found: {path}"))
+    }
+
     async fn list_scoped(&self, scope: Scope, path: &str) -> anyhow::Result<Vec<DirEntry>> {
         let segments = split_path(path);
         let parent = self.resolve_dir(scope, &segments).await?;

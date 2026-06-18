@@ -184,10 +184,12 @@ test('app-automations renders and opens the create modal on click', () => {
 
 test('app-automations lists tasks and toggles enable through delegation', () => {
   const el = mount('app-automations', {
-    items: [{ id: 'a1', name: 'Daily', schedule: '0 9 * * *', kind: 'agent', payload: 'x', enabled: true, created_at: 1, last_run: null }],
+    items: [{ id: 'a1', name: 'Daily', schedule: '0 9 * * *', kind: 'agent', payload: 'x', enabled: true, created_at: 1, last_run: null, trigger_kind: 'cron', notify_kind: 'telegram' }],
   });
   assert.match(el.shadowRoot.innerHTML, /Daily/);
   assert.match(el.shadowRoot.innerHTML, /0 9 \* \* \*/);
+  assert.match(el.shadowRoot.innerHTML, /telegram/);
+  assert.ok(el.shadowRoot.querySelector('[data-action="run"][data-id="a1"]'), 'run button is missing');
   const toggle = el.shadowRoot.querySelector('[data-action="toggle"][data-id="a1"]');
   assert.equal(toggle.textContent.trim(), 'On');
 });

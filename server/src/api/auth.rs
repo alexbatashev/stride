@@ -516,6 +516,7 @@ mod tests {
                 telegram_interactions: Arc::new(std::sync::Mutex::new(
                     crate::api::telegram::Interactions::default(),
                 )),
+                executor: crate::scheduler::ExecutorHandle::channel().0,
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
         )
