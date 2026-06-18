@@ -1648,6 +1648,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "zip 2.4.2",
 ]
 
 [[package]]
