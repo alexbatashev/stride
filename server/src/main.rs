@@ -345,7 +345,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
                     .read_token(&model.provider)
                     .unwrap_or("-".to_string()),
                 model_name: model.slug.clone(),
-                thinking: model.thinking.unwrap_or(true),
+                reasoning_effort: model.reasoning_effort(),
                 vision: model.vision.unwrap_or(false),
             },
         );
@@ -368,7 +368,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
                     .read_token(&model.provider)
                     .unwrap_or("-".to_string()),
                 model_name: model.slug.clone(),
-                thinking: model.thinking.unwrap_or(true),
+                reasoning_effort: model.reasoning_effort(),
                 vision: model.vision.unwrap_or(false),
             },
         );

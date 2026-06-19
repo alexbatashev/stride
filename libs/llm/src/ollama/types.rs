@@ -58,7 +58,7 @@ impl<'a> From<&'a CompletionRequest> for OllamaChatRequest<'a> {
         Self {
             model: &value.model,
             stream: false,
-            think: false,
+            think: value.reasoning_effort.is_some(),
             messages: &value.messages,
             tools: None,
         }

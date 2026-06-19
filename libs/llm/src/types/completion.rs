@@ -25,7 +25,7 @@ pub struct CompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<ThinkingConfig>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,11 +50,27 @@ pub struct CompletionRequest {
     pub top_logprobs: Option<u8>,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, Debug)]
-pub struct ThinkingConfig {
-    #[serde(rename = "type")]
-    pub thinking_type: String,
-    pub budget_tokens: Option<u32>,
+/// Reasoning effort level requested from a model. Serializes to the lowercase
+/// string form (`"low"`, `"medium"`, `"high"`) expected by OpenAI-compatible
+/// `reasoning_effort` parameters.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    /// Maps an effort level to a thinking token budget for providers that
+    /// configure reasoning by token count instead of an effort string.
+    pub fn budget_tokens(self) -> u32 {
+        match self {
+            ReasoningEffort::Low => 4096,
+            ReasoningEffort::Medium => 8192,
+            ReasoningEffort::High => 24576,
+        }
+    }
 }
 
 impl CompletionRequest {
@@ -126,8 +142,8 @@ impl CompletionRequest {
         self
     }
 
-    pub fn thinking(mut self, thinking: ThinkingConfig) -> Self {
-        self.thinking = Some(thinking);
+    pub fn reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = Some(effort);
         self
     }
 }

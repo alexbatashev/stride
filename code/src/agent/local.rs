@@ -154,7 +154,7 @@ fn create_model_registry(config: &Config) -> ModelRegistry {
             api,
             token: p.read_token(&m.provider).unwrap_or("-".to_string()),
             model_name: m.slug.clone(),
-            thinking: m.thinking.unwrap_or(true),
+            reasoning_effort: m.reasoning_effort(),
             vision: m.vision.unwrap_or(false),
         };
         model_registry.add_model(name, entry);

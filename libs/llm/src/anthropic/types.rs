@@ -34,6 +34,12 @@ pub struct AnthropicUsage {
 }
 
 #[derive(Serialize)]
+pub struct AnthropicThinking {
+    r#type: &'static str,
+    budget_tokens: u32,
+}
+
+#[derive(Serialize)]
 pub struct AnthropicCompletionRequest<'a> {
     model: &'a str,
     max_tokens: u32,
@@ -42,6 +48,8 @@ pub struct AnthropicCompletionRequest<'a> {
     system: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinking>,
 }
 
 #[derive(Deserialize)]
@@ -57,23 +65,41 @@ pub struct AnthropicStreamChunkWithModel {
     pub chunk: AnthropicStreamChunk,
 }
 
+/// Headroom for output tokens added on top of the thinking budget, since
+/// Anthropic requires `max_tokens` to be strictly greater than `budget_tokens`.
+const THINKING_OUTPUT_HEADROOM: u32 = 8192;
+
 impl<'a> AnthropicCompletionRequest<'a> {
     pub fn stream_with_max_tokens(mut self, max_tokens: u32) -> Self {
-        self.max_tokens = max_tokens;
+        self.max_tokens = self.clamp_max_tokens(max_tokens);
         self.stream = Some(true);
         self
+    }
+
+    fn clamp_max_tokens(&self, max_tokens: u32) -> u32 {
+        match &self.thinking {
+            Some(thinking) => max_tokens.max(thinking.budget_tokens + THINKING_OUTPUT_HEADROOM),
+            None => max_tokens,
+        }
     }
 }
 
 impl<'a> From<&'a CompletionRequest> for AnthropicCompletionRequest<'a> {
     fn from(value: &'a CompletionRequest) -> Self {
-        Self {
+        let thinking = value.reasoning_effort.map(|effort| AnthropicThinking {
+            r#type: "enabled",
+            budget_tokens: effort.budget_tokens(),
+        });
+        let mut request = Self {
             model: &value.model,
             max_tokens: value.max_tokens.unwrap_or(8192),
             messages: &value.messages,
             system: None,
             stream: None,
-        }
+            thinking,
+        };
+        request.max_tokens = request.clamp_max_tokens(request.max_tokens);
+        request
     }
 }
 

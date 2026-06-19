@@ -15,7 +15,8 @@ url = "http://localhost:11434/v1"
 [models.gpt_4_1]
 slug = "gpt-4.1"
 provider = "openai"
-thinking = true
+# Reasoning effort: "low", "medium", or "high". Omit to disable reasoning.
+reasoning_effort = "high"
 # Set when the model accepts image inputs. Enables attached images and the
 # attach_image tool. Defaults to false.
 vision = true
@@ -23,12 +24,12 @@ vision = true
 [models.claude_sonnet_4]
 slug = "claude-sonnet-4-20250514"
 provider = "anthropic"
-thinking = true
+reasoning_effort = "medium"
 
 [models.llama]
 slug = "llama3.2"
 provider = "ollama"
-thinking = false
+# Omit reasoning_effort (or the legacy `thinking` flag) to disable reasoning.
 
 [server]
 db_path = "/tmp/server.db"

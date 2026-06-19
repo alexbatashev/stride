@@ -96,6 +96,21 @@ mod tests {
     }
 
     #[test]
+    fn serializes_reasoning_effort_as_string() {
+        use crate::ReasoningEffort;
+
+        let request = CompletionRequest {
+            model: "o4".to_string(),
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..Default::default()
+        };
+
+        let body = serialize_request(&request).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["reasoning_effort"], "high");
+    }
+
+    #[test]
     fn parses_models_without_supported_parameters() {
         let body = br#"{"object":"list","data":[{"id":"openai/gpt-5.4","object":"model","created":1777057381,"owned_by":"proxy"}]}"#;
         let parsed: ModelListResponse = serde_json::from_slice(body).unwrap();
