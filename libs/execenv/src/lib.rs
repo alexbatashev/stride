@@ -1430,7 +1430,12 @@ mod eryx_backend {
             .map(|cb| (cb.name().to_string(), cb.clone()))
             .collect();
         let (cb_tx, cb_rx) = tokio::sync::mpsc::channel::<eryx::CallbackRequest>(32);
-        let handler = tokio::spawn(run_tool_callback_handler(cb_rx, dispatch));
+        let handler = tokio::spawn(eryx::callback_handler::run_callback_handler(
+            cb_rx,
+            Arc::new(dispatch),
+            unlimited_callback_limits(),
+            Arc::new(HashMap::new()),
+        ));
 
         let full_code = format!("{preamble}\n{}", request.script);
         let mut execute = request
@@ -1532,23 +1537,14 @@ mod eryx_backend {
         }
     }
 
-    /// Service callback requests from a running script: look up the callback by
-    /// name, invoke it, and return the JSON-encoded result to the guest.
-    async fn run_tool_callback_handler(
-        mut rx: tokio::sync::mpsc::Receiver<eryx::CallbackRequest>,
-        callbacks: HashMap<String, Arc<dyn eryx::Callback>>,
-    ) {
-        while let Some(request) = rx.recv().await {
-            let args = serde_json::from_str(&request.arguments_json).unwrap_or(serde_json::Value::Null);
-            let response = match callbacks.get(&request.name) {
-                Some(callback) => callback
-                    .invoke(args)
-                    .await
-                    .map(|value| value.to_string())
-                    .map_err(|err| err.to_string()),
-                None => Err(format!("unknown callback: {}", request.name)),
-            };
-            let _ = request.response_tx.send(response);
+    /// Callback limits for the host-side tool dispatcher. The host tools are
+    /// trusted, so neither invocation count nor per-call timeout is capped here;
+    /// script-level limits still bound the overall execution.
+    fn unlimited_callback_limits() -> eryx::ResourceLimits {
+        eryx::ResourceLimits {
+            callback_timeout: None,
+            max_callback_invocations: None,
+            ..Default::default()
         }
     }
 
