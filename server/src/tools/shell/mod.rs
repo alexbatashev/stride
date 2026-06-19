@@ -1,23 +1,13 @@
 mod vfs_backend;
 
-use std::collections::HashSet;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bashkit::{Bash, PosixFs};
-use friday_agent::tools::shell::{ShellBackend, ShellResult, command_is_read_only};
+use friday_agent::tools::shell::{ShellBackend, ShellResult};
 
 use crate::vfs::MountedVfs;
 use vfs_backend::VfsBackend;
-
-/// Read-only commands that need no approval.
-static SAFE_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "echo", "ls", "cat", "pwd", "cd", "grep", "head", "tail", "wc", "test", "true", "false",
-    ]
-    .into_iter()
-    .collect()
-});
 
 /// Working directory the shell starts in: the writable workspace mount.
 const DEFAULT_CWD: &str = "/~workspace";
@@ -62,8 +52,11 @@ impl ShellBackend for EmulatedShellBackend {
         }
     }
 
-    fn is_safe(&self, command: &str) -> bool {
-        command_is_read_only(command, &SAFE_COMMANDS)
+    /// The shell runs in an isolated bashkit sandbox over the VFS, with no real
+    /// shell or host access and writes confined to the workspace. Nothing it can
+    /// do is harmful, so every command is auto-approved.
+    fn is_safe(&self, _command: &str) -> bool {
+        true
     }
 }
 
@@ -175,6 +168,14 @@ mod tests {
             "out={:?} err={:?}",
             result.stdout, result.stderr
         );
+    }
+
+    #[tokio::test]
+    async fn every_command_is_auto_approved() {
+        let (sh, _) = backend().await;
+        assert!(sh.is_safe("ls"));
+        assert!(sh.is_safe("rm -rf /~workspace/file"));
+        assert!(sh.is_safe("echo data > out.txt"));
     }
 
     #[tokio::test]
