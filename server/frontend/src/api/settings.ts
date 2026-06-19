@@ -9,18 +9,26 @@ export type TelegramSettings = {
 	last_name: string | null;
 };
 
-export type TelegramConnectCode = {
-	code: string;
-	expires_at: number;
-	start_url: string | null;
+export type TelegramAuthData = {
+	id: number;
+	first_name?: string;
+	last_name?: string;
+	username?: string;
+	photo_url?: string;
+	auth_date: number;
+	hash: string;
 };
 
 export async function getTelegramSettings(): Promise<TelegramSettings> {
 	return request("/api/settings/telegram");
 }
 
-export async function createTelegramConnectCode(): Promise<TelegramConnectCode> {
-	return request("/api/settings/telegram/connect-code", { method: "POST" });
+export async function loginTelegram(data: TelegramAuthData): Promise<void> {
+	await request("/api/settings/telegram/login", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
 }
 
 export async function disconnectTelegram(): Promise<void> {

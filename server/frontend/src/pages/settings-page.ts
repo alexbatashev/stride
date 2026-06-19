@@ -1,26 +1,28 @@
 import {
-	createTelegramConnectCode,
 	disconnectTelegram,
 	getTelegramSettings,
+	loginTelegram,
+	type TelegramAuthData,
 	type TelegramSettings,
 } from "../api/settings.js";
 import { bindSidebar } from "./sidebar.js";
 
 const root = document.querySelector<HTMLElement>("#settings-page");
+const TELEGRAM_AUTH_CALLBACK = "onTelegramAuth";
 
 class SettingsPage {
 	private readonly statusEl: HTMLElement;
-	private readonly codeEl: HTMLElement;
-	private readonly helpEl: HTMLElement;
-	private readonly linkEl: HTMLAnchorElement;
+	private readonly widgetEl: HTMLElement;
+	private readonly disconnectEl: HTMLElement;
 	private readonly errorEl: HTMLElement;
+	private renderedBot: string | null = null;
 
 	constructor(private readonly root: HTMLElement) {
 		this.statusEl = this.mustQuery("[data-telegram-status]");
-		this.codeEl = this.mustQuery("[data-connect-code]");
-		this.helpEl = this.mustQuery("[data-connect-help]");
-		this.linkEl = this.mustQuery("[data-connect-link]");
+		this.widgetEl = this.mustQuery("[data-telegram-widget]");
+		this.disconnectEl = this.mustQuery('[data-action="disconnect"]');
 		this.errorEl = this.mustQuery("[data-error]");
+		this.exposeAuthCallback();
 		this.bindEvents();
 		void this.refresh();
 	}
@@ -33,11 +35,15 @@ class SettingsPage {
 		return element;
 	}
 
+	private exposeAuthCallback() {
+		const w = window as unknown as Record<string, unknown>;
+		w[TELEGRAM_AUTH_CALLBACK] = (user: TelegramAuthData) => {
+			void this.handleAuth(user);
+		};
+	}
+
 	private bindEvents() {
-		this.root.querySelector('[data-action="connect-code"]')?.addEventListener("click", () => {
-			void this.createCode();
-		});
-		this.root.querySelector('[data-action="disconnect"]')?.addEventListener("click", () => {
+		this.disconnectEl.addEventListener("click", () => {
 			void this.disconnect();
 		});
 		const sidebar = this.root.querySelector<HTMLElement>("app-sidebar");
@@ -56,14 +62,11 @@ class SettingsPage {
 
 	private render(settings: TelegramSettings) {
 		this.setError("");
-		this.codeEl.style.display = "none";
-		this.codeEl.textContent = "";
-		this.helpEl.textContent = "";
-		this.linkEl.style.display = "none";
-		this.linkEl.removeAttribute("href");
 
 		if (!settings.bot_configured) {
 			this.statusEl.textContent = "Telegram bot is not configured on this server.";
+			this.clearWidget();
+			this.disconnectEl.style.display = "none";
 			return;
 		}
 
@@ -72,27 +75,49 @@ class SettingsPage {
 				? `@${settings.username}`
 				: [settings.first_name, settings.last_name].filter(Boolean).join(" ");
 			this.statusEl.textContent = name ? `Connected as ${name}.` : "Telegram is connected.";
+			this.clearWidget();
+			this.disconnectEl.style.display = "inline-flex";
+			return;
+		}
+
+		this.statusEl.textContent = "Telegram is not connected.";
+		this.disconnectEl.style.display = "none";
+		if (settings.bot_username) {
+			this.renderWidget(settings.bot_username);
 		} else {
-			const bot = settings.bot_username ? ` Bot: @${settings.bot_username}.` : "";
-			this.statusEl.textContent = `Telegram is not connected.${bot}`;
+			this.clearWidget();
+			this.statusEl.textContent =
+				"Telegram bot username is unavailable, so the login button cannot be shown.";
 		}
 	}
 
-	private async createCode() {
+	private renderWidget(botUsername: string) {
+		if (this.renderedBot === botUsername) {
+			return;
+		}
+		this.renderedBot = botUsername;
+		this.widgetEl.replaceChildren();
+		const script = document.createElement("script");
+		script.async = true;
+		script.src = "https://telegram.org/js/telegram-widget.js?22";
+		script.setAttribute("data-telegram-login", botUsername);
+		script.setAttribute("data-size", "large");
+		script.setAttribute("data-request-access", "write");
+		script.setAttribute("data-onauth", `${TELEGRAM_AUTH_CALLBACK}(user)`);
+		this.widgetEl.appendChild(script);
+	}
+
+	private clearWidget() {
+		this.renderedBot = null;
+		this.widgetEl.replaceChildren();
+	}
+
+	private async handleAuth(user: TelegramAuthData) {
 		try {
-			const result = await createTelegramConnectCode();
-			this.codeEl.textContent = result.code;
-			this.codeEl.style.display = "block";
-			if (result.start_url) {
-				this.linkEl.href = result.start_url;
-				this.linkEl.style.display = "inline-flex";
-				this.helpEl.textContent = "Open Telegram and press Start. Code expires in 10 minutes.";
-			} else {
-				this.helpEl.textContent = "Send /start CODE to your Friday bot. Code expires in 10 minutes.";
-			}
-			this.setError("");
+			await loginTelegram(user);
+			await this.refresh();
 		} catch (error) {
-			this.setError(error instanceof Error ? error.message : "Failed to create code.");
+			this.setError(error instanceof Error ? error.message : "Failed to connect Telegram.");
 		}
 	}
 

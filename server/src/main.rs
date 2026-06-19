@@ -214,8 +214,8 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/api/logout", post(api::auth::logout))
         .route("/api/settings/telegram", get(api::telegram::settings))
         .route(
-            "/api/settings/telegram/connect-code",
-            post(api::telegram::create_connect_code),
+            "/api/settings/telegram/login",
+            post(api::telegram::login),
         )
         .route(
             "/api/settings/telegram/disconnect",
