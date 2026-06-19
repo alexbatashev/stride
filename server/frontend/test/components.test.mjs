@@ -33,6 +33,12 @@ test('all custom elements register', () => {
     'app-message', 'app-spoiler', 'auto-markdown', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
     'app-file-manager', 'app-automations', 'icon-arrow-up', 'icon-x',
+    'app-badge', 'app-label', 'app-separator', 'app-skeleton', 'app-aspect-ratio',
+    'app-card', 'app-avatar', 'app-alert', 'app-progress', 'app-checkbox',
+    'app-switch', 'app-toggle', 'app-textarea', 'app-radio-group', 'app-slider',
+    'app-breadcrumb', 'app-tabs', 'app-accordion', 'app-pagination', 'app-dialog',
+    'app-alert-dialog', 'app-sheet', 'app-tooltip', 'app-popover', 'app-hover-card',
+    'app-select', 'icon-check',
   ]) {
     assert.ok(customElements.get(tag), `${tag} is not registered`);
   }
@@ -243,4 +249,152 @@ test('app-automations run button posts and renders returned output', async () =>
     globalThis.fetch = originalFetch;
     window.setTimeout = originalSetTimeout;
   }
+});
+
+test('app-badge renders slotted content', () => {
+  const el = mount('app-badge');
+  el.textContent = 'New';
+  assert.ok(el.shadowRoot.querySelector('.badge slot'));
+  assert.equal(el.textContent, 'New');
+});
+
+test('app-alert renders title and description slot', () => {
+  const el = mount('app-alert', { title: 'Heads up' });
+  assert.match(el.shadowRoot.innerHTML, /Heads up/);
+  assert.ok(el.shadowRoot.querySelector('.description slot'));
+});
+
+test('app-progress reflects the clamped value', () => {
+  const el = mount('app-progress', { value: '40' });
+  assert.equal(el.shadowRoot.querySelector('.indicator').style.width, '40%');
+  assert.equal(el.shadowRoot.querySelector('.track').getAttribute('aria-valuenow'), '40');
+
+  const over = mount('app-progress', { value: '250' });
+  assert.equal(over.shadowRoot.querySelector('.indicator').style.width, '100%');
+});
+
+test('app-checkbox toggles and dispatches change', () => {
+  const el = mount('app-checkbox');
+  const changed = lastEvent(el, 'change');
+  const box = el.shadowRoot.querySelector('button[role="checkbox"]');
+  assert.equal(box.getAttribute('aria-checked'), 'false');
+  box.click();
+  assert.equal(box.getAttribute('aria-checked'), 'true');
+  assert.equal(changed.detail.checked, true);
+  assert.ok(el.hasAttribute('checked'));
+});
+
+test('app-checkbox honours disabled', () => {
+  const el = mount('app-checkbox', { disabled: true });
+  el.setAttribute('disabled', '');
+  const changed = lastEvent(el, 'change');
+  el.shadowRoot.querySelector('button[role="checkbox"]').click();
+  assert.equal(changed.count, 0);
+});
+
+test('app-switch toggles and dispatches change', () => {
+  const el = mount('app-switch');
+  const changed = lastEvent(el, 'change');
+  const sw = el.shadowRoot.querySelector('button[role="switch"]');
+  sw.click();
+  assert.equal(sw.getAttribute('aria-checked'), 'true');
+  assert.equal(changed.detail.checked, true);
+});
+
+test('app-toggle reports pressed state', () => {
+  const el = mount('app-toggle');
+  const pressed = lastEvent(el, 'pressed-change');
+  const button = el.shadowRoot.querySelector('button');
+  button.click();
+  assert.equal(button.getAttribute('aria-pressed'), 'true');
+  assert.equal(pressed.detail.pressed, true);
+});
+
+test('app-radio-group selects an option', () => {
+  const el = mount('app-radio-group', { options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }] });
+  assert.match(el.shadowRoot.innerHTML, /Alpha/);
+  const changed = lastEvent(el, 'value-change');
+  el.shadowRoot.querySelector('[data-value="b"]').click();
+  assert.equal(changed.detail.value, 'b');
+  assert.equal(el.getAttribute('value'), 'b');
+  assert.equal(el.shadowRoot.querySelector('[data-value="b"]').getAttribute('aria-checked'), 'true');
+});
+
+test('app-slider dispatches numeric value on input', () => {
+  const el = mount('app-slider', { value: '20' });
+  const changed = lastEvent(el, 'value-change');
+  const input = el.shadowRoot.querySelector('input[type="range"]');
+  input.value = '65';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  assert.equal(changed.detail.value, 65);
+});
+
+test('app-tabs switches the active tab', () => {
+  const el = mount('app-tabs', { tabs: [{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }] });
+  const triggers = el.shadowRoot.querySelectorAll('.trigger');
+  assert.equal(triggers[0].getAttribute('aria-selected'), 'true');
+  const changed = lastEvent(el, 'tab-change');
+  el.shadowRoot.querySelector('[data-value="two"]').click();
+  assert.equal(changed.detail.value, 'two');
+  assert.equal(el.shadowRoot.querySelector('[data-value="two"]').getAttribute('aria-selected'), 'true');
+});
+
+test('app-accordion expands and collapses items', () => {
+  const el = mount('app-accordion', { items: [{ value: 'a', title: 'First', content: 'Body A' }] });
+  const trigger = el.shadowRoot.querySelector('.trigger');
+  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  assert.doesNotMatch(el.shadowRoot.innerHTML, /Body A/);
+  trigger.click();
+  assert.match(el.shadowRoot.innerHTML, /Body A/);
+  el.shadowRoot.querySelector('.trigger').click();
+  assert.doesNotMatch(el.shadowRoot.innerHTML, /Body A/);
+});
+
+test('app-select opens and picks an option', () => {
+  const el = mount('app-select', { options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }], placeholder: 'Pick' });
+  assert.match(el.shadowRoot.innerHTML, /Pick/);
+  el.shadowRoot.querySelector('.trigger').click();
+  assert.ok(el.hasAttribute('open'));
+  const changed = lastEvent(el, 'value-change');
+  el.shadowRoot.querySelector('[data-value="b"]').click();
+  assert.equal(changed.detail.value, 'b');
+  assert.equal(el.getAttribute('value'), 'b');
+  assert.ok(!el.hasAttribute('open'));
+});
+
+test('app-breadcrumb renders links and a current page', () => {
+  const el = mount('app-breadcrumb', { items: [{ label: 'Home', href: '/' }, { label: 'Now' }] });
+  const link = el.shadowRoot.querySelector('a');
+  assert.equal(link.getAttribute('href'), '/');
+  assert.match(el.shadowRoot.innerHTML, /aria-current="page"[^>]*>Now/);
+});
+
+test('app-pagination disables edges and dispatches page-change', () => {
+  const el = mount('app-pagination', { total: '5', page: '1' });
+  assert.ok(el.shadowRoot.querySelector('.prev').disabled);
+  const changed = lastEvent(el, 'page-change');
+  el.shadowRoot.querySelector('[data-page="3"]').click();
+  assert.equal(changed.detail.page, 3);
+  assert.equal(el.getAttribute('page'), '3');
+});
+
+test('app-dialog closes via the close button', () => {
+  const el = mount('app-dialog', { title: 'Title' });
+  el.setAttribute('open', '');
+  const closed = lastEvent(el, 'close');
+  el.shadowRoot.querySelector('.close').click();
+  assert.equal(closed.count, 1);
+  assert.ok(!el.hasAttribute('open'));
+});
+
+test('app-alert-dialog reports confirm and cancel', () => {
+  const el = mount('app-alert-dialog');
+  el.setAttribute('open', '');
+  const answered = lastEvent(el, 'response');
+  el.shadowRoot.querySelector('.action').click();
+  assert.equal(answered.detail.confirmed, true);
+  assert.ok(!el.hasAttribute('open'));
+  el.setAttribute('open', '');
+  el.shadowRoot.querySelector('.cancel').click();
+  assert.equal(answered.detail.confirmed, false);
 });
