@@ -35,6 +35,7 @@ pub(crate) const DEFAULT_THREAD_TITLE: &str = "New chat";
 /// Telegram caps forum topic names at 128 characters; we cap every generated title to match.
 const MAX_TITLE_LEN: usize = 128;
 const TITLE_GENERATION_TIMEOUT: Duration = Duration::from_secs(20);
+const TITLE_GENERATOR_MODEL: &str = "title_generator";
 
 #[derive(Serialize)]
 pub struct ThreadResponse {
@@ -482,7 +483,7 @@ async fn generate_title(
     config: &Arc<friday_agent::AgentConfig>,
     content: &str,
 ) -> Result<(String, bool), llm::Error> {
-    let model = config.model_registry.get_or_default(DEFAULT_MODEL);
+    let model = config.model_registry.get_or_default(TITLE_GENERATOR_MODEL);
     let request = title_generation_request(&model.model_name, content);
 
     let completion = model.api.get_completion(&model.token, request).await?;
@@ -510,7 +511,7 @@ fn title_generation_request(model_name: &str, content: &str) -> CompletionReques
             },
         ],
     )
-    .max_tokens(1024)
+    .max_tokens(4096)
 }
 
 fn title_from_completion(completion: llm::Completion) -> Option<String> {

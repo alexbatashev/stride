@@ -74,22 +74,11 @@ impl MountedVfs {
         }
     }
 
-    pub async fn read(&self, path: &str) -> anyhow::Result<String> {
-        match self.resolve(path) {
-            Mount::Workspace(rel) => self.vfs.read(self.workspace_id, &rel).await,
-            Mount::Global(rel) => self.vfs.read_global(self.owner, &rel).await,
-        }
-    }
-
     pub async fn read_bytes(&self, path: &str) -> anyhow::Result<(Vec<u8>, Option<String>)> {
         match self.resolve(path) {
             Mount::Workspace(rel) => self.vfs.read_bytes(self.workspace_id, &rel).await,
             Mount::Global(rel) => self.vfs.read_bytes_global(self.owner, &rel).await,
         }
-    }
-
-    pub async fn write(&self, path: &str, content: &str) -> anyhow::Result<()> {
-        self.write_bytes(path, content.as_bytes(), None).await
     }
 
     pub async fn write_bytes(
