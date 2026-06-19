@@ -7,8 +7,8 @@ use async_stream::stream;
 use futures::channel::oneshot;
 use futures::{Stream, StreamExt};
 use llm::{
-    API, CompletionRequest, ImageSource, Message, StreamResponseChunk, ToolCallChunk,
-    ToolCallFunction,
+    API, CompletionRequest, ImageSource, Message, ReasoningEffort, StreamResponseChunk,
+    ToolCallChunk, ToolCallFunction,
 };
 use serde_json::Value;
 use serde_json::json;
@@ -75,7 +75,8 @@ pub struct ModelRegEntry {
     pub api: API,
     pub token: String,
     pub model_name: String,
-    pub thinking: bool,
+    /// Reasoning effort to request from the model. `None` disables reasoning.
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Whether the model accepts image inputs. Gates image attachment and the
     /// `attach_image` tool on the server side.
     pub vision: bool,
@@ -259,12 +260,7 @@ impl BaseAgent {
                         tools: (!tools.is_empty()).then_some(tools.clone()),
                         ..Default::default()
                     };
-                    if model.thinking {
-                        request.thinking = Some(llm::ThinkingConfig {
-                            thinking_type: "native".to_string(),
-                            budget_tokens: None,
-                        });
-                    }
+                    request.reasoning_effort = model.reasoning_effort;
                     request
                 };
 
@@ -650,7 +646,7 @@ mod tests {
                 api: mock.clone().into(),
                 token: String::new(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -921,7 +917,7 @@ mod tests {
                 api: mock.clone().into(),
                 token: String::new(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );

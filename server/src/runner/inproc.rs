@@ -2032,7 +2032,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -2137,7 +2137,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -2407,7 +2407,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -2492,7 +2492,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -2669,7 +2669,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -2752,7 +2752,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -2833,7 +2833,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -2930,7 +2930,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -3020,7 +3020,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
@@ -3095,7 +3095,7 @@ mod tests {
                     .into(),
                 token: "-".to_string(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );

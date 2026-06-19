@@ -23,6 +23,7 @@ pub struct McpServer {
 #[derive(Debug, Deserialize)]
 pub enum Kind {
     OpenAI,
+    OpenRouter,
     Anthropic,
     Ollama,
 }
@@ -38,10 +39,27 @@ pub struct Provider {
 pub struct Model {
     pub slug: String,
     pub provider: String,
+    /// Reasoning effort level requested from the model (`"low"`, `"medium"`,
+    /// `"high"`). Takes precedence over the legacy `thinking` flag.
+    pub reasoning_effort: Option<llm::ReasoningEffort>,
+    /// Deprecated boolean toggle kept for backwards compatibility. `true` maps
+    /// to medium effort when `reasoning_effort` is unset.
     pub thinking: Option<bool>,
     /// Whether this model accepts image inputs. When true, attached images are
     /// sent to the model and the `attach_image` tool is offered to the agent.
     pub vision: Option<bool>,
+}
+
+impl Model {
+    /// Resolves the effective reasoning effort, falling back to the legacy
+    /// `thinking` flag (`true` -> medium) when `reasoning_effort` is unset.
+    pub fn reasoning_effort(&self) -> Option<llm::ReasoningEffort> {
+        self.reasoning_effort.or_else(|| {
+            self.thinking
+                .unwrap_or(true)
+                .then_some(llm::ReasoningEffort::Medium)
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]

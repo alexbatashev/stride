@@ -11,15 +11,26 @@ use hyper::Request;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
+/// How the reasoning effort is serialized on the wire. OpenAI's chat
+/// completions API takes a flat `reasoning_effort` string; OpenRouter expects a
+/// nested `reasoning: { effort }` object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReasoningStyle {
+    Effort,
+    Nested,
+}
+
 #[derive(Clone)]
 pub struct OpenAI {
     base_url: String,
+    reasoning_style: ReasoningStyle,
 }
 
 impl std::fmt::Debug for OpenAI {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenAI")
             .field("base_url", &self.base_url)
+            .field("reasoning_style", &self.reasoning_style)
             .finish()
     }
 }
@@ -62,7 +73,7 @@ mod tests {
             ..Default::default()
         };
 
-        let body = serialize_request(&request).unwrap();
+        let body = serialize_request(&request, ReasoningStyle::Effort).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let message = &value["messages"][0];
 
@@ -90,9 +101,41 @@ mod tests {
             ..Default::default()
         };
 
-        let body = serialize_request(&request).unwrap();
+        let body = serialize_request(&request, ReasoningStyle::Effort).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["messages"][0]["content"], "hello");
+    }
+
+    #[test]
+    fn serializes_reasoning_effort_as_string() {
+        use crate::ReasoningEffort;
+
+        let request = CompletionRequest {
+            model: "o4".to_string(),
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..Default::default()
+        };
+
+        let body = serialize_request(&request, ReasoningStyle::Effort).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["reasoning_effort"], "high");
+        assert!(value.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn serializes_reasoning_as_nested_object_for_openrouter() {
+        use crate::ReasoningEffort;
+
+        let request = CompletionRequest {
+            model: "anthropic/claude".to_string(),
+            reasoning_effort: Some(ReasoningEffort::Xhigh),
+            ..Default::default()
+        };
+
+        let body = serialize_request(&request, ReasoningStyle::Nested).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["reasoning"]["effort"], "xhigh");
+        assert!(value.get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -113,7 +156,10 @@ struct ModelListResponse {
 /// Serializes a request to OpenAI's wire format, rewriting any message that
 /// carries images into the `content` parts array (text part plus one
 /// `image_url` part per image) that the chat completions API expects.
-fn serialize_request(request: &CompletionRequest) -> Result<Vec<u8>, Error> {
+fn serialize_request(
+    request: &CompletionRequest,
+    reasoning_style: ReasoningStyle,
+) -> Result<Vec<u8>, Error> {
     let mut body =
         serde_json::to_value(request).map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
 
@@ -123,7 +169,26 @@ fn serialize_request(request: &CompletionRequest) -> Result<Vec<u8>, Error> {
         }
     }
 
+    if reasoning_style == ReasoningStyle::Nested {
+        rewrite_reasoning_effort(&mut body);
+    }
+
     serde_json::to_vec(&body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+}
+
+/// Rewrites the flat `reasoning_effort` string into OpenRouter's nested
+/// `reasoning: { effort }` object.
+fn rewrite_reasoning_effort(body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let Some(effort) = object.remove("reasoning_effort") else {
+        return;
+    };
+    object.insert(
+        "reasoning".to_string(),
+        serde_json::json!({ "effort": effort }),
+    );
 }
 
 fn rewrite_message_images(message: &mut serde_json::Value) {
@@ -163,6 +228,16 @@ impl OpenAI {
     pub fn new(base_url: &str) -> Self {
         OpenAI {
             base_url: base_url.to_string(),
+            reasoning_style: ReasoningStyle::Effort,
+        }
+    }
+
+    /// Builds a client for OpenRouter, which expects reasoning effort as a
+    /// nested `reasoning: { effort }` object instead of a flat string.
+    pub fn openrouter(base_url: &str) -> Self {
+        OpenAI {
+            base_url: base_url.to_string(),
+            reasoning_style: ReasoningStyle::Nested,
         }
     }
 
@@ -247,7 +322,7 @@ impl OpenAI {
         token: &str,
         request: CompletionRequest,
     ) -> Result<Completion, Error> {
-        let body = serialize_request(&request)?;
+        let body = serialize_request(&request, self.reasoning_style)?;
 
         let base = self.base_url.trim_end_matches('/');
         let path = if base.ends_with("/v1") {
@@ -277,7 +352,7 @@ impl OpenAI {
         token: &str,
         request: CompletionRequest,
     ) -> Pin<Box<dyn Stream<Item = Result<StreamResponseChunk, Error>> + Send + 'static>> {
-        let req_body = match serialize_request(&request) {
+        let req_body = match serialize_request(&request, self.reasoning_style) {
             Ok(v) => v,
             Err(err) => {
                 return Box::pin(futures::stream::once(async move { Err(err) }));

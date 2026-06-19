@@ -263,7 +263,7 @@ mod tests {
                 api: mock.clone().into(),
                 token: String::new(),
                 model_name: "mock-model".to_string(),
-                thinking: false,
+                reasoning_effort: None,
                 vision: false,
             },
         );
