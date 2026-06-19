@@ -181,6 +181,17 @@ migrations! {
     }
 
     telegram_integration {
+        // Retained for migration parity even though the connect-code flow was
+        // replaced by the Telegram Login Widget. Migrations are append-only and
+        // validated by index, so this table must stay in its original block.
+        table telegram_connect_codes {
+            code: String [PrimaryKey],
+            user_id: Uuid [Unique],
+            expires_at: i64,
+
+            foreign_key(user_id -> users.id);
+        }
+
         table telegram_connections {
             id: Uuid [PrimaryKey],
             user_id: Uuid [Unique],
