@@ -11,6 +11,7 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 pub enum Kind {
     OpenAI,
+    OpenRouter,
     Anthropic,
     Ollama,
 }

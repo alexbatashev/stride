@@ -147,6 +147,7 @@ fn create_model_registry(config: &Config) -> ModelRegistry {
         let p = config.providers.get(&m.provider).unwrap();
         let api: API = match p.kind {
             config::Kind::OpenAI => OpenAI::new(&p.url).into(),
+            config::Kind::OpenRouter => OpenAI::openrouter(&p.url).into(),
             config::Kind::Anthropic => Anthropic::new(&p.url).into(),
             config::Kind::Ollama => Ollama::new(&p.url).into(),
         };

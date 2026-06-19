@@ -3,6 +3,14 @@ kind = "OpenAI"
 url = "https://api.openai.com/v1"
 token = "sk-..."
 
+# OpenRouter is OpenAI-compatible but takes reasoning effort as a nested
+# `reasoning: { effort }` object. Use kind = "OpenRouter" so the effort level
+# (including "xhigh") is sent in the form OpenRouter expects.
+[providers.openrouter]
+kind = "OpenRouter"
+url = "https://openrouter.ai/api/v1"
+token = "sk-or-..."
+
 [providers.anthropic]
 kind = "Anthropic"
 url = "https://api.anthropic.com/v1"
@@ -15,7 +23,7 @@ url = "http://localhost:11434/v1"
 [models.gpt_4_1]
 slug = "gpt-4.1"
 provider = "openai"
-# Reasoning effort: "low", "medium", or "high". Omit to disable reasoning.
+# Reasoning effort: "low", "medium", "high", or "xhigh". Omit to disable.
 reasoning_effort = "high"
 # Set when the model accepts image inputs. Enables attached images and the
 # attach_image tool. Defaults to false.

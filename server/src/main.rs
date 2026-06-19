@@ -334,6 +334,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
         };
         let api: API = match provider.kind {
             config::Kind::OpenAI => OpenAI::new(&provider.url).into(),
+            config::Kind::OpenRouter => OpenAI::openrouter(&provider.url).into(),
             config::Kind::Anthropic => Anthropic::new(&provider.url).into(),
             config::Kind::Ollama => Ollama::new(&provider.url).into(),
         };
@@ -357,6 +358,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
     {
         let api: API = match provider.kind {
             config::Kind::OpenAI => OpenAI::new(&provider.url).into(),
+            config::Kind::OpenRouter => OpenAI::openrouter(&provider.url).into(),
             config::Kind::Anthropic => Anthropic::new(&provider.url).into(),
             config::Kind::Ollama => Ollama::new(&provider.url).into(),
         };

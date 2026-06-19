@@ -23,6 +23,7 @@ pub struct McpServer {
 #[derive(Debug, Deserialize)]
 pub enum Kind {
     OpenAI,
+    OpenRouter,
     Anthropic,
     Ollama,
 }

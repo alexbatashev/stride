@@ -51,14 +51,15 @@ pub struct CompletionRequest {
 }
 
 /// Reasoning effort level requested from a model. Serializes to the lowercase
-/// string form (`"low"`, `"medium"`, `"high"`) expected by OpenAI-compatible
-/// `reasoning_effort` parameters.
+/// string form (`"low"`, `"medium"`, `"high"`, `"xhigh"`) used by
+/// OpenAI-compatible reasoning parameters.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    Xhigh,
 }
 
 impl ReasoningEffort {
@@ -69,6 +70,7 @@ impl ReasoningEffort {
             ReasoningEffort::Low => 4096,
             ReasoningEffort::Medium => 8192,
             ReasoningEffort::High => 24576,
+            ReasoningEffort::Xhigh => 32768,
         }
     }
 }
