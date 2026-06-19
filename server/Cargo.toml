@@ -13,7 +13,6 @@ bytes = "1.11.1"
 clap = { version = "4", features = ["derive"] }
 execenv = { path = "../libs/execenv", features = ["eryx"] }
 futures = "0.3.32"
-fzilla = { path = "../libs/fzilla" }
 hex = "0.4"
 hmac = "0.12"
 http-body-util = "0.1.3"

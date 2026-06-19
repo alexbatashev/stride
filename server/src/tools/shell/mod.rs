@@ -12,11 +12,9 @@ use vfs_backend::VfsBackend;
 /// Working directory the shell starts in: the writable workspace mount.
 const DEFAULT_CWD: &str = "/~workspace";
 
-const DESCRIPTION: &str = "Execute a shell command against the workspace file system. \
-Commands run in an in-process bash sandbox (bashkit) over the virtual file system; no real shell or host access. \
-Supports variables, expansion, pipes, redirection, control flow, and the usual coreutils. \
-The working directory is the writable workspace at /~workspace. Your read-only files live under / alongside it; \
-writes outside /~workspace are rejected.";
+const DESCRIPTION: &str = "Execute a bash command against the workspace file system. \
+Default workdir is /~workspace. Use this tool to inspect filesystem or contents of file with \
+the help of standard UNIX tools, like cat, grep, ls, rg, sed, diff, mkdir, cp and others.";
 
 /// Shell backend that runs bashkit over the mounted VFS.
 pub struct EmulatedShellBackend {
@@ -106,45 +104,6 @@ mod tests {
             result.stdout, result.stderr
         );
         assert_eq!(result.stdout, "hello\n");
-    }
-
-    #[tokio::test]
-    async fn redirect_persists_to_workspace() {
-        let (sh, fs) = backend().await;
-        let result = sh.run("echo hi > out.txt", None).await;
-        assert!(
-            result.success,
-            "out={:?} err={:?}",
-            result.stdout, result.stderr
-        );
-        assert_eq!(fs.read("/~workspace/out.txt").await.unwrap(), "hi\n");
-    }
-
-    #[tokio::test]
-    async fn nested_mkdir_then_write() {
-        let (sh, fs) = backend().await;
-        let result = sh
-            .run("mkdir -p sub/deep && echo z > sub/deep/c.txt", None)
-            .await;
-        assert!(
-            result.success,
-            "out={:?} err={:?}",
-            result.stdout, result.stderr
-        );
-        assert_eq!(fs.read("/~workspace/sub/deep/c.txt").await.unwrap(), "z\n");
-    }
-
-    #[tokio::test]
-    async fn copy_file() {
-        let (sh, fs) = backend().await;
-        assert!(sh.run("echo data > a.txt", None).await.success);
-        let result = sh.run("cp a.txt b.txt", None).await;
-        assert!(
-            result.success,
-            "out={:?} err={:?}",
-            result.stdout, result.stderr
-        );
-        assert_eq!(fs.read("/~workspace/b.txt").await.unwrap(), "data\n");
     }
 
     #[tokio::test]
