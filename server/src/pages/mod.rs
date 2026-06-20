@@ -468,13 +468,14 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
         display: none;
     }}
 
-    #settings-page .email-list {{
+    #settings-page .email-list,
+    #settings-page .mcp-list {{
         display: grid;
         gap: 8px;
         margin-top: 16px;
     }}
 
-    #settings-page .email-account {{
+    #settings-page .integration-account {{
         align-items: center;
         border: 1px solid var(--border);
         border-radius: 10px;
@@ -484,18 +485,18 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
         padding: 12px;
     }}
 
-    #settings-page .email-account strong,
-    #settings-page .email-account span {{
+    #settings-page .integration-account strong,
+    #settings-page .integration-account span {{
         display: block;
     }}
 
-    #settings-page .email-account span {{
+    #settings-page .integration-account span {{
         color: var(--muted-foreground);
         font-size: 12px;
         margin-top: 3px;
     }}
 
-    #settings-page .imap-form {{
+    #settings-page .settings-form {{
         border: 1px solid var(--border);
         border-radius: 12px;
         display: grid;
@@ -526,6 +527,19 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
         font: inherit;
         min-height: 38px;
         padding: 8px 10px;
+        width: 100%;
+    }}
+
+    #settings-page textarea {{
+        background: var(--background);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-sizing: border-box;
+        color: var(--foreground);
+        font: inherit;
+        min-height: 84px;
+        padding: 8px 10px;
+        resize: vertical;
         width: 100%;
     }}
 
@@ -596,7 +610,7 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
             <p class="muted">Connect one or more TLS IMAP accounts. Friday can read incoming and sent mail and save reply-all drafts. It cannot send email.</p>
             <div class="email-list" data-email-list></div>
             <p class="status" data-email-empty>There are no IMAP accounts yet.</p>
-            <form class="imap-form" data-email-form>
+            <form class="settings-form" data-email-form>
                 <strong>Add IMAP server</strong>
                 <div class="form-grid">
                     <label>Account name<input name="name" required placeholder="Work" autocomplete="off" /></label>
@@ -617,6 +631,24 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
                 <p class="muted">The connection is verified before it is saved. Credentials are encrypted at rest.</p>
                 <div><button type="submit">Add account</button></div>
                 <div class="error" data-email-error></div>
+            </form>
+        </section>
+        <section class="section" data-mcp>
+            <h2>MCP servers</h2>
+            <p class="muted">Add remote HTTP MCP servers for your agents. Tools from these servers are loaded with the global MCP servers.</p>
+            <div class="mcp-list" data-mcp-list></div>
+            <p class="status" data-mcp-empty>There are no custom MCP servers yet.</p>
+            <form class="settings-form" data-mcp-form>
+                <strong>Add MCP server</strong>
+                <div class="form-grid">
+                    <label>Name<input name="name" required placeholder="deepwiki" autocomplete="off" pattern="[A-Za-z][A-Za-z0-9_]{{1,47}}" /></label>
+                    <label>URL<input name="url" type="url" required placeholder="https://mcp.example.com/mcp" autocomplete="off" /></label>
+                    <label>Bearer token<input name="bearer_token" type="password" autocomplete="new-password" /></label>
+                </div>
+                <label>Headers JSON<textarea name="headers_json" placeholder='{{"X-Tenant":"acme"}}'></textarea></label>
+                <p class="muted">Only Streamable HTTP MCP servers are supported here. Authorization values are stored but not shown again.</p>
+                <div><button type="submit">Add server</button></div>
+                <div class="error" data-mcp-error></div>
             </form>
         </section>
     </section>
@@ -758,6 +790,8 @@ mod tests {
         assert!(html.contains("Add IMAP server"));
         assert!(html.contains("data-email-form"));
         assert!(html.contains("cannot send email"));
+        assert!(html.contains("MCP servers"));
+        assert!(html.contains("data-mcp-form"));
         assert!(html.contains(r#"href="/settings" aria-current="page""#));
         assert!(html.contains("/static/pages/settings-page.js"));
     }

@@ -4,6 +4,7 @@ mod config;
 mod cron;
 mod db;
 mod email;
+mod mcp_servers;
 mod notify;
 mod pages;
 pub mod runner;
@@ -126,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
         tools.clone(),
         telegram_bot_token.clone(),
         email_service.clone(),
+        mcp_tools.clone(),
     );
 
     let public_url = config.public_url();
@@ -218,6 +220,11 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/api/login", post(api::auth::login))
         .route("/api/logout", post(api::auth::logout))
         .route("/api/settings/telegram", get(api::telegram::settings))
+        .route(
+            "/api/settings/mcp",
+            get(api::mcp::list).post(api::mcp::create),
+        )
+        .route("/api/settings/mcp/{id}", delete(api::mcp::delete))
         .route(
             "/api/settings/email",
             get(api::email::list).post(api::email::create),

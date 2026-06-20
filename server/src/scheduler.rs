@@ -11,6 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use friday_agent::{
     AgentConfig, AgentResponseChunk, BaseAgent, Tool,
+    mcp::McpTool,
     tools::email::{CreateEmailDraftTool, ListEmailsTool},
 };
 use futures::StreamExt;
@@ -83,6 +84,7 @@ struct ExecutorCtx {
     tools: Tools,
     telegram_bot_token: Option<String>,
     email_service: ImapService,
+    mcp_tools: Vec<McpTool>,
 }
 
 pub fn spawn(
@@ -91,6 +93,7 @@ pub fn spawn(
     tools: Tools,
     telegram_bot_token: Option<String>,
     email_service: ImapService,
+    mcp_tools: Vec<McpTool>,
 ) -> ExecutorHandle {
     let (tx, rx) = unbounded_channel();
     let ctx = ExecutorCtx {
@@ -99,6 +102,7 @@ pub fn spawn(
         tools,
         telegram_bot_token,
         email_service,
+        mcp_tools,
     };
     std::thread::Builder::new()
         .name("friday-scheduler".to_string())
@@ -301,10 +305,15 @@ async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
         }
         AutomationKind::Agent => {
             let prompt = agent_prompt(&automation.payload, request.payload.as_ref());
+            let mut mcp_tools = ctx.mcp_tools.clone();
+            mcp_tools.extend(
+                crate::mcp_servers::connect_user_mcp_servers(&ctx.db, automation.owner).await,
+            );
             run_agent(
                 ctx.model_config.clone(),
                 &prompt,
                 ctx.email_service.provider(automation.owner),
+                mcp_tools,
             )
             .await
         }
@@ -410,6 +419,7 @@ async fn run_agent(
     model_config: Arc<AgentConfig>,
     prompt: &str,
     email_provider: Arc<dyn friday_agent::tools::email::EmailProvider>,
+    mcp_tools: Vec<McpTool>,
 ) -> Result<String, String> {
     let agent = BaseAgent::new(
         "default".to_string(),
@@ -417,6 +427,9 @@ async fn run_agent(
         AGENT_SYSTEM_PROMPT.to_string(),
         Vec::new(),
     );
+    for tool in mcp_tools {
+        agent.register_searchable_tool(tool);
+    }
     agent.register_tool(ListEmailsTool {
         provider: email_provider.clone(),
     });
@@ -610,6 +623,7 @@ mod tests {
                     tools: python_tools(),
                     telegram_bot_token: None,
                     email_service: ImapService::new(db.clone(), "test-secret"),
+                    mcp_tools: Vec::new(),
                 };
                 run_automation(
                     ctx,

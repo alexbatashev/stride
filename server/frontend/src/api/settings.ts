@@ -44,6 +44,24 @@ export type NewEmailAccount = {
 	drafts_mailbox: string;
 };
 
+export type McpServer = {
+	id: string;
+	name: string;
+	url: string;
+	enabled: boolean;
+	created_at: number;
+	header_names: string[];
+	has_authorization: boolean;
+};
+
+export type NewMcpServer = {
+	name: string;
+	url: string;
+	bearer_token: string;
+	headers_json: string;
+	enabled: boolean;
+};
+
 export async function getTelegramSettings(): Promise<TelegramSettings> {
 	return request("/api/settings/telegram");
 }
@@ -74,6 +92,22 @@ export async function createEmailAccount(data: NewEmailAccount): Promise<EmailAc
 
 export async function deleteEmailAccount(id: string): Promise<void> {
 	await request(`/api/settings/email/${id}`, { method: "DELETE" });
+}
+
+export async function listMcpServers(): Promise<McpServer[]> {
+	return request("/api/settings/mcp");
+}
+
+export async function createMcpServer(data: NewMcpServer): Promise<McpServer> {
+	return request("/api/settings/mcp", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
+export async function deleteMcpServer(id: string): Promise<void> {
+	await request(`/api/settings/mcp/${id}`, { method: "DELETE" });
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

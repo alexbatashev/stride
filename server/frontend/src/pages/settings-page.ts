@@ -1,13 +1,17 @@
 import {
 	disconnectTelegram,
 	createEmailAccount,
+	createMcpServer,
 	deleteEmailAccount,
+	deleteMcpServer,
 	getTelegramSettings,
 	listEmailAccounts,
+	listMcpServers,
 	loginTelegram,
 	type TelegramAuthData,
 	type TelegramSettings,
 	type EmailAccount,
+	type McpServer,
 } from "../api/settings.js";
 import { bindSidebar } from "./sidebar.js";
 
@@ -23,6 +27,10 @@ class SettingsPage {
 	private readonly emailEmptyEl: HTMLElement;
 	private readonly emailFormEl: HTMLFormElement;
 	private readonly emailErrorEl: HTMLElement;
+	private readonly mcpListEl: HTMLElement;
+	private readonly mcpEmptyEl: HTMLElement;
+	private readonly mcpFormEl: HTMLFormElement;
+	private readonly mcpErrorEl: HTMLElement;
 	private renderedBot: string | null = null;
 
 	constructor(private readonly root: HTMLElement) {
@@ -34,6 +42,10 @@ class SettingsPage {
 		this.emailEmptyEl = this.mustQuery("[data-email-empty]");
 		this.emailFormEl = this.mustQuery("[data-email-form]");
 		this.emailErrorEl = this.mustQuery("[data-email-error]");
+		this.mcpListEl = this.mustQuery("[data-mcp-list]");
+		this.mcpEmptyEl = this.mustQuery("[data-mcp-empty]");
+		this.mcpFormEl = this.mustQuery("[data-mcp-form]");
+		this.mcpErrorEl = this.mustQuery("[data-mcp-error]");
 		this.exposeAuthCallback();
 		this.bindEvents();
 		void this.refresh();
@@ -62,9 +74,17 @@ class SettingsPage {
 			event.preventDefault();
 			void this.addEmailAccount();
 		});
+		this.mcpFormEl.addEventListener("submit", (event) => {
+			event.preventDefault();
+			void this.addMcpServer();
+		});
 		this.emailListEl.addEventListener("click", (event) => {
 			const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-email-delete]");
 			if (button?.dataset.emailDelete) void this.removeEmailAccount(button.dataset.emailDelete);
+		});
+		this.mcpListEl.addEventListener("click", (event) => {
+			const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-mcp-delete]");
+			if (button?.dataset.mcpDelete) void this.removeMcpServer(button.dataset.mcpDelete);
 		});
 		const sidebar = this.root.querySelector<HTMLElement>("app-sidebar");
 		if (sidebar) {
@@ -74,6 +94,7 @@ class SettingsPage {
 
 	private async refresh() {
 		void this.refreshEmailAccounts();
+		void this.refreshMcpServers();
 		try {
 			this.render(await getTelegramSettings());
 		} catch (error) {
@@ -90,10 +111,19 @@ class SettingsPage {
 		}
 	}
 
+	private async refreshMcpServers() {
+		try {
+			this.renderMcpServers(await listMcpServers());
+			this.setMcpError("");
+		} catch (error) {
+			this.setMcpError(error instanceof Error ? error.message : "Failed to load MCP servers.");
+		}
+	}
+
 	private renderEmailAccounts(accounts: EmailAccount[]) {
 		this.emailListEl.replaceChildren(...accounts.map((account) => {
 			const card = document.createElement("article");
-			card.className = "email-account";
+			card.className = "integration-account";
 			const details = document.createElement("div");
 			const title = document.createElement("strong");
 			title.textContent = account.name;
@@ -109,6 +139,33 @@ class SettingsPage {
 			return card;
 		}));
 		this.emailEmptyEl.style.display = accounts.length === 0 ? "block" : "none";
+	}
+
+	private renderMcpServers(servers: McpServer[]) {
+		this.mcpListEl.replaceChildren(...servers.map((server) => {
+			const card = document.createElement("article");
+			card.className = "integration-account";
+			const details = document.createElement("div");
+			const title = document.createElement("strong");
+			title.textContent = server.name;
+			const meta = document.createElement("span");
+			const headers = [
+				server.has_authorization ? "Authorization" : "",
+				...server.header_names,
+			].filter(Boolean);
+			meta.textContent = headers.length > 0
+				? `${server.url} · headers: ${headers.join(", ")}`
+				: server.url;
+			details.append(title, meta);
+			const remove = document.createElement("button");
+			remove.type = "button";
+			remove.className = "danger-button";
+			remove.dataset.mcpDelete = server.id;
+			remove.textContent = "Remove";
+			card.append(details, remove);
+			return card;
+		}));
+		this.mcpEmptyEl.style.display = servers.length === 0 ? "block" : "none";
 	}
 
 	private async addEmailAccount() {
@@ -148,8 +205,44 @@ class SettingsPage {
 		}
 	}
 
+	private async addMcpServer() {
+		const data = new FormData(this.mcpFormEl);
+		const submit = this.mcpFormEl.querySelector<HTMLButtonElement>('button[type="submit"]');
+		if (submit) submit.disabled = true;
+		this.setMcpError("");
+		try {
+			await createMcpServer({
+				name: String(data.get("name") ?? "").trim(),
+				url: String(data.get("url") ?? "").trim(),
+				bearer_token: String(data.get("bearer_token") ?? ""),
+				headers_json: String(data.get("headers_json") ?? "").trim(),
+				enabled: true,
+			});
+			this.mcpFormEl.reset();
+			await this.refreshMcpServers();
+		} catch (error) {
+			this.setMcpError(error instanceof Error ? error.message : "Failed to add MCP server.");
+		} finally {
+			if (submit) submit.disabled = false;
+		}
+	}
+
+	private async removeMcpServer(id: string) {
+		if (!window.confirm("Remove this MCP server from Friday?")) return;
+		try {
+			await deleteMcpServer(id);
+			await this.refreshMcpServers();
+		} catch (error) {
+			this.setMcpError(error instanceof Error ? error.message : "Failed to remove MCP server.");
+		}
+	}
+
 	private setEmailError(message: string) {
 		this.emailErrorEl.textContent = message;
+	}
+
+	private setMcpError(message: string) {
+		this.mcpErrorEl.textContent = message;
 	}
 
 	private render(settings: TelegramSettings) {

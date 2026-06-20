@@ -316,6 +316,22 @@ migrations! {
 
         raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_owner_name ON email_accounts(owner, name)";
     }
+
+    user_mcp_servers {
+        table mcp_servers {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            name: String,
+            url: String,
+            headers_json: Option<String>,
+            enabled: bool,
+            created_at: i64,
+
+            foreign_key(owner -> users.id);
+        }
+
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_owner_name ON mcp_servers(owner, name)";
+    }
 }
 
 impl FromValue for Role {

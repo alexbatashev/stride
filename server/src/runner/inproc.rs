@@ -913,6 +913,8 @@ async fn ensure_runner(
 
     ensure_thread_exists(&db, thread_id).await?;
     let user_id = thread_owner(&db, thread_id).await?;
+    let mut mcp_tools = mcp_tools;
+    mcp_tools.extend(crate::mcp_servers::connect_user_mcp_servers(&db, user_id).await);
     let project_id = thread_project_id(&db, thread_id).await?;
     let personality = load_personality(&db, user_id).await?;
     // A thread bound to a Telegram chat enables the file-delivery tool and absolute download links.

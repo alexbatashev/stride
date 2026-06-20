@@ -3,6 +3,7 @@ pub mod automations;
 pub mod email;
 pub mod files;
 pub mod images;
+pub mod mcp;
 pub mod projects;
 pub mod telegram;
 pub mod threads;
