@@ -942,13 +942,23 @@ async fn ensure_runner(
         });
         agent.allow_tool("send_telegram_message");
     }
-    let mut python_workspace = None;
-    if let Some(provider) = vfs {
+    let python_workspace = if let Some(provider) = vfs {
         let workspace_id = provider
             .get_or_create_workspace(thread_id, project_id, user_id)
             .await
             .map_err(AgentPoolError::Internal)?;
-        python_workspace = Some((provider.clone(), workspace_id));
+        Some((provider, workspace_id))
+    } else {
+        None
+    };
+
+    // Build the Python interpreter first so the shell can expose it as a
+    // `python` command sharing the same runtime and workspace.
+    let python = python_tool(&tools, thread_id, python_workspace.clone(), user_id)
+        .await
+        .map_err(AgentPoolError::Internal)?;
+
+    if let Some((provider, workspace_id)) = python_workspace {
         let fs = MountedVfs::new(provider.clone(), workspace_id, user_id);
         if vision {
             agent.register_tool(AttachImageTool {
@@ -960,12 +970,14 @@ async fn ensure_runner(
             });
             agent.allow_tool("attach_image");
         }
-        agent.register_tool(ShellTool::new(EmulatedShellBackend::new(fs)));
+        let mut shell = EmulatedShellBackend::new(fs);
+        if let Some(tool) = &python {
+            shell = shell.with_python(tool.service());
+        }
+        agent.register_tool(ShellTool::new(shell));
     }
-    if let Some(tool) = python_tool(&tools, thread_id, python_workspace, user_id)
-        .await
-        .map_err(AgentPoolError::Internal)?
-    {
+
+    if let Some(tool) = python {
         agent.register_tool(tool.with_tools(agent.registry_snapshot()));
         agent.allow_tool("python");
     }

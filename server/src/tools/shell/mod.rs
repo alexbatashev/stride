@@ -19,11 +19,21 @@ the help of standard UNIX tools, like cat, grep, ls, rg, sed, diff, mkdir, cp an
 /// Shell backend that runs bashkit over the mounted VFS.
 pub struct EmulatedShellBackend {
     fs: MountedVfs,
+    /// When set, `python`/`python3` run through execenv's interpreter instead of
+    /// bashkit's built-in (Monty) one. Shared with the agent's `python` tool so
+    /// scripts see the same runtime and `/~workspace` sync.
+    python: Option<Arc<dyn execenv::ExecutionService>>,
 }
 
 impl EmulatedShellBackend {
     pub fn new(fs: MountedVfs) -> Self {
-        Self { fs }
+        Self { fs, python: None }
+    }
+
+    /// Expose `python`/`python3` in the shell, backed by the given interpreter.
+    pub fn with_python(mut self, service: Arc<dyn execenv::ExecutionService>) -> Self {
+        self.python = Some(service);
+        self
     }
 }
 
@@ -37,7 +47,19 @@ impl ShellBackend for EmulatedShellBackend {
         let cwd = working_directory.unwrap_or(DEFAULT_CWD);
         let fs: Arc<dyn bashkit::FileSystem> =
             Arc::new(PosixFs::new(VfsBackend::new(self.fs.clone())));
-        let mut bash = Bash::builder().fs(fs).cwd(cwd).build();
+        let mut builder = Bash::builder().fs(fs).cwd(cwd);
+        if let Some(service) = &self.python {
+            builder = builder
+                .builtin(
+                    "python",
+                    Box::new(execenv::PythonBuiltin::new(service.clone())),
+                )
+                .builtin(
+                    "python3",
+                    Box::new(execenv::PythonBuiltin::new(service.clone())),
+                );
+        }
+        let mut bash = builder.build();
         match bash.exec(command).await {
             Ok(result) => ShellResult {
                 success: result.exit_code == 0,
@@ -92,6 +114,53 @@ mod tests {
             .unwrap();
         let mounted = MountedVfs::new(vfs, ws, owner);
         (EmulatedShellBackend::new(mounted.clone()), mounted)
+    }
+
+    /// Echoes the received script back as stdout so the test can confirm the
+    /// `python` command read the file and forwarded it to the interpreter.
+    struct EchoPython;
+
+    #[async_trait]
+    impl execenv::ExecutionService for EchoPython {
+        async fn execute_python(&self, script: &str) -> anyhow::Result<execenv::ExecutionOutput> {
+            Ok(execenv::ExecutionOutput {
+                stdout: script.to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn python_command_runs_workspace_script() {
+        let (_, mounted) = backend().await;
+        let sh = EmulatedShellBackend::new(mounted).with_python(Arc::new(EchoPython));
+
+        let write = sh
+            .run("echo \"print('hi')\" > /~workspace/script.py", None)
+            .await;
+        assert!(
+            write.success,
+            "out={:?} err={:?}",
+            write.stdout, write.stderr
+        );
+
+        let result = sh.run("python /~workspace/script.py", None).await;
+        assert!(
+            result.success,
+            "out={:?} err={:?}",
+            result.stdout, result.stderr
+        );
+        assert_eq!(result.stdout, "print('hi')\n");
+    }
+
+    #[tokio::test]
+    async fn python_command_absent_without_service() {
+        let (sh, _) = backend().await;
+        let result = sh.run("python --version", None).await;
+        assert!(
+            !result.success,
+            "python should be unavailable without an interpreter"
+        );
     }
 
     #[tokio::test]
