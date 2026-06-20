@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, state } from "@frontiers-labs/argon";
+import { Component, css } from "@frontiers-labs/argon";
 import { IconCheck } from "./icons/check.js";
 
 const styles = css`
@@ -69,25 +69,22 @@ export function AppCheckbox({
   name?: string;
   value?: string;
 }): Component {
-  let isChecked = state(checked);
   return (
     <>
       <style>{styles}</style>
       <button
         type="button"
         role="checkbox"
-        aria-checked={isChecked ? "true" : "false"}
+        aria-checked={checked ? "true" : "false"}
         data-name={name}
         data-value={value}
         onClick={() => {
-          if (this.hasAttribute("disabled")) return;
-          isChecked = !isChecked;
-          this.toggleAttribute("checked", isChecked);
+          if (disabled) return;
           this.dispatchEvent(
             new CustomEvent("change", {
               bubbles: true,
               composed: true,
-              detail: { checked: isChecked, value: value },
+              detail: { checked: !checked, value: value },
             }),
           );
         }}

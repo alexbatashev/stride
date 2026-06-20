@@ -162,5 +162,30 @@
                 data-options='["Option A","Option B"]'
             ></app-quiz-bar>
         </main>
+        <!--
+            The gallery components are fully controlled: a click only emits the
+            proposed next state. This controller is the "parent" that applies it
+            back to the prop, the same way a page hydrator would.
+        -->
+        <script type="module">
+            document.addEventListener("change", (event) => {
+                const tag = event.target.localName;
+                if (tag === "app-checkbox" || tag === "app-switch") {
+                    event.target.checked = event.detail.checked;
+                }
+            });
+            document.addEventListener("pressed-change", (event) => {
+                event.target.pressed = event.detail.pressed;
+            });
+            document.addEventListener("value-change", (event) => {
+                event.target.value = event.detail.value;
+            });
+            document.addEventListener("tab-change", (event) => {
+                event.target.value = event.detail.value;
+            });
+            document.addEventListener("page-change", (event) => {
+                event.target.page = String(event.detail.page);
+            });
+        </script>
     </body>
 </html>

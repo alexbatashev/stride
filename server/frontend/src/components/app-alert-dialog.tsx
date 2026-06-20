@@ -5,7 +5,6 @@
 import { Component, css } from "@frontiers-labs/argon";
 
 function respond(host: HTMLElement, confirmed: boolean): void {
-  host.removeAttribute("open");
   host.dispatchEvent(
     new CustomEvent("response", { bubbles: true, composed: true, detail: { confirmed: confirmed } }),
   );
@@ -19,16 +18,11 @@ const styles = css`
   .overlay {
     align-items: center;
     background: rgb(0 0 0 / 50%);
-    display: none;
     inset: 0;
     justify-content: center;
     padding: 16px;
     position: fixed;
     z-index: 50;
-  }
-
-  :host([open]) .overlay {
-    display: flex;
   }
 
   .dialog {
@@ -120,7 +114,7 @@ export function AppAlertDialog({
   return (
     <>
       <style>{styles}</style>
-      <div class="overlay">
+      <div class="overlay" style={open ? "display:flex" : "display:none"}>
         <div class="dialog" role="alertdialog" aria-modal="true">
           <div class="title">{title}</div>
           <div class="description">{description}</div>

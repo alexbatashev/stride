@@ -90,7 +90,6 @@ function emitPageChange(host: HTMLElement, totalAttr: string, pageAttr: string, 
   const current = Math.min(totalPages, Math.max(1, Number(pageAttr) || 1));
   const target = request === "prev" ? current - 1 : request === "next" ? current + 1 : Number(request);
   if (target < 1 || target > totalPages || target === current) return;
-  host.setAttribute("page", String(target));
   host.dispatchEvent(
     new CustomEvent("page-change", { bubbles: true, composed: true, detail: { page: target } }),
   );

@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, state } from "@frontiers-labs/argon";
+import { Component, css } from "@frontiers-labs/argon";
 
 interface RadioOption {
   value: string;
@@ -78,12 +78,13 @@ export function AppRadioGroup({
   options = [],
   value = "",
   name = "",
+  disabled = false,
 }: {
   options?: RadioOption[];
   value?: string;
   name?: string;
+  disabled?: boolean;
 }): Component {
-  let selected = state(value);
   return (
     <>
       <style>{styles}</style>
@@ -92,12 +93,11 @@ export function AppRadioGroup({
         role="radiogroup"
         data-name={name}
         onClick={(event: Event) => {
-          if (this.hasAttribute("disabled")) return;
+          if (disabled) return;
           const option = (event.target as Element).closest(".option");
           if (!option) return;
           const next = option.getAttribute("data-value") ?? "";
-          selected = next;
-          this.setAttribute("value", next);
+          if (next === value) return;
           this.dispatchEvent(
             new CustomEvent("value-change", { bubbles: true, composed: true, detail: { value: next } }),
           );
@@ -107,7 +107,7 @@ export function AppRadioGroup({
           .map(
             (option) =>
               `<div class="option" role="radio" tabindex="0" data-value="${option.value}" aria-checked="${
-                selected === option.value
+                value === option.value
               }"><span class="radio" aria-hidden="true"><span class="dot"></span></span><span>${
                 option.label
               }</span></div>`,

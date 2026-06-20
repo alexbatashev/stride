@@ -89,7 +89,6 @@ export function AppSlider({
         value={value}
         onInput={(event: Event) => {
           const next = (event.target as HTMLInputElement).value;
-          this.setAttribute("value", next);
           this.dispatchEvent(
             new CustomEvent("value-change", {
               bubbles: true,

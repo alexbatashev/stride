@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, state } from "@frontiers-labs/argon";
+import { Component, css } from "@frontiers-labs/argon";
 
 interface Tab {
   value: string;
@@ -56,7 +56,7 @@ const styles = css`
 `;
 
 export function AppTabs({ tabs = [], value = "" }: { tabs?: Tab[]; value?: string }): Component {
-  let active = state(value || (tabs[0]?.value ?? ""));
+  const active = value || (tabs[0]?.value ?? "");
   return (
     <>
       <style>{styles}</style>
@@ -67,9 +67,8 @@ export function AppTabs({ tabs = [], value = "" }: { tabs?: Tab[]; value?: strin
           const trigger = (event.target as Element).closest(".trigger");
           if (!trigger) return;
           const next = trigger.getAttribute("data-value") ?? "";
-          if (active === next) return;
-          active = next;
-          this.setAttribute("value", next);
+          const current = value || (tabs[0]?.value ?? "");
+          if (current === next) return;
           this.dispatchEvent(
             new CustomEvent("tab-change", { bubbles: true, composed: true, detail: { value: next } }),
           );

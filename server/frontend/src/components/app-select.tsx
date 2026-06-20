@@ -122,8 +122,7 @@ export function AppSelect({
   disabled?: boolean;
 }): Component {
   let open = state(false);
-  let selected = state(value);
-  const current = options.find((option) => option.value === selected);
+  const current = options.find((option) => option.value === value);
   onMount(() => {
     const onOutside = (event: Event) => {
       if (open && !event.composedPath().includes(this)) {
@@ -160,8 +159,6 @@ export function AppSelect({
           const option = (event.target as Element).closest(".option");
           if (!option) return;
           const next = option.getAttribute("data-value") ?? "";
-          selected = next;
-          this.setAttribute("value", next);
           open = false;
           this.removeAttribute("open");
           this.dispatchEvent(
@@ -173,7 +170,7 @@ export function AppSelect({
           .map(
             (option) =>
               `<div class="option" role="option" data-value="${option.value}" aria-selected="${
-                selected === option.value
+                value === option.value
               }"><span>${option.label}</span><span class="check" aria-hidden="true">${checkIcon}</span></div>`,
           )
           .join("")}

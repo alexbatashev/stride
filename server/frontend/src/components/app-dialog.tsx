@@ -5,9 +5,7 @@
 import { Component, css, onMount } from "@frontiers-labs/argon";
 import { IconX } from "./icons/x.js";
 
-function closeOverlay(host: HTMLElement): void {
-  if (!host.hasAttribute("open")) return;
-  host.removeAttribute("open");
+function requestClose(host: HTMLElement): void {
   host.dispatchEvent(new CustomEvent("close", { bubbles: true, composed: true }));
 }
 
@@ -19,16 +17,11 @@ const styles = css`
   .overlay {
     align-items: center;
     background: rgb(0 0 0 / 50%);
-    display: none;
     inset: 0;
     justify-content: center;
     padding: 16px;
     position: fixed;
     z-index: 50;
-  }
-
-  :host([open]) .overlay {
-    display: flex;
   }
 
   .dialog {
@@ -124,7 +117,7 @@ export function AppDialog({
 }): Component {
   onMount(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOverlay(this);
+      if (event.key === "Escape" && open) requestClose(this);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -134,12 +127,13 @@ export function AppDialog({
       <style>{styles}</style>
       <div
         class="overlay"
+        style={open ? "display:flex" : "display:none"}
         onClick={(event: Event) => {
-          if (event.target === event.currentTarget) closeOverlay(this);
+          if (event.target === event.currentTarget) requestClose(this);
         }}
       >
         <div class="dialog" role="dialog" aria-modal="true">
-          <button class="close" type="button" aria-label="Close" onClick={() => closeOverlay(this)}>
+          <button class="close" type="button" aria-label="Close" onClick={() => requestClose(this)}>
             <span class="icon">
               <IconX />
             </span>

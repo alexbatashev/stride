@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, state } from "@frontiers-labs/argon";
+import { Component, css } from "@frontiers-labs/argon";
 
 const styles = css`
   :host {
@@ -60,22 +60,19 @@ const styles = css`
 `;
 
 export function AppToggle({ pressed = false, disabled = false }: { pressed?: boolean; disabled?: boolean }): Component {
-  let isPressed = state(pressed);
   return (
     <>
       <style>{styles}</style>
       <button
         type="button"
-        aria-pressed={isPressed ? "true" : "false"}
+        aria-pressed={pressed ? "true" : "false"}
         onClick={() => {
-          if (this.hasAttribute("disabled")) return;
-          isPressed = !isPressed;
-          this.toggleAttribute("pressed", isPressed);
+          if (disabled) return;
           this.dispatchEvent(
             new CustomEvent("pressed-change", {
               bubbles: true,
               composed: true,
-              detail: { pressed: isPressed },
+              detail: { pressed: !pressed },
             }),
           );
         }}

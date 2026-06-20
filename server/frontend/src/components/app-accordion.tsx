@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, state } from "@frontiers-labs/argon";
+import { Component, css } from "@frontiers-labs/argon";
 
 interface AccordionItem {
   value: string;
@@ -69,12 +69,13 @@ const styles = css`
 
 export function AppAccordion({
   items = [],
+  value = [],
   type = "single",
 }: {
   items?: AccordionItem[];
+  value?: string[];
   type?: string;
 }): Component {
-  let open = state<string[]>([]);
   return (
     <>
       <style>{styles}</style>
@@ -83,20 +84,20 @@ export function AppAccordion({
         onClick={(event: Event) => {
           const trigger = (event.target as Element).closest(".trigger");
           if (!trigger) return;
-          const value = trigger.getAttribute("data-value") ?? "";
-          if (open.includes(value)) {
-            open = open.filter((entry) => entry !== value);
-          } else {
-            open = type === "multiple" ? [...open, value] : [value];
-          }
+          const item = trigger.getAttribute("data-value") ?? "";
+          const next = value.includes(item)
+            ? value.filter((entry) => entry !== item)
+            : type === "multiple"
+              ? [...value, item]
+              : [item];
           this.dispatchEvent(
-            new CustomEvent("value-change", { bubbles: true, composed: true, detail: { open: open } }),
+            new CustomEvent("value-change", { bubbles: true, composed: true, detail: { value: next } }),
           );
         }}
       >
         {items
           .map((item) => {
-            const expanded = open.includes(item.value);
+            const expanded = value.includes(item.value);
             return (
               `<div class="item" data-value="${item.value}">` +
               `<button class="trigger" type="button" data-value="${item.value}" aria-expanded="${expanded}">` +

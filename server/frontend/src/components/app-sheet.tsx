@@ -5,9 +5,7 @@
 import { Component, css } from "@frontiers-labs/argon";
 import { IconX } from "./icons/x.js";
 
-function closeSheet(host: HTMLElement): void {
-  if (!host.hasAttribute("open")) return;
-  host.removeAttribute("open");
+function requestClose(host: HTMLElement): void {
   host.dispatchEvent(new CustomEvent("close", { bubbles: true, composed: true }));
 }
 
@@ -18,14 +16,9 @@ const styles = css`
 
   .overlay {
     background: rgb(0 0 0 / 50%);
-    display: none;
     inset: 0;
     position: fixed;
     z-index: 50;
-  }
-
-  :host([open]) .overlay {
-    display: block;
   }
 
   .panel {
@@ -116,12 +109,13 @@ export function AppSheet({ open = false, title = "" }: { open?: boolean; title?:
       <style>{styles}</style>
       <div
         class="overlay"
+        style={open ? "display:block" : "display:none"}
         onClick={(event: Event) => {
-          if (event.target === event.currentTarget) closeSheet(this);
+          if (event.target === event.currentTarget) requestClose(this);
         }}
       >
         <div class="panel" role="dialog" aria-modal="true">
-          <button class="close" type="button" aria-label="Close" onClick={() => closeSheet(this)}>
+          <button class="close" type="button" aria-label="Close" onClick={() => requestClose(this)}>
             <span class="icon">
               <IconX />
             </span>

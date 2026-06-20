@@ -273,50 +273,57 @@ test('app-progress reflects the clamped value', () => {
   assert.equal(over.shadowRoot.querySelector('.indicator').style.width, '100%');
 });
 
-test('app-checkbox toggles and dispatches change', () => {
+// The interactive controls are fully controlled: a click only dispatches the
+// proposed next state, and the rendered state re-syncs when the prop changes.
+test('app-checkbox is controlled: dispatches intent, renders from prop', () => {
   const el = mount('app-checkbox');
   const changed = lastEvent(el, 'change');
   const box = el.shadowRoot.querySelector('button[role="checkbox"]');
   assert.equal(box.getAttribute('aria-checked'), 'false');
   box.click();
-  assert.equal(box.getAttribute('aria-checked'), 'true');
+  // No self-mutation: state still reflects the (unchanged) prop.
   assert.equal(changed.detail.checked, true);
-  assert.ok(el.hasAttribute('checked'));
+  assert.equal(el.shadowRoot.querySelector('button[role="checkbox"]').getAttribute('aria-checked'), 'false');
+  // Parent applies the change; the box re-syncs.
+  el.checked = true;
+  assert.equal(el.shadowRoot.querySelector('button[role="checkbox"]').getAttribute('aria-checked'), 'true');
 });
 
 test('app-checkbox honours disabled', () => {
   const el = mount('app-checkbox', { disabled: true });
-  el.setAttribute('disabled', '');
   const changed = lastEvent(el, 'change');
   el.shadowRoot.querySelector('button[role="checkbox"]').click();
   assert.equal(changed.count, 0);
 });
 
-test('app-switch toggles and dispatches change', () => {
+test('app-switch is controlled: dispatches intent, renders from prop', () => {
   const el = mount('app-switch');
   const changed = lastEvent(el, 'change');
-  const sw = el.shadowRoot.querySelector('button[role="switch"]');
-  sw.click();
-  assert.equal(sw.getAttribute('aria-checked'), 'true');
+  el.shadowRoot.querySelector('button[role="switch"]').click();
   assert.equal(changed.detail.checked, true);
+  assert.equal(el.shadowRoot.querySelector('button[role="switch"]').getAttribute('aria-checked'), 'false');
+  el.checked = true;
+  assert.equal(el.shadowRoot.querySelector('button[role="switch"]').getAttribute('aria-checked'), 'true');
 });
 
-test('app-toggle reports pressed state', () => {
+test('app-toggle is controlled: dispatches intent, renders from prop', () => {
   const el = mount('app-toggle');
   const pressed = lastEvent(el, 'pressed-change');
-  const button = el.shadowRoot.querySelector('button');
-  button.click();
-  assert.equal(button.getAttribute('aria-pressed'), 'true');
+  el.shadowRoot.querySelector('button').click();
   assert.equal(pressed.detail.pressed, true);
+  assert.equal(el.shadowRoot.querySelector('button').getAttribute('aria-pressed'), 'false');
+  el.pressed = true;
+  assert.equal(el.shadowRoot.querySelector('button').getAttribute('aria-pressed'), 'true');
 });
 
-test('app-radio-group selects an option', () => {
+test('app-radio-group is controlled: dispatches intent, renders from prop', () => {
   const el = mount('app-radio-group', { options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }] });
   assert.match(el.shadowRoot.innerHTML, /Alpha/);
   const changed = lastEvent(el, 'value-change');
   el.shadowRoot.querySelector('[data-value="b"]').click();
   assert.equal(changed.detail.value, 'b');
-  assert.equal(el.getAttribute('value'), 'b');
+  assert.equal(el.shadowRoot.querySelector('[data-value="b"]').getAttribute('aria-checked'), 'false');
+  el.value = 'b';
   assert.equal(el.shadowRoot.querySelector('[data-value="b"]').getAttribute('aria-checked'), 'true');
 });
 
@@ -329,37 +336,47 @@ test('app-slider dispatches numeric value on input', () => {
   assert.equal(changed.detail.value, 65);
 });
 
-test('app-tabs switches the active tab', () => {
+test('app-tabs is controlled: dispatches intent, renders from prop', () => {
   const el = mount('app-tabs', { tabs: [{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }] });
-  const triggers = el.shadowRoot.querySelectorAll('.trigger');
-  assert.equal(triggers[0].getAttribute('aria-selected'), 'true');
+  // Falls back to the first tab when no value is supplied.
+  assert.equal(el.shadowRoot.querySelector('[data-value="one"]').getAttribute('aria-selected'), 'true');
   const changed = lastEvent(el, 'tab-change');
   el.shadowRoot.querySelector('[data-value="two"]').click();
   assert.equal(changed.detail.value, 'two');
+  assert.equal(el.shadowRoot.querySelector('[data-value="two"]').getAttribute('aria-selected'), 'false');
+  el.value = 'two';
   assert.equal(el.shadowRoot.querySelector('[data-value="two"]').getAttribute('aria-selected'), 'true');
 });
 
-test('app-accordion expands and collapses items', () => {
+test('app-accordion is controlled: dispatches intent, renders from prop', () => {
   const el = mount('app-accordion', { items: [{ value: 'a', title: 'First', content: 'Body A' }] });
-  const trigger = el.shadowRoot.querySelector('.trigger');
-  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  const changed = lastEvent(el, 'value-change');
   assert.doesNotMatch(el.shadowRoot.innerHTML, /Body A/);
-  trigger.click();
-  assert.match(el.shadowRoot.innerHTML, /Body A/);
   el.shadowRoot.querySelector('.trigger').click();
+  assert.deepEqual(changed.detail.value, ['a']);
   assert.doesNotMatch(el.shadowRoot.innerHTML, /Body A/);
+  el.value = ['a'];
+  assert.match(el.shadowRoot.innerHTML, /Body A/);
+  // Toggling an open item proposes an empty set.
+  el.shadowRoot.querySelector('.trigger').click();
+  assert.deepEqual(changed.detail.value, []);
 });
 
-test('app-select opens and picks an option', () => {
+test('app-select is controlled: opens internally, value driven by prop', () => {
   const el = mount('app-select', { options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }], placeholder: 'Pick' });
   assert.match(el.shadowRoot.innerHTML, /Pick/);
+  // Open/close of the dropdown is internal UI state.
   el.shadowRoot.querySelector('.trigger').click();
   assert.ok(el.hasAttribute('open'));
   const changed = lastEvent(el, 'value-change');
   el.shadowRoot.querySelector('[data-value="b"]').click();
   assert.equal(changed.detail.value, 'b');
-  assert.equal(el.getAttribute('value'), 'b');
   assert.ok(!el.hasAttribute('open'));
+  // Value only shows once the prop is applied.
+  assert.match(el.shadowRoot.innerHTML, /Pick/);
+  el.value = 'b';
+  assert.match(el.shadowRoot.innerHTML, /Beta/);
+  assert.equal(el.shadowRoot.querySelector('[data-value="b"]').getAttribute('aria-selected'), 'true');
 });
 
 test('app-breadcrumb renders links and a current page', () => {
@@ -369,32 +386,39 @@ test('app-breadcrumb renders links and a current page', () => {
   assert.match(el.shadowRoot.innerHTML, /aria-current="page"[^>]*>Now/);
 });
 
-test('app-pagination disables edges and dispatches page-change', () => {
+test('app-pagination is controlled: disables edges and dispatches page-change', () => {
   const el = mount('app-pagination', { total: '5', page: '1' });
   assert.ok(el.shadowRoot.querySelector('.prev').disabled);
   const changed = lastEvent(el, 'page-change');
   el.shadowRoot.querySelector('[data-page="3"]').click();
   assert.equal(changed.detail.page, 3);
-  assert.equal(el.getAttribute('page'), '3');
+  // No self-mutation; the active page only moves when the prop changes.
+  assert.equal(el.shadowRoot.querySelector('[aria-current="page"]').textContent, '1');
+  el.page = '3';
+  assert.equal(el.shadowRoot.querySelector('[aria-current="page"]').textContent, '3');
 });
 
-test('app-dialog closes via the close button', () => {
+test('app-dialog is controlled: visibility from prop, close dispatches only', () => {
   const el = mount('app-dialog', { title: 'Title' });
-  el.setAttribute('open', '');
+  assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*none/);
+  el.open = true;
+  assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*flex/);
   const closed = lastEvent(el, 'close');
   el.shadowRoot.querySelector('.close').click();
   assert.equal(closed.count, 1);
-  assert.ok(!el.hasAttribute('open'));
+  // Still open until the parent applies the close.
+  assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*flex/);
+  el.open = false;
+  assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*none/);
 });
 
-test('app-alert-dialog reports confirm and cancel', () => {
-  const el = mount('app-alert-dialog');
-  el.setAttribute('open', '');
+test('app-alert-dialog is controlled: reports confirm and cancel', () => {
+  const el = mount('app-alert-dialog', { open: true });
   const answered = lastEvent(el, 'response');
   el.shadowRoot.querySelector('.action').click();
   assert.equal(answered.detail.confirmed, true);
-  assert.ok(!el.hasAttribute('open'));
-  el.setAttribute('open', '');
+  // No self-close; the dialog stays until the parent closes it.
+  assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*flex/);
   el.shadowRoot.querySelector('.cancel').click();
   assert.equal(answered.detail.confirmed, false);
 });
