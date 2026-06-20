@@ -19,6 +19,11 @@ use crate::{QuizQuestion, Tool, ToolRegistry};
 
 pub const DEFAULT_MODEL: &str = "default";
 
+/// Registry key reserved for the text embedding model. When a model is
+/// registered under this name (pointing at an OpenAI- or Ollama-compatible
+/// provider), features like the memory palace use it to embed text.
+pub const EMBEDDING_MODEL: &str = "embeddings";
+
 pub struct BaseAgent(Rc<RefCell<BaseAgentInner>>);
 
 #[derive(Debug, Error)]
@@ -116,6 +121,16 @@ impl ModelRegistry {
         } else {
             panic!("ModelRegistry must always have a 'default' model");
         }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&ModelRegEntry> {
+        self.models.get(name)
+    }
+
+    /// The model designated for text embeddings, if one is registered under the
+    /// [`EMBEDDING_MODEL`] key.
+    pub fn embedding(&self) -> Option<&ModelRegEntry> {
+        self.models.get(EMBEDDING_MODEL)
     }
 }
 

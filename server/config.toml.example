@@ -39,6 +39,14 @@ slug = "llama3.2"
 provider = "ollama"
 # Omit reasoning_effort (or the legacy `thinking` flag) to disable reasoning.
 
+# A model registered under the reserved name `embeddings` is used to embed text
+# for the agent's memory palace, enabling semantic recall. It must point at an
+# OpenAI- or Ollama-compatible provider. Without it, memory recall falls back to
+# keyword search.
+[models.embeddings]
+slug = "text-embedding-3-small"
+provider = "openai"
+
 [server]
 db_path = "/tmp/server.db"
 listen_addr = "0.0.0.0:3000"

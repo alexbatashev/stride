@@ -43,7 +43,10 @@ impl API {
         match self {
             API::OpenAI(api) => api.get_embeddings(token, input, model).await,
             API::Ollama(api) => api.get_embeddings(token, input, model).await,
-            _ => unimplemented!(),
+            _ => Err(Error::InvalidRequest(
+                "embeddings are only supported by OpenAI- and Ollama-compatible providers"
+                    .to_owned(),
+            )),
         }
     }
 

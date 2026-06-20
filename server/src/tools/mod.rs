@@ -1,5 +1,6 @@
 pub mod attach_image;
 pub mod automations;
+pub mod memory;
 pub mod personality;
 pub mod python;
 pub mod shell;
