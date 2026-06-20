@@ -974,6 +974,15 @@ async fn ensure_runner(
         if let Some(tool) = &python {
             shell = shell.with_python(tool.service());
         }
+        let python_cfg = tools
+            .python
+            .as_ref()
+            .map(python_tool_config)
+            .unwrap_or_default();
+        shell = shell.with_typst(
+            Some(python_cfg.cache_dir.join("typst-packages")),
+            matches!(python_cfg.network, execenv::NetworkAccess::Allowed),
+        );
         agent.register_tool(ShellTool::new(shell));
     }
 
