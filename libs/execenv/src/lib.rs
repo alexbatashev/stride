@@ -19,6 +19,19 @@ mod bashkit_cmd;
 #[cfg(feature = "bashkit")]
 pub use bashkit_cmd::PythonBuiltin;
 
+#[cfg(feature = "typst")]
+pub mod typst_doc;
+#[cfg(feature = "typst")]
+pub use typst_doc::{CompileRequest, TypstFormat, compile as typst_compile};
+
+#[cfg(all(feature = "bashkit", feature = "typst"))]
+mod typst_cmd;
+#[cfg(all(feature = "bashkit", feature = "typst"))]
+pub use typst_cmd::TypstBuiltin;
+
+#[cfg(all(feature = "eryx", feature = "typst"))]
+mod typst_bridge;
+
 // Pure-Python wheels (py3-none-any). They carry no native extensions, so they
 // import on any CPython-WASI minor version and need no compilation.
 const BS4_URL: &str = "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl";
@@ -1032,6 +1045,7 @@ mod eryx_backend {
                 limits: self.config.limits.clone(),
                 volumes: self.fs.volumes(),
                 network: self.config.network.clone(),
+                package_cache: self.config.cache_dir.join("typst-packages"),
             })
         }
     }
@@ -1295,6 +1309,10 @@ mod eryx_backend {
         limits: ExecutionLimits,
         volumes: Vec<eryx::VolumeMount>,
         network: NetworkAccess,
+        /// Cache directory for downloaded Typst packages. Used by the always-on
+        /// `typst` module; unused when the `typst` feature is off.
+        #[cfg_attr(not(feature = "typst"), allow(dead_code))]
+        package_cache: PathBuf,
     }
 
     fn worker_loop(rx: Arc<Mutex<mpsc::Receiver<ExecutionJob>>>) {
@@ -1334,11 +1352,38 @@ mod eryx_backend {
         }
     }
 
-    async fn execute_request(request: ExecutionRequest) -> anyhow::Result<ExecutionOutput> {
-        if matches!(request.network, NetworkAccess::Allowed) {
-            return execute_request_with_network(request).await;
+    /// The always-on built-in Python modules (currently just `typst`) attached
+    /// to every execution: their host callbacks plus the preamble exposing them.
+    /// Empty when the `typst` feature is disabled.
+    fn builtin_modules(request: &ExecutionRequest) -> (Vec<Arc<dyn eryx::Callback>>, String) {
+        #[cfg(feature = "typst")]
+        {
+            let allow_network = matches!(request.network, NetworkAccess::Allowed);
+            let callback =
+                crate::typst_bridge::callback(Some(request.package_cache.clone()), allow_network);
+            (vec![callback], crate::typst_bridge::PREAMBLE.to_string())
         }
+        #[cfg(not(feature = "typst"))]
+        {
+            let _ = request;
+            (Vec::new(), String::new())
+        }
+    }
 
+    async fn execute_request(request: ExecutionRequest) -> anyhow::Result<ExecutionOutput> {
+        let (callbacks, preamble) = builtin_modules(&request);
+        if matches!(request.network, NetworkAccess::Allowed) {
+            return run_networked(request, callbacks, preamble).await;
+        }
+        if callbacks.is_empty() {
+            return run_plain(request).await;
+        }
+        run_local(request, callbacks, preamble).await
+    }
+
+    /// Fast path with no host callbacks: run the script directly on the cached,
+    /// preinitialized interpreter.
+    async fn run_plain(request: ExecutionRequest) -> anyhow::Result<ExecutionOutput> {
         // Keep the scratch dir alive for the whole execution.
         let scratch = ScratchTmp::new()?;
         let mut volumes = request.volumes;
@@ -1385,8 +1430,14 @@ mod eryx_backend {
         }
     }
 
-    async fn execute_request_with_network(
+    /// Network-enabled path: a fresh Sandbox is required to wire the network
+    /// handler, so host callbacks and the preamble are attached through a
+    /// `RuntimeLibrary`. With no callbacks and an empty preamble this is a plain
+    /// networked run.
+    async fn run_networked(
         request: ExecutionRequest,
+        callbacks: Vec<Arc<dyn eryx::Callback>>,
+        preamble: String,
     ) -> anyhow::Result<ExecutionOutput> {
         let scratch = ScratchTmp::new()?;
         let mut volumes = request.volumes;
@@ -1400,6 +1451,12 @@ mod eryx_backend {
         .with_resource_limits(to_eryx_limits(&request.limits))
         .with_volumes(volumes)
         .with_network(eryx::NetConfig::permissive());
+        if !callbacks.is_empty() || !preamble.is_empty() {
+            let library = eryx::RuntimeLibrary::new()
+                .with_callbacks(callbacks.into_iter().map(boxed_callback).collect())
+                .with_preamble(preamble);
+            builder = builder.with_library(library);
+        }
         if let Some(site_packages) = request.runtime.site_packages.as_ref() {
             builder = builder.with_site_packages(site_packages);
         }
@@ -1429,17 +1486,33 @@ mod eryx_backend {
         tools: Vec<PythonToolSpec>,
         calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
     ) -> anyhow::Result<ExecutionOutput> {
-        if matches!(request.network, NetworkAccess::Allowed) {
-            return execute_request_with_tools_networked(request, tools, calls).await;
+        let (mut callbacks, mut preamble) = builtin_modules(&request);
+        let (tool_callbacks, tool_preamble) = build_tool_callbacks(&tools, calls);
+        callbacks.extend(tool_callbacks);
+        if !tool_preamble.is_empty() {
+            if !preamble.is_empty() {
+                preamble.push('\n');
+            }
+            preamble.push_str(&tool_preamble);
         }
 
-        // Fast path: reuse the cached, preinitialized interpreter and attach the
-        // tool callbacks directly, dispatching callback requests on a side task.
+        if matches!(request.network, NetworkAccess::Allowed) {
+            return run_networked(request, callbacks, preamble).await;
+        }
+        run_local(request, callbacks, preamble).await
+    }
+
+    /// Fast path that attaches host callbacks to the cached interpreter and
+    /// services them on a side task.
+    async fn run_local(
+        request: ExecutionRequest,
+        callbacks: Vec<Arc<dyn eryx::Callback>>,
+        preamble: String,
+    ) -> anyhow::Result<ExecutionOutput> {
         let scratch = ScratchTmp::new()?;
         let mut volumes = request.volumes;
         volumes.push(scratch.volume());
 
-        let (callbacks, preamble) = build_tool_callbacks(&tools, calls);
         let dispatch: HashMap<String, Arc<dyn eryx::Callback>> = callbacks
             .iter()
             .map(|cb| (cb.name().to_string(), cb.clone()))
@@ -1471,46 +1544,6 @@ mod eryx_backend {
         handler.abort();
         drop(scratch);
         let result = result?;
-        Ok(ExecutionOutput {
-            stdout: result.stdout,
-            stderr: result.stderr,
-        })
-    }
-
-    /// Network-enabled variant: a fresh Sandbox is required to wire the network
-    /// handler, so tools are attached through a `RuntimeLibrary`.
-    async fn execute_request_with_tools_networked(
-        request: ExecutionRequest,
-        tools: Vec<PythonToolSpec>,
-        calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
-    ) -> anyhow::Result<ExecutionOutput> {
-        let scratch = ScratchTmp::new()?;
-        let mut volumes = request.volumes;
-        volumes.push(scratch.volume());
-
-        let (callbacks, preamble) = build_tool_callbacks(&tools, calls);
-        let library = eryx::RuntimeLibrary::new()
-            .with_callbacks(callbacks.into_iter().map(boxed_callback).collect())
-            .with_preamble(preamble);
-
-        let mut builder = unsafe {
-            eryx::Sandbox::builder()
-                .with_precompiled_file(&request.runtime.runtime)
-                .with_python_stdlib(&request.runtime.stdlib)
-        }
-        .with_resource_limits(to_eryx_limits(&request.limits))
-        .with_volumes(volumes)
-        .with_library(library)
-        .with_network(eryx::NetConfig::permissive());
-        if let Some(site_packages) = request.runtime.site_packages.as_ref() {
-            builder = builder.with_site_packages(site_packages);
-        }
-        let sandbox = builder.build().context("build eryx sandbox")?;
-        let result = sandbox
-            .execute(&request.script)
-            .await
-            .context("execute eryx script")?;
-        drop(scratch);
         Ok(ExecutionOutput {
             stdout: result.stdout,
             stderr: result.stderr,
@@ -2043,5 +2076,62 @@ mod tests {
         assert_eq!(result["stdout"].as_str().unwrap().trim(), "10 3 4");
         let png = workspace.path().join("workspace").join("sample_plot.png");
         assert!(png.exists(), "savefig did not write to /~workspace");
+    }
+
+    #[cfg(all(feature = "eryx", feature = "typst"))]
+    #[tokio::test]
+    #[ignore = "downloads the CPython WASI stdlib and precompiles the runtime"]
+    async fn eryx_typst_module_compiles_pdf() {
+        let workspace = tempfile::tempdir().unwrap();
+        let ws_dir = workspace.path().join("workspace");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::write(ws_dir.join("doc.typ"), b"= Title\nHello from Typst").unwrap();
+
+        let cache_dir = std::env::temp_dir().join("friday-execenv-typst-test-cache");
+        tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+        let fs = Arc::new(
+            DirectOsFileSystem::new(ws_dir.clone())
+                .unwrap()
+                .guest_dir("/~workspace"),
+        );
+        let config = PythonToolConfig {
+            cache_dir,
+            backend: BackendKind::Eryx,
+            threads: 1,
+            preinit: true,
+            limits: ExecutionLimits::default(),
+            network: NetworkAccess::Blocked,
+        };
+        prepare_eryx_runtime(config.clone()).await.unwrap();
+        let tool = PythonTool::new(config, fs).await.unwrap();
+
+        // Exercises the in-sandbox `typst` module: gather the workspace project,
+        // ship it to the host compiler over the callback bridge, decode the
+        // returned PDF bytes and write them back to the mounted workspace.
+        let script = "import typst\n\
+             await typst.compile('/~workspace/doc.typ', output='/~workspace/doc.pdf')\n\
+             data = await typst.compile('/~workspace/doc.typ')\n\
+             print(len(data), data[:5].decode('latin1'))";
+        let result = tool
+            .execute(
+                Arc::new(AgentConfig {
+                    model_registry: friday_agent::ModelRegistry::new(),
+                    max_iterations: 1,
+                }),
+                json!({ "script": script }),
+            )
+            .await;
+
+        assert_eq!(result["success"], true, "{result}");
+        assert!(
+            result["stdout"].as_str().unwrap().contains("%PDF-"),
+            "{result}"
+        );
+        let pdf = ws_dir.join("doc.pdf");
+        assert!(
+            pdf.exists(),
+            "typst.compile(output=...) did not write the pdf"
+        );
+        assert_eq!(&std::fs::read(pdf).unwrap()[..5], b"%PDF-");
     }
 }

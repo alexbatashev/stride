@@ -13,7 +13,7 @@ axum = { version = "0.8.9", features = ["ws", "multipart"] }
 base64 = "0.22"
 bytes = "1.11.1"
 clap = { version = "4", features = ["derive"] }
-execenv = { path = "../libs/execenv", features = ["eryx", "bashkit"] }
+execenv = { path = "../libs/execenv", features = ["eryx", "bashkit", "typst"] }
 futures = "0.3.32"
 hex = "0.4"
 hmac = "0.12"

@@ -1,5 +1,6 @@
 mod vfs_backend;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -23,16 +24,30 @@ pub struct EmulatedShellBackend {
     /// bashkit's built-in (Monty) one. Shared with the agent's `python` tool so
     /// scripts see the same runtime and `/~workspace` sync.
     python: Option<Arc<dyn execenv::ExecutionService>>,
+    /// When set, exposes a `typst` command. The tuple is the Typst package cache
+    /// directory and whether package downloads may use the network.
+    typst: Option<(Option<PathBuf>, bool)>,
 }
 
 impl EmulatedShellBackend {
     pub fn new(fs: MountedVfs) -> Self {
-        Self { fs, python: None }
+        Self {
+            fs,
+            python: None,
+            typst: None,
+        }
     }
 
     /// Expose `python`/`python3` in the shell, backed by the given interpreter.
     pub fn with_python(mut self, service: Arc<dyn execenv::ExecutionService>) -> Self {
         self.python = Some(service);
+        self
+    }
+
+    /// Expose a `typst` command that compiles workspace documents. `package_cache`
+    /// caches downloaded `@preview` packages; `allow_network` gates downloads.
+    pub fn with_typst(mut self, package_cache: Option<PathBuf>, allow_network: bool) -> Self {
+        self.typst = Some((package_cache, allow_network));
         self
     }
 }
@@ -58,6 +73,15 @@ impl ShellBackend for EmulatedShellBackend {
                     "python3",
                     Box::new(execenv::PythonBuiltin::new(service.clone())),
                 );
+        }
+        if let Some((package_cache, allow_network)) = &self.typst {
+            builder = builder.builtin(
+                "typst",
+                Box::new(execenv::TypstBuiltin::new(
+                    package_cache.clone(),
+                    *allow_network,
+                )),
+            );
         }
         let mut bash = builder.build();
         match bash.exec(command).await {

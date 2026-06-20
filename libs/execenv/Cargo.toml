@@ -7,6 +7,17 @@ edition = "2024"
 default = []
 eryx = ["dep:eryx", "dep:tempfile"]
 bashkit = ["dep:bashkit"]
+typst = [
+    "dep:typst",
+    "dep:typst-layout",
+    "dep:typst-pdf",
+    "dep:typst-svg",
+    "dep:typst-render",
+    "dep:typst-library",
+    "dep:typst-kit",
+    "dep:base64",
+    "dep:comemo",
+]
 
 [dependencies]
 anyhow = "1.0.102"
@@ -27,6 +38,18 @@ tempfile = { version = "3", optional = true }
 tokio = { version = "1.52.3", features = ["fs", "macros", "sync", "time"] }
 tracing = "0.1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Typst document compiler (feature `typst`). Pulls a large native dependency
+# tree, so it is opt-in and gated behind the feature.
+typst = { version = "0.15.0", optional = true }
+typst-layout = { version = "0.15.0", optional = true }
+typst-pdf = { version = "0.15.0", optional = true }
+typst-svg = { version = "0.15.0", optional = true }
+typst-render = { version = "0.15.0", optional = true }
+typst-library = { version = "0.15.0", optional = true }
+typst-kit = { version = "0.15.0", optional = true, default-features = false, features = ["embedded-fonts", "universe-packages", "system-packages", "system-downloader"] }
+comemo = { version = "0.4", optional = true }
+base64 = { version = "0.22", optional = true }
 
 [dependencies.eryx]
 version = "0.5.0"
