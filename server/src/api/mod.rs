@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod automations;
+pub mod email;
 pub mod files;
 pub mod images;
 pub mod projects;

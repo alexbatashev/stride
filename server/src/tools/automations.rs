@@ -71,6 +71,9 @@ impl Tool for ScheduleAutomationTool {
             "cron" => TriggerKind::Cron,
             "webhook" => TriggerKind::Webhook,
             "manual" => TriggerKind::Manual,
+            "email" => {
+                return json!({"error": "email automations must be configured from the Automations page"});
+            }
             other => return json!({"success": false, "error": format!("invalid trigger: {other}")}),
         };
         let notify = match params.notify.as_deref().unwrap_or("none") {

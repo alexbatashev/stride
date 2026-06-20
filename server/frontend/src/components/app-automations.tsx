@@ -9,6 +9,7 @@ import {
   runAutomation,
   setAutomationEnabled,
 } from "../api/automations.js";
+import { listEmailAccounts, type EmailAccount } from "../api/settings.js";
 
 type RunView = {
   id: string;
@@ -43,6 +44,8 @@ type AutomationsHost = HTMLElement & {
   webhookOpen: boolean;
   webhookUrl: string;
   webhookSecret: string;
+  emailAccounts: EmailAccount[];
+  createTrigger: string;
 };
 
 function escapeHtml(value: string): string {
@@ -66,8 +69,13 @@ function titleCase(value: string): string {
   return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function describeTrigger(item: Automation): string {
+function describeTrigger(item: Automation, accounts: EmailAccount[]): string {
   if (item.trigger_kind === "cron") return item.schedule || "Cron schedule";
+  if (item.trigger_kind === "email") {
+    const accountId = String(item.trigger_config?.account_id ?? "");
+    const account = accounts.find((candidate) => candidate.id === accountId);
+    return account ? `New mail in ${account.name}` : "New incoming email";
+  }
   if (item.trigger_kind === "webhook") return "Webhook";
   if (item.trigger_kind === "vfs_change") return "File change";
   return "Manual";
@@ -77,13 +85,13 @@ function describeLastRun(item: Automation): string {
   return item.last_run ? `Last run ${formatDate(item.last_run)}` : "Never run";
 }
 
-function toAutomationItem(item: Automation): AutomationItem {
+function toAutomationItem(item: Automation, accounts: EmailAccount[]): AutomationItem {
   return {
     ...item,
     kindLabel: titleCase(item.kind),
     nameLabel: escapeHtml(item.name),
     notifyLabel: item.notify_kind !== "none" ? `• Notify ${titleCase(item.notify_kind)}` : "",
-    triggerLabel: describeTrigger(item),
+    triggerLabel: describeTrigger(item, accounts),
     lastRunLabel: describeLastRun(item),
   };
 }
@@ -92,7 +100,7 @@ async function load(host: AutomationsHost): Promise<void> {
   host.loading = true;
   host.error = "";
   try {
-    host.items = (await listAutomations()).map(toAutomationItem);
+    host.items = (await listAutomations()).map((item) => toAutomationItem(item, host.emailAccounts));
     if (!host.selectedId && host.items.length > 0) {
       await selectAutomation(host, host.items[0]);
     } else if (host.selectedId && !host.items.some((item) => item.id === host.selectedId)) {
@@ -586,6 +594,8 @@ export function AppAutomations({
   webhookOpen = false,
   webhookUrl = "",
   webhookSecret = "",
+  emailAccounts = [],
+  createTrigger = "cron",
 }: {
   items?: AutomationItem[];
   loading?: boolean;
@@ -599,9 +609,14 @@ export function AppAutomations({
   webhookOpen?: boolean;
   webhookUrl?: string;
   webhookSecret?: string;
+  emailAccounts?: EmailAccount[];
+  createTrigger?: string;
 }): Component {
   onMount(() => {
-    void load(this);
+    void listEmailAccounts()
+      .then((accounts) => { this.emailAccounts = accounts; })
+      .catch(() => { this.emailAccounts = []; })
+      .then(() => load(this));
   });
 
   const activeCount = items.filter((item) => item.enabled).length;
@@ -626,6 +641,7 @@ export function AppAutomations({
           if (!target) return;
           switch (target.dataset.action) {
             case "open-create":
+              this.createTrigger = "cron";
               this.creating = true;
               return;
             case "close-create":
@@ -663,6 +679,10 @@ export function AppAutomations({
               break;
           }
         }}
+        onChange={(event: Event) => {
+          const target = event.target as HTMLSelectElement;
+          if (target.name === "trigger") this.createTrigger = target.value;
+        }}
         onSubmit={(event: Event) => {
           event.preventDefault();
           const data = new FormData(event.target as HTMLFormElement);
@@ -676,6 +696,8 @@ export function AppAutomations({
                 ? "manual"
                 : trigger === "vfs_change"
                   ? "vfs_change"
+                  : trigger === "email"
+                    ? "email"
                   : "cron";
           void createAutomation({
             name: String(data.get("name") ?? "").trim(),
@@ -687,6 +709,8 @@ export function AppAutomations({
             notify_kind: notify === "telegram" ? "telegram" : "none",
             ...(triggerKind === "vfs_change"
               ? { trigger_config: { path: String(data.get("watch_path") ?? "").trim() } }
+              : triggerKind === "email"
+                ? { trigger_config: { account_id: String(data.get("email_account") ?? "") } }
               : {}),
           })
             .then(async (created) => {
@@ -817,9 +841,10 @@ export function AppAutomations({
               </div>
               <div class="form-grid">
                 <label>Name<input name="name" required placeholder="Daily report" /></label>
-                <label>Trigger<select name="trigger"><option value="cron">Cron schedule</option><option value="webhook">Webhook (HTTP)</option><option value="vfs_change">File change</option><option value="manual">Manual only</option></select></label>
-                <label>Schedule (cron)<input name="schedule" placeholder="*/30 * * * *" /><span class="hint">Required for cron automations. Ignored for other triggers.</span></label>
-                <label>Watch path<input name="watch_path" placeholder="reports/ (empty means all files)" /><span class="hint">Used only for file change automations.</span></label>
+                <label>Trigger<select name="trigger"><option value="cron">Cron schedule</option><option value="email">Incoming email</option><option value="webhook">Webhook (HTTP)</option><option value="vfs_change">File change</option><option value="manual">Manual only</option></select></label>
+                {createTrigger === "cron" ? <label>Schedule<input name="schedule" required placeholder="*/30 * * * *" /><span class="hint">Standard five-field cron expression in UTC.</span></label> : <input name="schedule" type="hidden" value="" />}
+                {createTrigger === "email" ? <label>Inbox<select name="email_account" required><option value="">Choose an inbox</option>{emailAccounts.map((account) => <option value={account.id}>{account.name} — {account.email}</option>).join("")}</select><span class="hint">Add IMAP accounts in Settings. Existing mail is ignored when the automation is created.</span></label> : ""}
+                {createTrigger === "vfs_change" ? <label>Watch path<input name="watch_path" placeholder="reports/ (empty means all files)" /><span class="hint">Leave empty to watch all files.</span></label> : ""}
                 <label>Type<select name="kind"><option value="agent">Agent prompt</option><option value="python">Python script</option></select></label>
                 <label>Notify<select name="notify"><option value="none">Store output only</option><option value="telegram">Telegram</option></select></label>
                 <label>Task<textarea name="payload" required placeholder="Describe the task or paste Python code..."></textarea></label>

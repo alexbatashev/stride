@@ -93,7 +93,7 @@ fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
         impl #impl_generics friday_agent::ToolDesc for #struct_name #ty_generics #where_clause {
             fn function_parameters() -> llm::FunctionParameters {
                 let mut properties = std::collections::HashMap::new();
-                let mut required = Vec::new();
+                let mut required: Vec<String> = Vec::new();
 
                 #(#property_inserts)*
                 #(#required_pushes)*

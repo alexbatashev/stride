@@ -3,6 +3,7 @@ mod components;
 mod config;
 mod cron;
 mod db;
+mod email;
 mod notify;
 mod pages;
 pub mod runner;
@@ -21,7 +22,7 @@ use axum::{
     extract::State,
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
 };
 use clap::Parser;
 use friday_agent::{
@@ -87,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
         model_registry: create_model_registry(&config),
         max_iterations: 90,
     });
+    let email_service = email::ImapService::new(db.clone(), &email::encryption_secret(&jwt_secret));
     let mcp_tools = connect_mcp_servers(&config).await;
     let telegram_bot_token = config
         .server
@@ -123,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         model_config.clone(),
         tools.clone(),
         telegram_bot_token.clone(),
+        email_service.clone(),
     );
 
     let public_url = config.public_url();
@@ -136,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
                 vfs.clone(),
                 telegram_bot_token.clone(),
                 public_url,
+                email_service.clone(),
             ),
         )
     } else {
@@ -147,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
                 mcp_tools,
                 telegram_bot_token.clone(),
                 public_url,
+                email_service,
             ),
         )
     };
@@ -214,9 +219,11 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/api/logout", post(api::auth::logout))
         .route("/api/settings/telegram", get(api::telegram::settings))
         .route(
-            "/api/settings/telegram/login",
-            post(api::telegram::login),
+            "/api/settings/email",
+            get(api::email::list).post(api::email::create),
         )
+        .route("/api/settings/email/{id}", delete(api::email::delete))
+        .route("/api/settings/telegram/login", post(api::telegram::login))
         .route(
             "/api/settings/telegram/disconnect",
             post(api::telegram::disconnect),

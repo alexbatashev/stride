@@ -15,7 +15,11 @@ use crate::{
     ServerState,
     api::auth::{self, AuthError},
     cron::Cron,
-    db::{AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_runs, automations},
+    db::{
+        AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_runs, automations,
+        email_accounts,
+    },
+    email::{ImapService, encryption_secret},
     scheduler::{FireRequest, TriggerSource},
     triggers::{vfs_change::VfsChangeTrigger, webhook},
 };
@@ -33,6 +37,7 @@ pub struct AutomationResponse {
     pub created_at: i64,
     pub last_run: Option<i64>,
     pub trigger_kind: String,
+    pub trigger_config: Option<JsonValue>,
     pub notify_kind: String,
     /// Returned only when a webhook automation is created, never on list.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,6 +129,7 @@ fn status_to_str(status: RunStatus) -> &'static str {
 fn trigger_from_str(kind: &str) -> Option<TriggerKind> {
     match kind {
         "cron" => Some(TriggerKind::Cron),
+        "email" => Some(TriggerKind::Email),
         "webhook" => Some(TriggerKind::Webhook),
         "manual" => Some(TriggerKind::Manual),
         "vfs_change" => Some(TriggerKind::VfsChange),
@@ -165,6 +171,10 @@ pub async fn list(
                 trigger_kind: TriggerKind::from_opt(r.trigger_kind.as_deref())
                     .as_str()
                     .to_string(),
+                trigger_config: r
+                    .trigger_config
+                    .as_deref()
+                    .and_then(|config| serde_json::from_str(config).ok()),
                 notify_kind: NotifyKind::from_opt(r.notify_kind.as_deref())
                     .as_str()
                     .to_string(),
@@ -193,18 +203,31 @@ pub async fn create(
     }
 
     // Cron is the only trigger that needs a valid schedule; the rest ignore it.
-    let trigger_config = match trigger_kind {
+    let (trigger_config, trigger_cursor) = match trigger_kind {
         TriggerKind::Cron => {
             if Cron::parse(&schedule).is_err() {
                 return Err(AutomationApiError::BadRequest);
             }
-            None
+            (None, None)
         }
-        TriggerKind::VfsChange => {
-            Some(resolve_vfs_config(&state, owner, request.trigger_config.as_ref()).await?)
-        }
+        TriggerKind::VfsChange => (
+            Some(resolve_vfs_config(&state, owner, request.trigger_config.as_ref()).await?),
+            None,
+        ),
         TriggerKind::Webhook | TriggerKind::Manual => {
-            request.trigger_config.as_ref().map(|c| c.to_string())
+            (request.trigger_config.as_ref().map(|c| c.to_string()), None)
+        }
+        TriggerKind::Email => {
+            let account_id =
+                resolve_email_account(&state, owner, request.trigger_config.as_ref()).await?;
+            let cursor = ImapService::new(state.db.clone(), &encryption_secret(&state.jwt_secret))
+                .current_inbox_uid(owner, account_id)
+                .await
+                .map_err(|_| AutomationApiError::BadRequest)?;
+            (
+                Some(serde_json::json!({"account_id": account_id}).to_string()),
+                Some(cursor.to_string()),
+            )
         }
     };
 
@@ -218,7 +241,7 @@ pub async fn create(
     let enabled = request.enabled.unwrap_or(true);
     let created_at = now();
     let last_run = match trigger_kind {
-        TriggerKind::VfsChange => Some(created_at),
+        TriggerKind::VfsChange | TriggerKind::Email => Some(created_at),
         _ => None,
     };
 
@@ -236,6 +259,7 @@ pub async fn create(
         .trigger_config(trigger_config.as_deref())
         .webhook_secret(webhook_secret.as_deref())
         .notify_kind(Some(notify_kind.as_str()))
+        .trigger_cursor(trigger_cursor.as_deref())
         .execute(&state.db)
         .await
         .map_err(|_| AutomationApiError::Internal)?;
@@ -252,6 +276,9 @@ pub async fn create(
             created_at,
             last_run,
             trigger_kind: trigger_kind.as_str().to_string(),
+            trigger_config: trigger_config
+                .as_deref()
+                .and_then(|config| serde_json::from_str(config).ok()),
             notify_kind: notify_kind.as_str().to_string(),
             webhook_secret,
         }),
@@ -291,6 +318,31 @@ async fn resolve_vfs_config(
 
     VfsChangeTrigger::parse(Some(&canonical), owner).map_err(|_| AutomationApiError::BadRequest)?;
     Ok(canonical)
+}
+
+async fn resolve_email_account(
+    state: &ServerState,
+    owner: Uuid,
+    config: Option<&JsonValue>,
+) -> Result<Uuid, AutomationApiError> {
+    let account_id = config
+        .and_then(|config| config.get("account_id"))
+        .and_then(JsonValue::as_str)
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .ok_or(AutomationApiError::BadRequest)?;
+    let rows = email_accounts::select_cols((email_accounts::id,))
+        .where_(
+            email_accounts::id
+                .eq(account_id)
+                .and(email_accounts::owner.eq(owner)),
+        )
+        .all(&state.db)
+        .await
+        .map_err(|_| AutomationApiError::Internal)?;
+    if rows.is_empty() {
+        return Err(AutomationApiError::BadRequest);
+    }
+    Ok(account_id)
 }
 
 pub async fn update(

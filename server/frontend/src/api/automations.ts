@@ -1,7 +1,7 @@
 import { readToken } from "./auth.js";
 
 export type AutomationKind = "python" | "agent";
-export type TriggerKind = "cron" | "webhook" | "manual" | "vfs_change";
+export type TriggerKind = "cron" | "email" | "webhook" | "manual" | "vfs_change";
 export type NotifyKind = "none" | "telegram";
 
 export type Automation = {
@@ -14,6 +14,7 @@ export type Automation = {
 	created_at: number;
 	last_run: number | null;
 	trigger_kind: TriggerKind;
+	trigger_config: Record<string, unknown> | null;
 	notify_kind: NotifyKind;
 	// Returned only when a webhook automation is created.
 	webhook_secret?: string | null;

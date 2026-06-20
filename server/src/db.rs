@@ -37,6 +37,7 @@ pub enum RunStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriggerKind {
     Cron,
+    Email,
     Webhook,
     Manual,
     VfsChange,
@@ -46,6 +47,7 @@ impl TriggerKind {
     pub fn as_str(self) -> &'static str {
         match self {
             TriggerKind::Cron => "cron",
+            TriggerKind::Email => "email",
             TriggerKind::Webhook => "webhook",
             TriggerKind::Manual => "manual",
             TriggerKind::VfsChange => "vfs_change",
@@ -56,6 +58,7 @@ impl TriggerKind {
     pub fn from_opt(value: Option<&str>) -> TriggerKind {
         match value {
             Some("webhook") => TriggerKind::Webhook,
+            Some("email") => TriggerKind::Email,
             Some("manual") => TriggerKind::Manual,
             Some("vfs_change") => TriggerKind::VfsChange,
             _ => TriggerKind::Cron,
@@ -287,6 +290,31 @@ migrations! {
 
             foreign_key(owner -> users.id);
         }
+    }
+
+    email_integration {
+        table email_accounts {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            name: String,
+            email: String,
+            host: String,
+            port: i64,
+            username: String,
+            password_ciphertext: String,
+            inbox_mailbox: String,
+            sent_mailbox: String,
+            drafts_mailbox: String,
+            created_at: i64,
+
+            foreign_key(owner -> users.id);
+        }
+
+        alter table automations {
+            add trigger_cursor: Option<String>;
+        }
+
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_accounts_owner_name ON email_accounts(owner, name)";
     }
 }
 
