@@ -48,7 +48,7 @@ use crate::{
         python::VfsExecFileSystem,
         shell::EmulatedShellBackend,
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
-        telegram::SendTelegramMessageTool,
+        telegram::{SendTelegramFileTool, SendTelegramMessageTool},
     },
     vfs::{MountedVfs, Vfs},
 };
@@ -57,9 +57,13 @@ const WORKER_THREADS: usize = 8;
 const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(300);
 const BASE_SYSTEM_PROMPT: &str = "You are Friday, a semi-autonomous AI agent. Your task is to assist user with any requests.
 
+Be proactive and goal-driven. Resolve user's problems and complete tasks in a meaningful and helpful way.
+
 Core instructions:
 
 1. Use the tools available. Do not assume anything. If there's a tool that can solve the problem - use it.
+   Proactively search for tools if whatever is available in your context is not enough to achieve the task.
+   Check the Skills section below for guidance on the task at hand, and load any matching skill before starting.
 2. You are running in a closed loop. Take time to achieve the goal. Call multiple tools if necessary. If a desired tool is not available right away, try searching for it.
 3. Avoid ambiguity. If in doubt, clarify things with user BEFORE doing anything.
 4. Serve your human well. Abide by Asimov's tree laws of robotics. Do not be cruel or cowardly.
@@ -70,19 +74,42 @@ Core instructions:
 10. Provide the final response in the same language as user promt unless explicitly instructed otherwise.
 ";
 
-fn build_system_prompt(base: &str, personality: Option<&str>, thread_id: Option<Uuid>) -> String {
+fn build_system_prompt(
+    base: &str,
+    personality: Option<&str>,
+    thread_id: Option<Uuid>,
+    telegram: bool,
+    public_url: Option<&str>,
+) -> String {
     let date = current_date();
     let mut prompt = base.to_string();
     prompt.push_str(&format!("\nCurrent date: {date}"));
     if let Some(id) = thread_id {
+        // Telegram only renders absolute links, so prefix download URLs with the server's public
+        // base URL there; elsewhere a relative path keeps working across deployments.
+        let base_url = telegram.then_some(public_url).flatten().unwrap_or("");
         prompt.push_str(&format!(
             "\n\nFile system: list `/` to see the user's files (read-only) alongside `/~workspace`. \
              Only paths under `/~workspace` are writable; everything else is read-only. \
              Write all outputs you create under `/~workspace`. \
-             Workspace files are downloadable via `/api/threads/{id}/files/<path>` \
+             Workspace files are downloadable via `{base_url}/api/threads/{id}/files/<path>` \
              where `<path>` is the workspace-relative path (drop the leading `/~workspace/`). \
-             Example: `/~workspace/report.pdf` → `[report.pdf](/api/threads/{id}/files/report.pdf)`."
+             Example: `/~workspace/report.pdf` → `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
         ));
+    }
+    if telegram {
+        prompt.push_str(
+            "\n\nThis conversation happens over Telegram. The user can send you files; they are \
+             downloaded into `/~workspace/uploads/` and noted in their message. When you produce a \
+             file for the user, deliver it with the `send_telegram_file` tool so it arrives as a \
+             native Telegram attachment.",
+        );
+        if public_url.is_some() {
+            prompt.push_str(
+                " You may also include a download link, but Telegram markdown only renders \
+                 absolute links, so always use the full `https://` download URL shown above.",
+            );
+        }
     }
     if let Some(p) = personality {
         prompt.push_str(&format!("\n\n<user_personality>\n{p}\n</user_personality>"));
@@ -888,11 +915,27 @@ async fn ensure_runner(
     let user_id = thread_owner(&db, thread_id).await?;
     let project_id = thread_project_id(&db, thread_id).await?;
     let personality = load_personality(&db, user_id).await?;
-    let system_prompt = build_system_prompt(
+    // A thread bound to a Telegram chat enables the file-delivery tool and absolute download links.
+    let telegram_chat = if telegram_bot_token.is_some() {
+        crate::tools::telegram::thread_chat(&db, thread_id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let mut system_prompt = build_system_prompt(
         &base_system_prompt,
         personality.as_deref(),
         vfs.as_ref().map(|_| thread_id),
+        telegram_chat.is_some(),
+        public_url.as_deref(),
     );
+    let catalog = crate::tools::skills::skill_catalog(&db, user_id).await;
+    if !catalog.is_empty() {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(&catalog);
+    }
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
@@ -933,7 +976,7 @@ async fn ensure_runner(
         agent.register_searchable_tool(CreateEmailDraftTool { provider });
         agent.allow_tool("create_email_draft");
     }
-    if let Some(bot_token) = telegram_bot_token {
+    if let Some(bot_token) = telegram_bot_token.clone() {
         agent.register_tool(SendTelegramMessageTool {
             db: db.clone(),
             user_id,
@@ -969,6 +1012,19 @@ async fn ensure_runner(
                 public_url: public_url.clone(),
             });
             agent.allow_tool("attach_image");
+        }
+        if let Some(bot_token) = telegram_bot_token
+            .as_ref()
+            .filter(|_| telegram_chat.is_some())
+        {
+            agent.register_tool(SendTelegramFileTool {
+                db: db.clone(),
+                fs: fs.clone(),
+                user_id,
+                thread_id,
+                bot_token: bot_token.clone(),
+            });
+            agent.allow_tool("send_telegram_file");
         }
         let mut shell = EmulatedShellBackend::new(fs);
         if let Some(tool) = &python {
@@ -1934,6 +1990,36 @@ mod tests {
     /// Subscribe to a thread's event topic the way real consumers do.
     fn subscribe_events(thread_id: Uuid) -> pubsub::Subscriber<AgentEvent> {
         pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe()
+    }
+
+    #[test]
+    fn telegram_prompt_uses_absolute_links_and_file_tool() {
+        let id = Uuid::now_v7();
+        let prompt = build_system_prompt(
+            "BASE",
+            None,
+            Some(id),
+            true,
+            Some("https://friday.example.com"),
+        );
+        assert!(prompt.contains("https://friday.example.com/api/threads/"));
+        assert!(prompt.contains("send_telegram_file"));
+        assert!(prompt.contains("happens over Telegram"));
+    }
+
+    #[test]
+    fn web_prompt_keeps_relative_links_without_telegram_section() {
+        let id = Uuid::now_v7();
+        let prompt = build_system_prompt(
+            "BASE",
+            None,
+            Some(id),
+            false,
+            Some("https://friday.example.com"),
+        );
+        assert!(prompt.contains("`/api/threads/"));
+        assert!(!prompt.contains("https://friday.example.com"));
+        assert!(!prompt.contains("send_telegram_file"));
     }
 
     #[test]

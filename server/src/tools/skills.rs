@@ -7,6 +7,8 @@ use minisql::{ConnectionPool, Value};
 use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
+use super::static_skills;
+
 pub struct SearchSkillsTool {
     pub db: ConnectionPool,
     pub user_id: Uuid,
@@ -46,6 +48,49 @@ struct CreateSkillParams {
     content: String,
 }
 
+/// Renders the catalog of available skills (static plus the user's own) as a
+/// system-prompt section, so the model knows what exists without searching for
+/// it. Returns an empty string when there are no skills.
+pub async fn skill_catalog(db: &ConnectionPool, user_id: Uuid) -> String {
+    let mut entries: Vec<(String, String)> = static_skills::static_skills()
+        .iter()
+        .map(|skill| (skill.name.clone(), skill.description.clone()))
+        .collect();
+
+    if let Ok(rows) = db
+        .query_with_params(
+            "SELECT name, description FROM skills WHERE owner IS NULL OR owner = ? ORDER BY name ASC",
+            vec![Value::Uuid(user_id)],
+        )
+        .await
+    {
+        let static_names = static_skills::static_skill_names();
+        for row in rows.rows() {
+            let name = row.get_text("name").unwrap_or_default();
+            if static_names.contains(name) {
+                continue;
+            }
+            let description = row.get_text("description").unwrap_or_default();
+            entries.push((name.to_string(), description.to_string()));
+        }
+    }
+
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut catalog = String::from(
+        "## Skills\n\nThese skills hold instructions for specific kinds of tasks. \
+         When a task matches one, call `load_skill(name)` to load its full instructions before proceeding.\n\n",
+    );
+    for (name, description) in &entries {
+        catalog.push_str(&format!("- {name}: {description}\n"));
+    }
+    catalog
+}
+
 #[async_trait(?Send)]
 impl Tool for SearchSkillsTool {
     fn name(&self) -> &str {
@@ -75,6 +120,18 @@ impl Tool for SearchSkillsTool {
 
         let query = params.query.to_lowercase();
 
+        let mut matches: Vec<JsonValue> = static_skills::static_skills()
+            .iter()
+            .filter(|skill| static_skills::skill_matches_query(skill, &query))
+            .map(|skill| {
+                json!({
+                    "name": skill.name,
+                    "title": skill.title,
+                    "description": skill.description,
+                })
+            })
+            .collect();
+
         let result = self
             .db
             .query_with_params(
@@ -86,26 +143,25 @@ impl Tool for SearchSkillsTool {
         match result {
             Err(e) => json!({"error": e.to_string()}),
             Ok(rows) => {
-                let matches: Vec<JsonValue> = rows
-                    .rows()
-                    .iter()
-                    .filter(|row| {
-                        let name = row.get_text("name").unwrap_or_default().to_lowercase();
-                        let title = row.get_text("title").unwrap_or_default().to_lowercase();
-                        let desc = row
-                            .get_text("description")
-                            .unwrap_or_default()
-                            .to_lowercase();
-                        name.contains(&query) || title.contains(&query) || desc.contains(&query)
-                    })
-                    .map(|row| {
-                        json!({
-                            "name": row.get_text("name").unwrap_or_default(),
-                            "title": row.get_text("title").unwrap_or_default(),
-                            "description": row.get_text("description").unwrap_or_default(),
-                        })
-                    })
-                    .collect();
+                let static_names = static_skills::static_skill_names();
+                for row in rows.rows() {
+                    let name = row.get_text("name").unwrap_or_default();
+                    if static_names.contains(name) {
+                        continue;
+                    }
+                    let title = row.get_text("title").unwrap_or_default();
+                    let desc = row.get_text("description").unwrap_or_default();
+                    if name.to_lowercase().contains(&query)
+                        || title.to_lowercase().contains(&query)
+                        || desc.to_lowercase().contains(&query)
+                    {
+                        matches.push(json!({
+                            "name": name,
+                            "title": title,
+                            "description": desc,
+                        }));
+                    }
+                }
 
                 json!({"found": matches.len(), "skills": matches})
             }
@@ -139,6 +195,10 @@ impl Tool for LoadSkillTool {
             Ok(p) => p,
             Err(e) => return json!({"error": e}),
         };
+
+        if let Some(skill) = static_skills::find_static_skill(&params.name) {
+            return json!({"title": skill.title, "content": skill.content});
+        }
 
         let result = self
             .db
@@ -197,6 +257,13 @@ impl Tool for CreateSkillTool {
             Ok(p) => p,
             Err(e) => return json!({"success": false, "error": e}),
         };
+
+        if static_skills::find_static_skill(&params.name).is_some() {
+            return json!({
+                "success": false,
+                "error": format!("'{}' is a built-in skill and cannot be overwritten", params.name),
+            });
+        }
 
         let id = Uuid::now_v7();
         let result = self
@@ -393,5 +460,135 @@ mod tests {
         let result = search.execute(config, json!({"query": "secret"})).await;
 
         assert_eq!(result["found"], 0);
+    }
+
+    #[tokio::test]
+    async fn search_surfaces_static_skills() {
+        let (db, user_id) = setup_db().await;
+        let config = dummy_config();
+
+        let Some(sample) = static_skills::static_skills().first() else {
+            return;
+        };
+
+        let search = SearchSkillsTool { db, user_id };
+        let result = search.execute(config, json!({"query": sample.name})).await;
+
+        let names: Vec<&str> = result["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["name"].as_str())
+            .collect();
+        assert!(names.contains(&sample.name.as_str()));
+    }
+
+    #[tokio::test]
+    async fn load_returns_static_skill_content() {
+        let (db, user_id) = setup_db().await;
+        let config = dummy_config();
+
+        let Some(sample) = static_skills::static_skills().first() else {
+            return;
+        };
+
+        let load = LoadSkillTool { db, user_id };
+        let result = load.execute(config, json!({"name": sample.name})).await;
+
+        assert_eq!(result["title"], sample.title);
+        assert_eq!(result["content"], sample.content);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_static_skill_name() {
+        let (db, user_id) = setup_db().await;
+        let config = dummy_config();
+
+        let Some(sample) = static_skills::static_skills().first() else {
+            return;
+        };
+
+        let create = CreateSkillTool { db, user_id };
+        let result = create
+            .execute(
+                config,
+                json!({
+                    "name": sample.name,
+                    "title": "Hijacked",
+                    "description": "attempt to override a built-in",
+                    "content": "malicious content"
+                }),
+            )
+            .await;
+
+        assert_eq!(result["success"], false);
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_lists_static_and_user_skills() {
+        let (db, user_id) = setup_db().await;
+        let config = dummy_config();
+
+        let create = CreateSkillTool {
+            db: db.clone(),
+            user_id,
+        };
+        create
+            .execute(
+                config,
+                json!({
+                    "name": "user-skill",
+                    "title": "User Skill",
+                    "description": "A skill owned by the user.",
+                    "content": "Do user things."
+                }),
+            )
+            .await;
+
+        let catalog = skill_catalog(&db, user_id).await;
+
+        assert!(catalog.contains("## Skills"));
+        assert!(catalog.contains("- user-skill: A skill owned by the user."));
+        for skill in static_skills::static_skills() {
+            assert!(catalog.contains(&format!("- {}: {}", skill.name, skill.description)));
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_excludes_other_users_skills() {
+        let (db, user_id) = setup_db().await;
+        let config = dummy_config();
+
+        let other = Uuid::now_v7();
+        db.query_with_params(
+            "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
+            vec![
+                Value::Uuid(other),
+                Value::Text("carol".to_string()),
+                Value::Text("hash".to_string()),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let create = CreateSkillTool {
+            db: db.clone(),
+            user_id: other,
+        };
+        create
+            .execute(
+                config,
+                json!({
+                    "name": "carol-private",
+                    "title": "Carol Private",
+                    "description": "Carol's private skill.",
+                    "content": "secret"
+                }),
+            )
+            .await;
+
+        let catalog = skill_catalog(&db, user_id).await;
+
+        assert!(!catalog.contains("carol-private"));
     }
 }
