@@ -12,6 +12,7 @@ use friday_agent::{
     AgentConfig, AgentResponseChunk, BaseAgent, QuizQuestion, Tool, ToolRegistry,
     mcp::McpTool,
     tools::{
+        email::{CreateEmailDraftTool, ListEmailsTool},
         expert::{EXPERT_NAME, make_expert},
         firecrawl::FirecrawlTool,
         quiz::QuizTool,
@@ -34,6 +35,7 @@ use uuid::Uuid;
 use crate::{
     config::{Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
     db::{Role, messages},
+    email::ImapService,
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
         PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId, RunnerLifecycle,
@@ -163,6 +165,7 @@ struct WorkerInit {
     vfs: Option<Arc<Vfs>>,
     telegram_bot_token: Option<String>,
     public_url: Option<String>,
+    email_service: Option<ImapService>,
     system_prompt: String,
     idle_ttl: Duration,
 }
@@ -175,6 +178,7 @@ struct WorkerState {
     vfs: Option<Arc<Vfs>>,
     telegram_bot_token: Option<String>,
     public_url: Option<String>,
+    email_service: Option<ImapService>,
     system_prompt: String,
     idle_ttl: Duration,
     threads: HashMap<Uuid, ThreadRunner>,
@@ -241,6 +245,7 @@ impl InProcessAgentPool {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -251,6 +256,7 @@ impl InProcessAgentPool {
         mcp_tools: Vec<McpTool>,
         telegram_bot_token: Option<String>,
         public_url: Option<String>,
+        email_service: ImapService,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -261,6 +267,7 @@ impl InProcessAgentPool {
             None,
             telegram_bot_token,
             public_url,
+            Some(email_service),
         )
     }
 
@@ -280,9 +287,11 @@ impl InProcessAgentPool {
             Some(vfs),
             None,
             None,
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_file_provider_and_telegram(
         db: ConnectionPool,
         config: Arc<AgentConfig>,
@@ -291,6 +300,7 @@ impl InProcessAgentPool {
         vfs: Arc<Vfs>,
         telegram_bot_token: Option<String>,
         public_url: Option<String>,
+        email_service: ImapService,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -301,6 +311,7 @@ impl InProcessAgentPool {
             Some(vfs),
             telegram_bot_token,
             public_url,
+            Some(email_service),
         )
     }
 
@@ -322,6 +333,7 @@ impl InProcessAgentPool {
         vfs: Option<Arc<Vfs>>,
         telegram_bot_token: Option<String>,
         public_url: Option<String>,
+        email_service: Option<ImapService>,
     ) -> Self {
         Self::from_init(WorkerInit {
             db,
@@ -331,6 +343,7 @@ impl InProcessAgentPool {
             vfs,
             telegram_bot_token,
             public_url,
+            email_service,
             system_prompt,
             idle_ttl: DEFAULT_IDLE_TTL,
         })
@@ -370,6 +383,7 @@ impl InProcessAgentPool {
             vfs,
             telegram_bot_token: None,
             public_url: None,
+            email_service: None,
             system_prompt,
             idle_ttl,
         })
@@ -498,6 +512,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 vfs,
                 telegram_bot_token,
                 public_url,
+                email_service,
                 system_prompt,
                 idle_ttl,
             } = init;
@@ -509,6 +524,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 vfs,
                 telegram_bot_token,
                 public_url,
+                email_service,
                 system_prompt,
                 idle_ttl,
                 threads: HashMap::new(),
@@ -841,7 +857,17 @@ async fn ensure_runner(
         return Ok(());
     }
 
-    let (db, config, tools, mcp_tools, vfs, telegram_bot_token, public_url, base_system_prompt) = {
+    let (
+        db,
+        config,
+        tools,
+        mcp_tools,
+        vfs,
+        telegram_bot_token,
+        public_url,
+        email_service,
+        base_system_prompt,
+    ) = {
         let state = state.borrow();
         (
             state.db.clone(),
@@ -851,6 +877,7 @@ async fn ensure_runner(
             state.vfs.clone(),
             state.telegram_bot_token.clone(),
             state.public_url.clone(),
+            state.email_service.clone(),
             state.system_prompt.clone(),
         )
     };
@@ -897,6 +924,15 @@ async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("create_skill");
+    if let Some(email_service) = email_service {
+        let provider = email_service.provider(user_id);
+        agent.register_tool(ListEmailsTool {
+            provider: provider.clone(),
+        });
+        agent.allow_tool("list_emails");
+        agent.register_tool(CreateEmailDraftTool { provider });
+        agent.allow_tool("create_email_draft");
+    }
     if let Some(bot_token) = telegram_bot_token {
         agent.register_tool(SendTelegramMessageTool {
             db: db.clone(),
@@ -2240,6 +2276,7 @@ mod tests {
             vfs: None,
             telegram_bot_token: None,
             public_url: None,
+            email_service: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
             threads,
@@ -2321,6 +2358,7 @@ mod tests {
             vfs: None,
             telegram_bot_token: None,
             public_url: None,
+            email_service: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
             threads,

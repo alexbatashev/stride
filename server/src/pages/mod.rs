@@ -468,6 +468,99 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
         display: none;
     }}
 
+    #settings-page .email-list {{
+        display: grid;
+        gap: 8px;
+        margin-top: 16px;
+    }}
+
+    #settings-page .email-account {{
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        padding: 12px;
+    }}
+
+    #settings-page .email-account strong,
+    #settings-page .email-account span {{
+        display: block;
+    }}
+
+    #settings-page .email-account span {{
+        color: var(--muted-foreground);
+        font-size: 12px;
+        margin-top: 3px;
+    }}
+
+    #settings-page .imap-form {{
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        display: grid;
+        gap: 12px;
+        margin-top: 20px;
+        padding: 16px;
+    }}
+
+    #settings-page .form-grid {{
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr 1fr;
+    }}
+
+    #settings-page label {{
+        color: var(--foreground);
+        display: grid;
+        font-size: 13px;
+        gap: 5px;
+    }}
+
+    #settings-page input {{
+        background: var(--background);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-sizing: border-box;
+        color: var(--foreground);
+        font: inherit;
+        min-height: 38px;
+        padding: 8px 10px;
+        width: 100%;
+    }}
+
+    #settings-page details summary {{
+        color: var(--foreground);
+        cursor: pointer;
+        font-size: 13px;
+    }}
+
+    #settings-page details .form-grid {{
+        margin-top: 12px;
+    }}
+
+    #settings-page button {{
+        background: var(--primary);
+        border: 1px solid var(--primary);
+        border-radius: 8px;
+        color: var(--primary-foreground);
+        cursor: pointer;
+        font: inherit;
+        min-height: 36px;
+        padding: 0 12px;
+    }}
+
+    #settings-page button:disabled {{
+        cursor: wait;
+        opacity: .6;
+    }}
+
+    #settings-page button.danger-button {{
+        background: transparent;
+        border-color: var(--border);
+        color: var(--destructive);
+    }}
+
     @media (max-width: 767px) {{
         #settings-page > main > header {{
             align-items: center;
@@ -475,6 +568,10 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
             box-sizing: border-box;
             display: flex;
             padding: 8px 12px;
+        }}
+
+        #settings-page .form-grid {{
+            grid-template-columns: 1fr;
         }}
     }}
 </style>
@@ -492,7 +589,35 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
             <div class="actions">
                 {disconnect_button}
             </div>
-            <div class="error" data-error></div>
+            <div class="error" data-telegram-error></div>
+        </section>
+        <section class="section" data-email>
+            <h2>Email</h2>
+            <p class="muted">Connect one or more TLS IMAP accounts. Friday can read incoming and sent mail and save reply-all drafts. It cannot send email.</p>
+            <div class="email-list" data-email-list></div>
+            <p class="status" data-email-empty>There are no IMAP accounts yet.</p>
+            <form class="imap-form" data-email-form>
+                <strong>Add IMAP server</strong>
+                <div class="form-grid">
+                    <label>Account name<input name="name" required placeholder="Work" autocomplete="off" /></label>
+                    <label>Email address<input name="email" type="email" required placeholder="you@example.com" autocomplete="email" /></label>
+                    <label>IMAP host<input name="host" required placeholder="imap.example.com" autocomplete="off" /></label>
+                    <label>Port<input name="port" type="number" min="1" max="65535" value="993" required /></label>
+                    <label>Username<input name="username" required placeholder="you@example.com" autocomplete="username" /></label>
+                    <label>Password or app password<input name="password" type="password" required autocomplete="new-password" /></label>
+                </div>
+                <details>
+                    <summary>Mailbox names</summary>
+                    <div class="form-grid">
+                        <label>Inbox<input name="inbox_mailbox" value="INBOX" required /></label>
+                        <label>Sent<input name="sent_mailbox" value="Sent" required /></label>
+                        <label>Drafts<input name="drafts_mailbox" value="Drafts" required /></label>
+                    </div>
+                </details>
+                <p class="muted">The connection is verified before it is saved. Credentials are encrypted at rest.</p>
+                <div><button type="submit">Add account</button></div>
+                <div class="error" data-email-error></div>
+            </form>
         </section>
     </section>
 </main>
@@ -623,13 +748,16 @@ mod tests {
     }
 
     #[test]
-    fn settings_page_renders_telegram_controls() {
+    fn settings_page_renders_integration_controls() {
         let html = super::render_settings_page(&sample_data());
 
         assert!(html.contains(r#"<body id="settings-page">"#));
         assert!(html.contains("Telegram"));
         assert!(html.contains("data-telegram-widget"));
         assert!(html.contains(r#"data-action="disconnect""#));
+        assert!(html.contains("Add IMAP server"));
+        assert!(html.contains("data-email-form"));
+        assert!(html.contains("cannot send email"));
         assert!(html.contains(r#"href="/settings" aria-current="page""#));
         assert!(html.contains("/static/pages/settings-page.js"));
     }

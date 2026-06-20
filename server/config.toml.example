@@ -48,6 +48,9 @@ allow_registration = true
 # embedded inline as base64.
 public_url = "https://friday.example.com"
 
+# Set FRIDAY_EMAIL_ENCRYPTION_KEY to a stable, high-entropy secret before users add IMAP accounts.
+# It encrypts stored IMAP passwords and must remain stable across restarts and JWT key rotation.
+
 [server.files]
 keep_versions = 10
 

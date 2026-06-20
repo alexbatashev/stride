@@ -9,7 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use friday_agent::{AgentConfig, AgentResponseChunk, BaseAgent, Tool};
+use friday_agent::{
+    AgentConfig, AgentResponseChunk, BaseAgent, Tool,
+    tools::email::{CreateEmailDraftTool, ListEmailsTool},
+};
 use futures::StreamExt;
 use llm::StreamResponseChunk;
 use minisql::ConnectionPool;
@@ -19,6 +22,7 @@ use uuid::Uuid;
 
 use crate::config::Tools;
 use crate::db::{AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_runs, automations};
+use crate::email::ImapService;
 use crate::notify::{self, RunResult};
 use crate::runner::inproc::{expert_tool_registry, python_tool_config};
 use crate::triggers;
@@ -34,6 +38,7 @@ pub enum TriggerSource {
     Webhook,
     Manual,
     VfsChange,
+    Email,
 }
 
 /// A request to run one automation now, optionally with a trigger payload.
@@ -77,6 +82,7 @@ struct ExecutorCtx {
     model_config: Arc<AgentConfig>,
     tools: Tools,
     telegram_bot_token: Option<String>,
+    email_service: ImapService,
 }
 
 pub fn spawn(
@@ -84,6 +90,7 @@ pub fn spawn(
     model_config: Arc<AgentConfig>,
     tools: Tools,
     telegram_bot_token: Option<String>,
+    email_service: ImapService,
 ) -> ExecutorHandle {
     let (tx, rx) = unbounded_channel();
     let ctx = ExecutorCtx {
@@ -91,6 +98,7 @@ pub fn spawn(
         model_config,
         tools,
         telegram_bot_token,
+        email_service,
     };
     std::thread::Builder::new()
         .name("friday-scheduler".to_string())
@@ -139,6 +147,11 @@ async fn poll_due(ctx: &ExecutorCtx) {
 
     for row in rows {
         let kind = TriggerKind::from_opt(row.trigger_kind.as_deref());
+        if kind == TriggerKind::Email {
+            let ctx = ctx.clone();
+            tokio::task::spawn_local(async move { poll_email(&ctx, row).await });
+            continue;
+        }
         let Some(trigger) = triggers::polled(
             kind,
             &row.schedule,
@@ -164,6 +177,7 @@ async fn poll_due(ctx: &ExecutorCtx) {
         let ctx = ctx.clone();
         let source = match kind {
             TriggerKind::VfsChange => TriggerSource::VfsChange,
+            TriggerKind::Email => TriggerSource::Email,
             _ => TriggerSource::Cron,
         };
         tokio::task::spawn_local(async move {
@@ -178,6 +192,65 @@ async fn poll_due(ctx: &ExecutorCtx) {
             .await
         });
     }
+}
+
+async fn poll_email(ctx: &ExecutorCtx, automation: crate::db::automations::Row) {
+    let account_id = automation
+        .trigger_config
+        .as_deref()
+        .and_then(|config| serde_json::from_str::<JsonValue>(config).ok())
+        .and_then(|config| config.get("account_id")?.as_str().map(str::to_string))
+        .and_then(|id| Uuid::parse_str(&id).ok());
+    let Some(account_id) = account_id else {
+        tracing::warn!(automation_id = %automation.id, "email trigger has invalid account config");
+        return;
+    };
+    let cursor = automation
+        .trigger_cursor
+        .as_deref()
+        .and_then(|cursor| cursor.parse::<u32>().ok())
+        .unwrap_or(0);
+    let batch = match ctx
+        .email_service
+        .new_inbox_messages(automation.owner, account_id, cursor)
+        .await
+    {
+        Ok(batch) => batch,
+        Err(error) => {
+            tracing::warn!(%error, automation_id = %automation.id, "email trigger poll failed");
+            return;
+        }
+    };
+    if batch.messages.is_empty() {
+        return;
+    }
+    if let Err(error) = automations::update()
+        .last_run(Some(unix_now()))
+        .trigger_cursor(Some(batch.cursor.to_string().as_str()))
+        .where_(automations::id.eq(automation.id))
+        .execute(&ctx.db)
+        .await
+    {
+        tracing::warn!(%error, "scheduler failed to advance email cursor");
+        return;
+    }
+    let payload = serde_json::json!({
+        "account_id": account_id,
+        "mailbox": "inbox",
+        "messages": batch.messages,
+    });
+    let ctx = ctx.clone();
+    tokio::task::spawn_local(async move {
+        run_automation(
+            ctx,
+            FireRequest {
+                automation_id: automation.id,
+                payload: Some(payload),
+                source: TriggerSource::Email,
+            },
+        )
+        .await
+    });
 }
 
 async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
@@ -228,7 +301,12 @@ async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
         }
         AutomationKind::Agent => {
             let prompt = agent_prompt(&automation.payload, request.payload.as_ref());
-            run_agent(ctx.model_config.clone(), &prompt).await
+            run_agent(
+                ctx.model_config.clone(),
+                &prompt,
+                ctx.email_service.provider(automation.owner),
+            )
+            .await
         }
     };
     let (status, output) = match result {
@@ -328,13 +406,25 @@ async fn run_python(
     }
 }
 
-async fn run_agent(model_config: Arc<AgentConfig>, prompt: &str) -> Result<String, String> {
+async fn run_agent(
+    model_config: Arc<AgentConfig>,
+    prompt: &str,
+    email_provider: Arc<dyn friday_agent::tools::email::EmailProvider>,
+) -> Result<String, String> {
     let agent = BaseAgent::new(
         "default".to_string(),
         model_config,
         AGENT_SYSTEM_PROMPT.to_string(),
         Vec::new(),
     );
+    agent.register_tool(ListEmailsTool {
+        provider: email_provider.clone(),
+    });
+    agent.allow_tool("list_emails");
+    agent.register_tool(CreateEmailDraftTool {
+        provider: email_provider,
+    });
+    agent.allow_tool("create_email_draft");
     let mut stream = agent.make_turn(prompt.to_string(), Vec::new()).await;
     let mut output = String::new();
     while let Some(item) = stream.next().await {
@@ -519,6 +609,7 @@ mod tests {
                     model_config: mock_model_config(),
                     tools: python_tools(),
                     telegram_bot_token: None,
+                    email_service: ImapService::new(db.clone(), "test-secret"),
                 };
                 run_automation(
                     ctx,

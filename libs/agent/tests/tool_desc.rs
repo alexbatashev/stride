@@ -11,6 +11,12 @@ struct SearchArgs {
     include_hidden: bool,
 }
 
+#[derive(Debug, PartialEq, ToolDesc)]
+struct OptionalArgs {
+    /// Optional query.
+    query: Option<String>,
+}
+
 #[test]
 fn derives_function_parameters() {
     let params = SearchArgs::function_parameters();
@@ -64,4 +70,14 @@ fn reports_missing_required_field() {
     let err = SearchArgs::try_from(json!({ "include_hidden": true })).unwrap_err();
 
     assert_eq!(err, "missing required parameter `query`");
+}
+
+#[test]
+fn supports_structs_with_only_optional_fields() {
+    let params = OptionalArgs::function_parameters();
+    assert_eq!(params.required, None);
+    assert_eq!(
+        OptionalArgs::decode(json!({})).unwrap(),
+        OptionalArgs { query: None }
+    );
 }

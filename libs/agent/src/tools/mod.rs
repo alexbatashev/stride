@@ -1,4 +1,5 @@
 pub mod calculator;
+pub mod email;
 pub mod expert;
 pub mod explorer;
 pub mod file;
