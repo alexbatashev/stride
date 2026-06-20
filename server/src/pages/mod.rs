@@ -396,93 +396,272 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
     .replacen("</app-button>", "Disconnect</app-button>", 1);
 
     let body = format!(
-        r#"<style>
+        r##"<style>
+    #settings-page > main {{
+        background:
+            radial-gradient(circle at top left, color-mix(in srgb, var(--primary) 9%, transparent), transparent 34rem),
+            var(--background);
+        min-height: 100vh;
+    }}
+
     #settings-page > main > header {{
         display: none;
     }}
 
-    #settings-page .settings-content {{
+    #settings-page .settings-shell {{
         box-sizing: border-box;
         margin: 0 auto;
-        max-width: 760px;
-        padding: 32px 24px;
+        max-width: 1180px;
+        padding: 36px 28px 56px;
         width: 100%;
+    }}
+
+    #settings-page .settings-hero {{
+        align-items: end;
+        display: grid;
+        gap: 20px;
+        grid-template-columns: 1fr auto;
+        margin-bottom: 28px;
+    }}
+
+    #settings-page .eyebrow {{
+        color: var(--muted-foreground);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: .12em;
+        margin: 0 0 10px;
+        text-transform: uppercase;
     }}
 
     #settings-page h1 {{
         color: var(--foreground);
-        font-size: 26px;
-        line-height: 1.2;
-        margin: 0 0 8px;
-    }}
-
-    #settings-page .intro,
-    #settings-page .muted {{
-        color: var(--muted-foreground);
-        font-size: 14px;
-        line-height: 1.5;
+        font-size: clamp(32px, 5vw, 52px);
+        letter-spacing: -0.055em;
+        line-height: .95;
         margin: 0;
     }}
 
-    #settings-page .section {{
-        border-top: 1px solid var(--border);
-        margin-top: 24px;
-        padding-top: 24px;
+    #settings-page .intro,
+    #settings-page .muted,
+    #settings-page .field-hint {{
+        color: var(--muted-foreground);
+        font-size: 14px;
+        line-height: 1.55;
+        margin: 0;
     }}
 
-    #settings-page .section h2 {{
+    #settings-page .intro {{
+        margin-top: 14px;
+        max-width: 660px;
+    }}
+
+    #settings-page .hero-actions {{
+        align-items: center;
+        display: flex;
+        gap: 10px;
+    }}
+
+    #settings-page .settings-layout {{
+        align-items: start;
+        display: grid;
+        gap: 24px;
+        grid-template-columns: 220px minmax(0, 1fr);
+    }}
+
+    #settings-page .settings-nav {{
+        background: color-mix(in srgb, var(--card) 82%, transparent);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: 0 18px 50px rgb(0 0 0 / 6%);
+        padding: 10px;
+        position: sticky;
+        top: 24px;
+    }}
+
+    #settings-page .settings-nav a {{
+        align-items: center;
+        border-radius: 12px;
+        color: var(--muted-foreground);
+        display: flex;
+        font-size: 14px;
+        font-weight: 500;
+        gap: 10px;
+        padding: 10px 12px;
+        text-decoration: none;
+    }}
+
+    #settings-page .settings-nav a[aria-current="page"],
+    #settings-page .settings-nav a:hover {{
+        background: var(--muted);
         color: var(--foreground);
-        font-size: 16px;
-        margin: 0 0 8px;
+    }}
+
+    #settings-page .nav-dot {{
+        background: currentColor;
+        border-radius: 999px;
+        height: 6px;
+        opacity: .7;
+        width: 6px;
+    }}
+
+    #settings-page .settings-content {{
+        display: grid;
+        gap: 18px;
+        min-width: 0;
+    }}
+
+    #settings-page .overview-grid {{
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }}
+
+    #settings-page .metric-card,
+    #settings-page .section {{
+        background: color-mix(in srgb, var(--card) 92%, transparent);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        box-shadow: 0 18px 50px rgb(0 0 0 / 5%);
+    }}
+
+    #settings-page .metric-card {{
+        display: grid;
+        gap: 8px;
+        min-height: 112px;
+        padding: 18px;
+    }}
+
+    #settings-page .metric-icon {{
+        align-items: center;
+        background: var(--primary);
+        border-radius: 14px;
+        color: var(--primary-foreground);
+        display: inline-flex;
+        font-size: 18px;
+        height: 38px;
+        justify-content: center;
+        width: 38px;
+    }}
+
+    #settings-page .metric-card strong {{
+        color: var(--foreground);
+        font-size: 15px;
+    }}
+
+    #settings-page .section {{
+        overflow: hidden;
+    }}
+
+    #settings-page .section-header {{
+        align-items: start;
+        border-bottom: 1px solid var(--border);
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr auto;
+        padding: 22px 24px;
+    }}
+
+    #settings-page .section-kicker {{
+        color: var(--muted-foreground);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: .08em;
+        margin: 0 0 7px;
+        text-transform: uppercase;
+    }}
+
+    #settings-page h2 {{
+        color: var(--foreground);
+        font-size: 22px;
+        letter-spacing: -0.025em;
+        line-height: 1.2;
+        margin: 0 0 6px;
+    }}
+
+    #settings-page .status-pill {{
+        align-items: center;
+        background: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--foreground);
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 600;
+        gap: 8px;
+        padding: 6px 10px;
+        white-space: nowrap;
+    }}
+
+    #settings-page .status-pill::before {{
+        background: #22c55e;
+        border-radius: 999px;
+        content: "";
+        height: 7px;
+        width: 7px;
+    }}
+
+    #settings-page .section-body {{
+        display: grid;
+        gap: 20px;
+        padding: 24px;
+    }}
+
+    #settings-page .telegram-panel {{
+        align-items: center;
+        background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 12%, transparent), transparent), var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        display: grid;
+        gap: 18px;
+        grid-template-columns: 1fr auto;
+        padding: 18px;
     }}
 
     #settings-page .status {{
         color: var(--foreground);
-        font-size: 14px;
-        margin: 12px 0;
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0 0 4px;
     }}
 
-    #settings-page .actions {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 16px;
-    }}
-
-    #settings-page .telegram-widget {{
-        margin-top: 16px;
-        min-height: 40px;
-    }}
-
-    #settings-page .telegram-widget:empty {{
-        display: none;
-    }}
-
-    #settings-page .error {{
-        color: var(--destructive);
-        font-size: 13px;
-        margin-top: 12px;
-    }}
-
+    #settings-page .telegram-widget:empty,
     #settings-page .error:empty {{
         display: none;
     }}
 
-    #settings-page .email-list,
-    #settings-page .mcp-list {{
+    #settings-page .error {{
+        background: var(--destructive-muted, rgb(220 38 38 / 10%));
+        border: 1px solid color-mix(in srgb, var(--destructive) 22%, transparent);
+        border-radius: 12px;
+        color: var(--destructive);
+        font-size: 13px;
+        padding: 10px 12px;
+    }}
+
+    #settings-page .resource-list {{
         display: grid;
-        gap: 8px;
-        margin-top: 16px;
+        gap: 10px;
+    }}
+
+    #settings-page .empty-state {{
+        background: var(--muted);
+        border: 1px dashed var(--border);
+        border-radius: 14px;
+        color: var(--muted-foreground);
+        font-size: 14px;
+        margin: 0;
+        padding: 18px;
     }}
 
     #settings-page .integration-account {{
         align-items: center;
+        background: var(--background);
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: 14px;
         display: flex;
         gap: 16px;
         justify-content: space-between;
-        padding: 12px;
+        padding: 14px;
     }}
 
     #settings-page .integration-account strong,
@@ -490,63 +669,85 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
         display: block;
     }}
 
+    #settings-page .integration-account strong {{
+        color: var(--foreground);
+        font-size: 14px;
+    }}
+
     #settings-page .integration-account span {{
         color: var(--muted-foreground);
         font-size: 12px;
-        margin-top: 3px;
+        margin-top: 4px;
     }}
 
     #settings-page .settings-form {{
+        background: var(--background);
         border: 1px solid var(--border);
-        border-radius: 12px;
+        border-radius: 16px;
         display: grid;
-        gap: 12px;
-        margin-top: 20px;
-        padding: 16px;
+        gap: 16px;
+        padding: 18px;
+    }}
+
+    #settings-page .form-title {{
+        align-items: center;
+        color: var(--foreground);
+        display: flex;
+        font-size: 15px;
+        font-weight: 650;
+        justify-content: space-between;
     }}
 
     #settings-page .form-grid {{
         display: grid;
-        gap: 12px;
-        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }}
 
     #settings-page label {{
         color: var(--foreground);
         display: grid;
         font-size: 13px;
-        gap: 5px;
+        font-weight: 500;
+        gap: 7px;
     }}
 
-    #settings-page input {{
+    #settings-page input,
+    #settings-page textarea {{
         background: var(--background);
-        border: 1px solid var(--border);
-        border-radius: 8px;
+        border: 1px solid var(--input, var(--border));
+        border-radius: 10px;
         box-sizing: border-box;
         color: var(--foreground);
         font: inherit;
         min-height: 38px;
-        padding: 8px 10px;
+        outline: none;
+        padding: 9px 11px;
         width: 100%;
     }}
 
+    #settings-page input:focus,
+    #settings-page textarea:focus {{
+        border-color: var(--ring);
+        box-shadow: 0 0 0 3px var(--ring-shadow, rgb(24 24 27 / 12%));
+    }}
+
     #settings-page textarea {{
-        background: var(--background);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        box-sizing: border-box;
-        color: var(--foreground);
-        font: inherit;
-        min-height: 84px;
-        padding: 8px 10px;
+        min-height: 92px;
         resize: vertical;
-        width: 100%;
+    }}
+
+    #settings-page details {{
+        background: var(--muted);
+        border-radius: 12px;
+        padding: 12px;
     }}
 
     #settings-page details summary {{
         color: var(--foreground);
         cursor: pointer;
         font-size: 13px;
+        font-weight: 600;
     }}
 
     #settings-page details .form-grid {{
@@ -556,12 +757,18 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
     #settings-page button {{
         background: var(--primary);
         border: 1px solid var(--primary);
-        border-radius: 8px;
+        border-radius: 10px;
         color: var(--primary-foreground);
         cursor: pointer;
         font: inherit;
-        min-height: 36px;
-        padding: 0 12px;
+        font-size: 14px;
+        font-weight: 600;
+        min-height: 38px;
+        padding: 0 14px;
+    }}
+
+    #settings-page button:hover {{
+        background: var(--primary-hover, var(--primary));
     }}
 
     #settings-page button:disabled {{
@@ -575,6 +782,28 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
         color: var(--destructive);
     }}
 
+    @media (max-width: 980px) {{
+        #settings-page .settings-layout,
+        #settings-page .settings-hero {{
+            grid-template-columns: 1fr;
+        }}
+
+        #settings-page .settings-nav {{
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            position: static;
+        }}
+
+        #settings-page .settings-nav a {{
+            white-space: nowrap;
+        }}
+
+        #settings-page .overview-grid {{
+            grid-template-columns: 1fr;
+        }}
+    }}
+
     @media (max-width: 767px) {{
         #settings-page > main > header {{
             align-items: center;
@@ -584,7 +813,13 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
             padding: 8px 12px;
         }}
 
-        #settings-page .form-grid {{
+        #settings-page .settings-shell {{
+            padding: 24px 14px 40px;
+        }}
+
+        #settings-page .form-grid,
+        #settings-page .section-header,
+        #settings-page .telegram-panel {{
             grid-template-columns: 1fr;
         }}
     }}
@@ -592,68 +827,131 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
 {sidebar}
 <main>
     <header>{toggle}</header>
-    <section class="settings-content">
-        <h1>Settings</h1>
-        <p class="intro">Manage account integrations.</p>
-        <section class="section" data-telegram>
-            <h2>Telegram</h2>
-            <p class="muted">Connect your Telegram account with the Friday bot.</p>
-            <p class="status" data-telegram-status>Loading...</p>
-            <div class="telegram-widget" data-telegram-widget></div>
-            <div class="actions">
-                {disconnect_button}
+    <section class="settings-shell">
+        <div class="settings-hero">
+            <div>
+                <p class="eyebrow">Workspace settings</p>
+                <h1>Command center for Friday.</h1>
+                <p class="intro">Connect the channels and tool servers Friday can use to read context, draft replies, and act on your behalf.</p>
             </div>
-            <div class="error" data-telegram-error></div>
-        </section>
-        <section class="section" data-email>
-            <h2>Email</h2>
-            <p class="muted">Connect one or more TLS IMAP accounts. Friday can read incoming and sent mail and save reply-all drafts. It cannot send email.</p>
-            <div class="email-list" data-email-list></div>
-            <p class="status" data-email-empty>There are no IMAP accounts yet.</p>
-            <form class="settings-form" data-email-form>
-                <strong>Add IMAP server</strong>
-                <div class="form-grid">
-                    <label>Account name<input name="name" required placeholder="Work" autocomplete="off" /></label>
-                    <label>Email address<input name="email" type="email" required placeholder="you@example.com" autocomplete="email" /></label>
-                    <label>IMAP host<input name="host" required placeholder="imap.example.com" autocomplete="off" /></label>
-                    <label>Port<input name="port" type="number" min="1" max="65535" value="993" required /></label>
-                    <label>Username<input name="username" required placeholder="you@example.com" autocomplete="username" /></label>
-                    <label>Password or app password<input name="password" type="password" required autocomplete="new-password" /></label>
+            <div class="hero-actions">
+                <a class="status-pill" href="#telegram">Live configuration</a>
+            </div>
+        </div>
+        <div class="settings-layout">
+            <nav class="settings-nav" aria-label="Settings sections">
+                <a href="#telegram" aria-current="page"><span class="nav-dot"></span>Telegram</a>
+                <a href="#email"><span class="nav-dot"></span>Email</a>
+                <a href="#mcp"><span class="nav-dot"></span>MCP servers</a>
+            </nav>
+            <div class="settings-content">
+                <div class="overview-grid" aria-label="Integration overview">
+                    <article class="metric-card">
+                        <span class="metric-icon">✦</span>
+                        <strong>Personal channels</strong>
+                        <p class="muted">Telegram and IMAP give Friday real conversations to help with.</p>
+                    </article>
+                    <article class="metric-card">
+                        <span class="metric-icon">⌘</span>
+                        <strong>Agent tools</strong>
+                        <p class="muted">Remote MCP servers extend what cloud agents can do safely.</p>
+                    </article>
+                    <article class="metric-card">
+                        <span class="metric-icon">◆</span>
+                        <strong>Encrypted secrets</strong>
+                        <p class="muted">Credentials are verified before saving and kept encrypted at rest.</p>
+                    </article>
                 </div>
-                <details>
-                    <summary>Mailbox names</summary>
-                    <div class="form-grid">
-                        <label>Inbox<input name="inbox_mailbox" value="INBOX" required /></label>
-                        <label>Sent<input name="sent_mailbox" value="Sent" required /></label>
-                        <label>Drafts<input name="drafts_mailbox" value="Drafts" required /></label>
+                <section class="section" id="telegram" data-telegram>
+                    <div class="section-header">
+                        <div>
+                            <p class="section-kicker">Messaging</p>
+                            <h2>Telegram</h2>
+                            <p class="muted">Connect the Friday bot to receive updates and approve work from chat.</p>
+                        </div>
+                        <span class="status-pill">Bot channel</span>
                     </div>
-                </details>
-                <p class="muted">The connection is verified before it is saved. Credentials are encrypted at rest.</p>
-                <div><button type="submit">Add account</button></div>
-                <div class="error" data-email-error></div>
-            </form>
-        </section>
-        <section class="section" data-mcp>
-            <h2>MCP servers</h2>
-            <p class="muted">Add remote HTTP MCP servers for your agents. Tools from these servers are loaded with the global MCP servers.</p>
-            <div class="mcp-list" data-mcp-list></div>
-            <p class="status" data-mcp-empty>There are no custom MCP servers yet.</p>
-            <form class="settings-form" data-mcp-form>
-                <strong>Add MCP server</strong>
-                <div class="form-grid">
-                    <label>Name<input name="name" required placeholder="deepwiki" autocomplete="off" pattern="[A-Za-z][A-Za-z0-9_]{{1,47}}" /></label>
-                    <label>URL<input name="url" type="url" required placeholder="https://mcp.example.com/mcp" autocomplete="off" /></label>
-                    <label>Bearer token<input name="bearer_token" type="password" autocomplete="new-password" /></label>
-                </div>
-                <label>Headers JSON<textarea name="headers_json" placeholder='{{"X-Tenant":"acme"}}'></textarea></label>
-                <p class="muted">Only Streamable HTTP MCP servers are supported here. Authorization values are stored but not shown again.</p>
-                <div><button type="submit">Add server</button></div>
-                <div class="error" data-mcp-error></div>
-            </form>
-        </section>
+                    <div class="section-body">
+                        <div class="telegram-panel">
+                            <div>
+                                <p class="status" data-telegram-status>Loading...</p>
+                                <p class="muted">Use Telegram login to bind this browser session to your account.</p>
+                            </div>
+                            <div class="telegram-widget" data-telegram-widget></div>
+                        </div>
+                        <div class="hero-actions">
+                            {disconnect_button}
+                        </div>
+                        <div class="error" data-telegram-error></div>
+                    </div>
+                </section>
+                <section class="section" id="email" data-email>
+                    <div class="section-header">
+                        <div>
+                            <p class="section-kicker">Inbox context</p>
+                            <h2>Email</h2>
+                            <p class="muted">Connect TLS IMAP accounts. Friday can read incoming and sent mail and save reply-all drafts. It cannot send email.</p>
+                        </div>
+                        <span class="status-pill">IMAP only</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="resource-list" data-email-list></div>
+                        <p class="empty-state" data-email-empty>No IMAP accounts yet. Add one below to unlock email automations.</p>
+                        <form class="settings-form" data-email-form>
+                            <div class="form-title">Add IMAP server <span class="muted">Verified before save</span></div>
+                            <div class="form-grid">
+                                <label>Account name<input name="name" required placeholder="Work" autocomplete="off" /></label>
+                                <label>Email address<input name="email" type="email" required placeholder="you@example.com" autocomplete="email" /></label>
+                                <label>IMAP host<input name="host" required placeholder="imap.example.com" autocomplete="off" /></label>
+                                <label>Port<input name="port" type="number" min="1" max="65535" value="993" required /></label>
+                                <label>Username<input name="username" required placeholder="you@example.com" autocomplete="username" /></label>
+                                <label>Password or app password<input name="password" type="password" required autocomplete="new-password" /></label>
+                            </div>
+                            <details>
+                                <summary>Mailbox names</summary>
+                                <div class="form-grid">
+                                    <label>Inbox<input name="inbox_mailbox" value="INBOX" required /></label>
+                                    <label>Sent<input name="sent_mailbox" value="Sent" required /></label>
+                                    <label>Drafts<input name="drafts_mailbox" value="Drafts" required /></label>
+                                </div>
+                            </details>
+                            <p class="field-hint">Credentials are encrypted at rest. Existing mail is ignored when automations start.</p>
+                            <div><button type="submit">Add account</button></div>
+                            <div class="error" data-email-error></div>
+                        </form>
+                    </div>
+                </section>
+                <section class="section" id="mcp" data-mcp>
+                    <div class="section-header">
+                        <div>
+                            <p class="section-kicker">Tooling</p>
+                            <h2>MCP servers</h2>
+                            <p class="muted">Add remote HTTP MCP servers for your agents. Tools from these servers are loaded with the global MCP servers.</p>
+                        </div>
+                        <span class="status-pill">Streamable HTTP</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="resource-list" data-mcp-list></div>
+                        <p class="empty-state" data-mcp-empty>No custom MCP servers yet. Add a trusted server to expand Friday's toolbelt.</p>
+                        <form class="settings-form" data-mcp-form>
+                            <div class="form-title">Add MCP server <span class="muted">Authorization is hidden after save</span></div>
+                            <div class="form-grid">
+                                <label>Name<input name="name" required placeholder="deepwiki" autocomplete="off" pattern="[A-Za-z][A-Za-z0-9_]{{1,47}}" /></label>
+                                <label>URL<input name="url" type="url" required placeholder="https://mcp.example.com/mcp" autocomplete="off" /></label>
+                                <label>Bearer token<input name="bearer_token" type="password" autocomplete="new-password" /></label>
+                            </div>
+                            <label>Headers JSON<textarea name="headers_json" placeholder='{{"X-Tenant":"acme"}}'></textarea></label>
+                            <p class="field-hint">Only Streamable HTTP MCP servers are supported here. Keep headers narrow and avoid broad production credentials.</p>
+                            <div><button type="submit">Add server</button></div>
+                            <div class="error" data-mcp-error></div>
+                        </form>
+                    </div>
+                </section>
+            </div>
+        </div>
     </section>
 </main>
-{NAVIGATE_SCRIPT}"#,
+{NAVIGATE_SCRIPT}"##,
     );
 
     render_page(
