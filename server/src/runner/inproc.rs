@@ -926,11 +926,11 @@ async fn ensure_runner(
     agent.allow_tool("create_skill");
     if let Some(email_service) = email_service {
         let provider = email_service.provider(user_id);
-        agent.register_tool(ListEmailsTool {
+        agent.register_searchable_tool(ListEmailsTool {
             provider: provider.clone(),
         });
         agent.allow_tool("list_emails");
-        agent.register_tool(CreateEmailDraftTool { provider });
+        agent.register_searchable_tool(CreateEmailDraftTool { provider });
         agent.allow_tool("create_email_draft");
     }
     if let Some(bot_token) = telegram_bot_token {
