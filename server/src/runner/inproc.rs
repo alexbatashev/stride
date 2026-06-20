@@ -44,6 +44,7 @@ use crate::{
     tools::{
         attach_image::AttachImageTool,
         automations::ScheduleAutomationTool,
+        memory::{ConnectMemoriesTool, ExplorePalaceTool, RecallTool, RememberTool},
         personality::UpdatePersonalityTool,
         python::VfsExecFileSystem,
         shell::EmulatedShellBackend,
@@ -938,6 +939,8 @@ async fn ensure_runner(
         system_prompt.push_str("\n\n");
         system_prompt.push_str(&catalog);
     }
+    system_prompt.push_str("\n\n");
+    system_prompt.push_str(&crate::tools::memory::palace_map(&db, user_id).await);
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
@@ -969,6 +972,26 @@ async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("create_skill");
+    agent.register_tool(RememberTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("remember");
+    agent.register_tool(RecallTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("recall");
+    agent.register_tool(ExplorePalaceTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("explore_palace");
+    agent.register_tool(ConnectMemoriesTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("connect_memories");
     if let Some(email_service) = email_service {
         let provider = email_service.provider(user_id);
         agent.register_searchable_tool(ListEmailsTool {
