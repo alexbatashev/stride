@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
-use crate::db::{telegram_connections, telegram_message_links};
+use tokio::time::timeout;
+
+use crate::db::{telegram_connections, telegram_message_links, telegram_threads};
+use crate::vfs::MountedVfs;
 
 pub struct SendTelegramMessageTool {
     pub db: ConnectionPool,
@@ -94,6 +98,252 @@ impl Tool for SendTelegramMessageTool {
             Err(error) => json!({"success": false, "error": error}),
         }
     }
+}
+
+/// Sends a workspace file to the user as a native Telegram attachment in the chat this thread is
+/// bound to. Used in Telegram-originated threads to deliver files the agent produced; its plain
+/// text replies are already streamed back to Telegram automatically.
+pub struct SendTelegramFileTool {
+    pub db: ConnectionPool,
+    pub fs: MountedVfs,
+    pub user_id: Uuid,
+    pub thread_id: Uuid,
+    pub bot_token: String,
+}
+
+#[derive(ToolDesc)]
+struct SendTelegramFileParams {
+    /// Absolute workspace path of the file to send, e.g. "/~workspace/report.pdf".
+    path: String,
+    /// Optional caption shown beneath the file in Telegram.
+    caption: Option<String>,
+}
+
+/// Telegram rejects multipart uploads larger than 50 MB.
+const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+
+#[async_trait(?Send)]
+impl Tool for SendTelegramFileTool {
+    fn name(&self) -> &str {
+        "send_telegram_file"
+    }
+
+    fn readable_name(&self) -> &str {
+        "Send Telegram file"
+    }
+
+    fn definition(&self) -> LlmTool {
+        LlmTool {
+            r#type: llm::ToolType::Function,
+            function: Function {
+                name: self.name().to_owned(),
+                description:
+                    "Send a workspace file to the user as a native Telegram attachment in \
+                              this conversation. Use this to deliver any file you produced \
+                              (documents, images, archives) so it arrives directly in Telegram, on \
+                              top of providing a download link."
+                        .to_string(),
+                parameters: Some(SendTelegramFileParams::function_parameters()),
+            },
+        }
+    }
+
+    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+        let params = match SendTelegramFileParams::decode(args) {
+            Ok(params) => params,
+            Err(error) => return json!({"success": false, "error": error}),
+        };
+
+        let (bytes, mime) = match self.fs.read_bytes(&params.path).await {
+            Ok(data) => data,
+            Err(error) => return json!({"success": false, "error": error.to_string()}),
+        };
+        if bytes.len() > MAX_UPLOAD_BYTES {
+            return json!({"success": false, "error": "file exceeds Telegram's 50 MB upload limit"});
+        }
+
+        let Some((chat_id, topic_id)) = thread_chat(&self.db, self.thread_id).await.ok().flatten()
+        else {
+            return json!({"success": false, "error": "thread is not connected to a Telegram chat"});
+        };
+
+        let file_name = file_name_from_path(&params.path);
+        let caption = params
+            .caption
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty());
+        let Some(sent) = send_document(
+            &self.bot_token,
+            chat_id,
+            topic_id,
+            &file_name,
+            mime.as_deref(),
+            &bytes,
+            caption,
+        )
+        .await
+        else {
+            return json!({"success": false, "error": "Telegram sendDocument failed"});
+        };
+
+        match link_message(
+            &self.db,
+            self.user_id,
+            sent.chat_id,
+            sent.message_id,
+            self.thread_id,
+        )
+        .await
+        {
+            Ok(()) => {
+                json!({"success": true, "chat_id": sent.chat_id, "message_id": sent.message_id})
+            }
+            Err(error) => json!({"success": false, "error": error}),
+        }
+    }
+}
+
+fn file_name_from_path(path: &str) -> String {
+    let name: String = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"')
+        .collect();
+    let name = name.trim();
+    if name.is_empty() {
+        "file".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Resolves the Telegram chat and (optional) topic a thread is bound to. The stored topic id is
+/// encoded: positive for forum topics, negative for direct-message topics, `0` for none.
+pub(crate) async fn thread_chat(
+    db: &ConnectionPool,
+    thread_id: Uuid,
+) -> Result<Option<(i64, Option<i64>)>, String> {
+    telegram_threads::select_cols((telegram_threads::chat_id, telegram_threads::topic_id))
+        .where_(telegram_threads::thread_id.eq(thread_id))
+        .all(db)
+        .await
+        .map_err(|error| error.to_string())
+        .map(|rows| {
+            rows.into_iter()
+                .next()
+                .map(|(chat_id, topic_id)| (chat_id, (topic_id != 0).then_some(topic_id)))
+        })
+}
+
+/// Splits an encoded topic id into Telegram's `message_thread_id` (forum topics, positive) and
+/// `direct_messages_topic_id` (direct-message topics, stored negative).
+fn topic_fields(topic_id: Option<i64>) -> (Option<i64>, Option<i64>) {
+    match topic_id {
+        Some(id) if id > 0 => (Some(id), None),
+        Some(id) if id < 0 => (None, Some(-id)),
+        _ => (None, None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_document(
+    bot_token: &str,
+    chat_id: i64,
+    topic_id: Option<i64>,
+    file_name: &str,
+    mime_type: Option<&str>,
+    data: &[u8],
+    caption: Option<&str>,
+) -> Option<TelegramSentMessage> {
+    let (message_thread_id, direct_messages_topic_id) = topic_fields(topic_id);
+    let mut fields: Vec<(&str, String)> = vec![("chat_id", chat_id.to_string())];
+    if let Some(id) = message_thread_id {
+        fields.push(("message_thread_id", id.to_string()));
+    }
+    if let Some(id) = direct_messages_topic_id {
+        fields.push(("direct_messages_topic_id", id.to_string()));
+    }
+    if let Some(caption) = caption {
+        fields.push(("caption", caption.chars().take(1024).collect()));
+    }
+
+    let boundary = format!("friday{}", Uuid::now_v7().as_simple());
+    let mime = mime_type.unwrap_or("application/octet-stream");
+    let body = multipart_body(&boundary, &fields, "document", file_name, mime, data);
+
+    let uri = format!("https://api.telegram.org/bot{bot_token}/sendDocument");
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Full::new(Bytes::from(body)))
+        .ok()?;
+
+    let (status, body) = match timeout(Duration::from_secs(60), tinynet::send_request(req)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "failed to send Telegram document");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "timed out sending Telegram document");
+            return None;
+        }
+    };
+    if !(200..300).contains(&status) {
+        tracing::warn!(
+            status,
+            body = %String::from_utf8_lossy(&body),
+            "Telegram sendDocument returned error"
+        );
+        return None;
+    }
+
+    serde_json::from_slice::<TelegramApiResponse<TelegramSendMessageResult>>(&body)
+        .ok()
+        .and_then(|response| response.result)
+        .map(|message| TelegramSentMessage {
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+        })
+}
+
+/// Encodes form fields and a single binary file part as a `multipart/form-data` body.
+fn multipart_body(
+    boundary: &str,
+    fields: &[(&str, String)],
+    file_field: &str,
+    file_name: &str,
+    mime_type: &str,
+    data: &[u8],
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"{file_field}\"; filename=\"{file_name}\"\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(format!("Content-Type: {mime_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(data);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
 }
 
 pub(crate) async fn connected_chat(
@@ -209,5 +459,32 @@ mod tests {
         db.initialize_database(db::get_migrations()).await.unwrap();
 
         assert_eq!(connected_chat(&db, Uuid::now_v7()).await.unwrap(), None);
+    }
+
+    #[test]
+    fn topic_fields_split_by_sign() {
+        assert_eq!(topic_fields(None), (None, None));
+        assert_eq!(topic_fields(Some(0)), (None, None));
+        assert_eq!(topic_fields(Some(5)), (Some(5), None));
+        assert_eq!(topic_fields(Some(-7)), (None, Some(7)));
+    }
+
+    #[test]
+    fn file_name_from_path_takes_basename() {
+        assert_eq!(file_name_from_path("/~workspace/report.pdf"), "report.pdf");
+        assert_eq!(file_name_from_path("plain.txt"), "plain.txt");
+        assert_eq!(file_name_from_path("/~workspace/"), "file");
+    }
+
+    #[test]
+    fn multipart_body_includes_fields_and_file() {
+        let fields = vec![("chat_id", "42".to_string())];
+        let body = multipart_body("BOUND", &fields, "document", "a.txt", "text/plain", b"hi");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("--BOUND\r\n"));
+        assert!(text.contains("name=\"chat_id\"\r\n\r\n42\r\n"));
+        assert!(text.contains("name=\"document\"; filename=\"a.txt\""));
+        assert!(text.contains("Content-Type: text/plain\r\n\r\nhi\r\n"));
+        assert!(text.ends_with("--BOUND--\r\n"));
     }
 }

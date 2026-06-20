@@ -32,6 +32,7 @@ use crate::{
         AgentEvent, AgentEventKind, AgentRequest, RUNNER_LIFECYCLE_TOPIC, RunnerLifecycle,
         thread_events_topic,
     },
+    vfs::WORKSPACE_MOUNT,
 };
 
 /// How long a streamed Telegram draft waits before the next update is pushed.
@@ -220,17 +221,14 @@ async fn handle_topic_message(
         return Ok(());
     };
 
-    let Some(text) = message
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-    else {
+    let text = message.message_text();
+    let attachments = message.attachments();
+    if text.is_none() && attachments.is_empty() {
         return Ok(());
-    };
+    }
 
     let Some(user_id) = user_for_telegram_id(&state, from.id).await? else {
-        if message.chat.kind == "private" && is_start_command(text) {
+        if message.chat.kind == "private" && text.is_some_and(is_start_command) {
             send_telegram_message(
                 &state,
                 message.chat.id,
@@ -242,20 +240,25 @@ async fn handle_topic_message(
         return Ok(());
     };
 
-    if resolve_text_action(&state, &message, text).await? {
-        return Ok(());
-    }
-
-    if text.starts_with('/') {
-        return Ok(());
-    }
-
-    // A plain message answers a pending free-form quiz question instead of starting a new run.
-    if let Some((quiz_id, question_index)) =
-        pending_free_form_quiz(&state, message.chat.id, message.send_topic_id())
+    // Interactive flows (button replies, slash commands, free-form quiz answers) only apply to
+    // plain text messages; a message carrying files always starts or continues an agent run.
+    if attachments.is_empty()
+        && let Some(text) = text
     {
-        answer_quiz_question(&state, quiz_id, question_index, text.to_string()).await;
-        return Ok(());
+        if resolve_text_action(&state, &message, text).await? {
+            return Ok(());
+        }
+
+        if text.starts_with('/') {
+            return Ok(());
+        }
+
+        if let Some((quiz_id, question_index)) =
+            pending_free_form_quiz(&state, message.chat.id, message.send_topic_id())
+        {
+            answer_quiz_question(&state, quiz_id, question_index, text.to_string()).await;
+            return Ok(());
+        }
     }
 
     let (thread_id, is_new) =
@@ -266,10 +269,13 @@ async fn handle_topic_message(
         };
 
     if is_new {
+        let title_seed = text
+            .map(str::to_string)
+            .unwrap_or_else(|| attachment_title_seed(&attachments));
         crate::api::threads::spawn_title_generation(
             state.clone(),
             thread_id,
-            text.to_string(),
+            title_seed,
             message
                 .message_thread_id
                 .map(|topic| (message.chat.id, topic)),
@@ -285,13 +291,15 @@ async fn handle_topic_message(
     .await?;
     ensure_telegram_mapping_for_message(&state, user_id, &message, thread_id).await;
 
+    let content = build_agent_content(&state, user_id, thread_id, text, &attachments).await;
+
     // The pool serializes concurrent messages per thread, so a plain send never collides.
     if let Err(error) = state
         .runner
         .send(
             thread_id,
             AgentRequest {
-                content: text.to_string(),
+                content,
                 images: Vec::new(),
             },
         )
@@ -308,6 +316,152 @@ async fn handle_topic_message(
     }
 
     Ok(())
+}
+
+/// Hands the agent the user's text plus, for any attached files, a note of where each landed in
+/// the workspace after being downloaded (or that the download failed).
+async fn build_agent_content(
+    state: &ServerState,
+    user_id: Uuid,
+    thread_id: Uuid,
+    text: Option<&str>,
+    attachments: &[IncomingAttachment],
+) -> String {
+    let mut content = text.unwrap_or_default().to_string();
+    if attachments.is_empty() {
+        return content;
+    }
+
+    let saved = download_attachments_to_workspace(state, user_id, thread_id, attachments).await;
+    let note = if saved.is_empty() {
+        format!(
+            "[The user attached {} file(s), but Friday could not download them.]",
+            attachments.len()
+        )
+    } else {
+        let list = saved
+            .iter()
+            .map(|path| format!("/{WORKSPACE_MOUNT}/{path}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "[The user attached {} file(s), saved to the workspace: {list}]",
+            saved.len()
+        )
+    };
+    if !content.is_empty() {
+        content.push_str("\n\n");
+    }
+    content.push_str(&note);
+    content
+}
+
+fn attachment_title_seed(attachments: &[IncomingAttachment]) -> String {
+    match attachments.first() {
+        Some(first) => format!("Shared file {}", first.file_name),
+        None => "Shared a file".to_string(),
+    }
+}
+
+/// Downloads each attachment from Telegram and writes it under `/~workspace/uploads`, returning the
+/// workspace-relative paths (e.g. `uploads/photo.jpg`) that were stored successfully.
+async fn download_attachments_to_workspace(
+    state: &ServerState,
+    user_id: Uuid,
+    thread_id: Uuid,
+    attachments: &[IncomingAttachment],
+) -> Vec<String> {
+    let Some(vfs) = state.vfs.as_ref() else {
+        tracing::warn!(%thread_id, "no VFS configured; cannot save Telegram attachments");
+        return Vec::new();
+    };
+    let Some(token) = bot_token(state) else {
+        return Vec::new();
+    };
+    let project_id = thread_project_id(&state.db, thread_id).await;
+    let workspace_id = match vfs
+        .get_or_create_workspace(thread_id, project_id, user_id)
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            tracing::warn!(%thread_id, %error, "failed to open workspace for Telegram attachments");
+            return Vec::new();
+        }
+    };
+
+    let mut saved = Vec::new();
+    for attachment in attachments {
+        let Some(bytes) = download_telegram_file(state, &token, &attachment.file_id).await else {
+            continue;
+        };
+        let path = format!("uploads/{}", attachment.file_name);
+        match vfs
+            .write_bytes(
+                workspace_id,
+                &path,
+                &bytes,
+                attachment.mime_type.as_deref(),
+                user_id,
+            )
+            .await
+        {
+            Ok(()) => saved.push(path),
+            Err(error) => {
+                tracing::warn!(%thread_id, path, %error, "failed to write Telegram attachment");
+            }
+        }
+    }
+    saved
+}
+
+async fn thread_project_id(db: &ConnectionPool, thread_id: Uuid) -> Option<Uuid> {
+    threads::select_cols((threads::project_id,))
+        .where_(threads::id.eq(thread_id))
+        .all(db)
+        .await
+        .ok()?
+        .into_iter()
+        .next()
+        .and_then(|(project_id,)| project_id)
+}
+
+/// Resolves a Telegram `file_id` to its bytes via `getFile` + the file download endpoint. Telegram
+/// caps bot downloads at 20 MB; larger files fail `getFile` and yield `None`.
+async fn download_telegram_file(
+    state: &ServerState,
+    token: &str,
+    file_id: &str,
+) -> Option<Vec<u8>> {
+    let body = serde_json::to_vec(&json!({ "file_id": file_id })).ok()?;
+    let response = telegram_post(state, "getFile", body).await?;
+    let file_path = serde_json::from_slice::<TelegramApiResponse<TelegramFile>>(&response)
+        .ok()?
+        .result?
+        .file_path?;
+
+    let uri = format!("https://api.telegram.org/file/bot{token}/{file_path}");
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Full::new(Bytes::new()))
+        .ok()?;
+    let (status, body) = match timeout(Duration::from_secs(30), tinynet::send_request(req)).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "failed to download Telegram file");
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "timed out downloading Telegram file");
+            return None;
+        }
+    };
+    if !(200..300).contains(&status) {
+        tracing::warn!(status, "Telegram file download returned error");
+        return None;
+    }
+    Some(body.to_vec())
 }
 
 /// Pending interactive prompts (approvals and quizzes) shown in Telegram as buttons or, for
@@ -2090,13 +2244,109 @@ pub struct TelegramMessage {
     chat: TelegramChat,
     from: Option<TelegramUser>,
     text: Option<String>,
+    caption: Option<String>,
     message_thread_id: Option<i64>,
     direct_messages_topic: Option<DirectMessagesTopic>,
     reply_to_message: Option<TelegramReplyMessage>,
     forum_topic_created: Option<ForumTopicCreated>,
+    document: Option<TelegramDocument>,
+    photo: Option<Vec<TelegramPhotoSize>>,
+    voice: Option<TelegramVoice>,
+    audio: Option<TelegramAudio>,
+    video: Option<TelegramVideo>,
+    video_note: Option<TelegramVideoNote>,
+}
+
+/// A downloadable file attached to an incoming message, normalized across the
+/// various Telegram media kinds (document, photo, voice, ...).
+struct IncomingAttachment {
+    file_id: String,
+    file_name: String,
+    mime_type: Option<String>,
 }
 
 impl TelegramMessage {
+    /// The message's free-text, taken from `text` for plain messages and from
+    /// `caption` for media messages.
+    fn message_text(&self) -> Option<&str> {
+        self.text
+            .as_deref()
+            .or(self.caption.as_deref())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Files attached to this message, with a sanitized workspace file name and
+    /// best-known MIME type for each.
+    fn attachments(&self) -> Vec<IncomingAttachment> {
+        let mut out = Vec::new();
+        if let Some(doc) = &self.document {
+            out.push(IncomingAttachment {
+                file_id: doc.file_id.clone(),
+                file_name: attachment_file_name(
+                    doc.file_name.as_deref(),
+                    &doc.file_unique_id,
+                    doc.mime_type.as_deref(),
+                    "file",
+                ),
+                mime_type: doc.mime_type.clone(),
+            });
+        }
+        if let Some(largest) = self
+            .photo
+            .as_ref()
+            .and_then(|sizes| sizes.iter().max_by_key(|s| s.file_size.unwrap_or(0)))
+        {
+            out.push(IncomingAttachment {
+                file_id: largest.file_id.clone(),
+                file_name: format!("photo_{}.jpg", largest.file_unique_id),
+                mime_type: Some("image/jpeg".to_string()),
+            });
+        }
+        if let Some(voice) = &self.voice {
+            out.push(IncomingAttachment {
+                file_id: voice.file_id.clone(),
+                file_name: format!("voice_{}.ogg", voice.file_unique_id),
+                mime_type: voice
+                    .mime_type
+                    .clone()
+                    .or_else(|| Some("audio/ogg".to_string())),
+            });
+        }
+        if let Some(audio) = &self.audio {
+            out.push(IncomingAttachment {
+                file_id: audio.file_id.clone(),
+                file_name: attachment_file_name(
+                    audio.file_name.as_deref(),
+                    &audio.file_unique_id,
+                    audio.mime_type.as_deref(),
+                    "audio",
+                ),
+                mime_type: audio.mime_type.clone(),
+            });
+        }
+        if let Some(video) = &self.video {
+            out.push(IncomingAttachment {
+                file_id: video.file_id.clone(),
+                file_name: attachment_file_name(
+                    video.file_name.as_deref(),
+                    &video.file_unique_id,
+                    video.mime_type.as_deref(),
+                    "video",
+                ),
+                mime_type: video.mime_type.clone(),
+            });
+        }
+        if let Some(note) = &self.video_note {
+            out.push(IncomingAttachment {
+                file_id: note.file_id.clone(),
+                file_name: format!("video_note_{}.mp4", note.file_unique_id),
+                mime_type: Some("video/mp4".to_string()),
+            });
+        }
+        out
+    }
+
     fn send_topic_id(&self) -> Option<i64> {
         self.message_thread_id
             .map(encode_forum_topic_id)
@@ -2154,6 +2404,98 @@ pub struct TelegramUser {
 
 #[derive(Debug, Deserialize)]
 pub struct ForumTopicCreated {}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramDocument {
+    file_id: String,
+    file_unique_id: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramPhotoSize {
+    file_id: String,
+    file_unique_id: String,
+    file_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramVoice {
+    file_id: String,
+    file_unique_id: String,
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramAudio {
+    file_id: String,
+    file_unique_id: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramVideo {
+    file_id: String,
+    file_unique_id: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramVideoNote {
+    file_id: String,
+    file_unique_id: String,
+}
+
+/// Picks a safe workspace file name for an incoming attachment: the basename of
+/// the Telegram-provided name when present, otherwise `<fallback>_<unique_id>`
+/// with an extension guessed from the MIME type.
+fn attachment_file_name(
+    provided: Option<&str>,
+    file_unique_id: &str,
+    mime_type: Option<&str>,
+    fallback: &str,
+) -> String {
+    if let Some(name) = provided.map(sanitize_file_name).filter(|n| !n.is_empty()) {
+        return name;
+    }
+    match mime_extension(mime_type) {
+        Some(ext) => format!("{fallback}_{file_unique_id}.{ext}"),
+        None => format!("{fallback}_{file_unique_id}"),
+    }
+}
+
+/// Reduces a path-like name to a single safe file name component.
+fn sanitize_file_name(name: &str) -> String {
+    name.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"')
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn mime_extension(mime_type: Option<&str>) -> Option<&'static str> {
+    match mime_type?.split(';').next()?.trim() {
+        "application/pdf" => Some("pdf"),
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "text/plain" => Some("txt"),
+        "text/csv" => Some("csv"),
+        "application/zip" => Some("zip"),
+        "application/json" => Some("json"),
+        "audio/ogg" => Some("ogg"),
+        "audio/mpeg" => Some("mp3"),
+        "video/mp4" => Some("mp4"),
+        _ => None,
+    }
+}
 
 #[derive(Serialize)]
 struct SendMessageRequest<'a> {
@@ -2274,11 +2616,58 @@ struct TelegramGetMeResult {
     username: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct TelegramFile {
+    file_path: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn document_message_yields_named_attachment() {
+        let update: TelegramUpdate = serde_json::from_str(
+            r#"{"message":{"message_id":1,"chat":{"id":1,"type":"private"},"from":{"id":2},"caption":"see this","document":{"file_id":"FID","file_unique_id":"U","file_name":"report.pdf","mime_type":"application/pdf"}}}"#,
+        )
+        .unwrap();
+        let message = update.message().unwrap();
+        assert_eq!(message.message_text(), Some("see this"));
+        let attachments = message.attachments();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].file_id, "FID");
+        assert_eq!(attachments[0].file_name, "report.pdf");
+        assert_eq!(attachments[0].mime_type.as_deref(), Some("application/pdf"));
+    }
+
+    #[test]
+    fn photo_message_without_caption_picks_largest_size() {
+        let update: TelegramUpdate = serde_json::from_str(
+            r#"{"message":{"message_id":1,"chat":{"id":1,"type":"private"},"from":{"id":2},"photo":[{"file_id":"small","file_unique_id":"s","file_size":100},{"file_id":"big","file_unique_id":"b","file_size":900}]}}"#,
+        )
+        .unwrap();
+        let message = update.message().unwrap();
+        assert_eq!(message.message_text(), None);
+        let attachments = message.attachments();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].file_id, "big");
+        assert_eq!(attachments[0].file_name, "photo_b.jpg");
+    }
+
+    #[test]
+    fn attachment_file_name_sanitizes_and_falls_back() {
+        assert_eq!(
+            attachment_file_name(None, "U", Some("application/pdf"), "file"),
+            "file_U.pdf"
+        );
+        assert_eq!(attachment_file_name(None, "U", None, "audio"), "audio_U");
+        assert_eq!(
+            attachment_file_name(Some("../etc/passwd"), "U", None, "file"),
+            "passwd"
+        );
+    }
 
     #[test]
     fn rich_send_delivered_is_not_resent_as_plain_text() {
@@ -2572,6 +2961,13 @@ mod tests {
             direct_messages_topic: None,
             reply_to_message: None,
             forum_topic_created: None,
+            caption: None,
+            document: None,
+            photo: None,
+            voice: None,
+            audio: None,
+            video: None,
+            video_note: None,
         }
     }
 
@@ -2885,6 +3281,13 @@ mod tests {
             direct_messages_topic: None,
             reply_to_message: None,
             forum_topic_created: None,
+            caption: None,
+            document: None,
+            photo: None,
+            voice: None,
+            audio: None,
+            video: None,
+            video_note: None,
         };
 
         let (created_thread_id, is_new) = ensure_telegram_thread(&state, user_id, &message)
@@ -2916,6 +3319,13 @@ mod tests {
             direct_messages_topic: Some(DirectMessagesTopic { topic_id: 99 }),
             reply_to_message: None,
             forum_topic_created: None,
+            caption: None,
+            document: None,
+            photo: None,
+            voice: None,
+            audio: None,
+            video: None,
+            video_note: None,
         };
 
         let (created_thread_id, is_new) = ensure_telegram_thread(&state, user_id, &message)
