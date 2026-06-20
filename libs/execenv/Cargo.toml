@@ -6,10 +6,12 @@ edition = "2024"
 [features]
 default = []
 eryx = ["dep:eryx", "dep:tempfile"]
+bashkit = ["dep:bashkit"]
 
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1"
+bashkit = { version = "0.11.0", default-features = false, optional = true }
 bytes = "1.11.1"
 flate2 = "1.1"
 friday-agent = { path = "../agent" }

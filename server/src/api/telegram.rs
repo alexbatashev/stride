@@ -27,9 +27,7 @@ use crate::{
     ServerState,
     api::auth::{self, AuthError},
     api::threads::DEFAULT_THREAD_TITLE,
-    db::{
-        Role, messages, telegram_connections, telegram_message_links, telegram_threads, threads,
-    },
+    db::{Role, messages, telegram_connections, telegram_message_links, telegram_threads, threads},
     runner::{
         AgentEvent, AgentEventKind, AgentRequest, RUNNER_LIFECYCLE_TOPIC, RunnerLifecycle,
         thread_events_topic,
@@ -1945,7 +1943,8 @@ fn is_start_command(text: &str) -> bool {
         return false;
     };
     let command = command.split('@').next().unwrap_or(command);
-    let is_start = command.eq_ignore_ascii_case("/connect") || command.eq_ignore_ascii_case("/start");
+    let is_start =
+        command.eq_ignore_ascii_case("/connect") || command.eq_ignore_ascii_case("/start");
     is_start && parts.next().is_none()
 }
 

@@ -14,6 +14,11 @@ use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "eryx")]
 pub use eryx::VolumeMount;
 
+#[cfg(feature = "bashkit")]
+mod bashkit_cmd;
+#[cfg(feature = "bashkit")]
+pub use bashkit_cmd::PythonBuiltin;
+
 // Pure-Python wheels (py3-none-any). They carry no native extensions, so they
 // import on any CPython-WASI minor version and need no compilation.
 const BS4_URL: &str = "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl";
@@ -636,6 +641,12 @@ impl PythonTool {
         }
     }
 
+    /// The underlying interpreter, shareable with other callers (e.g. a shell
+    /// `python` command) so they reuse the same runtime and workspace.
+    pub fn service(&self) -> Arc<dyn ExecutionService> {
+        self.service.clone()
+    }
+
     /// Expose the agent's auto-approved tools to executed scripts under the
     /// `tools` package. The registry should not contain this Python tool itself.
     pub fn with_tools(mut self, registry: ToolRegistry) -> Self {
@@ -1054,7 +1065,10 @@ mod eryx_backend {
         ) -> anyhow::Result<ExecutionOutput> {
             let request = self.prepared_request(script).await?;
             self.fs.before_execute().await?;
-            let result = self.hub.execute_with_tools(request, tools.to_vec(), calls).await;
+            let result = self
+                .hub
+                .execute_with_tools(request, tools.to_vec(), calls)
+                .await;
             let after = self.fs.after_execute().await;
             join_results(result, after)
         }
@@ -1312,7 +1326,8 @@ mod eryx_backend {
                     calls,
                     tx,
                 } => {
-                    let result = runtime.block_on(execute_request_with_tools(request, tools, calls));
+                    let result =
+                        runtime.block_on(execute_request_with_tools(request, tools, calls));
                     let _ = tx.send(result);
                 }
             }
