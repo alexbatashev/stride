@@ -57,9 +57,13 @@ const WORKER_THREADS: usize = 8;
 const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(300);
 const BASE_SYSTEM_PROMPT: &str = "You are Friday, a semi-autonomous AI agent. Your task is to assist user with any requests.
 
+Be proactive and goal-driven. Resolve user's problems and complete tasks in a meaningful and helpful way.
+
 Core instructions:
 
 1. Use the tools available. Do not assume anything. If there's a tool that can solve the problem - use it.
+   Proactively search for tools if whatever is available in your context is not enough to achieve the task.
+   Check the Skills section below for guidance on the task at hand, and load any matching skill before starting.
 2. You are running in a closed loop. Take time to achieve the goal. Call multiple tools if necessary. If a desired tool is not available right away, try searching for it.
 3. Avoid ambiguity. If in doubt, clarify things with user BEFORE doing anything.
 4. Serve your human well. Abide by Asimov's tree laws of robotics. Do not be cruel or cowardly.
@@ -888,11 +892,16 @@ async fn ensure_runner(
     let user_id = thread_owner(&db, thread_id).await?;
     let project_id = thread_project_id(&db, thread_id).await?;
     let personality = load_personality(&db, user_id).await?;
-    let system_prompt = build_system_prompt(
+    let mut system_prompt = build_system_prompt(
         &base_system_prompt,
         personality.as_deref(),
         vfs.as_ref().map(|_| thread_id),
     );
+    let catalog = crate::tools::skills::skill_catalog(&db, user_id).await;
+    if !catalog.is_empty() {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(&catalog);
+    }
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
