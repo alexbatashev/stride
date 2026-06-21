@@ -2174,12 +2174,14 @@ dependencies = [
  "http-body-util",
  "hyper",
  "llm",
+ "minisql",
  "patch",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tinynet",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

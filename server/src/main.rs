@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "change-this-development-secret".to_string());
 
     let db = ConnectionPool::new(&config.db_url()).unwrap();
-    db.initialize_database(db::get_migrations()).await.unwrap();
+    db::migrate(&db).await.unwrap();
 
     let listen_addr = config.listen_addr().to_string();
     let tools = config.tools.clone().unwrap_or_default();
