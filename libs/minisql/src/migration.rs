@@ -15,6 +15,32 @@ pub struct Migration {
     raw_sql: Vec<String>,
 }
 
+/// A named, independent migration history. Each crate can define one (or more)
+/// of these; several can be applied to a single connection pool so the schema
+/// is composed from fragments that each own their own append-only sequence.
+#[derive(Debug, Clone)]
+pub struct SchemaSet {
+    name: String,
+    migrations: Vec<Migration>,
+}
+
+impl SchemaSet {
+    pub fn new<S: Into<String>>(name: S, migrations: Vec<Migration>) -> Self {
+        SchemaSet {
+            name: name.into(),
+            migrations,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn migrations(&self) -> &[Migration] {
+        &self.migrations
+    }
+}
+
 // Manual impl so migrations without alters hash exactly as before, keeping
 // already-applied databases compatible after this field was introduced.
 impl Hash for Migration {

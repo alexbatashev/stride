@@ -14,7 +14,7 @@ Prefer the `migrations!` macro path over manual `Migration` or `Table` builders.
 1. Find the existing `migrations!` block and generated table-module usage before editing anything.
 2. Change schema in the macro first.
 3. Update call sites to use the generated module API instead of hand-written SQL when the query is a simple single-table insert or select.
-4. Keep `get_migrations()` output to one migration unless you also change runtime migration handling.
+4. Add new schema changes as a new version block; existing applied migrations are append-only and validated by index.
 5. Run focused Rust tests after changes.
 
 ## Macro Rules
@@ -38,10 +38,17 @@ Prefer the `migrations!` macro path over manual `Migration` or `Table` builders.
 - `update()` and `delete()` require a `.where_(...)` predicate; call `.all()` to intentionally affect every row.
 - Use raw SQL with `query_with_params` when the query needs joins, aggregates, or anything beyond the single-table DSL.
 
+## Sharing Schema Across Crates
+
+- Wrap version blocks in `namespace <name> { v1 { ... } v2 { ... } }` to make the macro emit a composable `schema() -> SchemaSet` instead of `get_migrations()`.
+- A namespaced fragment can live in a shared crate; downstream crates import its `schema()` and its generated table modules.
+- Compose fragments onto one pool with `db.migrator().apply(a::schema()).apply(b::schema()).run().await`. List a fragment before any fragment whose foreign keys reference it.
+- Each namespace owns an independent append-only history in the `__migrations` ledger, so fragment indices never collide. The unnamed form (`get_migrations()` + `initialize_database`) maps to the default empty namespace.
+
 ## Sharp Edges
 
 - `ConnectionPool` only supports SQLite URLs. In tests, use `sqlite::memory:`.
-- `initialize_database` currently panics for more than one migration in the vector. The macro can define multiple migrations, but the runtime does not apply them yet.
+- Migrations are append-only and validated by index (per namespace). Reordering or editing an already-applied migration panics on mismatch; add a new version block instead.
 - The generated query DSL is single-table only.
 - `select_cols` tuple decoding only exists for 1 to 4 columns.
 - `InsertBuilder::execute()` returns the query result's `affected_rows()`, which is not a reliable inserted-row count for SQLite writes in this implementation.

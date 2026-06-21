@@ -152,9 +152,48 @@ Use `db.query_with_params(...)` instead of the DSL for:
 - custom SQL functions
 - anything that is not a single-table `SELECT`, `INSERT`, `UPDATE`, or `DELETE`
 
+## Sharing Schema Across Crates
+
+Wrap the version blocks in a `namespace <name> { ... }` to make the macro emit a
+composable fragment instead of a bare `get_migrations()`:
+
+```rust
+migrations! {
+    namespace core {
+        v1 {
+            table accounts {
+                id: Uuid [PrimaryKey],
+                name: String,
+            }
+        }
+    }
+}
+```
+
+This generates `pub fn schema() -> minisql::SchemaSet` (plus the usual table
+modules). A shared crate exports `schema()` and its table modules; downstream
+crates compose several fragments onto one pool:
+
+```rust
+db.migrator()
+    .apply(core_schema::schema())   // applied first: FK target
+    .apply(app_schema::schema())    // may FK into core tables
+    .run()
+    .await?;
+```
+
+Notes:
+- Each namespace keeps its own append-only migration history in `__migrations`,
+  so fragment indices never collide.
+- Apply order matters: list a fragment before any fragment that references its
+  tables via foreign keys.
+- The unnamed form (`get_migrations()` + `initialize_database`) is the default
+  empty namespace; the two forms coexist on the same database.
+
 ## Current Runtime Limits
 
 - `ConnectionPool::new(...)` only recognizes `sqlite:` URLs.
-- `initialize_database(...)` currently rejects more than one migration in the vector.
+- Migrations are append-only and validated by index within each namespace; a
+  hash mismatch panics. Add new version blocks rather than editing applied ones.
 - `SelectQuery::one()` and projection `.one()` are convenience wrappers over `LIMIT 1`.
 - `InsertBuilder::execute()` should be treated as fire-and-forget success reporting, not a trusted inserted-row count.

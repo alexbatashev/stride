@@ -161,6 +161,33 @@ migrations! {
 
 This generates a function that returns a `Vec<Migration>` with both migrations in order.
 
+### Sharing Schema Across Crates
+
+Wrap the version blocks in `namespace <name> { ... }` to emit a composable
+`schema() -> SchemaSet` fragment instead of a bare `get_migrations()`. A shared
+crate can define a fragment; downstream crates compose several fragments onto one
+connection pool, each with its own independent migration history:
+
+```rust
+migrations! {
+    namespace core {
+        v1 {
+            table accounts {
+                id: Uuid [PrimaryKey],
+                name: String,
+            }
+        }
+    }
+}
+
+// Generates `pub fn schema() -> minisql::SchemaSet`.
+db.migrator()
+    .apply(core_schema::schema())   // applied first: foreign-key target
+    .apply(app_schema::schema())    // may reference core tables
+    .run()
+    .await?;
+```
+
 ## Error Handling
 
 The macro provides compile-time validation:
