@@ -1,221 +1,140 @@
 import Foundation
+import Markdown
 
-/// A block-level element produced by ``MarkdownParser``.
-enum MarkdownBlock: Equatable, Identifiable {
-    case heading(level: Int, text: String)
-    case paragraph(text: String)
-    case bulletList(items: [String])
-    case orderedList(items: [OrderedItem])
-    case quote(text: String)
+/// A block-level element ready to render. Inline spans (bold, italic, code,
+/// links) are already baked into the `AttributedString` payloads, so the view
+/// layer never parses anything itself.
+enum MarkdownBlock {
+    case heading(level: Int, text: AttributedString)
+    case paragraph(AttributedString)
+    case bulletList(items: [[MarkdownBlock]])
+    case orderedList(start: Int, items: [[MarkdownBlock]])
+    case quote([MarkdownBlock])
     case code(language: String?, code: String)
     case image(alt: String, url: String)
     case rule
-
-    struct OrderedItem: Equatable, Identifiable {
-        let id = UUID()
-        let number: Int
-        let text: String
-    }
-
-    var id: String {
-        switch self {
-        case .heading(let level, let text): return "h\(level):\(text)"
-        case .paragraph(let text): return "p:\(text)"
-        case .bulletList(let items): return "ul:\(items.joined(separator: "|"))"
-        case .orderedList(let items): return "ol:\(items.map { "\($0.number).\($0.text)" }.joined(separator: "|"))"
-        case .quote(let text): return "q:\(text)"
-        case .code(let language, let code): return "code:\(language ?? "")\n\(code)"
-        case .image(let alt, let url): return "img:\(url):\(alt)"
-        case .rule: return "hr"
-        }
-    }
 }
 
-/// A line-based, fault-tolerant Markdown block parser. It is deliberately lenient
-/// so that text still streaming from the agent (an unclosed code fence, a dangling
-/// emphasis marker) renders sensibly mid-flight.
+/// Turns Markdown into ``MarkdownBlock``s using swift-markdown's CommonMark
+/// parser. Replaces a hand-rolled line scanner, so nested lists, blockquotes and
+/// inline emphasis all parse correctly. Results are memoized by ``MarkdownCache``.
 enum MarkdownParser {
-    static func parse(_ source: String) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
-        let lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
-        var index = 0
+    static func parse(_ source: String, baseURL: URL?) -> [MarkdownBlock] {
+        let document = Document(parsing: source)
+        return blocks(Array(document.children), baseURL: baseURL)
+    }
 
-        while index < lines.count {
-            let line = lines[index]
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+    // MARK: - Blocks
 
-            if trimmed.isEmpty {
-                index += 1
-                continue
-            }
+    private static func blocks(_ markups: [Markup], baseURL: URL?) -> [MarkdownBlock] {
+        markups.compactMap { block($0, baseURL: baseURL) }
+    }
 
-            if let fence = fenceLanguage(trimmed) {
-                let (block, next) = consumeCodeBlock(lines, start: index + 1, language: fence)
-                blocks.append(block)
-                index = next
-                continue
-            }
-
-            if isRule(trimmed) {
-                blocks.append(.rule)
-                index += 1
-                continue
-            }
-
-            if let heading = heading(trimmed) {
-                blocks.append(heading)
-                index += 1
-                continue
-            }
-
-            if let image = standaloneImage(trimmed) {
-                blocks.append(image)
-                index += 1
-                continue
-            }
-
-            if trimmed.hasPrefix(">") {
-                let (block, next) = consumeQuote(lines, start: index)
-                blocks.append(block)
-                index = next
-                continue
-            }
-
-            if isBullet(trimmed) {
-                let (block, next) = consumeBulletList(lines, start: index)
-                blocks.append(block)
-                index = next
-                continue
-            }
-
-            if orderedPrefix(trimmed) != nil {
-                let (block, next) = consumeOrderedList(lines, start: index)
-                blocks.append(block)
-                index = next
-                continue
-            }
-
-            let (block, next) = consumeParagraph(lines, start: index)
-            blocks.append(block)
-            index = next
+    private static func block(_ markup: Markup, baseURL: URL?) -> MarkdownBlock? {
+        switch markup {
+        case let heading as Heading:
+            return .heading(level: heading.level, text: inline(heading, baseURL: baseURL))
+        case let paragraph as Paragraph:
+            return standaloneImage(paragraph) ?? .paragraph(inline(paragraph, baseURL: baseURL))
+        case let list as UnorderedList:
+            return .bulletList(items: items(of: list.listItems, baseURL: baseURL))
+        case let list as OrderedList:
+            return .orderedList(start: Int(list.startIndex), items: items(of: list.listItems, baseURL: baseURL))
+        case let quote as BlockQuote:
+            return .quote(blocks(Array(quote.children), baseURL: baseURL))
+        case let code as CodeBlock:
+            let language = code.language.flatMap { $0.isEmpty ? nil : $0 }
+            return .code(language: language, code: trimmingTrailingNewlines(code.code))
+        case is ThematicBreak:
+            return .rule
+        case let html as HTMLBlock:
+            return .paragraph(AttributedString(html.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines)))
+        default:
+            return nil
         }
-
-        return blocks
     }
 
-    // MARK: - Block detectors
-
-    private static func fenceLanguage(_ trimmed: String) -> String? {
-        guard trimmed.hasPrefix("```") else { return nil }
-        let language = trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
-        return language.isEmpty ? "" : language
+    private static func items(of listItems: some Sequence<ListItem>, baseURL: URL?) -> [[MarkdownBlock]] {
+        listItems.map { blocks(Array($0.children), baseURL: baseURL) }
     }
 
-    private static func isRule(_ trimmed: String) -> Bool {
-        let stripped = trimmed.filter { !$0.isWhitespace }
-        guard stripped.count >= 3 else { return false }
-        return stripped.allSatisfy { $0 == "-" } || stripped.allSatisfy { $0 == "*" } || stripped.allSatisfy { $0 == "_" }
+    private static func standaloneImage(_ paragraph: Paragraph) -> MarkdownBlock? {
+        let children = Array(paragraph.children)
+        guard children.count == 1, let image = children.first as? Markdown.Image,
+              let source = image.source else { return nil }
+        return .image(alt: image.plainText, url: source)
     }
 
-    private static func heading(_ trimmed: String) -> MarkdownBlock? {
-        var level = 0
-        for char in trimmed {
-            if char == "#" { level += 1 } else { break }
+    private static func trimmingTrailingNewlines(_ string: String) -> String {
+        var result = string
+        while result.hasSuffix("\n") { result.removeLast() }
+        return result
+    }
+
+    // MARK: - Inline
+
+    private static func inline(_ markup: Markup, baseURL: URL?) -> AttributedString {
+        descend(markup.children, intent: [], link: nil, baseURL: baseURL)
+    }
+
+    private static func descend(
+        _ children: some Sequence<Markup>,
+        intent: InlinePresentationIntent,
+        link: URL?,
+        baseURL: URL?
+    ) -> AttributedString {
+        var result = AttributedString()
+        for child in children {
+            result.append(fragment(child, intent: intent, link: link, baseURL: baseURL))
         }
-        guard level >= 1, level <= 6 else { return nil }
-        let rest = trimmed.dropFirst(level)
-        guard rest.first == " " else { return nil }
-        return .heading(level: level, text: rest.trimmingCharacters(in: .whitespaces))
+        return result
     }
 
-    private static func standaloneImage(_ trimmed: String) -> MarkdownBlock? {
-        guard trimmed.hasPrefix("!["), trimmed.hasSuffix(")"),
-              let bracket = trimmed.firstIndex(of: "]"),
-              let paren = trimmed.firstIndex(of: "(")
-        else { return nil }
-        let alt = String(trimmed[trimmed.index(trimmed.startIndex, offsetBy: 2)..<bracket])
-        let url = String(trimmed[trimmed.index(after: paren)..<trimmed.index(before: trimmed.endIndex)])
-        return .image(alt: alt, url: url)
-    }
-
-    private static func isBullet(_ trimmed: String) -> Bool {
-        trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ")
-    }
-
-    private static func orderedPrefix(_ trimmed: String) -> Int? {
-        let digits = trimmed.prefix { $0.isNumber }
-        guard !digits.isEmpty, let number = Int(digits) else { return nil }
-        let afterDigits = trimmed.dropFirst(digits.count)
-        guard afterDigits.first == ".", afterDigits.dropFirst().first == " " else { return nil }
-        return number
-    }
-
-    // MARK: - Block consumers
-
-    private static func consumeCodeBlock(_ lines: [String], start: Int, language: String) -> (MarkdownBlock, Int) {
-        var body: [String] = []
-        var index = start
-        while index < lines.count {
-            if lines[index].trimmingCharacters(in: .whitespaces) == "```" {
-                index += 1
-                break
-            }
-            body.append(lines[index])
-            index += 1
+    private static func fragment(
+        _ markup: Markup,
+        intent: InlinePresentationIntent,
+        link: URL?,
+        baseURL: URL?
+    ) -> AttributedString {
+        switch markup {
+        case let text as Markdown.Text:
+            return styled(text.string, intent: intent, link: link)
+        case let code as InlineCode:
+            return styled(code.code, intent: intent.union(.code), link: link)
+        case let emphasis as Emphasis:
+            return descend(emphasis.children, intent: intent.union(.emphasized), link: link, baseURL: baseURL)
+        case let strong as Strong:
+            return descend(strong.children, intent: intent.union(.stronglyEmphasized), link: link, baseURL: baseURL)
+        case let strike as Strikethrough:
+            return descend(strike.children, intent: intent.union(.strikethrough), link: link, baseURL: baseURL)
+        case let anchor as Markdown.Link:
+            let resolved = anchor.destination.flatMap { resolveLink($0, baseURL: baseURL) }
+            return descend(anchor.children, intent: intent, link: resolved ?? link, baseURL: baseURL)
+        case let image as Markdown.Image:
+            return styled(image.plainText, intent: intent, link: link)
+        case is LineBreak:
+            return AttributedString("\n")
+        case is SoftBreak:
+            return AttributedString(" ")
+        case let html as InlineHTML:
+            return styled(html.rawHTML, intent: intent, link: link)
+        case let inline as InlineMarkup:
+            return styled(inline.plainText, intent: intent, link: link)
+        default:
+            return AttributedString()
         }
-        let lang = language.isEmpty ? nil : language
-        return (.code(language: lang, code: body.joined(separator: "\n")), index)
     }
 
-    private static func consumeQuote(_ lines: [String], start: Int) -> (MarkdownBlock, Int) {
-        var body: [String] = []
-        var index = start
-        while index < lines.count, lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(">") {
-            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-            body.append(String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces))
-            index += 1
-        }
-        return (.quote(text: body.joined(separator: "\n")), index)
+    private static func styled(_ string: String, intent: InlinePresentationIntent, link: URL?) -> AttributedString {
+        var attributed = AttributedString(string)
+        if !intent.isEmpty { attributed.inlinePresentationIntent = intent }
+        if let link { attributed.link = link }
+        return attributed
     }
 
-    private static func consumeBulletList(_ lines: [String], start: Int) -> (MarkdownBlock, Int) {
-        var items: [String] = []
-        var index = start
-        while index < lines.count {
-            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-            guard isBullet(trimmed) else { break }
-            items.append(String(trimmed.dropFirst(2)))
-            index += 1
-        }
-        return (.bulletList(items: items), index)
-    }
-
-    private static func consumeOrderedList(_ lines: [String], start: Int) -> (MarkdownBlock, Int) {
-        var items: [MarkdownBlock.OrderedItem] = []
-        var index = start
-        while index < lines.count {
-            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-            guard let number = orderedPrefix(trimmed) else { break }
-            let text = trimmed.drop { $0.isNumber }.dropFirst(2)
-            items.append(.init(number: number, text: String(text)))
-            index += 1
-        }
-        return (.orderedList(items: items), index)
-    }
-
-    private static func consumeParagraph(_ lines: [String], start: Int) -> (MarkdownBlock, Int) {
-        var body: [String] = []
-        var index = start
-        while index < lines.count {
-            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix("```") || trimmed.hasPrefix(">")
-                || isBullet(trimmed) || orderedPrefix(trimmed) != nil || heading(trimmed) != nil
-                || isRule(trimmed) {
-                break
-            }
-            body.append(trimmed)
-            index += 1
-        }
-        return (.paragraph(text: body.joined(separator: "\n")), index)
+    private static func resolveLink(_ destination: String, baseURL: URL?) -> URL? {
+        if let direct = URL(string: destination), direct.scheme != nil { return direct }
+        guard let baseURL else { return URL(string: destination) }
+        return URL(string: destination, relativeTo: baseURL)
     }
 }

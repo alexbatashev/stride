@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AB00CA0000000000000000A2 /* ComposableArchitecture in Frameworks */ = {isa = PBXBuildFile; productRef = AB00CA0000000000000000A1 /* ComposableArchitecture */; };
+		AB00CA0000000000000000B2 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = AB00CA0000000000000000B1 /* Markdown */; };
 		FDFD010000000000000000E1 /* FridayFileProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FDFD010000000000000000A0 /* FridayFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -95,6 +96,7 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				AB00CA0000000000000000A2 /* ComposableArchitecture in Frameworks */,
+				AB00CA0000000000000000B2 /* Markdown in Frameworks */,
 			);
 		};
 		FA95935B2FE7ECAB00C23AFA /* Frameworks */ = {
@@ -160,6 +162,7 @@
 			name = Stride;
 			packageProductDependencies = (
 				AB00CA0000000000000000A1 /* ComposableArchitecture */,
+				AB00CA0000000000000000B1 /* Markdown */,
 			);
 			productName = Stride;
 			productReference = FA95934F2FE7ECAA00C23AFA /* Stride.app */;
@@ -262,6 +265,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				FA9593792FE7ED1000C23AFA /* XCRemoteSwiftPackageReference "swift-composable-architecture" */,
+				AB00CA0000000000000000B0 /* XCRemoteSwiftPackageReference "swift-markdown" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FA9593502FE7ECAA00C23AFA /* Products */;
@@ -482,7 +486,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
@@ -528,7 +532,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
@@ -769,6 +773,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		AB00CA0000000000000000B0 /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swiftlang/swift-markdown.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
 		FA9593792FE7ED1000C23AFA /* XCRemoteSwiftPackageReference "swift-composable-architecture" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/pointfreeco/swift-composable-architecture";
@@ -784,6 +796,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = FA9593792FE7ED1000C23AFA /* XCRemoteSwiftPackageReference "swift-composable-architecture" */;
 			productName = ComposableArchitecture;
+		};
+		AB00CA0000000000000000B1 /* Markdown */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AB00CA0000000000000000B0 /* XCRemoteSwiftPackageReference "swift-markdown" */;
+			productName = Markdown;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

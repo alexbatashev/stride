@@ -1,74 +1,89 @@
 import SwiftUI
 
-/// Renders Markdown produced by the agent into native SwiftUI. Inline spans
-/// (bold, italic, code, links) come from `AttributedString`'s Markdown parser;
-/// block layout (code fences, lists, quotes, images) is laid out by hand.
+/// Renders Markdown produced by the agent into native SwiftUI. Parsing happens
+/// in ``MarkdownParser`` (swift-markdown) and is memoized by ``MarkdownCache``;
+/// this layer only lays out the resulting blocks.
 struct MarkdownView: View {
     let text: String
     var baseURL: URL?
 
     var body: some View {
+        BlockList(blocks: MarkdownCache.blocks(for: text, baseURL: baseURL), baseURL: baseURL)
+    }
+}
+
+/// A vertical stack of blocks. Used at the top level and recursively for list
+/// items and blockquote bodies.
+private struct BlockList: View {
+    let blocks: [MarkdownBlock]
+    var baseURL: URL?
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(MarkdownParser.parse(text).enumerated()), id: \.offset) { _, block in
-                blockView(block)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                BlockView(block: block, baseURL: baseURL)
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func blockView(_ block: MarkdownBlock) -> some View {
+private struct BlockView: View {
+    let block: MarkdownBlock
+    var baseURL: URL?
+
+    var body: some View {
         switch block {
-        case .heading(let level, let text):
-            Text(inline(text))
+        case let .heading(level, text):
+            Text(text)
                 .font(headingFont(level))
                 .padding(.top, level <= 2 ? 4 : 0)
 
-        case .paragraph(let text):
-            Text(inline(text))
+        case let .paragraph(text):
+            Text(text)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
 
-        case .bulletList(let items):
+        case let .bulletList(items):
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("•").foregroundStyle(.secondary)
-                        Text(inline(item)).fixedSize(horizontal: false, vertical: true)
-                    }
+                    marker("•", content: item)
                 }
             }
 
-        case .orderedList(let items):
+        case let .orderedList(start, items):
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(items) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("\(item.number).")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                        Text(inline(item.text)).fixedSize(horizontal: false, vertical: true)
-                    }
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    marker("\(start + index).", content: item)
                 }
             }
 
-        case .quote(let text):
+        case let .quote(blocks):
             HStack(alignment: .top, spacing: 10) {
                 RoundedRectangle(cornerRadius: 2)
                     .fill(Color.accentColor.opacity(0.6))
                     .frame(width: 3)
-                Text(inline(text))
+                BlockList(blocks: blocks, baseURL: baseURL)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             .fixedSize(horizontal: false, vertical: true)
 
-        case .code(let language, let code):
+        case let .code(language, code):
             CodeBlock(language: language, code: code)
 
-        case .image(let alt, let url):
+        case let .image(alt, url):
             MarkdownImage(alt: alt, url: resolved(url))
 
         case .rule:
             Divider().padding(.vertical, 2)
+        }
+    }
+
+    private func marker(_ label: String, content: [MarkdownBlock]) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            BlockList(blocks: content, baseURL: baseURL)
         }
     }
 
@@ -79,29 +94,6 @@ struct MarkdownView: View {
         case 3: return .headline
         default: return .subheadline.bold()
         }
-    }
-
-    private func inline(_ string: String) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(
-            allowsExtendedAttributes: true,
-            interpretedSyntax: .inlineOnlyPreservingWhitespace,
-            failurePolicy: .returnPartiallyParsedIfPossible
-        )
-        guard var attributed = try? AttributedString(markdown: string, options: options) else {
-            return AttributedString(string)
-        }
-        guard let baseURL else { return attributed }
-
-        let ranges = attributed.runs.compactMap { run -> (Range<AttributedString.Index>, URL)? in
-            guard let link = run.link, link.scheme == nil,
-                  let absolute = URL(string: link.relativeString, relativeTo: baseURL)
-            else { return nil }
-            return (run.range, absolute)
-        }
-        for (range, url) in ranges {
-            attributed[range].link = url
-        }
-        return attributed
     }
 
     private func resolved(_ url: String) -> URL? {

@@ -61,6 +61,7 @@ struct ChatView: View {
 
                     ForEach(store.messages) { message in
                         MessageRow(message: message, baseURL: baseURL)
+                            .equatable()
                     }
 
                     if let streaming = store.streaming {
@@ -90,7 +91,7 @@ struct ChatView: View {
                 }
             }
             .onChange(of: store.messages.count) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: store.streaming?.content) { _, _ in scrollToBottom(proxy) }
+            .onChange(of: store.streaming?.content) { _, _ in scrollToBottom(proxy, animated: false) }
             .onChange(of: store.activeTool) { _, _ in scrollToBottom(proxy) }
             .onAppear { scrollToBottom(proxy, animated: false) }
         }

@@ -1,7 +1,10 @@
 import SwiftUI
 
 /// Routes a stored message to the right presentation based on its role.
-struct MessageRow: View {
+/// `Equatable` so that, wrapped in `.equatable()`, an already-committed row skips
+/// body evaluation (and the Markdown parse it triggers) when an unrelated part of
+/// the chat — a streaming token, the typing indicator — changes.
+struct MessageRow: View, Equatable {
     let message: ChatMessage
     let baseURL: URL?
 
