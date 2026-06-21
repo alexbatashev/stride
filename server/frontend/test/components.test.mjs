@@ -32,7 +32,7 @@ test('all custom elements register', () => {
     'app-button', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
     'app-message', 'app-spoiler', 'auto-markdown', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
-    'app-file-manager', 'app-automations', 'icon-arrow-up', 'icon-x',
+    'app-file-manager', 'app-automations', 'app-settings', 'icon-arrow-up', 'icon-x',
     'app-badge', 'app-label', 'app-separator', 'app-skeleton', 'app-aspect-ratio',
     'app-card', 'app-avatar', 'app-alert', 'app-progress', 'app-checkbox',
     'app-switch', 'app-toggle', 'app-textarea', 'app-radio-group', 'app-slider',
@@ -167,6 +167,38 @@ test('app-data-table renders rows and reports selection', () => {
   const action = lastEvent(el, 'row-action');
   el.shadowRoot.querySelector('button[data-row-id="dir/sub"]').click();
   assert.deepEqual(action.detail, { action: 'open', rowId: 'dir/sub' });
+});
+
+test('app-settings switches sections and lists integrations', () => {
+  const el = mount('app-settings', {
+    emails: [{ id: 'm1', name: 'Work', email: 'you@example.com', host: 'imap.example.com', port: 993, username: 'you', inbox_mailbox: 'INBOX', sent_mailbox: 'Sent', drafts_mailbox: 'Drafts', created_at: 1 }],
+    emailLoaded: true,
+    mcps: [{ id: 's1', name: 'deepwiki', url: 'https://mcp.example.com/mcp', enabled: true, created_at: 1, header_names: [], has_authorization: false }],
+    mcpLoaded: true,
+  });
+  assert.match(el.shadowRoot.innerHTML, /Settings/);
+
+  const layout = el.shadowRoot.querySelector('.layout');
+  assert.equal(layout.getAttribute('data-active'), 'telegram');
+  assert.ok(el.shadowRoot.querySelector('[data-section="email"]'), 'email tab missing');
+
+  el.shadowRoot.querySelector('[data-section="email"]').click();
+  assert.equal(layout.getAttribute('data-active'), 'email');
+  assert.match(el.shadowRoot.innerHTML, /Work/);
+
+  el.shadowRoot.querySelector('[data-section="mcp"]').click();
+  assert.equal(layout.getAttribute('data-active'), 'mcp');
+  assert.match(el.shadowRoot.innerHTML, /deepwiki/);
+});
+
+test('app-settings escapes account names', () => {
+  const el = mount('app-settings', {
+    activeSection: 'email',
+    emails: [{ id: 'm1', name: '<script>x</script>', email: 'a@b.c', host: 'h', port: 1, username: 'u', inbox_mailbox: 'INBOX', sent_mailbox: 'Sent', drafts_mailbox: 'Drafts', created_at: 1 }],
+    emailLoaded: true,
+  });
+  assert.doesNotMatch(el.shadowRoot.innerHTML, /<script>x<\/script>/);
+  assert.match(el.shadowRoot.innerHTML, /&lt;script&gt;/);
 });
 
 test('auth-form switches mode via a plain link', () => {
