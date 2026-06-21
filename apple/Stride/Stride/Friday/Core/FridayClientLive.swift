@@ -14,7 +14,7 @@ extension FridayClient {
                 try await api.authenticate(path: "/api/register", baseURL: baseURL, username: username, password: password)
             },
             signOut: {
-                try? await api.post("/api/logout")
+                _ = try? await api.post("/api/logout")
                 session.signOut()
             },
             listProjects: {
@@ -57,6 +57,24 @@ extension FridayClient {
             },
             events: { threadID in
                 api.eventStream(threadID: threadID)
+            },
+            listFiles: { scope, path in
+                try await api.get(api.filesPath(scope, query: path), as: FileListing.self)
+            },
+            createDirectory: { scope, path in
+                try await api.post(api.directoriesPath(scope), body: PathBody(path: path))
+            },
+            renameFile: { path, newName in
+                try await api.patch("/api/files/rename", body: RenameBody(path: path, name: newName))
+            },
+            deleteFile: { scope, path in
+                try await api.delete(api.filePath(scope, path: path))
+            },
+            uploadFiles: { scope, directory, files in
+                try await api.upload(api.filesPath(scope, query: directory), files: files)
+            },
+            downloadFile: { scope, path in
+                try await api.getData(api.filePath(scope, path: path))
             }
         )
     }
@@ -106,6 +124,104 @@ private final class HTTPAPI: @unchecked Sendable {
     func post<B: Encodable, T: Decodable>(_ path: String, body: B, as type: T.Type) async throws -> T {
         let data = try await perform(path, method: "POST", body: body)
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    func patch<B: Encodable>(_ path: String, body: B) async throws {
+        _ = try await perform(path, method: "PATCH", body: body)
+    }
+
+    func delete(_ path: String) async throws {
+        _ = try await perform(path, method: "DELETE", body: Optional<EmptyBody>.none)
+    }
+
+    /// Fetches raw bytes (file downloads) without JSON decoding.
+    func getData(_ path: String) async throws -> Data {
+        try await perform(path, method: "GET", body: Optional<EmptyBody>.none)
+    }
+
+    // MARK: File endpoint paths
+
+    /// Listing / upload endpoint for a scope, with the directory as a `path`
+    /// query parameter.
+    func filesPath(_ scope: FileScope, query: String) -> String {
+        "\(filesBase(scope))?path=\(Self.encodeQuery(query))"
+    }
+
+    /// Single-file endpoint (download / delete) for a scope, where the file path
+    /// is part of the URL (`{*path}` wildcard).
+    func filePath(_ scope: FileScope, path: String) -> String {
+        "\(filesBase(scope))/\(Self.encodePath(path))"
+    }
+
+    /// Create-directory endpoint for a scope.
+    func directoriesPath(_ scope: FileScope) -> String {
+        switch scope {
+        case .global:
+            return "/api/files/directories"
+        case let .workspace(threadID):
+            return "/api/threads/\(threadID)/directories"
+        }
+    }
+
+    private func filesBase(_ scope: FileScope) -> String {
+        switch scope {
+        case .global:
+            return "/api/files"
+        case let .workspace(threadID):
+            return "/api/threads/\(threadID)/files"
+        }
+    }
+
+    /// Uploads one or more files as `multipart/form-data`. The server accepts any
+    /// field name, so each part is named `file`.
+    func upload(_ path: String, files: [FileUpload]) async throws -> [UploadedFile] {
+        guard let baseURL = session.baseURL else { throw FridayError.notConfigured }
+        let boundary = "friday-\(UUID().uuidString)"
+        var request = URLRequest(url: Self.join(baseURL, path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        if let token = session.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = Self.multipartBody(files: files, boundary: boundary)
+
+        do {
+            let (data, response) = try await urlSession.data(for: request)
+            try Self.validate(response)
+            return try JSONDecoder().decode(UploadResponse.self, from: data).files
+        } catch let error as FridayError {
+            throw error
+        } catch {
+            throw FridayError.transport
+        }
+    }
+
+    private static func multipartBody(files: [FileUpload], boundary: String) -> Data {
+        var body = Data()
+        let newline = "\r\n"
+        for file in files {
+            body.append("--\(boundary)\(newline)")
+            body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(file.name)\"\(newline)")
+            body.append("Content-Type: \(file.mimeType ?? "application/octet-stream")\(newline)\(newline)")
+            body.append(file.data)
+            body.append(newline)
+        }
+        body.append("--\(boundary)--\(newline)")
+        return body
+    }
+
+    /// Percent-encodes a URL path while preserving `/` separators.
+    private static func encodePath(_ path: String) -> String {
+        let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        return trimmed.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? trimmed
+    }
+
+    /// Percent-encodes a query-parameter value.
+    private static func encodeQuery(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=?/")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private func perform<B: Encodable>(_ path: String, method: String, body: B?) async throws -> Data {
@@ -246,4 +362,23 @@ private struct ApprovalBody: Encodable {
 
 private struct QuizAnswerBody: Encodable {
     let answers: [String]
+}
+
+private struct PathBody: Encodable {
+    let path: String
+}
+
+private struct RenameBody: Encodable {
+    let path: String
+    let name: String
+}
+
+private struct UploadResponse: Decodable {
+    let files: [UploadedFile]
+}
+
+private extension Data {
+    mutating func append(_ string: String) {
+        if let data = string.data(using: .utf8) { append(data) }
+    }
 }

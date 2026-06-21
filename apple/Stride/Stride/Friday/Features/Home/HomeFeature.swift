@@ -7,32 +7,38 @@ struct HomeFeature {
     struct State: Equatable {
         var projects: IdentifiedArrayOf<Project> = []
         var threads: IdentifiedArrayOf<ThreadSummary> = []
-        var selectedScope: Scope = .all
+        var selection: SidebarSelection = .all
         var selectedThreadID: String?
         var chat: ChatFeature.State?
+        var files = FilesFeature.State(scope: .global)
         var searchText = ""
         var isLoading = false
         var errorMessage: String?
         var columnVisibility: NavigationSplitViewVisibility = .all
         var preferredCompactColumn: NavigationSplitViewColumn = .content
 
-        enum Scope: Equatable, Hashable {
+        enum SidebarSelection: Equatable, Hashable {
             case all
             case project(String)
+            case files
         }
 
+        var isFiles: Bool { selection == .files }
+
         var scopeProjectID: String? {
-            if case let .project(id) = selectedScope { return id }
+            if case let .project(id) = selection { return id }
             return nil
         }
 
         var visibleThreads: [ThreadSummary] {
             let base: [ThreadSummary]
-            switch selectedScope {
+            switch selection {
             case .all:
                 base = Array(threads)
             case let .project(id):
                 base = threads.filter { $0.projectID == id }
+            case .files:
+                base = []
             }
             let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
             guard !query.isEmpty else { return base }
@@ -46,10 +52,11 @@ struct HomeFeature {
         case refresh
         case dataResponse(threads: [ThreadSummary], projects: [Project])
         case loadFailed(FridayError)
-        case scopeSelected(State.Scope)
+        case sidebarSelected(State.SidebarSelection)
         case threadSelected(String?)
         case newThreadTapped
         case chat(ChatFeature.Action)
+        case files(FilesFeature.Action)
         case logoutTapped
         case delegate(Delegate)
 
@@ -103,8 +110,11 @@ struct HomeFeature {
                 state.errorMessage = "Couldn't load your conversations."
                 return .none
 
-            case let .scopeSelected(scope):
-                state.selectedScope = scope
+            case let .sidebarSelected(selection):
+                state.selection = selection
+                if selection == .files {
+                    state.preferredCompactColumn = .content
+                }
                 return .none
 
             case let .threadSelected(id):
@@ -142,6 +152,9 @@ struct HomeFeature {
             case .chat:
                 return .none
 
+            case .files:
+                return .none
+
             case .logoutTapped:
                 return .run { send in
                     await friday.signOut()
@@ -151,6 +164,9 @@ struct HomeFeature {
             case .delegate:
                 return .none
             }
+        }
+        Scope(state: \.files, action: \.files) {
+            FilesFeature()
         }
         .ifLet(\.chat, action: \.chat) {
             ChatFeature()

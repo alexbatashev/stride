@@ -14,8 +14,14 @@ struct HomeView: View {
             SidebarView(store: store)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
         } content: {
-            ThreadListView(store: store)
-                .navigationSplitViewColumnWidth(min: 300, ideal: 360, max: 460)
+            Group {
+                if store.isFiles {
+                    FilesView(store: store.scope(state: \.files, action: \.files))
+                } else {
+                    ThreadListView(store: store)
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 300, ideal: 360, max: 460)
         } detail: {
             NavigationStack {
                 detail
@@ -26,7 +32,9 @@ struct HomeView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let chatStore = store.scope(state: \.chat, action: \.chat) {
+        if store.isFiles {
+            FilesDetailPlaceholder()
+        } else if let chatStore = store.scope(state: \.chat, action: \.chat) {
             ChatView(store: chatStore)
                 .id(chatStore.draftID)
         } else {
@@ -43,7 +51,7 @@ private struct SidebarView: View {
             Section {
                 Label("All Conversations", systemImage: "tray.full")
                     .badge(store.threads.count)
-                    .tag(HomeFeature.State.Scope.all)
+                    .tag(HomeFeature.State.SidebarSelection.all)
             }
 
             if !store.projects.isEmpty {
@@ -51,9 +59,14 @@ private struct SidebarView: View {
                     ForEach(store.projects) { project in
                         Label(project.title, systemImage: "folder")
                             .badge(store.threads.filter { $0.projectID == project.id }.count)
-                            .tag(HomeFeature.State.Scope.project(project.id))
+                            .tag(HomeFeature.State.SidebarSelection.project(project.id))
                     }
                 }
+            }
+
+            Section("Library") {
+                Label("Files", systemImage: "folder.fill")
+                    .tag(HomeFeature.State.SidebarSelection.files)
             }
         }
         .listStyle(.sidebar)
@@ -86,10 +99,10 @@ private struct SidebarView: View {
         }
     }
 
-    private var scopeBinding: Binding<HomeFeature.State.Scope?> {
+    private var scopeBinding: Binding<HomeFeature.State.SidebarSelection?> {
         Binding(
-            get: { store.selectedScope },
-            set: { if let scope = $0 { store.send(.scopeSelected(scope)) } }
+            get: { store.selection },
+            set: { if let selection = $0 { store.send(.sidebarSelected(selection)) } }
         )
     }
 }
@@ -153,11 +166,13 @@ private struct ThreadListView: View {
     }
 
     private var scopeTitle: String {
-        switch store.selectedScope {
+        switch store.selection {
         case .all:
             return "All Conversations"
         case let .project(id):
             return store.projects[id: id]?.title ?? "Project"
+        case .files:
+            return "Files"
         }
     }
 
@@ -201,6 +216,16 @@ private struct ThreadRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct FilesDetailPlaceholder: View {
+    var body: some View {
+        ContentUnavailableView {
+            Label("Your Files", systemImage: "folder")
+        } description: {
+            Text("Select a file to preview it, or upload a new one.")
+        }
     }
 }
 

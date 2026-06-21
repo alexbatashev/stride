@@ -26,6 +26,25 @@ struct ChatView: View {
                     }
                 }
             }
+            if store.threadID != nil {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        store.send(.filesButtonTapped)
+                    } label: {
+                        Label("Files", systemImage: "folder")
+                    }
+                }
+            }
+        }
+        .inspector(isPresented: $store.showFiles) {
+            Group {
+                if let filesStore = store.scope(state: \.files, action: \.files) {
+                    FilesView(store: filesStore)
+                } else {
+                    ContentUnavailableView("Files", systemImage: "folder")
+                }
+            }
+            .inspectorColumnWidth(min: 280, ideal: 340, max: 460)
         }
         .onAppear { store.send(.onAppear) }
     }

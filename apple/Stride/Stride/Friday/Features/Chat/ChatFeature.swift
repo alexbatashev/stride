@@ -35,6 +35,8 @@ struct ChatFeature {
         var errorMessage: String?
         var isLoadingHistory = false
         var lastEventSeq = -1
+        var files: FilesFeature.State?
+        var showFiles = false
 
         var id: UUID { draftID }
         var isNewThread: Bool { threadID == nil }
@@ -76,6 +78,8 @@ struct ChatFeature {
         case quizSelected(String)
         case quizFailed(State.Quiz)
         case dismissError
+        case filesButtonTapped
+        case files(FilesFeature.Action)
         case delegate(Delegate)
 
         enum Delegate: Equatable {
@@ -171,6 +175,7 @@ struct ChatFeature {
             case let .threadCreated(.success(result)):
                 state.threadID = result.threadID
                 state.lastEventSeq = -1
+                state.files = nil
                 return .merge(
                     .send(.delegate(.threadCreated(id: result.threadID, projectID: state.projectID))),
                     .send(.connect),
@@ -214,11 +219,12 @@ struct ChatFeature {
                 state.pendingQuiz = nil
                 let answers = quiz.answers
                 let quizID = quiz.id
+                let completedQuiz = quiz
                 return .run { send in
                     do {
                         try await friday.answerQuiz(threadID, quizID, answers)
                     } catch {
-                        await send(.quizFailed(quiz))
+                        await send(.quizFailed(completedQuiz))
                     }
                 }
 
@@ -231,9 +237,23 @@ struct ChatFeature {
                 state.errorMessage = nil
                 return .none
 
+            case .filesButtonTapped:
+                guard let threadID = state.threadID else { return .none }
+                if state.files == nil {
+                    state.files = FilesFeature.State(scope: .workspace(threadID: threadID))
+                }
+                state.showFiles.toggle()
+                return .none
+
+            case .files:
+                return .none
+
             case .delegate:
                 return .none
             }
+        }
+        .ifLet(\.files, action: \.files) {
+            FilesFeature()
         }
     }
 

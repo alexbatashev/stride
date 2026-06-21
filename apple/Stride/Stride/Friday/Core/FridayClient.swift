@@ -28,6 +28,13 @@ struct FridayClient {
     var answerQuiz: @Sendable (_ threadID: String, _ quizID: String, _ answers: [String]) async throws -> Void
 
     var events: @Sendable (_ threadID: String) -> AsyncThrowingStream<ThreadEvent, Error>
+
+    var listFiles: @Sendable (_ scope: FileScope, _ path: String) async throws -> FileListing
+    var createDirectory: @Sendable (_ scope: FileScope, _ path: String) async throws -> Void
+    var renameFile: @Sendable (_ path: String, _ newName: String) async throws -> Void
+    var deleteFile: @Sendable (_ scope: FileScope, _ path: String) async throws -> Void
+    var uploadFiles: @Sendable (_ scope: FileScope, _ directory: String, _ files: [FileUpload]) async throws -> [UploadedFile]
+    var downloadFile: @Sendable (_ scope: FileScope, _ path: String) async throws -> Data
 }
 
 extension FridayClient: DependencyKey {
@@ -45,7 +52,13 @@ extension FridayClient: DependencyKey {
         cancelRun: { _ in },
         resolveApproval: { _, _, _ in },
         answerQuiz: { _, _, _ in },
-        events: { _ in AsyncThrowingStream { $0.finish() } }
+        events: { _ in AsyncThrowingStream { $0.finish() } },
+        listFiles: { _, _ in FileListing(path: "", entries: []) },
+        createDirectory: { _, _ in },
+        renameFile: { _, _ in },
+        deleteFile: { _, _ in },
+        uploadFiles: { _, _, _ in [] },
+        downloadFile: { _, _ in Data() }
     )
 }
 
