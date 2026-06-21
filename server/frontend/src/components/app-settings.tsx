@@ -1,4 +1,4 @@
-import { Component, css, effect, onMount, ref } from "@frontiers-labs/argon";
+import { Component, css, effect, onMount } from "@frontiers-labs/argon";
 import {
   createEmailAccount,
   createMcpServer,
@@ -275,7 +275,7 @@ const styles = css`
     line-height: 1.5;
   }
 
-  .tg-widget:empty {
+  .tg-widget:not(:has(::slotted(*))) {
     display: none;
   }
 
@@ -452,8 +452,6 @@ export function AppSettings({
   mcpLoaded?: boolean;
   mcpError?: string;
 }): Component {
-  const tgWidget = ref<HTMLDivElement>();
-
   onMount(() => {
     (window as unknown as Record<string, unknown>).onTelegramAuth = (user: TelegramAuthData) => {
       void handleAuth(this, user);
@@ -463,23 +461,25 @@ export function AppSettings({
     void refreshMcps(this);
   });
 
-  // The Telegram login widget is a third-party script that injects an iframe.
-  // The container is a stable node, so re-renders elsewhere never wipe it; we
-  // only (re)inject when the bot or connection state actually changes.
+  // Telegram's widget script finds its own <script> tag in the document and
+  // injects the login iframe next to it. A script inside this component's
+  // shadow DOM is not part of the document tree, so that lookup fails and no
+  // button appears. Inject into a light-DOM child of the host and surface it
+  // through the tg-widget slot; reinject only when the bot or state changes.
   effect(() => {
-    const el = tgWidget.current;
-    if (!el) return;
+    const host = this;
     const show = tgConfigured && !tgConnected && tgBotUsername;
+    const existing = host.querySelector<HTMLElement>(":scope > [data-tg-widget]");
     if (!show) {
-      if (el.dataset.bot) {
-        el.replaceChildren();
-        delete el.dataset.bot;
-      }
+      existing?.remove();
       return;
     }
-    if (el.dataset.bot === tgBotUsername) return;
-    el.replaceChildren();
-    el.dataset.bot = tgBotUsername;
+    if (existing?.dataset.bot === tgBotUsername) return;
+    existing?.remove();
+    const container = document.createElement("div");
+    container.dataset.tgWidget = "";
+    container.dataset.bot = tgBotUsername;
+    container.setAttribute("slot", "tg-widget");
     const script = document.createElement("script");
     script.async = true;
     script.src = "https://telegram.org/js/telegram-widget.js?22";
@@ -487,7 +487,8 @@ export function AppSettings({
     script.setAttribute("data-size", "large");
     script.setAttribute("data-request-access", "write");
     script.setAttribute("data-onauth", "onTelegramAuth(user)");
-    el.appendChild(script);
+    container.appendChild(script);
+    host.appendChild(container);
   });
 
   const emailViews = emails.map(emailView);
@@ -576,7 +577,7 @@ export function AppSettings({
                         : <app-badge variant="secondary">Unavailable</app-badge>}
                     <span class="status">{tgStatus}</span>
                   </div>
-                  <div class="tg-widget" ref={tgWidget}></div>
+                  <div class="tg-widget"><slot name="tg-widget"></slot></div>
                   {tgConnected
                     ? <div><app-button variant="outline" data-action="tg-disconnect">Disconnect</app-button></div>
                     : ""}
