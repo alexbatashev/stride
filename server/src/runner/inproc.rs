@@ -1062,6 +1062,7 @@ async fn ensure_runner(
             .unwrap_or_default();
         shell = shell.with_typst(
             Some(python_cfg.cache_dir.join("typst-packages")),
+            vec![python_cfg.cache_dir.join("fonts")],
             matches!(python_cfg.network, execenv::NetworkAccess::Allowed),
         );
         agent.register_tool(ShellTool::new(shell));

@@ -14,6 +14,15 @@ use tokio::sync::{mpsc, oneshot};
 #[cfg(feature = "eryx")]
 pub use eryx::VolumeMount;
 
+#[cfg(feature = "eryx")]
+mod fonts;
+
+/// Guest path the shared font cache is mounted at. matplotlib's font manager
+/// scans `/usr/share/fonts` on non-Windows/macOS targets, so fonts dropped here
+/// are discovered automatically; fpdf2/Pillow can register them by path.
+#[cfg(feature = "eryx")]
+const FONTS_GUEST_DIR: &str = "/usr/share/fonts";
+
 #[cfg(feature = "bashkit")]
 mod bashkit_cmd;
 #[cfg(feature = "bashkit")]
@@ -742,10 +751,12 @@ impl Tool for PythonTool {
             "Execute a Python script in a sandbox and return stdout and stderr. \
             The writable workspace is mounted at /~workspace; write outputs there. \
             /tmp is writable scratch. matplotlib uses the Agg backend. \
-            No system fonts are installed: for Unicode text in fpdf2 or Pillow, \
-            register a bundled TTF such as \
-            /site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf \
-            instead of a system path like /usr/share/fonts/.... \
+            Open-source fonts (DejaVu, Roboto, Open Sans, Lato, Montserrat and \
+            the Noto Sans/Serif/Mono families) are mounted read-only under \
+            /usr/share/fonts; matplotlib picks them up automatically. For \
+            fpdf2 or Pillow register one by path, e.g. \
+            /usr/share/fonts/dejavu/dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf \
+            (list /usr/share/fonts to find others). \
             Installed packages: {}.",
             installed_packages_list()
         );
@@ -923,6 +934,7 @@ async fn fetch(url: &str) -> anyhow::Result<bytes::Bytes> {
     for _ in 0..MAX_REDIRECTS {
         let req = hyper::Request::builder()
             .uri(&url)
+            .header(hyper::header::USER_AGENT, "friday-execenv/0.1")
             .body(Empty::<bytes::Bytes>::new())?;
         let res = client.request(req).await?;
         let status = res.status();
@@ -1046,6 +1058,7 @@ mod eryx_backend {
                 volumes: self.fs.volumes(),
                 network: self.config.network.clone(),
                 package_cache: self.config.cache_dir.join("typst-packages"),
+                fonts_dir: runtime.fonts_dir.clone(),
             })
         }
     }
@@ -1132,12 +1145,21 @@ mod eryx_backend {
     }
 
     async fn build_runtime(config: PythonToolConfig) -> anyhow::Result<PreinitRuntime> {
+        // The shared font cache is downloaded once and mounted into every
+        // execution; a download failure is non-fatal (the sandbox still runs).
+        let fonts_dir = crate::fonts::ensure_fonts(&config.cache_dir).await.ok();
         if config.preinit {
             let deps = ensure_wasi_dependencies(&config.cache_dir).await?;
             let imports = crate::preinit_imports();
-            prepare_preinit(&config.cache_dir, Some(&deps.site_packages), &imports).await
+            prepare_preinit(
+                &config.cache_dir,
+                Some(&deps.site_packages),
+                &imports,
+                fonts_dir,
+            )
+            .await
         } else {
-            prepare_preinit(&config.cache_dir, None, &[]).await
+            prepare_preinit(&config.cache_dir, None, &[], fonts_dir).await
         }
     }
 
@@ -1146,6 +1168,7 @@ mod eryx_backend {
         runtime: PathBuf,
         stdlib: PathBuf,
         site_packages: Option<PathBuf>,
+        fonts_dir: Option<PathBuf>,
         executor: Arc<eryx::PythonExecutor>,
     }
 
@@ -1153,6 +1176,7 @@ mod eryx_backend {
         cache_dir: &std::path::Path,
         site_packages: Option<&std::path::Path>,
         imports: &[&str],
+        fonts_dir: Option<PathBuf>,
     ) -> anyhow::Result<PreinitRuntime> {
         let preinit_dir = cache_dir.join("preinit");
         tokio::fs::create_dir_all(&preinit_dir).await?;
@@ -1169,6 +1193,7 @@ mod eryx_backend {
                 runtime,
                 stdlib,
                 site_packages.map(std::path::Path::to_path_buf),
+                fonts_dir,
             );
         }
 
@@ -1200,6 +1225,7 @@ mod eryx_backend {
             runtime,
             stdlib,
             site_packages.map(std::path::Path::to_path_buf),
+            fonts_dir,
         )
     }
 
@@ -1215,6 +1241,7 @@ mod eryx_backend {
         runtime: PathBuf,
         stdlib: PathBuf,
         site_packages: Option<PathBuf>,
+        fonts_dir: Option<PathBuf>,
     ) -> anyhow::Result<PreinitRuntime> {
         let mut executor = unsafe {
             eryx::PythonExecutor::from_precompiled_file(&runtime)
@@ -1229,6 +1256,7 @@ mod eryx_backend {
             runtime,
             stdlib,
             site_packages,
+            fonts_dir,
             executor: Arc::new(executor),
         })
     }
@@ -1313,6 +1341,22 @@ mod eryx_backend {
         /// `typst` module; unused when the `typst` feature is off.
         #[cfg_attr(not(feature = "typst"), allow(dead_code))]
         package_cache: PathBuf,
+        /// Shared font cache, mounted read-only into the guest and scanned by the
+        /// host Typst compiler. `None` when the download failed.
+        fonts_dir: Option<PathBuf>,
+    }
+
+    /// Appends the standard per-execution mounts — the shared read-only font
+    /// cache (when present) and a writable `/tmp` scratch — to `volumes`.
+    fn push_base_mounts(
+        volumes: &mut Vec<eryx::VolumeMount>,
+        fonts_dir: &Option<PathBuf>,
+        scratch: &ScratchTmp,
+    ) {
+        if let Some(dir) = fonts_dir {
+            volumes.push(eryx::VolumeMount::read_only(dir, crate::FONTS_GUEST_DIR));
+        }
+        volumes.push(scratch.volume());
     }
 
     fn worker_loop(rx: Arc<Mutex<mpsc::Receiver<ExecutionJob>>>) {
@@ -1359,8 +1403,12 @@ mod eryx_backend {
         #[cfg(feature = "typst")]
         {
             let allow_network = matches!(request.network, NetworkAccess::Allowed);
-            let callback =
-                crate::typst_bridge::callback(Some(request.package_cache.clone()), allow_network);
+            let font_paths = request.fonts_dir.clone().into_iter().collect();
+            let callback = crate::typst_bridge::callback(
+                Some(request.package_cache.clone()),
+                font_paths,
+                allow_network,
+            );
             (vec![callback], crate::typst_bridge::PREAMBLE.to_string())
         }
         #[cfg(not(feature = "typst"))]
@@ -1387,7 +1435,7 @@ mod eryx_backend {
         // Keep the scratch dir alive for the whole execution.
         let scratch = ScratchTmp::new()?;
         let mut volumes = request.volumes;
-        volumes.push(scratch.volume());
+        push_base_mounts(&mut volumes, &request.fonts_dir, &scratch);
 
         let mut execute = request
             .runtime
@@ -1441,7 +1489,7 @@ mod eryx_backend {
     ) -> anyhow::Result<ExecutionOutput> {
         let scratch = ScratchTmp::new()?;
         let mut volumes = request.volumes;
-        volumes.push(scratch.volume());
+        push_base_mounts(&mut volumes, &request.fonts_dir, &scratch);
 
         let mut builder = unsafe {
             eryx::Sandbox::builder()
@@ -1511,7 +1559,7 @@ mod eryx_backend {
     ) -> anyhow::Result<ExecutionOutput> {
         let scratch = ScratchTmp::new()?;
         let mut volumes = request.volumes;
-        volumes.push(scratch.volume());
+        push_base_mounts(&mut volumes, &request.fonts_dir, &scratch);
 
         let dispatch: HashMap<String, Arc<dyn eryx::Callback>> = callbacks
             .iter()
