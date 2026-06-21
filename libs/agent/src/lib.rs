@@ -1,5 +1,6 @@
 mod base;
 pub mod mcp;
+pub mod memory;
 mod tool;
 mod tool_registry;
 pub mod tools;

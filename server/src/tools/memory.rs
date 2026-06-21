@@ -19,7 +19,7 @@ use minisql::{ConnectionPool, Value};
 use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
-use crate::db::Embedding;
+use friday_agent::memory::Embedding;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -799,7 +799,7 @@ mod tests {
 
     async fn setup() -> (ConnectionPool, Uuid) {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
-        db.initialize_database(db::get_migrations()).await.unwrap();
+        db::migrate(&db).await.unwrap();
         let user_id = Uuid::now_v7();
         db.query_with_params(
             "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
