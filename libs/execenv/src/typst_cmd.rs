@@ -40,13 +40,19 @@ const USAGE: &str = "usage: typst <command> [options]\n\
 /// cache directory and whether network package downloads are allowed.
 pub struct TypstBuiltin {
     package_cache: Option<PathBuf>,
+    font_paths: Vec<PathBuf>,
     allow_network: bool,
 }
 
 impl TypstBuiltin {
-    pub fn new(package_cache: Option<PathBuf>, allow_network: bool) -> Self {
+    pub fn new(
+        package_cache: Option<PathBuf>,
+        font_paths: Vec<PathBuf>,
+        allow_network: bool,
+    ) -> Self {
         Self {
             package_cache,
+            font_paths,
             allow_network,
         }
     }
@@ -135,6 +141,7 @@ impl TypstBuiltin {
             ppi: options.ppi.unwrap_or(typst_doc::DEFAULT_PPI),
             sys_inputs: options.inputs,
             package_cache: self.package_cache.clone(),
+            font_paths: self.font_paths.clone(),
             allow_network: self.allow_network,
         };
 
@@ -333,7 +340,10 @@ mod tests {
         Bash::builder()
             .fs(fs)
             .cwd("/~workspace")
-            .builtin("typst", Box::new(TypstBuiltin::new(None, false)))
+            .builtin(
+                "typst",
+                Box::new(TypstBuiltin::new(None, Vec::new(), false)),
+            )
             .build()
     }
 

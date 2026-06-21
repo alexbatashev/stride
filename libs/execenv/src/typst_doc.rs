@@ -19,13 +19,13 @@ use typst::diag::{FileError, FileResult, PackageError, Severity, SourceDiagnosti
 use typst::foundations::{Bytes, Datetime, Dict, Duration, Str, Value};
 use typst::layout::Abs;
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
-use typst::text::{Font, FontBook};
+use typst::text::{Font, FontBook, FontInfo};
 use typst::utils::{LazyHash, Scalar};
 use typst::visualize::Color;
 use typst::{Library, LibraryExt};
 use typst_kit::downloader::SystemDownloader;
 use typst_kit::files::{FileLoader, FileStore};
-use typst_kit::fonts::FontStore;
+use typst_kit::fonts::{FontPath, FontStore};
 use typst_kit::packages::{FsPackages, SystemPackages, UniversePackages};
 use typst_layout::PagedDocument;
 use typst_pdf::PdfOptions;
@@ -94,6 +94,9 @@ pub struct CompileRequest {
     /// Directory used to cache downloaded Typst Universe packages. When `None`,
     /// `@preview` imports fail.
     pub package_cache: Option<PathBuf>,
+    /// Directories scanned recursively for additional fonts, in addition to the
+    /// fonts embedded in the binary. Used to expose the shared font cache.
+    pub font_paths: Vec<PathBuf>,
     /// Whether the compiler may download missing packages from the network.
     pub allow_network: bool,
 }
@@ -107,6 +110,7 @@ impl Default for CompileRequest {
             ppi: DEFAULT_PPI,
             sys_inputs: BTreeMap::new(),
             package_cache: None,
+            font_paths: Vec::new(),
             allow_network: false,
         }
     }
@@ -221,6 +225,9 @@ impl TypstWorld {
 
         let mut fonts = FontStore::new();
         fonts.extend(typst_kit::fonts::embedded());
+        for dir in &request.font_paths {
+            load_fonts_from_dir(dir, &mut fonts);
+        }
 
         let mut project = BTreeMap::new();
         for (path, bytes) in &request.files {
@@ -327,6 +334,53 @@ impl FileLoader for MemoryLoader {
             }
         }
     }
+}
+
+/// Recursively scans `dir` for font files and registers each face with the
+/// store. Faces load lazily through [`FontPath`], so only fonts actually used by
+/// a document are parsed into memory; metadata is read up front to build the
+/// font book. Unreadable files and directories are skipped silently.
+fn load_fonts_from_dir(dir: &std::path::Path, fonts: &mut FontStore) {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !is_font_file(&path) {
+                continue;
+            }
+            let Ok(data) = std::fs::read(&path) else {
+                continue;
+            };
+            for (index, info) in FontInfo::iter(&data).enumerate() {
+                fonts.push((
+                    FontPath {
+                        path: path.clone(),
+                        index: index as u32,
+                    },
+                    info,
+                ));
+            }
+        }
+    }
+}
+
+/// Whether a path looks like a font file Typst can load (TrueType/OpenType,
+/// including collections).
+fn is_font_file(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("ttf" | "otf" | "ttc" | "otc")
+    )
 }
 
 fn build_packages(cache_dir: Option<PathBuf>) -> Option<SystemPackages> {

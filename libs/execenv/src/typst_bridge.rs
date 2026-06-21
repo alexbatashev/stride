@@ -37,6 +37,7 @@ fn base64_engine() -> base64::engine::GeneralPurpose {
 /// Builds the host-side Typst compile callback for one execution.
 pub(crate) fn callback(
     package_cache: Option<PathBuf>,
+    font_paths: Vec<PathBuf>,
     allow_network: bool,
 ) -> Arc<dyn eryx::Callback> {
     let schema = eryx::Schema::try_from_value(json!({ "type": "object" }))
@@ -46,7 +47,8 @@ pub(crate) fn callback(
         "Compile a Typst document to PDF, SVG or PNG.".to_string(),
         move |args| {
             let package_cache = package_cache.clone();
-            Box::pin(async move { Ok(run(args, package_cache, allow_network).await) })
+            let font_paths = font_paths.clone();
+            Box::pin(async move { Ok(run(args, package_cache, font_paths, allow_network).await) })
         },
     )
     .schema(schema)
@@ -54,8 +56,13 @@ pub(crate) fn callback(
     Arc::new(callback)
 }
 
-async fn run(args: Value, package_cache: Option<PathBuf>, allow_network: bool) -> Value {
-    let request = match parse_request(args, package_cache, allow_network) {
+async fn run(
+    args: Value,
+    package_cache: Option<PathBuf>,
+    font_paths: Vec<PathBuf>,
+    allow_network: bool,
+) -> Value {
+    let request = match parse_request(args, package_cache, font_paths, allow_network) {
         Ok(request) => request,
         Err(err) => return json!({ "ok": false, "error": err }),
     };
@@ -82,6 +89,7 @@ async fn run(args: Value, package_cache: Option<PathBuf>, allow_network: bool) -
 fn parse_request(
     args: Value,
     package_cache: Option<PathBuf>,
+    font_paths: Vec<PathBuf>,
     allow_network: bool,
 ) -> Result<CompileRequest, String> {
     let object = args.as_object().ok_or("expected an object of arguments")?;
@@ -140,6 +148,7 @@ fn parse_request(
         ppi,
         sys_inputs,
         package_cache,
+        font_paths,
         allow_network,
     })
 }

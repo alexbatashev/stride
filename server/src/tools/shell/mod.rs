@@ -25,8 +25,9 @@ pub struct EmulatedShellBackend {
     /// scripts see the same runtime and `/~workspace` sync.
     python: Option<Arc<dyn execenv::ExecutionService>>,
     /// When set, exposes a `typst` command. The tuple is the Typst package cache
-    /// directory and whether package downloads may use the network.
-    typst: Option<(Option<PathBuf>, bool)>,
+    /// directory, the font directories to scan, and whether package downloads may
+    /// use the network.
+    typst: Option<(Option<PathBuf>, Vec<PathBuf>, bool)>,
 }
 
 impl EmulatedShellBackend {
@@ -45,9 +46,15 @@ impl EmulatedShellBackend {
     }
 
     /// Expose a `typst` command that compiles workspace documents. `package_cache`
-    /// caches downloaded `@preview` packages; `allow_network` gates downloads.
-    pub fn with_typst(mut self, package_cache: Option<PathBuf>, allow_network: bool) -> Self {
-        self.typst = Some((package_cache, allow_network));
+    /// caches downloaded `@preview` packages; `font_paths` are scanned for extra
+    /// fonts; `allow_network` gates downloads.
+    pub fn with_typst(
+        mut self,
+        package_cache: Option<PathBuf>,
+        font_paths: Vec<PathBuf>,
+        allow_network: bool,
+    ) -> Self {
+        self.typst = Some((package_cache, font_paths, allow_network));
         self
     }
 }
@@ -74,11 +81,12 @@ impl ShellBackend for EmulatedShellBackend {
                     Box::new(execenv::PythonBuiltin::new(service.clone())),
                 );
         }
-        if let Some((package_cache, allow_network)) = &self.typst {
+        if let Some((package_cache, font_paths, allow_network)) = &self.typst {
             builder = builder.builtin(
                 "typst",
                 Box::new(execenv::TypstBuiltin::new(
                     package_cache.clone(),
+                    font_paths.clone(),
                     *allow_network,
                 )),
             );
