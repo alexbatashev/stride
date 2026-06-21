@@ -15,6 +15,7 @@ pub fn migrations(input: TokenStream) -> TokenStream {
 }
 
 struct Migrations {
+    namespace: Option<String>,
     migrations: Vec<Migration>,
 }
 
@@ -67,13 +68,39 @@ enum SqlTag {
 
 impl Parse for Migrations {
     fn parse(input: ParseStream) -> Result<Self> {
-        let mut migrations = Vec::new();
+        // Optional `namespace <name> { ... }` wrapper. The version blocks live
+        // inside it. Disambiguated from a legacy block literally named
+        // `namespace` by requiring an identifier (the name) after the keyword.
+        if input.peek(syn::Ident) {
+            let fork = input.fork();
+            let kw: Ident = fork.parse()?;
+            if kw == "namespace" && fork.peek(syn::Ident) {
+                input.parse::<Ident>()?; // consume `namespace`
+                let name: Ident = input.parse()?;
+                let content;
+                braced!(content in input);
 
+                let mut migrations = Vec::new();
+                while !content.is_empty() {
+                    migrations.push(content.parse()?);
+                }
+
+                return Ok(Migrations {
+                    namespace: Some(name.to_string()),
+                    migrations,
+                });
+            }
+        }
+
+        let mut migrations = Vec::new();
         while !input.is_empty() {
             migrations.push(input.parse()?);
         }
 
-        Ok(Migrations { migrations })
+        Ok(Migrations {
+            namespace: None,
+            migrations,
+        })
     }
 }
 
@@ -406,12 +433,27 @@ impl Migrations {
         let table_modules: Vec<proc_macro2::TokenStream> =
             final_tables.iter().map(|t| t.expand_module()).collect();
 
+        // Namespaced form exposes a composable `schema()` fragment; the legacy
+        // form keeps the bare `get_migrations()` entry point.
+        let entry = match &self.namespace {
+            Some(name) => quote! {
+                pub fn schema() -> ::minisql::SchemaSet {
+                    ::minisql::SchemaSet::new(#name, vec![
+                        #(#migration_exprs),*
+                    ])
+                }
+            },
+            None => quote! {
+                pub fn get_migrations() -> Vec<::minisql::Migration> {
+                    vec![
+                        #(#migration_exprs),*
+                    ]
+                }
+            },
+        };
+
         quote! {
-            pub fn get_migrations() -> Vec<::minisql::Migration> {
-                vec![
-                    #(#migration_exprs),*
-                ]
-            }
+            #entry
 
             #(#table_modules)*
         }
