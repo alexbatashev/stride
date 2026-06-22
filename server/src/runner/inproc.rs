@@ -91,20 +91,13 @@ fn build_system_prompt(
         // base URL there; elsewhere a relative path keeps working across deployments.
         let base_url = telegram.then_some(public_url).flatten().unwrap_or("");
         prompt.push_str(&format!(
-            "\n\nFile system: list `/` to see the user's files (read-only). \
+            "\n\nFile system: list `/` to see the user's files. \
              Your writable directory is `{root}` — write all outputs you create there; \
-             everything else under `/` is read-only. \
+             everything else under `/` is read-only (this applies in the shell and the Python sandbox alike). \
              Files in it are downloadable via `{base_url}/api/threads/{id}/files/<path>` \
              where `<path>` is relative to your writable directory (drop the leading `{root}/`). \
              Example: `{root}/report.pdf` → `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
         ));
-        // The Python sandbox always mounts the writable directory at `/~workspace`;
-        // mention it when that differs from the path used elsewhere.
-        if root != "/~workspace" {
-            prompt.push_str(
-                " Inside the Python sandbox this writable directory is mounted at `/~workspace`.",
-            );
-        }
     }
     if telegram {
         prompt.push_str(
