@@ -8,15 +8,21 @@ import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.accept
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.forms.MultiPartFormDataContent
+import io.ktor.client.request.forms.formData
 import io.ktor.client.request.header
+import io.ktor.client.request.parameter
 import io.ktor.client.request.request
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
+import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.contentType
+import io.ktor.http.encodeURLPathPart
 import io.ktor.serialization.kotlinx.json.json
+import me.batashev.stride.PickedFile
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.flow.Flow
@@ -120,6 +126,55 @@ class FridayClient(private val session: Session) {
         }
     }
 
+    // MARK: Files
+
+    suspend fun listFiles(path: String): FileListing =
+        authed(HttpMethod.Get, "/api/files") { parameter("path", path) }.body()
+
+    suspend fun createDirectory(path: String) {
+        authed(HttpMethod.Post, "/api/files/directories") {
+            contentType(ContentType.Application.Json)
+            setBody(PathBody(path))
+        }
+    }
+
+    suspend fun renameFile(path: String, name: String) {
+        authed(HttpMethod.Patch, "/api/files/rename") {
+            contentType(ContentType.Application.Json)
+            setBody(RenameBody(path, name))
+        }
+    }
+
+    suspend fun deleteFile(path: String) {
+        authed(HttpMethod.Delete, filePath(path)) {}
+    }
+
+    suspend fun downloadFile(path: String): ByteArray = authed(HttpMethod.Get, filePath(path)) {}.body()
+
+    suspend fun uploadFile(directory: String, file: PickedFile) {
+        authed(HttpMethod.Post, "/api/files") {
+            parameter("path", directory)
+            setBody(
+                MultiPartFormDataContent(
+                    formData {
+                        append(
+                            key = "file",
+                            value = file.bytes,
+                            headers = Headers.build {
+                                append(HttpHeaders.ContentType, file.mimeType ?: "application/octet-stream")
+                                append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
+                            },
+                        )
+                    },
+                ),
+            )
+        }
+    }
+
+    /** Builds a percent-encoded `/api/files/...` path for the wildcard download/delete routes. */
+    private fun filePath(path: String): String =
+        "/api/files/" + path.split('/').filter { it.isNotEmpty() }.joinToString("/") { it.encodeURLPathPart() }
+
     /**
      * Streams thread events over a WebSocket. Completes when the socket closes;
      * the caller is responsible for reconnecting. Unparseable frames are dropped.
@@ -208,3 +263,9 @@ private data class ApprovalBody(val approved: Boolean)
 
 @Serializable
 private data class QuizAnswerBody(val answers: List<String>)
+
+@Serializable
+private data class PathBody(val path: String)
+
+@Serializable
+private data class RenameBody(val path: String, val name: String)

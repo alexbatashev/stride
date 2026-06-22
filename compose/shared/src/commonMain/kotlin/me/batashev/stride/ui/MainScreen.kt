@@ -1,16 +1,38 @@
 package me.batashev.stride.ui
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.layout.AnimatedPane
 import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffold
 import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -21,14 +43,73 @@ import me.batashev.stride.SystemBackHandler
 import me.batashev.stride.ui.chat.ChatEmptyState
 import me.batashev.stride.ui.chat.ChatPane
 import me.batashev.stride.ui.chat.ChatViewModel
+import me.batashev.stride.ui.files.FilesPane
+import me.batashev.stride.ui.files.FilesViewModel
 import me.batashev.stride.ui.threads.ThreadListPane
 import me.batashev.stride.ui.threads.ThreadsViewModel
 
 private const val NEW_PREFIX = "new-"
 
-@OptIn(ExperimentalMaterial3AdaptiveApi::class)
+private enum class Destination(val label: String, val icon: ImageVector) {
+    Chats("Chats", Icons.AutoMirrored.Filled.Chat),
+    Files("Files", Icons.Filled.Folder),
+}
+
+private const val EXPANDED_WIDTH_DP = 600
+
 @Composable
 fun MainScreen(container: AppContainer) {
+    var selected by rememberSaveable { mutableStateOf(0) }
+    val stateHolder = rememberSaveableStateHolder()
+
+    AdaptiveNavigation(selected = selected, onSelect = { selected = it }) {
+        stateHolder.SaveableStateProvider(selected) {
+            when (Destination.entries[selected]) {
+                Destination.Chats -> ChatsScreen(container)
+                Destination.Files -> FilesScreen(container)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdaptiveNavigation(selected: Int, onSelect: (Int) -> Unit, content: @Composable () -> Unit) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        if (maxWidth >= EXPANDED_WIDTH_DP.dp) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                NavigationRail {
+                    Destination.entries.forEachIndexed { index, destination ->
+                        NavigationRailItem(
+                            selected = index == selected,
+                            onClick = { onSelect(index) },
+                            icon = { Icon(destination.icon, contentDescription = destination.label) },
+                            label = { Text(destination.label) },
+                        )
+                    }
+                }
+                Box(modifier = Modifier.weight(1f).fillMaxHeight()) { content() }
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) { content() }
+                NavigationBar {
+                    Destination.entries.forEachIndexed { index, destination ->
+                        NavigationBarItem(
+                            selected = index == selected,
+                            onClick = { onSelect(index) },
+                            icon = { Icon(destination.icon, contentDescription = destination.label) },
+                            label = { Text(destination.label) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3AdaptiveApi::class)
+@Composable
+private fun ChatsScreen(container: AppContainer) {
     val scope = rememberCoroutineScope()
     val onUnauthorized: () -> Unit = { container.session.signOut() }
 
@@ -84,6 +165,15 @@ fun MainScreen(container: AppContainer) {
             }
         },
     )
+}
+
+@Composable
+private fun FilesScreen(container: AppContainer) {
+    val onUnauthorized: () -> Unit = { container.session.signOut() }
+    val vm: FilesViewModel = viewModel(
+        factory = viewModelFactory { initializer { FilesViewModel(container.client, onUnauthorized) } },
+    )
+    FilesPane(vm = vm)
 }
 
 @Composable
