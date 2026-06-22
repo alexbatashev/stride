@@ -223,7 +223,23 @@ where
     let status = res.status().as_u16();
 
     if !(200..300).contains(&status) {
-        let body_bytes = match res.into_body().collect().await {
+        // Reading the error body still requires driving the connection future,
+        // exactly like the streaming path below. Awaiting `collect()` alone would
+        // deadlock on a chunked error response because nothing pumps the socket.
+        let collect_fut = res.into_body().collect();
+        futures::pin_mut!(collect_fut);
+        let collected = loop {
+            match futures::future::select(collect_fut.as_mut(), conn.as_mut()).await {
+                Either::Left((collected, _)) => break collected,
+                Either::Right((Ok(()), _)) => break collect_fut.await,
+                Either::Right((Err(err), _)) => {
+                    return Box::pin(futures::stream::once(async move {
+                        Err(Error::RequestError(err.to_string()))
+                    }));
+                }
+            }
+        };
+        let body_bytes = match collected {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 return Box::pin(futures::stream::once(async move {

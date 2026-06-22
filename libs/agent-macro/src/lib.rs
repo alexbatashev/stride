@@ -42,6 +42,7 @@ fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
         let name = ident.to_string();
         let description = doc_description(&field.attrs);
         let (ty, required) = schema_type(&field.ty);
+        let extra = array_items_extra(&field.ty);
 
         property_inserts.push(quote! {
             properties.insert(
@@ -49,6 +50,7 @@ fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
                 llm::FunctionProperty {
                     r#type: #ty.to_string(),
                     description: #description.to_string(),
+                    extra: #extra,
                     ..Default::default()
                 },
             );
@@ -155,6 +157,27 @@ fn doc_description(attrs: &[Attribute]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// JSON Schema requires array types to declare an `items` schema; strict
+/// providers (Google/Gemini) reject a bare `{"type":"array"}`. For `Vec<T>`
+/// fields this emits the `items` entry into the property's `extra` map, using
+/// the element type's schema type.
+fn array_items_extra(ty: &Type) -> TokenStream2 {
+    let unwrapped = single_generic_arg(ty, "Option").unwrap_or(ty);
+    if let Some(inner) = single_generic_arg(unwrapped, "Vec") {
+        let inner_ty = schema_type(inner).0;
+        quote! {{
+            let mut extra = serde_json::Map::new();
+            extra.insert(
+                "items".to_string(),
+                serde_json::json!({ "type": #inner_ty }),
+            );
+            extra
+        }}
+    } else {
+        quote! { Default::default() }
+    }
 }
 
 fn schema_type(ty: &Type) -> (&'static str, bool) {
