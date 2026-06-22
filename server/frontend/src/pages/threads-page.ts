@@ -99,7 +99,9 @@ class ThreadsPageHydrator {
 		this.fileManagerEl = this.mustQuery("[data-file-manager]");
 		this.threads = this.readThreads();
 		this.projects = this.sidebarEl.projects.map(({ id, title }) => ({ id, title }));
-		this.currentProjectId = this.threads.find((t) => t.id === this.threadId)?.project_id ?? null;
+		this.currentProjectId = this.threadId
+			? (this.threads.find((t) => t.id === this.threadId)?.project_id ?? null)
+			: this.readProjectFromQuery();
 
 		this.bindEvents();
 		this.syncComposer();
@@ -126,6 +128,14 @@ class ThreadsPageHydrator {
 		);
 		const ungrouped = this.sidebarEl.threads.map((thread) => ({ ...thread, project_id: null }));
 		return [...grouped, ...ungrouped];
+	}
+
+	// A new thread can be opened pre-bound to a project via `/threads?project=<id>`
+	// (the sidebar's per-project "+" action). Ignore unknown ids.
+	private readProjectFromQuery(): string | null {
+		const id = new URLSearchParams(window.location.search).get("project");
+		if (!id) return null;
+		return this.projects.some((p) => p.id === id) ? id : null;
 	}
 
 	private bindEvents() {
@@ -552,7 +562,7 @@ class ThreadsPageHydrator {
 
 	private syncComposer() {
 		this.promptEl.running = this.running;
-		this.promptEl.placeholder = this.threadId ? "Message Friday" : "Ask Friday anything";
+		this.promptEl.placeholder = this.composerPlaceholder();
 		const hasApproval = this.pendingApproval !== null;
 		const hasQuiz = this.pendingQuiz !== null;
 		this.promptEl.hidden = hasApproval || hasQuiz;
@@ -565,6 +575,14 @@ class ThreadsPageHydrator {
 		this.quizEl.options = (question?.options ?? []).map(esc);
 		this.errorEl.textContent = this.error;
 		this.fileManagerEl.threadId = this.threadId;
+	}
+
+	private composerPlaceholder(): string {
+		if (this.threadId) return "Message Friday";
+		const project = this.currentProjectId
+			? this.projects.find((p) => p.id === this.currentProjectId)
+			: undefined;
+		return project ? `New thread in ${project.title}` : "Ask Friday anything";
 	}
 
 	private toggleFiles() {

@@ -186,7 +186,7 @@ async fn find_room(
 
 /// Renders the palace structure as a system-prompt section so the agent knows
 /// what it has stored and which tools to use, without searching first.
-pub async fn palace_map(db: &ConnectionPool, owner: Uuid) -> String {
+pub async fn palace_map(db: &ConnectionPool, owner: Uuid, project_wing: Option<&str>) -> String {
     let mut section = String::from(
         "## Memory Palace\n\n\
          You have a persistent personal memory that survives across conversations. Store durable \
@@ -196,6 +196,14 @@ pub async fn palace_map(db: &ConnectionPool, owner: Uuid) -> String {
          - `explore_palace` — walk the palace to see which wings and rooms exist.\n\
          - `connect_memories` — link two related rooms.\n\n",
     );
+
+    if let Some(wing) = project_wing {
+        section.push_str(&format!(
+            "This thread belongs to a project. Its memory wing is `{wing}` — `remember` and \
+             `recall` default to it, so you can omit the wing. Name a different wing to store or \
+             search elsewhere.\n\n"
+        ));
+    }
 
     let rows = db
         .query_with_params(
@@ -233,11 +241,17 @@ pub async fn palace_map(db: &ConnectionPool, owner: Uuid) -> String {
 pub struct RememberTool {
     pub db: ConnectionPool,
     pub user_id: Uuid,
+    /// Wing to file memories under when the agent does not name one. Set to the
+    /// project's wing inside a project thread.
+    pub default_wing: Option<String>,
 }
 
 pub struct RecallTool {
     pub db: ConnectionPool,
     pub user_id: Uuid,
+    /// Wing searched when the agent does not name one. Set to the project's wing
+    /// inside a project thread.
+    pub default_wing: Option<String>,
 }
 
 pub struct ExplorePalaceTool {
@@ -253,7 +267,8 @@ pub struct ConnectMemoriesTool {
 #[derive(ToolDesc)]
 struct RememberParams {
     /// Top-level subject this memory belongs to (a project, person or theme), e.g. "friday-project".
-    wing: String,
+    /// Omit it inside a project to file the memory under the project's own wing.
+    wing: Option<String>,
     /// Specific topic within the wing, e.g. "auth-design".
     room: String,
     /// One or two sentence compressed summary of the memory. Used as the searchable index card.
@@ -307,7 +322,13 @@ impl RememberTool {
         params: RememberParams,
     ) -> Result<JsonValue, DynError> {
         let owner = self.user_id;
-        let wing_id = ensure_wing(&self.db, owner, &params.wing, "").await?;
+        let wing = params
+            .wing
+            .clone()
+            .filter(|w| !w.is_empty())
+            .or_else(|| self.default_wing.clone())
+            .ok_or("a wing is required: name a subject to file this memory under")?;
+        let wing_id = ensure_wing(&self.db, owner, &wing, "").await?;
         let room_id = ensure_room(&self.db, owner, wing_id, &params.room, "").await?;
         let hall_id = match params.hall.as_deref().filter(|h| !h.is_empty()) {
             Some(hall) => Some(ensure_hall(&self.db, owner, wing_id, hall).await?),
@@ -362,7 +383,7 @@ impl RememberTool {
 
         Ok(json!({
             "stored": true,
-            "wing": params.wing,
+            "wing": wing,
             "room": params.room,
             "title": title,
             "embedded": embedded,
@@ -504,7 +525,14 @@ impl RecallTool {
             .limit
             .unwrap_or(DEFAULT_RECALL_LIMIT)
             .clamp(1, MAX_RECALL_LIMIT);
-        let wing = params.wing.as_deref().filter(|w| !w.is_empty());
+        // Default to the project's wing when the agent does not name one, so
+        // recall stays focused on the current project but can still be widened
+        // by naming another wing.
+        let wing = params
+            .wing
+            .as_deref()
+            .filter(|w| !w.is_empty())
+            .or(self.default_wing.as_deref());
 
         let mut memories = match embed(config, &params.query).await {
             Some(embedding) => self.vector_search(&embedding, wing, limit).await?,
@@ -832,6 +860,7 @@ mod tests {
         let tool = RememberTool {
             db: db.clone(),
             user_id: user,
+            default_wing: None,
         };
         let result = tool
             .execute(
@@ -858,6 +887,7 @@ mod tests {
         let recall = RecallTool {
             db: db.clone(),
             user_id: user,
+            default_wing: None,
         };
         let result = recall.execute(config(), json!({"query": "jwt"})).await;
         assert_eq!(result["found"], 1);
@@ -898,6 +928,7 @@ mod tests {
         let recall = RecallTool {
             db: db.clone(),
             user_id: other,
+            default_wing: None,
         };
         let result = recall.execute(config(), json!({"query": "secret"})).await;
         assert_eq!(result["found"], 0);
@@ -1027,6 +1058,7 @@ mod tests {
         let recall = RecallTool {
             db: db.clone(),
             user_id: user,
+            default_wing: None,
         };
         let query = Embedding::from_floats(&[0.9_f32, 0.1, 0.0]);
         let results = recall.vector_search(&query, None, 5).await.unwrap();
@@ -1041,11 +1073,11 @@ mod tests {
     #[tokio::test]
     async fn palace_map_reflects_contents() {
         let (db, user) = setup().await;
-        let empty = palace_map(&db, user).await;
+        let empty = palace_map(&db, user, None).await;
         assert!(empty.contains("empty"));
 
         remember(&db, user, "friday", "auth-design", "jwt", "a").await;
-        let map = palace_map(&db, user).await;
+        let map = palace_map(&db, user, None).await;
         assert!(map.contains("- friday"));
         assert!(map.contains("  - auth-design"));
     }

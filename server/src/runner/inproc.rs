@@ -51,7 +51,7 @@ use crate::{
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
         telegram::{SendTelegramFileTool, SendTelegramMessageTool},
     },
-    vfs::{MountedVfs, Vfs},
+    vfs::{MountedVfs, Vfs, WritableArea},
 };
 
 const WORKER_THREADS: usize = 8;
@@ -79,31 +79,32 @@ fn build_system_prompt(
     base: &str,
     personality: Option<&str>,
     thread_id: Option<Uuid>,
+    writable_root: Option<&str>,
     telegram: bool,
     public_url: Option<&str>,
 ) -> String {
     let date = current_date();
     let mut prompt = base.to_string();
     prompt.push_str(&format!("\nCurrent date: {date}"));
-    if let Some(id) = thread_id {
+    if let (Some(id), Some(root)) = (thread_id, writable_root) {
         // Telegram only renders absolute links, so prefix download URLs with the server's public
         // base URL there; elsewhere a relative path keeps working across deployments.
         let base_url = telegram.then_some(public_url).flatten().unwrap_or("");
         prompt.push_str(&format!(
-            "\n\nFile system: list `/` to see the user's files (read-only) alongside `/~workspace`. \
-             Only paths under `/~workspace` are writable; everything else is read-only. \
-             Write all outputs you create under `/~workspace`. \
-             Workspace files are downloadable via `{base_url}/api/threads/{id}/files/<path>` \
-             where `<path>` is the workspace-relative path (drop the leading `/~workspace/`). \
-             Example: `/~workspace/report.pdf` → `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
+            "\n\nFile system: list `/` to see the user's files. \
+             Your writable directory is `{root}` — write all outputs you create there; \
+             everything else under `/` is read-only (this applies in the shell and the Python sandbox alike). \
+             Files in it are downloadable via `{base_url}/api/threads/{id}/files/<path>` \
+             where `<path>` is relative to your writable directory (drop the leading `{root}/`). \
+             Example: `{root}/report.pdf` → `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
         ));
     }
     if telegram {
         prompt.push_str(
             "\n\nThis conversation happens over Telegram. The user can send you files; they are \
-             downloaded into `/~workspace/uploads/` and noted in their message. When you produce a \
-             file for the user, deliver it with the `send_telegram_file` tool so it arrives as a \
-             native Telegram attachment.",
+             downloaded into an `uploads/` folder in your writable directory and noted in their \
+             message with their full path. When you produce a file for the user, deliver it with \
+             the `send_telegram_file` tool so it arrives as a native Telegram attachment.",
         );
         if public_url.is_some() {
             prompt.push_str(
@@ -917,6 +918,18 @@ async fn ensure_runner(
     let mut mcp_tools = mcp_tools;
     mcp_tools.extend(crate::mcp_servers::connect_user_mcp_servers(&db, user_id).await);
     let project_id = thread_project_id(&db, thread_id).await?;
+    // Resolve where this thread writes: a project thread writes into the
+    // project's folder in the user's global files; an ungrouped thread keeps a
+    // standalone `/~workspace`.
+    let (writable_area, project_title) = match vfs.as_ref() {
+        Some(vfs) => {
+            let (area, title) =
+                resolve_writable_area(&db, vfs, thread_id, project_id, user_id).await?;
+            (Some(area), title)
+        }
+        None => (None, None),
+    };
+    let writable_root = writable_area.as_ref().map(writable_root_path);
     let personality = load_personality(&db, user_id).await?;
     // A thread bound to a Telegram chat enables the file-delivery tool and absolute download links.
     let telegram_chat = if telegram_bot_token.is_some() {
@@ -931,6 +944,7 @@ async fn ensure_runner(
         &base_system_prompt,
         personality.as_deref(),
         vfs.as_ref().map(|_| thread_id),
+        writable_root.as_deref(),
         telegram_chat.is_some(),
         public_url.as_deref(),
     );
@@ -940,7 +954,8 @@ async fn ensure_runner(
         system_prompt.push_str(&catalog);
     }
     system_prompt.push_str("\n\n");
-    system_prompt.push_str(&crate::tools::memory::palace_map(&db, user_id).await);
+    system_prompt
+        .push_str(&crate::tools::memory::palace_map(&db, user_id, project_title.as_deref()).await);
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
@@ -975,11 +990,13 @@ async fn ensure_runner(
     agent.register_tool(RememberTool {
         db: db.clone(),
         user_id,
+        default_wing: project_title.clone(),
     });
     agent.allow_tool("remember");
     agent.register_tool(RecallTool {
         db: db.clone(),
         user_id,
+        default_wing: project_title.clone(),
     });
     agent.allow_tool("recall");
     agent.register_tool(ExplorePalaceTool {
@@ -1010,14 +1027,9 @@ async fn ensure_runner(
         });
         agent.allow_tool("send_telegram_message");
     }
-    let python_workspace = if let Some(provider) = vfs {
-        let workspace_id = provider
-            .get_or_create_workspace(thread_id, project_id, user_id)
-            .await
-            .map_err(AgentPoolError::Internal)?;
-        Some((provider, workspace_id))
-    } else {
-        None
+    let python_workspace = match (vfs, writable_area) {
+        (Some(provider), Some(area)) => Some((provider, area)),
+        _ => None,
     };
 
     // Build the Python interpreter first so the shell can expose it as a
@@ -1026,8 +1038,8 @@ async fn ensure_runner(
         .await
         .map_err(AgentPoolError::Internal)?;
 
-    if let Some((provider, workspace_id)) = python_workspace {
-        let fs = MountedVfs::new(provider.clone(), workspace_id, user_id);
+    if let Some((provider, area)) = python_workspace {
+        let fs = MountedVfs::new(provider.clone(), user_id, area.clone());
         if vision {
             agent.register_tool(AttachImageTool {
                 fs: fs.clone(),
@@ -1117,7 +1129,7 @@ fn configure_agent_tools(agent: &BaseAgent, tools: &Tools) {
 async fn python_tool(
     tools: &Tools,
     thread_id: Uuid,
-    workspace: Option<(Arc<Vfs>, Uuid)>,
+    workspace: Option<(Arc<Vfs>, WritableArea)>,
     user_id: Uuid,
 ) -> anyhow::Result<Option<execenv::PythonTool>> {
     let Some(python) = tools.python.as_ref() else {
@@ -1129,10 +1141,10 @@ async fn python_tool(
 
     let config = python_tool_config(python);
     let cache_dir = config.cache_dir.clone();
-    let fs: Arc<dyn execenv::FileSystemBackend> = if let Some((vfs, workspace_id)) = workspace {
+    let fs: Arc<dyn execenv::FileSystemBackend> = if let Some((vfs, area)) = workspace {
         Arc::new(VfsExecFileSystem::new(
             vfs,
-            workspace_id,
+            area,
             user_id,
             cache_dir
                 .join("workspaces")
@@ -1857,6 +1869,61 @@ async fn thread_project_id(
         }))
 }
 
+/// Determines a thread's writable area. A thread bound to a project writes into
+/// that project's folder in the owner's global files; an ungrouped thread keeps
+/// its own standalone workspace. Also returns the project title when present, so
+/// callers can default the memory wing and prompt to it.
+async fn resolve_writable_area(
+    db: &ConnectionPool,
+    vfs: &Vfs,
+    thread_id: Uuid,
+    project_id: Option<Uuid>,
+    owner: Uuid,
+) -> Result<(WritableArea, Option<String>), AgentPoolError> {
+    if let Some(pid) = project_id
+        && let Some(title) = project_title(db, pid).await?
+    {
+        let prefix = vfs
+            .ensure_project_dir(owner, &title)
+            .await
+            .map_err(AgentPoolError::Internal)?;
+        return Ok((WritableArea::ProjectDir(prefix), Some(title)));
+    }
+
+    let workspace_id = vfs
+        .get_or_create_workspace(thread_id, None, owner)
+        .await
+        .map_err(AgentPoolError::Internal)?;
+    Ok((WritableArea::Workspace(workspace_id), None))
+}
+
+/// The absolute path the agent uses to reach its writable directory.
+fn writable_root_path(area: &WritableArea) -> String {
+    match area {
+        WritableArea::Workspace(_) => format!("/{}", crate::vfs::WORKSPACE_MOUNT),
+        WritableArea::ProjectDir(prefix) => format!("/{prefix}"),
+    }
+}
+
+async fn project_title(
+    db: &ConnectionPool,
+    project_id: Uuid,
+) -> Result<Option<String>, AgentPoolError> {
+    let result = db
+        .query_with_params(
+            "SELECT title FROM projects WHERE id = ? LIMIT 1",
+            vec![Value::Uuid(project_id)],
+        )
+        .await
+        .map_err(db_error)?;
+
+    Ok(result
+        .rows()
+        .first()
+        .and_then(|row| row.get_text("title"))
+        .map(|s| s.to_string()))
+}
+
 async fn thread_owner(db: &ConnectionPool, thread_id: Uuid) -> Result<Uuid, AgentPoolError> {
     let result = db
         .query_with_params(
@@ -2025,6 +2092,7 @@ mod tests {
             "BASE",
             None,
             Some(id),
+            Some("/~workspace"),
             true,
             Some("https://friday.example.com"),
         );
@@ -2040,6 +2108,7 @@ mod tests {
             "BASE",
             None,
             Some(id),
+            Some("/~workspace"),
             false,
             Some("https://friday.example.com"),
         );

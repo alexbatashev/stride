@@ -2030,6 +2030,95 @@ mod tests {
         assert_eq!(result["stdout"].as_str().unwrap().trim(), "4");
     }
 
+    /// Read-only volume for the whole filesystem plus a read-write volume nested
+    /// inside it — the layout `VfsExecFileSystem` uses for a project thread.
+    #[cfg(feature = "eryx")]
+    struct TwoMountFs {
+        root: std::path::PathBuf,
+        rw: std::path::PathBuf,
+        guest_rw: String,
+    }
+
+    #[cfg(feature = "eryx")]
+    impl FileSystemBackend for TwoMountFs {
+        fn volumes(&self) -> Vec<VolumeMount> {
+            vec![
+                VolumeMount::read_only(&self.root, "/"),
+                VolumeMount::new(&self.rw, &self.guest_rw),
+            ]
+        }
+    }
+
+    #[cfg(feature = "eryx")]
+    #[tokio::test]
+    #[ignore = "precompiles Eryx runtime"]
+    async fn eryx_mounts_whole_fs_readonly_with_writable_subtree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let rw = tmp.path().join("rw");
+        // The read-only world, including a read-only copy of the project folder.
+        std::fs::create_dir_all(root.join("Projects/Acme")).unwrap();
+        std::fs::write(root.join("other.txt"), "GLOBALDATA").unwrap();
+        std::fs::write(root.join("Projects/Acme/existing.txt"), "ROOTCOPY").unwrap();
+        // The writable mirror of the project folder, mounted on top.
+        std::fs::create_dir_all(&rw).unwrap();
+        std::fs::write(rw.join("existing.txt"), "RWCOPY").unwrap();
+
+        let fs = Arc::new(TwoMountFs {
+            root,
+            rw: rw.clone(),
+            guest_rw: "/Projects/Acme".to_string(),
+        });
+        let config = PythonToolConfig {
+            cache_dir: cache.path().to_path_buf(),
+            backend: BackendKind::Eryx,
+            threads: 2,
+            preinit: false,
+            limits: ExecutionLimits {
+                max_runtime: Duration::from_secs(10),
+                max_memory_bytes: Some(128 * 1024 * 1024),
+                max_cpu_fuel: None,
+            },
+            network: NetworkAccess::Blocked,
+        };
+        let tool = PythonTool::new(config, fs).await.unwrap();
+
+        let script = concat!(
+            "print('READ_GLOBAL', open('/other.txt').read())\n",
+            "print('READ_NESTED', open('/Projects/Acme/existing.txt').read())\n",
+            "open('/Projects/Acme/new.txt', 'w').write('NEW')\n",
+            "print('WROTE_RW', open('/Projects/Acme/new.txt').read())\n",
+            "try:\n",
+            "    open('/blocked.txt', 'w').write('x')\n",
+            "    print('RO_WRITE_UNEXPECTED')\n",
+            "except Exception:\n",
+            "    print('RO_WRITE_BLOCKED')\n",
+        );
+
+        let result = tool
+            .execute(
+                Arc::new(AgentConfig {
+                    model_registry: friday_agent::ModelRegistry::new(),
+                    max_iterations: 1,
+                }),
+                json!({ "script": script }),
+            )
+            .await;
+
+        assert_eq!(result["success"], true, "{result}");
+        let stdout = result["stdout"].as_str().unwrap();
+        // The whole filesystem is readable.
+        assert!(stdout.contains("READ_GLOBAL GLOBALDATA"), "{stdout}");
+        // The writable mount shadows the read-only copy at the same path.
+        assert!(stdout.contains("READ_NESTED RWCOPY"), "{stdout}");
+        // Writes land in the writable subtree.
+        assert!(stdout.contains("WROTE_RW NEW"), "{stdout}");
+        // Writes elsewhere are denied by the read-only root mount.
+        assert!(stdout.contains("RO_WRITE_BLOCKED"), "{stdout}");
+        assert_eq!(std::fs::read_to_string(rw.join("new.txt")).unwrap(), "NEW");
+    }
+
     #[cfg(feature = "eryx")]
     #[tokio::test]
     #[ignore = "downloads pure-Python wheels and precompiles runtime"]
