@@ -525,6 +525,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_users_can_own_same_skill_name() {
+        let (db, user_id) = setup_db().await;
+        let config = dummy_config();
+
+        let other = Uuid::now_v7();
+        db.query_with_params(
+            "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
+            vec![
+                Value::Uuid(other),
+                Value::Text("dave".to_string()),
+                Value::Text("hash".to_string()),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let params = json!({
+            "name": "shared-name",
+            "title": "Shared",
+            "description": "Same slug, different owners.",
+            "content": "Body."
+        });
+
+        let first = CreateSkillTool {
+            db: db.clone(),
+            user_id,
+        }
+        .execute(config.clone(), params.clone())
+        .await;
+        assert_eq!(first["success"], true);
+
+        let second = CreateSkillTool {
+            db: db.clone(),
+            user_id: other,
+        }
+        .execute(config, params)
+        .await;
+        assert_eq!(second["success"], true);
+    }
+
+    #[tokio::test]
     async fn skill_catalog_lists_static_and_user_skills() {
         let (db, user_id) = setup_db().await;
         let config = dummy_config();

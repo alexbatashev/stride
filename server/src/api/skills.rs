@@ -114,13 +114,13 @@ pub async fn create(
     }
 
     let duplicate = skills::select_cols((skills::id,))
-        .where_(skills::name.eq(name.as_str()))
+        .where_(skills::owner.eq(owner).and(skills::name.eq(name.as_str())))
         .all(&state.db)
         .await
         .map_err(|_| SkillApiError::Internal)?;
     if !duplicate.is_empty() {
         return Err(SkillApiError::Conflict(
-            "a skill with this name already exists".to_string(),
+            "you already have a skill with this name".to_string(),
         ));
     }
 
