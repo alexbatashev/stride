@@ -6,6 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use minisql::Value;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -98,6 +99,14 @@ pub async fn create(
         .await
         .map_err(|_| ProjectApiError::Internal)?;
 
+    // Materialize the project's folder in the user's global files so it is
+    // visible everywhere and acts as the writable directory for its threads.
+    if let Some(vfs) = &state.vfs
+        && let Err(error) = vfs.ensure_project_dir(owner, &title).await
+    {
+        tracing::warn!(%error, %id, "failed to create project directory");
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(ProjectResponse {
@@ -119,7 +128,7 @@ pub async fn rename(
         return Err(ProjectApiError::BadRequest);
     }
 
-    require_project_owner(&state, owner, project_id).await?;
+    let old_title = project_title(&state, owner, project_id).await?;
 
     projects::update()
         .title(title.clone())
@@ -127,6 +136,17 @@ pub async fn rename(
         .execute(&state.db)
         .await
         .map_err(|_| ProjectApiError::Internal)?;
+
+    if old_title != title {
+        // Keep the project's folder and memory wing aligned with its new name so
+        // existing files and memories carry over.
+        if let Some(vfs) = &state.vfs
+            && let Err(error) = vfs.rename_project_dir(owner, &old_title, &title).await
+        {
+            tracing::warn!(%error, %project_id, "failed to rename project directory");
+        }
+        rename_project_wing(&state, owner, &old_title, &title).await;
+    }
 
     Ok(Json(ProjectResponse {
         id: project_id.to_string(),
@@ -174,5 +194,42 @@ async fn require_project_owner(
         Err(ProjectApiError::NotFound)
     } else {
         Ok(())
+    }
+}
+
+/// Fetches the project's current title, also asserting ownership.
+async fn project_title(
+    state: &ServerState,
+    owner: Uuid,
+    project_id: Uuid,
+) -> Result<String, ProjectApiError> {
+    let rows = projects::select_cols((projects::title,))
+        .where_(projects::id.eq(project_id).and(projects::owner.eq(owner)))
+        .all(&state.db)
+        .await
+        .map_err(|_| ProjectApiError::Internal)?;
+
+    rows.into_iter()
+        .next()
+        .map(|(title,)| title)
+        .ok_or(ProjectApiError::NotFound)
+}
+
+/// Renames the memory wing that defaults to a project so its stored memories
+/// stay reachable under the project's new name.
+async fn rename_project_wing(state: &ServerState, owner: Uuid, old_title: &str, new_title: &str) {
+    if let Err(error) = state
+        .db
+        .query_with_params(
+            "UPDATE memory_wings SET name = ? WHERE owner = ? AND name = ?",
+            vec![
+                Value::Text(new_title.to_string()),
+                Value::Uuid(owner),
+                Value::Text(old_title.to_string()),
+            ],
+        )
+        .await
+    {
+        tracing::warn!(%error, "failed to rename project memory wing");
     }
 }

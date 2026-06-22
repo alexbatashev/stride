@@ -27,12 +27,15 @@ use crate::{
     ServerState,
     api::auth::{self, AuthError},
     api::threads::DEFAULT_THREAD_TITLE,
-    db::{Role, messages, telegram_connections, telegram_message_links, telegram_threads, threads},
+    db::{
+        Role, messages, projects, telegram_connections, telegram_message_links, telegram_threads,
+        threads,
+    },
     runner::{
         AgentEvent, AgentEventKind, AgentRequest, RUNNER_LIFECYCLE_TOPIC, RunnerLifecycle,
         thread_events_topic,
     },
-    vfs::WORKSPACE_MOUNT,
+    vfs::{WORKSPACE_MOUNT, WritableArea},
 };
 
 /// How long a streamed Telegram draft waits before the next update is pushed.
@@ -339,11 +342,7 @@ async fn build_agent_content(
             attachments.len()
         )
     } else {
-        let list = saved
-            .iter()
-            .map(|path| format!("/{WORKSPACE_MOUNT}/{path}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let list = saved.join(", ");
         format!(
             "[The user attached {} file(s), saved to the workspace: {list}]",
             saved.len()
@@ -363,8 +362,9 @@ fn attachment_title_seed(attachments: &[IncomingAttachment]) -> String {
     }
 }
 
-/// Downloads each attachment from Telegram and writes it under `/~workspace/uploads`, returning the
-/// workspace-relative paths (e.g. `uploads/photo.jpg`) that were stored successfully.
+/// Downloads each attachment from Telegram and writes it into the thread's
+/// writable directory under `uploads/`, returning the agent-facing absolute
+/// paths (e.g. `/Projects/Acme/uploads/photo.jpg`) that were stored.
 async fn download_attachments_to_workspace(
     state: &ServerState,
     user_id: Uuid,
@@ -378,16 +378,9 @@ async fn download_attachments_to_workspace(
     let Some(token) = bot_token(state) else {
         return Vec::new();
     };
-    let project_id = thread_project_id(&state.db, thread_id).await;
-    let workspace_id = match vfs
-        .get_or_create_workspace(thread_id, project_id, user_id)
-        .await
-    {
-        Ok(id) => id,
-        Err(error) => {
-            tracing::warn!(%thread_id, %error, "failed to open workspace for Telegram attachments");
-            return Vec::new();
-        }
+    let Some((area, root)) = thread_writable_area(state, vfs, user_id, thread_id).await else {
+        tracing::warn!(%thread_id, "failed to open writable area for Telegram attachments");
+        return Vec::new();
     };
 
     let mut saved = Vec::new();
@@ -395,24 +388,62 @@ async fn download_attachments_to_workspace(
         let Some(bytes) = download_telegram_file(state, &token, &attachment.file_id).await else {
             continue;
         };
-        let path = format!("uploads/{}", attachment.file_name);
+        let rel = format!("uploads/{}", attachment.file_name);
         match vfs
-            .write_bytes(
-                workspace_id,
-                &path,
+            .area_write_bytes(
+                &area,
+                user_id,
+                &rel,
                 &bytes,
                 attachment.mime_type.as_deref(),
-                user_id,
             )
             .await
         {
-            Ok(()) => saved.push(path),
+            Ok(()) => saved.push(format!("{root}/{rel}")),
             Err(error) => {
-                tracing::warn!(%thread_id, path, %error, "failed to write Telegram attachment");
+                tracing::warn!(%thread_id, rel, %error, "failed to write Telegram attachment");
             }
         }
     }
     saved
+}
+
+/// Resolves a Telegram thread's writable area and the absolute path the agent
+/// uses to reach it. Project threads write into the project's folder in the
+/// user's global files; others keep a standalone workspace.
+async fn thread_writable_area(
+    state: &ServerState,
+    vfs: &crate::vfs::Vfs,
+    user_id: Uuid,
+    thread_id: Uuid,
+) -> Option<(WritableArea, String)> {
+    if let Some(pid) = thread_project_id(&state.db, thread_id).await
+        && let Some(title) = project_title(&state.db, pid).await
+        && let Ok(prefix) = vfs.ensure_project_dir(user_id, &title).await
+    {
+        let root = format!("/{prefix}");
+        return Some((WritableArea::ProjectDir(prefix), root));
+    }
+    let workspace_id = vfs
+        .get_or_create_workspace(thread_id, None, user_id)
+        .await
+        .ok()?;
+    Some((
+        WritableArea::Workspace(workspace_id),
+        format!("/{WORKSPACE_MOUNT}"),
+    ))
+}
+
+async fn project_title(db: &ConnectionPool, project_id: Uuid) -> Option<String> {
+    projects::select_cols((projects::title,))
+        .where_(projects::id.eq(project_id))
+        .all(db)
+        .await
+        .ok()?
+        .into_iter()
+        .next()
+        .map(|(title,)| title)
+        .filter(|title| !title.is_empty())
 }
 
 async fn thread_project_id(db: &ConnectionPool, thread_id: Uuid) -> Option<Uuid> {

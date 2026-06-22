@@ -144,7 +144,7 @@ mod tests {
             .get_or_create_workspace(Uuid::now_v7(), None, owner)
             .await
             .unwrap();
-        let mounted = MountedVfs::new(vfs, ws, owner);
+        let mounted = MountedVfs::new(vfs, owner, crate::vfs::WritableArea::Workspace(ws));
         (EmulatedShellBackend::new(mounted.clone()), mounted)
     }
 

@@ -2,7 +2,7 @@ mod local;
 mod mounted;
 
 pub use local::LocalFileProvider;
-pub use mounted::{MountedVfs, WORKSPACE_MOUNT};
+pub use mounted::{MountedVfs, WORKSPACE_MOUNT, WritableArea};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -138,6 +138,124 @@ impl Vfs {
             return Ok(id);
         }
         self.create_workspace(Some(thread_id), None, owner).await
+    }
+
+    /// Ensures the project's folder exists in the owner's global files and
+    /// returns its global path (e.g. `Projects/Acme`).
+    pub async fn ensure_project_dir(&self, owner: Uuid, title: &str) -> anyhow::Result<String> {
+        let prefix = mounted::project_dir_prefix(title);
+        self.create_dir_global(owner, &prefix).await?;
+        Ok(prefix)
+    }
+
+    /// Renames a project's global folder when the project title changes. Best
+    /// effort: a missing source folder is created under the new name.
+    pub async fn rename_project_dir(
+        &self,
+        owner: Uuid,
+        old_title: &str,
+        new_title: &str,
+    ) -> anyhow::Result<String> {
+        let old_name = mounted::project_dir_name(old_title);
+        let new_name = mounted::project_dir_name(new_title);
+        let new_prefix = mounted::project_dir_prefix(new_title);
+        if old_name == new_name {
+            self.create_dir_global(owner, &new_prefix).await?;
+            return Ok(new_prefix);
+        }
+        let old_prefix = mounted::project_dir_prefix(old_title);
+        match self.rename_global(owner, &old_prefix, &new_name).await {
+            Ok(()) => Ok(new_prefix),
+            Err(_) => {
+                // Source missing or target exists; fall back to ensuring the
+                // destination so callers always get a usable folder.
+                self.create_dir_global(owner, &new_prefix).await?;
+                Ok(new_prefix)
+            }
+        }
+    }
+
+    /// Lists a writable area at `rel` (relative to its root). Routes to the
+    /// standalone workspace or the project's global subtree.
+    pub async fn area_list(
+        &self,
+        area: &WritableArea,
+        owner: Uuid,
+        rel: &str,
+    ) -> anyhow::Result<Vec<DirEntry>> {
+        match area {
+            WritableArea::Workspace(id) => self.list(*id, rel).await,
+            WritableArea::ProjectDir(prefix) => {
+                self.list_global(owner, &join_under(prefix, rel)).await
+            }
+        }
+    }
+
+    /// Reads raw bytes and mime type from a writable area at `rel`.
+    pub async fn area_read_bytes(
+        &self,
+        area: &WritableArea,
+        owner: Uuid,
+        rel: &str,
+    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+        match area {
+            WritableArea::Workspace(id) => self.read_bytes(*id, rel).await,
+            WritableArea::ProjectDir(prefix) => {
+                self.read_bytes_global(owner, &join_under(prefix, rel))
+                    .await
+            }
+        }
+    }
+
+    /// Writes raw bytes to a writable area at `rel`.
+    pub async fn area_write_bytes(
+        &self,
+        area: &WritableArea,
+        owner: Uuid,
+        rel: &str,
+        content: &[u8],
+        mime_type: Option<&str>,
+    ) -> anyhow::Result<()> {
+        match area {
+            WritableArea::Workspace(id) => {
+                self.write_bytes(*id, rel, content, mime_type, owner).await
+            }
+            WritableArea::ProjectDir(prefix) => {
+                self.write_bytes_global(owner, &join_under(prefix, rel), content, mime_type)
+                    .await
+            }
+        }
+    }
+
+    /// Creates a directory (and parents) in a writable area at `rel`.
+    pub async fn area_create_dir(
+        &self,
+        area: &WritableArea,
+        owner: Uuid,
+        rel: &str,
+    ) -> anyhow::Result<()> {
+        match area {
+            WritableArea::Workspace(id) => self.create_dir(*id, rel, owner).await,
+            WritableArea::ProjectDir(prefix) => {
+                self.create_dir_global(owner, &join_under(prefix, rel))
+                    .await
+            }
+        }
+    }
+
+    /// Deletes a file or directory tree in a writable area at `rel`.
+    pub async fn area_delete(
+        &self,
+        area: &WritableArea,
+        owner: Uuid,
+        rel: &str,
+    ) -> anyhow::Result<()> {
+        match area {
+            WritableArea::Workspace(id) => self.delete(*id, rel).await,
+            WritableArea::ProjectDir(prefix) => {
+                self.delete_global(owner, &join_under(prefix, rel)).await
+            }
+        }
     }
 
     /// Lists entries at `path` relative to workspace root (empty = root).
@@ -802,6 +920,15 @@ fn split_path(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
 
+/// Joins a writable-root-relative path under a project's global prefix.
+fn join_under(prefix: &str, rel: &str) -> String {
+    if rel.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/{rel}")
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -824,6 +951,8 @@ fn uuid_from_row(row: &minisql::Row, col: &str) -> Option<Uuid> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::db;
 
@@ -1017,6 +1146,113 @@ mod tests {
             .unwrap();
         assert_eq!(vfs.read_global(owner, "dir/new.txt").await.unwrap(), "x");
         assert!(vfs.read_global(owner, "dir/old.txt").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ensure_project_dir_appears_in_global_files() {
+        let (vfs, owner) = setup_vfs().await;
+        let prefix = vfs.ensure_project_dir(owner, "Acme").await.unwrap();
+        assert_eq!(prefix, "Projects/Acme");
+
+        let roots: Vec<_> = vfs
+            .list_global(owner, "")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert!(roots.contains(&"Projects".to_string()));
+        let projects: Vec<_> = vfs
+            .list_global(owner, "Projects")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(projects, vec!["Acme".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn rename_project_dir_moves_files() {
+        let (vfs, owner) = setup_vfs().await;
+        vfs.ensure_project_dir(owner, "Acme").await.unwrap();
+        vfs.write_global(owner, "Projects/Acme/report.txt", "hi")
+            .await
+            .unwrap();
+
+        let prefix = vfs.rename_project_dir(owner, "Acme", "Beta").await.unwrap();
+        assert_eq!(prefix, "Projects/Beta");
+        assert_eq!(
+            vfs.read_global(owner, "Projects/Beta/report.txt")
+                .await
+                .unwrap(),
+            "hi"
+        );
+        assert!(
+            vfs.read_global(owner, "Projects/Acme/report.txt")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn area_methods_route_to_project_subtree() {
+        let (vfs, owner) = setup_vfs().await;
+        let prefix = vfs.ensure_project_dir(owner, "Acme").await.unwrap();
+        let area = WritableArea::ProjectDir(prefix);
+
+        vfs.area_write_bytes(&area, owner, "out.txt", b"data", None)
+            .await
+            .unwrap();
+        // The file lands in the project's folder in global files.
+        assert_eq!(
+            vfs.read_global(owner, "Projects/Acme/out.txt")
+                .await
+                .unwrap(),
+            "data"
+        );
+        // Listing the area root shows it relative to the project folder.
+        let names: Vec<_> = vfs
+            .area_list(&area, owner, "")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, vec!["out.txt".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn mounted_project_mode_only_project_dir_is_writable() {
+        let (vfs, owner) = setup_vfs().await;
+        let vfs = Arc::new(vfs);
+        let prefix = vfs.ensure_project_dir(owner, "Acme").await.unwrap();
+        // A read-only personal file outside the project.
+        vfs.write_global(owner, "personal/notes.txt", "secret")
+            .await
+            .unwrap();
+
+        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::ProjectDir(prefix));
+        // Writing inside the project folder works.
+        fs.write_bytes("/Projects/Acme/out.txt", b"ok", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            vfs.read_global(owner, "Projects/Acme/out.txt")
+                .await
+                .unwrap(),
+            "ok"
+        );
+        // The rest of the namespace is readable but not writable.
+        assert_eq!(
+            fs.read_bytes("/personal/notes.txt").await.unwrap().0,
+            b"secret"
+        );
+        assert!(
+            fs.write_bytes("/personal/notes.txt", b"x", None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

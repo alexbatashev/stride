@@ -555,6 +555,13 @@ export function AppSidebar({
                   <span class="project-actions">
                     <span
                       role="button"
+                      title="New thread"
+                      data-action="project-new-thread"
+                      data-project-id={project.id}
+                      data-project-title={project.title}
+                    >+</span>
+                    <span
+                      role="button"
                       title="Rename"
                       data-action="project-rename"
                       data-project-id={project.id}

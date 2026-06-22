@@ -17,6 +17,12 @@ export function bindSidebar(sidebar: HTMLElement): void {
 		void createProject(title).then(() => window.location.reload());
 	});
 
+	sidebar.addEventListener("project-new-thread", (event) => {
+		const { id } = (event as CustomEvent<{ id: string }>).detail;
+		if (!id) return;
+		window.location.href = `/threads?project=${encodeURIComponent(id)}`;
+	});
+
 	sidebar.addEventListener("project-rename", (event) => {
 		const { id, title } = (event as CustomEvent<{ id: string; title: string }>).detail;
 		const next = window.prompt("Project name:", title)?.trim();
