@@ -141,7 +141,7 @@ migrations! {
 
         table skills {
             id: Uuid [PrimaryKey],
-            name: String [Unique],
+            name: String,
             title: String,
             description: String,
             content: String,
@@ -149,6 +149,8 @@ migrations! {
 
             foreign_key(owner -> users.id);
         }
+
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_owner_name ON skills(owner, name)";
 
         table vfs_workspaces {
             id: Uuid [PrimaryKey],
@@ -331,18 +333,6 @@ migrations! {
         }
 
         raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_owner_name ON mcp_servers(owner, name)";
-    }
-
-    skills_owner_scoped {
-        // Skill names started out globally unique, which prevented two users
-        // from owning a skill with the same slug. SQLite cannot drop an inline
-        // UNIQUE constraint, so rebuild the table without it and enforce
-        // uniqueness per owner instead.
-        raw "CREATE TABLE skills_new (id BINARY(16) PRIMARY KEY, name TEXT, title TEXT, description TEXT, content TEXT, owner BINARY(16), FOREIGN KEY (owner) REFERENCES users (id) ON UPDATE CASCADE ON DELETE SET NULL)";
-        raw "INSERT INTO skills_new (id, name, title, description, content, owner) SELECT id, name, title, description, content, owner FROM skills";
-        raw "DROP TABLE skills";
-        raw "ALTER TABLE skills_new RENAME TO skills";
-        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_owner_name ON skills(owner, name)";
     }
 }
 
