@@ -5,5 +5,6 @@ pub mod files;
 pub mod images;
 pub mod mcp;
 pub mod projects;
+pub mod skills;
 pub mod telegram;
 pub mod threads;

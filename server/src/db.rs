@@ -141,7 +141,7 @@ migrations! {
 
         table skills {
             id: Uuid [PrimaryKey],
-            name: String [Unique],
+            name: String,
             title: String,
             description: String,
             content: String,
@@ -149,6 +149,8 @@ migrations! {
 
             foreign_key(owner -> users.id);
         }
+
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_owner_name ON skills(owner, name)";
 
         table vfs_workspaces {
             id: Uuid [PrimaryKey],

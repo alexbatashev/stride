@@ -62,6 +62,27 @@ export type NewMcpServer = {
 	enabled: boolean;
 };
 
+export type Skill = {
+	id: string;
+	name: string;
+	title: string;
+	description: string;
+	content: string;
+};
+
+export type NewSkill = {
+	name: string;
+	title: string;
+	description: string;
+	content: string;
+};
+
+export type SkillUpdate = {
+	title: string;
+	description: string;
+	content: string;
+};
+
 export async function getTelegramSettings(): Promise<TelegramSettings> {
 	return request("/api/settings/telegram");
 }
@@ -108,6 +129,30 @@ export async function createMcpServer(data: NewMcpServer): Promise<McpServer> {
 
 export async function deleteMcpServer(id: string): Promise<void> {
 	await request(`/api/settings/mcp/${id}`, { method: "DELETE" });
+}
+
+export async function listSkills(): Promise<Skill[]> {
+	return request("/api/settings/skills");
+}
+
+export async function createSkill(data: NewSkill): Promise<Skill> {
+	return request("/api/settings/skills", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
+export async function updateSkill(id: string, data: SkillUpdate): Promise<Skill> {
+	return request(`/api/settings/skills/${id}`, {
+		method: "PATCH",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
+export async function deleteSkill(id: string): Promise<void> {
+	await request(`/api/settings/skills/${id}`, { method: "DELETE" });
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
