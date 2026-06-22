@@ -1213,6 +1213,14 @@ mod eryx_backend {
             Vec::new()
         };
 
+        // This step boots CPython in WASM, imports the preinit packages and AOT
+        // compiles the snapshot to native code. It is silent and CPU-bound, so
+        // on a cold cache it can run for a minute and look like a hang; log
+        // around it so startup progress is visible.
+        tracing::info!(
+            runtime = %runtime.display(),
+            "building Python preinit snapshot (first run, compiles to native code; can take a minute)"
+        );
         let component =
             eryx::preinit::pre_initialize(&stdlib, site_packages, imports, &extensions).await?;
         let precompiled = eryx::PythonExecutor::precompile(&component)?;
@@ -1220,6 +1228,7 @@ mod eryx_backend {
         tokio::fs::write(&tmp, precompiled).await?;
         tokio::fs::rename(tmp, &runtime).await?;
         tokio::fs::write(&marker, ERYX_RUNTIME_CACHE_VERSION).await?;
+        tracing::info!(runtime = %runtime.display(), "Python preinit snapshot ready");
 
         preinit_runtime(
             runtime,
