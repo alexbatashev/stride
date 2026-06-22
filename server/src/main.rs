@@ -230,6 +230,14 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             get(api::email::list).post(api::email::create),
         )
         .route("/api/settings/email/{id}", delete(api::email::delete))
+        .route(
+            "/api/settings/skills",
+            get(api::skills::list).post(api::skills::create),
+        )
+        .route(
+            "/api/settings/skills/{id}",
+            patch(api::skills::update).delete(api::skills::delete),
+        )
         .route("/api/settings/telegram/login", post(api::telegram::login))
         .route(
             "/api/settings/telegram/disconnect",

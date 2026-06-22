@@ -2,15 +2,20 @@ import { Component, css, effect, onMount } from "@frontiers-labs/argon";
 import {
   createEmailAccount,
   createMcpServer,
+  createSkill,
   deleteEmailAccount,
   deleteMcpServer,
+  deleteSkill,
   disconnectTelegram,
   getTelegramSettings,
   listEmailAccounts,
   listMcpServers,
+  listSkills,
   loginTelegram,
+  updateSkill,
   type EmailAccount,
   type McpServer,
+  type Skill,
   type TelegramAuthData,
 } from "../api/settings.js";
 
@@ -27,6 +32,10 @@ type SettingsHost = HTMLElement & {
   mcps: McpServer[];
   mcpLoaded: boolean;
   mcpError: string;
+  skills: Skill[];
+  skillLoaded: boolean;
+  skillError: string;
+  editingSkill: Skill | null;
 };
 
 function escapeHtml(value: string): string {
@@ -54,6 +63,16 @@ function mcpView(server: McpServer): AccountView {
     id: server.id,
     name: escapeHtml(server.name),
     meta: escapeHtml(headers.length > 0 ? `${server.url} · headers: ${headers.join(", ")}` : server.url),
+  };
+}
+
+type SkillView = { id: string; name: string; meta: string };
+
+function skillView(skill: Skill): SkillView {
+  return {
+    id: skill.id,
+    name: escapeHtml(skill.title),
+    meta: escapeHtml(`${skill.name} · ${skill.description}`),
   };
 }
 
@@ -98,6 +117,49 @@ async function refreshMcps(host: SettingsHost): Promise<void> {
     host.mcpError = "";
   } catch {
     host.mcpError = "Failed to load MCP servers.";
+  }
+}
+
+async function refreshSkills(host: SettingsHost): Promise<void> {
+  try {
+    host.skills = await listSkills();
+    host.skillLoaded = true;
+    host.skillError = "";
+  } catch {
+    host.skillError = "Failed to load skills.";
+  }
+}
+
+async function submitSkill(host: SettingsHost, form: HTMLFormElement): Promise<void> {
+  const data = new FormData(form);
+  host.skillError = "";
+  try {
+    await createSkill({
+      name: String(data.get("name") ?? "").trim(),
+      title: String(data.get("title") ?? "").trim(),
+      description: String(data.get("description") ?? "").trim(),
+      content: String(data.get("content") ?? "").trim(),
+    });
+    form.reset();
+    await refreshSkills(host);
+  } catch (error) {
+    host.skillError = error instanceof Error ? error.message : "Failed to add skill.";
+  }
+}
+
+async function submitSkillEdit(host: SettingsHost, form: HTMLFormElement, id: string): Promise<void> {
+  const data = new FormData(form);
+  host.skillError = "";
+  try {
+    await updateSkill(id, {
+      title: String(data.get("title") ?? "").trim(),
+      description: String(data.get("description") ?? "").trim(),
+      content: String(data.get("content") ?? "").trim(),
+    });
+    host.editingSkill = null;
+    await refreshSkills(host);
+  } catch (error) {
+    host.skillError = error instanceof Error ? error.message : "Failed to update skill.";
   }
 }
 
@@ -232,7 +294,8 @@ const styles = css`
 
   .layout[data-active="telegram"] .tab[data-section="telegram"],
   .layout[data-active="email"] .tab[data-section="email"],
-  .layout[data-active="mcp"] .tab[data-section="mcp"] {
+  .layout[data-active="mcp"] .tab[data-section="mcp"],
+  .layout[data-active="skills"] .tab[data-section="skills"] {
     background: var(--accent);
     color: var(--foreground);
     font-weight: 600;
@@ -253,7 +316,8 @@ const styles = css`
 
   .layout[data-active="telegram"] .panel[data-panel="telegram"],
   .layout[data-active="email"] .panel[data-panel="email"],
-  .layout[data-active="mcp"] .panel[data-panel="mcp"] {
+  .layout[data-active="mcp"] .panel[data-panel="mcp"],
+  .layout[data-active="skills"] .panel[data-panel="skills"] {
     display: flex;
   }
 
@@ -311,6 +375,21 @@ const styles = css`
   .account app-button {
     flex: 0 0 auto;
     width: auto;
+  }
+
+  .row-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 8px;
+  }
+
+  .skill-content textarea {
+    min-height: 200px;
+    font-family:
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
   }
 
   form {
@@ -438,6 +517,10 @@ export function AppSettings({
   mcps = [],
   mcpLoaded = false,
   mcpError = "",
+  skills = [],
+  skillLoaded = false,
+  skillError = "",
+  editingSkill = null,
 }: {
   activeSection?: string;
   tgConfigured?: boolean;
@@ -451,6 +534,10 @@ export function AppSettings({
   mcps?: McpServer[];
   mcpLoaded?: boolean;
   mcpError?: string;
+  skills?: Skill[];
+  skillLoaded?: boolean;
+  skillError?: string;
+  editingSkill?: Skill | null;
 }): Component {
   onMount(() => {
     (window as unknown as Record<string, unknown>).onTelegramAuth = (user: TelegramAuthData) => {
@@ -459,6 +546,7 @@ export function AppSettings({
     void refreshTelegram(this);
     void refreshEmails(this);
     void refreshMcps(this);
+    void refreshSkills(this);
   });
 
   // Telegram's widget script finds its own <script> tag in the document and
@@ -493,6 +581,15 @@ export function AppSettings({
 
   const emailViews = emails.map(emailView);
   const mcpViews = mcps.map(mcpView);
+  const skillViews = skills.map(skillView);
+  const editing = editingSkill
+    ? {
+        id: editingSkill.id,
+        title: escapeHtml(editingSkill.title),
+        description: escapeHtml(editingSkill.description),
+        content: escapeHtml(editingSkill.content),
+      }
+    : null;
 
   return (
     <>
@@ -544,6 +641,40 @@ export function AppSettings({
                   });
               }
               return;
+            case "add-skill": {
+              const form = action.closest<HTMLFormElement>("form");
+              if (form) void submitSkill(this, form);
+              return;
+            }
+            case "edit-skill": {
+              const skill = this.skills.find((item) => item.id === action.dataset.id);
+              if (skill) {
+                this.skillError = "";
+                this.editingSkill = skill;
+              }
+              return;
+            }
+            case "save-skill": {
+              const form = action.closest<HTMLFormElement>("form");
+              if (form && this.editingSkill) void submitSkillEdit(this, form, this.editingSkill.id);
+              return;
+            }
+            case "cancel-skill":
+              this.skillError = "";
+              this.editingSkill = null;
+              return;
+            case "del-skill":
+              if (action.dataset.id && window.confirm("Remove this skill from Friday?")) {
+                void deleteSkill(action.dataset.id)
+                  .then(() => {
+                    if (this.editingSkill?.id === action.dataset.id) this.editingSkill = null;
+                    return refreshSkills(this);
+                  })
+                  .catch(() => {
+                    this.skillError = "Failed to remove skill.";
+                  });
+              }
+              return;
           }
         }}
         onSubmit={(event: Event) => {
@@ -551,6 +682,10 @@ export function AppSettings({
           const form = event.target as HTMLFormElement;
           if (form.dataset.form === "email") void submitEmail(this, form);
           if (form.dataset.form === "mcp") void submitMcp(this, form);
+          if (form.dataset.form === "skill") void submitSkill(this, form);
+          if (form.dataset.form === "skill-edit" && this.editingSkill) {
+            void submitSkillEdit(this, form, this.editingSkill.id);
+          }
         }}
       >
         <div class="shell">
@@ -564,6 +699,7 @@ export function AppSettings({
               <button type="button" class="tab" data-section="telegram">Telegram</button>
               <button type="button" class="tab" data-section="email">Email</button>
               <button type="button" class="tab" data-section="mcp">MCP servers</button>
+              <button type="button" class="tab" data-section="skills">Skills</button>
             </nav>
 
             <div class="panels">
@@ -665,6 +801,60 @@ export function AppSettings({
                     <p class="error">{mcpError}</p>
                   </form>
                 </app-card>
+              </section>
+
+              <section class="panel" data-panel="skills">
+                <app-card
+                  title="Skills"
+                  description="Skills are reusable instruction sets your agents load on demand. Built-in skills are always available and are not listed here."
+                >
+                  {skillViews.length > 0
+                    ? (
+                      <div class="account-list">
+                        {skillViews.map((skill) => (
+                          <div class="account" key={skill.id}>
+                            <div>
+                              <div class="name">{skill.name}</div>
+                              <div class="meta">{skill.meta}</div>
+                            </div>
+                            <div class="row-actions">
+                              <app-button variant="outline" size="sm" data-action="edit-skill" data-id={skill.id}>Edit</app-button>
+                              <app-button variant="outline" size="sm" data-action="del-skill" data-id={skill.id}>Remove</app-button>
+                            </div>
+                          </div>
+                        )).join("")}
+                      </div>
+                    )
+                    : <p class="muted">{skillLoaded ? "No skills yet." : "Loading skills…"}</p>}
+                </app-card>
+
+                {editing
+                  ? (
+                    <app-card title="Edit skill" description="Update the title, description, or content. The skill name cannot be changed.">
+                      <form data-form="skill-edit">
+                        <label class="full">Title<input name="title" required value={editing.title} autocomplete="off" /></label>
+                        <label class="full">Description<input name="description" required value={editing.description} autocomplete="off" /></label>
+                        <label class="full skill-content">Content<textarea name="content" required>{editing.content}</textarea></label>
+                        <div class="actions">
+                          <app-button data-action="save-skill" data-id={editing.id}>Save changes</app-button>
+                          <app-button variant="outline" data-action="cancel-skill">Cancel</app-button>
+                        </div>
+                        <p class="error">{skillError}</p>
+                      </form>
+                    </app-card>
+                  )
+                  : (
+                    <app-card title="Add skill" description="The name is a unique slug, e.g. python-debugging. Content is Markdown instructions the agent follows when this skill is active.">
+                      <form data-form="skill">
+                        <label class="full">Name<input name="name" required placeholder="python-debugging" autocomplete="off" pattern="[a-z][a-z0-9-]{1,63}" /></label>
+                        <label class="full">Title<input name="title" required placeholder="Python Debugging Guide" autocomplete="off" /></label>
+                        <label class="full">Description<input name="description" required placeholder="One or two sentence summary used for search." autocomplete="off" /></label>
+                        <label class="full skill-content">Content<textarea name="content" required placeholder="Markdown instructions, context, or steps the agent should follow."></textarea></label>
+                        <div class="actions"><app-button data-action="add-skill">Add skill</app-button></div>
+                        <p class="error">{skillError}</p>
+                      </form>
+                    </app-card>
+                  )}
               </section>
             </div>
           </div>
