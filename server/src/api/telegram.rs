@@ -2052,17 +2052,16 @@ fn validate_secret(state: &ServerState, headers: &HeaderMap) -> Result<(), Teleg
         .server
         .as_ref()
         .and_then(|s| s.telegram.as_ref())
-        .and_then(|t| t.webhook_secret.as_deref());
-
-    let Some(expected) = expected.filter(|s| !s.is_empty()) else {
-        return Ok(());
-    };
+        .and_then(|t| t.webhook_secret.as_deref())
+        .filter(|s| !s.is_empty())
+        .ok_or(TelegramApiError::Unauthorized)?;
 
     let actual = headers
         .get(TELEGRAM_SECRET_HEADER)
-        .and_then(|v| v.to_str().ok());
+        .and_then(|v| v.to_str().ok())
+        .ok_or(TelegramApiError::Unauthorized)?;
 
-    if actual == Some(expected) {
+    if crate::triggers::webhook::verify_secret(expected, actual) {
         Ok(())
     } else {
         Err(TelegramApiError::Unauthorized)
@@ -2771,6 +2770,90 @@ mod tests {
 
         // Wrong bot token invalidates the signature.
         assert!(!verify_login("999999:other-token", &fields));
+    }
+
+    fn state_with_webhook_secret(secret: Option<&str>) -> ServerState {
+        let telegram = crate::config::Telegram {
+            bot_api_key: None,
+            bot_username: None,
+            webhook_secret: secret.map(str::to_owned),
+            webhook_url: None,
+        };
+        let server = crate::config::Server {
+            db_path: None,
+            listen_addr: None,
+            allow_registration: None,
+            ldap: None,
+            files: None,
+            telegram: Some(telegram),
+            public_url: None,
+        };
+        ServerState {
+            config: Config {
+                providers: HashMap::new(),
+                models: HashMap::new(),
+                server: Some(server),
+                tools: None,
+                mcp: HashMap::new(),
+            },
+            db: ConnectionPool::new("sqlite::memory:").unwrap(),
+            jwt_secret: String::new(),
+            runner: Arc::new(FakePool::default()),
+            model_config: Arc::new(friday_agent::AgentConfig {
+                model_registry: friday_agent::ModelRegistry::default(),
+                max_iterations: 1,
+            }),
+            vfs: None,
+            telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
+            executor: crate::scheduler::ExecutorHandle::channel().0,
+        }
+    }
+
+    fn headers_with_secret(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(TELEGRAM_SECRET_HEADER, value.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn validate_secret_rejects_when_no_secret_configured() {
+        let state = state_with_webhook_secret(None);
+        assert!(matches!(
+            validate_secret(&state, &HeaderMap::new()),
+            Err(TelegramApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            validate_secret(&state, &headers_with_secret("anything")),
+            Err(TelegramApiError::Unauthorized)
+        ));
+    }
+
+    #[test]
+    fn validate_secret_rejects_empty_configured_secret() {
+        let state = state_with_webhook_secret(Some(""));
+        assert!(matches!(
+            validate_secret(&state, &headers_with_secret("")),
+            Err(TelegramApiError::Unauthorized)
+        ));
+    }
+
+    #[test]
+    fn validate_secret_accepts_matching_header() {
+        let state = state_with_webhook_secret(Some("s3cr3t"));
+        assert!(validate_secret(&state, &headers_with_secret("s3cr3t")).is_ok());
+    }
+
+    #[test]
+    fn validate_secret_rejects_wrong_or_missing_header() {
+        let state = state_with_webhook_secret(Some("s3cr3t"));
+        assert!(matches!(
+            validate_secret(&state, &headers_with_secret("nope")),
+            Err(TelegramApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            validate_secret(&state, &HeaderMap::new()),
+            Err(TelegramApiError::Unauthorized)
+        ));
     }
 
     fn sign_login(token: &str, fields: &serde_json::Map<String, Value>) -> String {

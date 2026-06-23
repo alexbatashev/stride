@@ -494,7 +494,15 @@ mod tests {
         Config {
             providers: HashMap::new(),
             models: HashMap::new(),
-            server: None,
+            server: Some(Server {
+                db_path: None,
+                listen_addr: None,
+                allow_registration: Some(true),
+                ldap: None,
+                files: None,
+                telegram: None,
+                public_url: None,
+            }),
             tools: None,
             mcp: HashMap::new(),
         }

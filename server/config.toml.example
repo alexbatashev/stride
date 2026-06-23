@@ -50,7 +50,8 @@ provider = "openai"
 [server]
 db_path = "/tmp/server.db"
 listen_addr = "0.0.0.0:3000"
-allow_registration = true
+# Self-signup is closed by default; set this to true to explicitly enable it.
+allow_registration = false
 # Public base URL the server is reachable at. When set, image attachments are
 # served to vision models via capability URLs under this host instead of being
 # embedded inline as base64.

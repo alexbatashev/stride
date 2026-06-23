@@ -220,7 +220,7 @@ impl ImapService {
             uids.sort_unstable_by(|a, b| b.cmp(a));
             uids.truncate(limit);
             let mut messages = fetch_uids(&mut session, mailbox_name, &uids).await?;
-            messages.sort_unstable_by(|a, b| b.uid.cmp(&a.uid));
+            messages.sort_unstable_by_key(|message| std::cmp::Reverse(message.uid));
             session.logout().await.map_err(|error| error.to_string())?;
             Ok(messages)
         })

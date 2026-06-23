@@ -186,7 +186,7 @@ impl Config {
         self.server
             .as_ref()
             .and_then(|server| server.allow_registration)
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 
     /// Public base URL (without trailing slash) used to build externally
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn registration_is_enabled_by_default() {
+    fn registration_is_disabled_by_default() {
         let cfg = Config {
             providers: HashMap::new(),
             models: HashMap::new(),
@@ -309,7 +309,7 @@ mod tests {
             mcp: HashMap::new(),
         };
 
-        assert!(cfg.allow_registration());
+        assert!(!cfg.allow_registration());
     }
 
     #[test]
