@@ -179,7 +179,8 @@ test('app-settings switches sections and lists integrations', () => {
   assert.match(el.shadowRoot.innerHTML, /Settings/);
 
   const layout = el.shadowRoot.querySelector('.layout');
-  assert.equal(layout.getAttribute('data-active'), 'telegram');
+  assert.equal(layout.getAttribute('data-active'), 'connections');
+  assert.match(el.shadowRoot.innerHTML, /GitHub/);
   assert.ok(el.shadowRoot.querySelector('[data-section="email"]'), 'email tab missing');
 
   el.shadowRoot.querySelector('[data-section="email"]').click();

@@ -2786,6 +2786,7 @@ mod tests {
             ldap: None,
             files: None,
             telegram: Some(telegram),
+            github: None,
             public_url: None,
         };
         ServerState {

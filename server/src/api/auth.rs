@@ -450,6 +450,7 @@ mod tests {
                     ldap: None,
                     files: None,
                     telegram: None,
+                    github: None,
                     public_url: None,
                 }),
                 ..empty_config()
@@ -501,6 +502,7 @@ mod tests {
                 ldap: None,
                 files: None,
                 telegram: None,
+                github: None,
                 public_url: None,
             }),
             tools: None,

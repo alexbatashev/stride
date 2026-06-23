@@ -77,6 +77,7 @@ pub struct Server {
     pub ldap: Option<Ldap>,
     pub files: Option<Files>,
     pub telegram: Option<Telegram>,
+    pub github: Option<GitHub>,
     /// Public base URL the server is reachable at, e.g. `https://stride.example.com`.
     /// Used to build capability URLs for image attachments served to vision
     /// models. When unset, images are sent inline as base64 instead.
@@ -92,6 +93,58 @@ pub struct Telegram {
     /// set with a bot token, the server registers it on startup with `callback_query` updates
     /// enabled, so inline button taps are delivered.
     pub webhook_url: Option<String>,
+}
+
+/// Connection to the official, hosted GitHub MCP server. Linking an account uses
+/// a standard GitHub OAuth App: the server redirects the user to GitHub, exchanges
+/// the returned code for a user access token, and forwards that token to the MCP
+/// server. Setting `client_id` and `client_secret` is all that is required to
+/// activate the integration.
+#[derive(Clone, Debug, Deserialize)]
+pub struct GitHub {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    /// OAuth scopes requested when linking an account. Defaults to a set covering
+    /// the GitHub MCP server's common toolsets.
+    pub scopes: Option<String>,
+    /// Streamable HTTP endpoint of the GitHub MCP server. Defaults to the official
+    /// hosted server; override only for GitHub Enterprise Cloud.
+    pub mcp_url: Option<String>,
+}
+
+impl GitHub {
+    pub fn read_client_id(&self) -> Option<String> {
+        self.client_id
+            .clone()
+            .or_else(|| env::var("STRIDE_GITHUB_CLIENT_ID").ok())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn read_client_secret(&self) -> Option<String> {
+        self.client_secret
+            .clone()
+            .or_else(|| env::var("STRIDE_GITHUB_CLIENT_SECRET").ok())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn scopes(&self) -> &str {
+        self.scopes
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("repo read:org read:user")
+    }
+
+    pub fn mcp_url(&self) -> &str {
+        self.mcp_url
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(crate::github::DEFAULT_MCP_URL)
+    }
+
+    /// Whether the OAuth App credentials needed to link accounts are present.
+    pub fn is_configured(&self) -> bool {
+        self.read_client_id().is_some() && self.read_client_secret().is_some()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -288,6 +341,7 @@ mod tests {
                 ldap: None,
                 files: None,
                 telegram: None,
+                github: None,
                 public_url: None,
             }),
             tools: None,
@@ -396,6 +450,28 @@ mod tests {
         assert_eq!(telegram.read_bot_api_key().unwrap(), "123:abc");
         assert_eq!(telegram.read_bot_username().unwrap(), "stride_bot");
         assert_eq!(telegram.webhook_secret.unwrap(), "secret");
+    }
+
+    #[test]
+    fn github_config_loads() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [server.github]
+            client_id = "Iv1.abc"
+            client_secret = "gh-secret"
+            "#,
+        )
+        .unwrap();
+
+        let github = cfg.server.unwrap().github.unwrap();
+        assert_eq!(github.read_client_id().unwrap(), "Iv1.abc");
+        assert_eq!(github.read_client_secret().unwrap(), "gh-secret");
+        assert!(github.is_configured());
+        assert_eq!(github.scopes(), "repo read:org read:user");
+        assert_eq!(github.mcp_url(), "https://api.githubcopilot.com/mcp/");
     }
 
     #[test]

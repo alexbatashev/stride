@@ -19,6 +19,12 @@ export type TelegramAuthData = {
 	hash: string;
 };
 
+export type GitHubSettings = {
+	configured: boolean;
+	connected: boolean;
+	login: string | null;
+};
+
 export type EmailAccount = {
 	id: string;
 	name: string;
@@ -97,6 +103,19 @@ export async function loginTelegram(data: TelegramAuthData): Promise<void> {
 
 export async function disconnectTelegram(): Promise<void> {
 	await request("/api/settings/telegram/disconnect", { method: "POST" });
+}
+
+export async function getGitHubSettings(): Promise<GitHubSettings> {
+	return request("/api/settings/github");
+}
+
+export async function startGitHubAuthorize(): Promise<string> {
+	const response = await request<{ url: string }>("/api/settings/github/authorize");
+	return response.url;
+}
+
+export async function disconnectGitHub(): Promise<void> {
+	await request("/api/settings/github/disconnect", { method: "POST" });
 }
 
 export async function listEmailAccounts(): Promise<EmailAccount[]> {

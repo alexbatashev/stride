@@ -4,6 +4,7 @@ mod config;
 mod cron;
 mod db;
 mod email;
+mod github;
 mod mcp_servers;
 mod notify;
 mod pages;
@@ -101,6 +102,14 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.telegram.as_ref())
         .and_then(|t| t.read_bot_api_key())
         .filter(|token| !token.is_empty());
+    // The hosted GitHub MCP server is offered to every linked user once the
+    // OAuth App credentials are present; resolve its endpoint once at startup.
+    let github_mcp_url = config
+        .server
+        .as_ref()
+        .and_then(|s| s.github.as_ref())
+        .filter(|github| github.is_configured())
+        .map(|github| github.mcp_url().to_string());
     let vfs_provider = config
         .server
         .as_ref()
@@ -145,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
                 vfs.clone(),
                 telegram_bot_token.clone(),
                 public_url,
+                github_mcp_url,
                 email_service.clone(),
             ),
         )
@@ -157,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
                 mcp_tools,
                 telegram_bot_token.clone(),
                 public_url,
+                github_mcp_url,
                 email_service,
             ),
         )
@@ -271,6 +282,16 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .merge(auth_routes)
         .route("/api/logout", post(api::auth::logout))
         .route("/api/settings/telegram", get(api::telegram::settings))
+        .route("/api/settings/github", get(api::github::settings))
+        .route(
+            "/api/settings/github/authorize",
+            get(api::github::authorize),
+        )
+        .route("/api/settings/github/callback", get(api::github::callback))
+        .route(
+            "/api/settings/github/disconnect",
+            post(api::github::disconnect),
+        )
         .route(
             "/api/settings/mcp",
             get(api::mcp::list).post(api::mcp::create),
