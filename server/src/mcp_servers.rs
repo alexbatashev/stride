@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use friday_agent::mcp::{self, McpTool};
 use hyper::{
@@ -84,10 +85,59 @@ pub fn normalize_url(value: &str) -> Result<String, String> {
     if scheme != "http" && scheme != "https" {
         return Err("MCP server URL must use http or https".to_string());
     }
-    if uri.host().is_none() {
-        return Err("MCP server URL must include a host".to_string());
+    let host = uri
+        .host()
+        .ok_or_else(|| "MCP server URL must include a host".to_string())?;
+    if !is_public_host(host) {
+        return Err("MCP server URL must point to a public host".to_string());
     }
     Ok(url.to_string())
+}
+
+fn is_public_host(host: &str) -> bool {
+    let unbracketed = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+
+    if let Ok(ipv4) = unbracketed.parse::<Ipv4Addr>() {
+        return is_public_ipv4(&ipv4);
+    }
+    if let Ok(ipv6) = unbracketed.parse::<Ipv6Addr>() {
+        return is_public_ipv6(&ipv6);
+    }
+    is_public_hostname(unbracketed)
+}
+
+fn is_public_hostname(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    if host == "localhost" {
+        return false;
+    }
+    !(host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".internal"))
+}
+
+fn is_public_ipv4(addr: &Ipv4Addr) -> bool {
+    !(addr.is_loopback()
+        || addr.is_private()
+        || addr.is_link_local()
+        || addr.is_unspecified()
+        || addr.is_broadcast())
+}
+
+fn is_public_ipv6(addr: &Ipv6Addr) -> bool {
+    if addr.is_loopback() || addr.is_unspecified() {
+        return false;
+    }
+    let octets = addr.octets();
+    if octets[0] & 0xfe == 0xfc {
+        return false;
+    }
+    let segments = addr.segments();
+    if segments[0] & 0xffc0 == 0xfe80 {
+        return false;
+    }
+    true
 }
 
 pub fn headers_json(input: &McpServerInput) -> Result<Option<String>, String> {
@@ -202,9 +252,19 @@ mod tests {
     #[test]
     fn accepts_only_remote_http_urls() {
         assert!(normalize_url("https://mcp.example.com/mcp").is_ok());
-        assert!(normalize_url("http://127.0.0.1:8080/mcp").is_ok());
         assert!(normalize_url("stdio://server").is_err());
         assert!(normalize_url("/mcp").is_err());
+    }
+
+    #[test]
+    fn rejects_private_and_internal_targets() {
+        assert!(normalize_url("https://mcp.example.com/mcp").is_ok());
+        assert!(normalize_url("http://169.254.169.254").is_err());
+        assert!(normalize_url("http://localhost").is_err());
+        assert!(normalize_url("http://127.0.0.1").is_err());
+        assert!(normalize_url("http://10.0.0.5").is_err());
+        assert!(normalize_url("http://192.168.1.1").is_err());
+        assert!(normalize_url("http://[::1]").is_err());
     }
 
     #[test]

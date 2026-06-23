@@ -7,6 +7,7 @@ mod email;
 mod mcp_servers;
 mod notify;
 mod pages;
+mod rate_limit;
 pub mod runner;
 mod scheduler;
 mod tools;
@@ -20,7 +21,7 @@ use std::{
 
 use axum::{
     Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, patch, post},
@@ -34,12 +35,16 @@ use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::ConnectionPool;
 use tower_http::{
     services::ServeDir,
-    trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+    trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::runner::AgentPool;
+use crate::{rate_limit::RateLimiter, runner::AgentPool};
+
+const UPLOAD_BODY_LIMIT: usize = 25 * 1024 * 1024;
+const DEFAULT_DEV_JWT_SECRET: &str = "change-this-development-secret";
+const MIN_JWT_SECRET_LEN: usize = 32;
 
 const DEFAULT_STATIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/frontend/dist");
 
@@ -69,8 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let config = config::Config::load(&args.config_path)?;
-    let jwt_secret = std::env::var("FRIDAY_JWT_SECRET")
-        .unwrap_or_else(|_| "change-this-development-secret".to_string());
+    let jwt_secret = load_jwt_secret()?;
 
     let db = ConnectionPool::new(&config.db_url()).unwrap();
     db::migrate(&db).await.unwrap();
@@ -200,7 +204,11 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     tracing::info!(addr = %listener.local_addr()?, "server listening");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -214,10 +222,52 @@ fn init_tracing() {
         .init();
 }
 
+fn load_jwt_secret() -> anyhow::Result<String> {
+    let secret = std::env::var("FRIDAY_JWT_SECRET").map_err(|_| {
+        anyhow::anyhow!(
+            "FRIDAY_JWT_SECRET is not set. Set a strong, random FRIDAY_JWT_SECRET (at least \
+             {MIN_JWT_SECRET_LEN} bytes) before starting the server."
+        )
+    })?;
+
+    if secret == DEFAULT_DEV_JWT_SECRET {
+        anyhow::bail!(
+            "FRIDAY_JWT_SECRET is set to the insecure default. Set a strong, random \
+             FRIDAY_JWT_SECRET (at least {MIN_JWT_SECRET_LEN} bytes) before starting the server."
+        );
+    }
+
+    if secret.len() < MIN_JWT_SECRET_LEN {
+        anyhow::bail!(
+            "FRIDAY_JWT_SECRET is too short ({} bytes). Set a strong, random FRIDAY_JWT_SECRET \
+             with at least {MIN_JWT_SECRET_LEN} bytes before starting the server.",
+            secret.len()
+        );
+    }
+
+    if std::env::var("FRIDAY_EMAIL_ENCRYPTION_KEY").is_err() {
+        tracing::warn!(
+            "FRIDAY_EMAIL_ENCRYPTION_KEY is not set; stored IMAP passwords fall back to the JWT \
+             secret for encryption. A dedicated FRIDAY_EMAIL_ENCRYPTION_KEY is recommended."
+        );
+    }
+
+    Ok(secret)
+}
+
 fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
-    Router::new()
+    let limiter = Arc::new(RateLimiter::new());
+
+    let auth_routes = Router::new()
         .route("/api/register", post(api::auth::register))
         .route("/api/login", post(api::auth::login))
+        .layer(axum::middleware::from_fn_with_state(
+            limiter,
+            rate_limit::limit,
+        ));
+
+    Router::new()
+        .merge(auth_routes)
         .route("/api/logout", post(api::auth::logout))
         .route("/api/settings/telegram", get(api::telegram::settings))
         .route(
@@ -272,7 +322,9 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         )
         .route(
             "/api/threads/{id}/files",
-            get(api::threads::list_files).post(api::threads::upload_file),
+            get(api::threads::list_files)
+                .post(api::threads::upload_file)
+                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
         )
         .route(
             "/api/threads/{id}/directories",
@@ -284,7 +336,9 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         )
         .route(
             "/api/files",
-            get(api::files::list_files).post(api::files::upload_file),
+            get(api::files::list_files)
+                .post(api::files::upload_file)
+                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
         )
         .route("/api/files/directories", post(api::files::create_directory))
         .route("/api/files/rename", patch(api::files::rename))
@@ -318,7 +372,13 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .nest_service("/static", ServeDir::new(static_dir))
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .make_span_with(|req: &axum::http::Request<_>| {
+                    tracing::info_span!(
+                        "request",
+                        method = %req.method(),
+                        path = %req.uri().path(),
+                    )
+                })
                 .on_request(DefaultOnRequest::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
