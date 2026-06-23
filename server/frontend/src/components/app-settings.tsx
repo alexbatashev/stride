@@ -6,12 +6,15 @@ import {
   deleteEmailAccount,
   deleteMcpServer,
   deleteSkill,
+  disconnectGitHub,
   disconnectTelegram,
+  getGitHubSettings,
   getTelegramSettings,
   listEmailAccounts,
   listMcpServers,
   listSkills,
   loginTelegram,
+  startGitHubAuthorize,
   updateSkill,
   type EmailAccount,
   type McpServer,
@@ -26,6 +29,11 @@ type SettingsHost = HTMLElement & {
   tgStatus: string;
   tgBotUsername: string;
   tgError: string;
+  ghConfigured: boolean;
+  ghConnected: boolean;
+  ghStatus: string;
+  ghLogin: string;
+  ghError: string;
   emails: EmailAccount[];
   emailLoaded: boolean;
   emailError: string;
@@ -97,6 +105,34 @@ async function refreshTelegram(host: SettingsHost): Promise<void> {
     }
   } catch {
     host.tgError = "Failed to load Telegram settings.";
+  }
+}
+
+async function refreshGitHub(host: SettingsHost): Promise<void> {
+  try {
+    const settings = await getGitHubSettings();
+    host.ghError = "";
+    host.ghConfigured = settings.configured;
+    host.ghConnected = settings.connected;
+    host.ghLogin = settings.login ?? "";
+    if (!settings.configured) {
+      host.ghStatus = "GitHub is not configured on this server.";
+    } else if (settings.connected) {
+      host.ghStatus = settings.login ? `Connected as @${settings.login}.` : "GitHub is connected.";
+    } else {
+      host.ghStatus = "GitHub is not connected.";
+    }
+  } catch {
+    host.ghError = "Failed to load GitHub settings.";
+  }
+}
+
+async function connectGitHub(host: SettingsHost): Promise<void> {
+  host.ghError = "";
+  try {
+    window.location.assign(await startGitHubAuthorize());
+  } catch {
+    host.ghError = "Failed to start GitHub sign in.";
   }
 }
 
@@ -292,7 +328,7 @@ const styles = css`
     color: var(--foreground);
   }
 
-  .layout[data-active="telegram"] .tab[data-section="telegram"],
+  .layout[data-active="connections"] .tab[data-section="connections"],
   .layout[data-active="email"] .tab[data-section="email"],
   .layout[data-active="mcp"] .tab[data-section="mcp"],
   .layout[data-active="skills"] .tab[data-section="skills"] {
@@ -314,7 +350,7 @@ const styles = css`
     gap: 20px;
   }
 
-  .layout[data-active="telegram"] .panel[data-panel="telegram"],
+  .layout[data-active="connections"] .panel[data-panel="connections"],
   .layout[data-active="email"] .panel[data-panel="email"],
   .layout[data-active="mcp"] .panel[data-panel="mcp"],
   .layout[data-active="skills"] .panel[data-panel="skills"] {
@@ -505,12 +541,17 @@ const styles = css`
 `;
 
 export function AppSettings({
-  activeSection = "telegram",
+  activeSection = "connections",
   tgConfigured = false,
   tgConnected = false,
   tgStatus = "Loading…",
   tgBotUsername = "",
   tgError = "",
+  ghConfigured = false,
+  ghConnected = false,
+  ghStatus = "Loading…",
+  ghLogin = "",
+  ghError = "",
   emails = [],
   emailLoaded = false,
   emailError = "",
@@ -528,6 +569,11 @@ export function AppSettings({
   tgStatus?: string;
   tgBotUsername?: string;
   tgError?: string;
+  ghConfigured?: boolean;
+  ghConnected?: boolean;
+  ghStatus?: string;
+  ghLogin?: string;
+  ghError?: string;
   emails?: EmailAccount[];
   emailLoaded?: boolean;
   emailError?: string;
@@ -544,6 +590,7 @@ export function AppSettings({
       void handleAuth(this, user);
     };
     void refreshTelegram(this);
+    void refreshGitHub(this);
     void refreshEmails(this);
     void refreshMcps(this);
     void refreshSkills(this);
@@ -611,6 +658,16 @@ export function AppSettings({
                 .then(() => refreshTelegram(this))
                 .catch(() => {
                   this.tgError = "Failed to disconnect Telegram.";
+                });
+              return;
+            case "gh-connect":
+              void connectGitHub(this);
+              return;
+            case "gh-disconnect":
+              void disconnectGitHub()
+                .then(() => refreshGitHub(this))
+                .catch(() => {
+                  this.ghError = "Failed to disconnect GitHub.";
                 });
               return;
             case "add-email": {
@@ -696,14 +753,14 @@ export function AppSettings({
 
           <div class="layout" data-active={activeSection}>
             <nav class="tabs" aria-label="Settings sections">
-              <button type="button" class="tab" data-section="telegram">Telegram</button>
+              <button type="button" class="tab" data-section="connections">Connections</button>
               <button type="button" class="tab" data-section="email">Email</button>
               <button type="button" class="tab" data-section="mcp">MCP servers</button>
               <button type="button" class="tab" data-section="skills">Skills</button>
             </nav>
 
             <div class="panels">
-              <section class="panel" data-panel="telegram">
+              <section class="panel" data-panel="connections">
                 <app-card title="Telegram" description="Connect your Telegram account with the S.T.R.I.D.E. bot.">
                   <div class="status-row">
                     {tgConnected
@@ -718,6 +775,23 @@ export function AppSettings({
                     ? <div><app-button variant="outline" data-action="tg-disconnect">Disconnect</app-button></div>
                     : ""}
                   <p class="error">{tgError}</p>
+                </app-card>
+
+                <app-card title="GitHub" description="Sign in with GitHub to give your agents the official GitHub MCP tools for repositories, issues, and pull requests.">
+                  <div class="status-row">
+                    {ghConnected
+                      ? <app-badge>Connected</app-badge>
+                      : ghConfigured
+                        ? <app-badge variant="outline">Not connected</app-badge>
+                        : <app-badge variant="secondary">Unavailable</app-badge>}
+                    <span class="status">{ghStatus}</span>
+                  </div>
+                  {ghConfigured
+                    ? (ghConnected
+                      ? <div><app-button variant="outline" data-action="gh-disconnect">Disconnect</app-button></div>
+                      : <div><app-button data-action="gh-connect">Sign in with GitHub</app-button></div>)
+                    : ""}
+                  <p class="error">{ghError}</p>
                 </app-card>
               </section>
 

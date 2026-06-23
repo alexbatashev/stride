@@ -334,6 +334,31 @@ migrations! {
 
         raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_owner_name ON mcp_servers(owner, name)";
     }
+
+    github_integration {
+        table github_connections {
+            id: Uuid [PrimaryKey],
+            user_id: Uuid [Unique],
+            github_user_id: i64 [Unique],
+            login: String,
+            access_token: String,
+            scope: Option<String>,
+            connected_at: i64,
+
+            foreign_key(user_id -> users.id);
+        }
+
+        // Short-lived CSRF tokens linking a pending OAuth flow to the user who
+        // started it. The browser returns from GitHub without credentials, so the
+        // signed-in user is recovered from the `state` parameter recorded here.
+        table github_oauth_states {
+            state: String [PrimaryKey],
+            user_id: Uuid,
+            expires_at: i64,
+
+            foreign_key(user_id -> users.id);
+        }
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

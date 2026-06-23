@@ -450,6 +450,7 @@ mod tests {
                     ldap: None,
                     files: None,
                     telegram: None,
+                    github: None,
                     public_url: None,
                 }),
                 ..empty_config()
@@ -501,6 +502,7 @@ mod tests {
                 ldap: None,
                 files: None,
                 telegram: None,
+                github: None,
                 public_url: None,
             }),
             tools: None,
@@ -527,6 +529,7 @@ mod tests {
                     crate::api::telegram::Interactions::default(),
                 )),
                 executor: crate::scheduler::ExecutorHandle::channel().0,
+                cipher: crate::crypto::SecretCipher::new("test-secret"),
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
         )

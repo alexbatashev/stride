@@ -75,6 +75,18 @@ bot_api_key = "123456:telegram-bot-token"
 bot_username = "stride_bot"
 webhook_secret = "change-this-webhook-secret"
 
+# Linking a GitHub account uses a standard GitHub OAuth App. Register one at
+# https://github.com/settings/developers with the authorization callback URL set
+# to `{public_url}/api/settings/github/callback`. Setting client_id and
+# client_secret activates the hosted GitHub MCP server for every linked user.
+[server.github]
+client_id = "Iv1.0123456789abcdef"
+client_secret = "change-this-github-oauth-secret"
+# Optional. OAuth scopes requested when linking; defaults to "repo read:org read:user".
+# scopes = "repo read:org read:user"
+# Optional. Override only for GitHub Enterprise Cloud; defaults to the official server.
+# mcp_url = "https://api.githubcopilot.com/mcp/"
+
 [server.ldap]
 url = "ldap://localhost:389"
 user_dn_template = "uid={username},ou=users,dc=example,dc=com"

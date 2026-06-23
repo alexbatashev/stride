@@ -570,6 +570,7 @@ mod tests {
             telegram_interactions: Arc::new(std::sync::Mutex::new(
                 crate::api::telegram::Interactions::default(),
             )),
+            cipher: crate::crypto::SecretCipher::new("test-secret"),
             executor,
         })
     }

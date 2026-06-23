@@ -2786,6 +2786,7 @@ mod tests {
             ldap: None,
             files: None,
             telegram: Some(telegram),
+            github: None,
             public_url: None,
         };
         ServerState {
@@ -2806,6 +2807,7 @@ mod tests {
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
             executor: crate::scheduler::ExecutorHandle::channel().0,
+            cipher: crate::crypto::SecretCipher::new("test-secret"),
         }
     }
 
@@ -2987,6 +2989,7 @@ mod tests {
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
             executor: crate::scheduler::ExecutorHandle::channel().0,
+            cipher: crate::crypto::SecretCipher::new("test-secret"),
         })
     }
 

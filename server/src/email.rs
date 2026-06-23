@@ -1,16 +1,10 @@
 use std::{collections::HashSet, future::Future, sync::Arc, time::Duration};
 
-use aes_gcm::{
-    Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit},
-};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use futures::TryStreamExt;
 use mail_parser::{Address, Message, MessageParser};
 use minisql::ConnectionPool;
-use rand_core::{OsRng, RngCore};
-use sha2::{Digest, Sha256};
 use stride_agent::tools::email::{
     EmailAccount, EmailDraft, EmailMailbox, EmailMessage, EmailProvider,
 };
@@ -18,7 +12,7 @@ use tokio::net::TcpStream;
 use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
 use uuid::Uuid;
 
-use crate::db::email_accounts;
+use crate::{crypto::SecretCipher, db::email_accounts};
 
 const IMAP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_TRIGGER_MESSAGES: usize = 50;
@@ -29,12 +23,7 @@ type ImapSession = async_imap::Session<TlsStream<TcpStream>>;
 #[derive(Clone)]
 pub struct ImapService {
     db: ConnectionPool,
-    cipher: CredentialCipher,
-}
-
-#[derive(Clone)]
-struct CredentialCipher {
-    key: [u8; 32],
+    cipher: SecretCipher,
 }
 
 #[derive(Clone, Debug)]
@@ -63,7 +52,7 @@ impl ImapService {
     pub fn new(db: ConnectionPool, encryption_secret: &str) -> Self {
         Self {
             db,
-            cipher: CredentialCipher::new(encryption_secret),
+            cipher: SecretCipher::new(encryption_secret),
         }
     }
 
@@ -315,52 +304,6 @@ impl EmailProvider for UserEmailProvider {
         self.service
             .create_draft(self.owner, account_id, mailbox, message_uid, body)
             .await
-    }
-}
-
-impl CredentialCipher {
-    fn new(secret: &str) -> Self {
-        Self {
-            key: Sha256::digest(secret.as_bytes()).into(),
-        }
-    }
-
-    fn encrypt(&self, account_id: Uuid, password: &str) -> Result<String, String> {
-        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| "invalid key".to_string())?;
-        let mut nonce_bytes = [0_u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let ciphertext = cipher
-            .encrypt(
-                Nonce::from_slice(&nonce_bytes),
-                aes_gcm::aead::Payload {
-                    msg: password.as_bytes(),
-                    aad: account_id.as_bytes(),
-                },
-            )
-            .map_err(|_| "failed to encrypt password".to_string())?;
-        let mut encoded = nonce_bytes.to_vec();
-        encoded.extend(ciphertext);
-        Ok(BASE64.encode(encoded))
-    }
-
-    fn decrypt(&self, account_id: Uuid, encoded: &str) -> Result<String, String> {
-        let bytes = BASE64
-            .decode(encoded)
-            .map_err(|_| "invalid encrypted password".to_string())?;
-        let (nonce, ciphertext) = bytes
-            .split_at_checked(12)
-            .ok_or_else(|| "invalid encrypted password".to_string())?;
-        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| "invalid key".to_string())?;
-        let plaintext = cipher
-            .decrypt(
-                Nonce::from_slice(nonce),
-                aes_gcm::aead::Payload {
-                    msg: ciphertext,
-                    aad: account_id.as_bytes(),
-                },
-            )
-            .map_err(|_| "failed to decrypt password".to_string())?;
-        String::from_utf8(plaintext).map_err(|_| "invalid decrypted password".to_string())
     }
 }
 
@@ -648,7 +591,7 @@ mod tests {
 
     #[test]
     fn credentials_are_authenticated_and_account_bound() {
-        let cipher = CredentialCipher::new("secret");
+        let cipher = SecretCipher::new("secret");
         let account = Uuid::now_v7();
         let other = Uuid::now_v7();
         let encrypted = cipher.encrypt(account, "password").unwrap();

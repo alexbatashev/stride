@@ -2,8 +2,10 @@ mod api;
 mod components;
 mod config;
 mod cron;
+mod crypto;
 mod db;
 mod email;
+mod github;
 mod mcp_servers;
 mod notify;
 mod pages;
@@ -58,6 +60,8 @@ struct ServerState {
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
     pub(crate) telegram_interactions: Arc<Mutex<api::telegram::Interactions>>,
     pub(crate) executor: scheduler::ExecutorHandle,
+    /// Protects secrets stored at rest, such as linked GitHub access tokens.
+    pub(crate) cipher: crypto::SecretCipher,
 }
 
 #[derive(Debug, Parser)]
@@ -93,7 +97,9 @@ async fn main() -> anyhow::Result<()> {
         model_registry: create_model_registry(&config),
         max_iterations: 90,
     });
-    let email_service = email::ImapService::new(db.clone(), &email::encryption_secret(&jwt_secret));
+    let encryption_secret = email::encryption_secret(&jwt_secret);
+    let cipher = crypto::SecretCipher::new(&encryption_secret);
+    let email_service = email::ImapService::new(db.clone(), &encryption_secret);
     let mcp_tools = connect_mcp_servers(&config).await;
     let telegram_bot_token = config
         .server
@@ -101,6 +107,17 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.telegram.as_ref())
         .and_then(|t| t.read_bot_api_key())
         .filter(|token| !token.is_empty());
+    // The hosted GitHub MCP server is offered to every linked user once the
+    // OAuth App credentials are present; resolve its endpoint once at startup.
+    let github_runtime = config
+        .server
+        .as_ref()
+        .and_then(|s| s.github.as_ref())
+        .filter(|github| github.is_configured())
+        .map(|github| github::GitHubRuntime {
+            mcp_url: github.mcp_url().to_string(),
+            cipher: cipher.clone(),
+        });
     let vfs_provider = config
         .server
         .as_ref()
@@ -145,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
                 vfs.clone(),
                 telegram_bot_token.clone(),
                 public_url,
+                github_runtime.clone(),
                 email_service.clone(),
             ),
         )
@@ -157,6 +175,7 @@ async fn main() -> anyhow::Result<()> {
                 mcp_tools,
                 telegram_bot_token.clone(),
                 public_url,
+                github_runtime.clone(),
                 email_service,
             ),
         )
@@ -171,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
         vfs: vfs_provider,
         telegram_interactions: Arc::new(Mutex::new(api::telegram::Interactions::default())),
         executor,
+        cipher,
     });
 
     // Bind Telegram subscriber tasks to agent runner lifetimes (created on activation, aborted on
@@ -271,6 +291,16 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .merge(auth_routes)
         .route("/api/logout", post(api::auth::logout))
         .route("/api/settings/telegram", get(api::telegram::settings))
+        .route("/api/settings/github", get(api::github::settings))
+        .route(
+            "/api/settings/github/authorize",
+            get(api::github::authorize),
+        )
+        .route("/api/settings/github/callback", get(api::github::callback))
+        .route(
+            "/api/settings/github/disconnect",
+            post(api::github::disconnect),
+        )
         .route(
             "/api/settings/mcp",
             get(api::mcp::list).post(api::mcp::create),
