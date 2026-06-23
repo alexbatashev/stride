@@ -39,6 +39,9 @@ pub struct McpTool {
     readable: String,
     remote_name: String,
     definition: LlmTool,
+    /// Whether the server annotated this tool as read-only. Tools that may modify
+    /// state (the MCP `readOnlyHint` default) are gated behind user approval.
+    read_only: bool,
 }
 
 /// Connect to an MCP server and return one tool per advertised capability.
@@ -88,6 +91,7 @@ pub async fn connect(server_name: &str, server: McpServer) -> Result<Vec<McpTool
             .get("inputSchema")
             .cloned()
             .and_then(parameters_from_schema);
+        let read_only = read_only_hint(&tool);
         let exposed = format!("{server_name}_{remote_name}");
 
         result.push(McpTool {
@@ -103,6 +107,7 @@ pub async fn connect(server_name: &str, server: McpServer) -> Result<Vec<McpTool
             name: exposed,
             readable: remote_name.to_string(),
             remote_name: remote_name.to_string(),
+            read_only,
         });
     }
 
@@ -121,6 +126,16 @@ impl Tool for McpTool {
 
     fn definition(&self) -> LlmTool {
         self.definition.clone()
+    }
+
+    /// State-changing tools (anything not annotated read-only) require explicit
+    /// user approval before the call is forwarded to the server.
+    fn requires_confirmation(&self) -> bool {
+        !self.read_only
+    }
+
+    fn confirmation_prompt(&self, args: &Value) -> String {
+        format!("Run MCP tool `{}` with arguments: {}", self.readable, args)
     }
 
     async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
@@ -222,6 +237,16 @@ fn parse_sse(body: &[u8]) -> Result<Value, String> {
     found.ok_or_else(|| "no JSON-RPC response in MCP SSE stream".to_string())
 }
 
+/// Read the MCP `annotations.readOnlyHint`. Per the spec it defaults to false, so
+/// a tool is considered read-only only when the server explicitly sets it; any
+/// other tool is treated as state-changing and gated behind approval.
+fn read_only_hint(tool: &Value) -> bool {
+    tool.get("annotations")
+        .and_then(|annotations| annotations.get("readOnlyHint"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn header_str(headers: &hyper::HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -308,6 +333,17 @@ mod tests {
     #[test]
     fn non_object_schema_is_ignored() {
         assert!(parameters_from_schema(json!("nonsense")).is_none());
+    }
+
+    #[test]
+    fn read_only_hint_defaults_to_false_and_honors_annotation() {
+        assert!(!read_only_hint(&json!({ "name": "create_issue" })));
+        assert!(!read_only_hint(
+            &json!({ "annotations": { "readOnlyHint": false } })
+        ));
+        assert!(read_only_hint(
+            &json!({ "annotations": { "readOnlyHint": true } })
+        ));
     }
 
     #[test]

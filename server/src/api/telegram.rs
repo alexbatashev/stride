@@ -2807,6 +2807,7 @@ mod tests {
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
             executor: crate::scheduler::ExecutorHandle::channel().0,
+            cipher: crate::crypto::SecretCipher::new("test-secret"),
         }
     }
 
@@ -2988,6 +2989,7 @@ mod tests {
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
             executor: crate::scheduler::ExecutorHandle::channel().0,
+            cipher: crate::crypto::SecretCipher::new("test-secret"),
         })
     }
 

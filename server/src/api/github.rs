@@ -191,6 +191,11 @@ async fn complete(state: &ServerState, params: CallbackParams) -> Result<(), Str
     let (github_user_id, login) = fetch_user(&access_token).await?;
     let scope = github.scopes().to_string();
 
+    // The token is bound to the row id as associated data, so encrypt under the
+    // id we are about to insert.
+    let id = Uuid::now_v7();
+    let access_ciphertext = state.cipher.encrypt(id, &access_token)?;
+
     // A user may relink, and a GitHub account may move between users; clear both
     // sides of the unique constraints before inserting the fresh row.
     github_connections::delete()
@@ -203,11 +208,11 @@ async fn complete(state: &ServerState, params: CallbackParams) -> Result<(), Str
         .await
         .map_err(|error| error.to_string())?;
     github_connections::insert()
-        .id(Uuid::now_v7())
+        .id(id)
         .user_id(user_id)
         .github_user_id(github_user_id)
         .login(login.as_str())
-        .access_token(access_token.as_str())
+        .access_token(access_ciphertext.as_str())
         .scope(Some(scope.as_str()))
         .connected_at(now())
         .execute(&state.db)

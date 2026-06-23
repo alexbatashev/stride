@@ -529,6 +529,7 @@ mod tests {
                     crate::api::telegram::Interactions::default(),
                 )),
                 executor: crate::scheduler::ExecutorHandle::channel().0,
+                cipher: crate::crypto::SecretCipher::new("test-secret"),
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
         )
