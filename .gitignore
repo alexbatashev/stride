@@ -92,3 +92,7 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Nix build outputs
+/result
+/result-*

@@ -1,0 +1,14 @@
+# Components compiled to Rust for SSR. One path per line, relative to this
+# frontend directory. app-files.tsx is client-only (it drives the REST API from
+# the browser), so it stays out of this list. Read by both server/build.rs and
+# the Nix frontend derivation so the two never drift.
+src/components/app-approval-bar.tsx
+src/components/app-button.tsx
+src/components/app-message.tsx
+src/components/app-prompt-input.tsx
+src/components/app-quiz-bar.tsx
+src/components/app-sidebar.tsx
+src/components/app-spoiler.tsx
+src/components/app-text-input.tsx
+src/components/auth-form.tsx
+src/components/auto-markdown.tsx

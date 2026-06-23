@@ -199,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
 
     let static_dir = args
         .static_dir
+        .or_else(|| std::env::var_os("STRIDE_STATIC_DIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_STATIC_DIR));
     let app = app(state, static_dir);
 
