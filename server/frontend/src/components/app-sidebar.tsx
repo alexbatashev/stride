@@ -494,7 +494,7 @@ export function AppSidebar({
         <div class="header">
           <div class="brand">
             <span class="mark">F</span>
-            <strong>Friday</strong>
+            <strong>S.T.R.I.D.E.</strong>
             <AppSidebarToggle brand="F" />
           </div>
         </div>

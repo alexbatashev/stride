@@ -7,12 +7,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import me.batashev.stride.data.FridayClient
-import me.batashev.stride.data.FridayException
+import me.batashev.stride.data.StrideClient
+import me.batashev.stride.data.StrideException
 import me.batashev.stride.data.Session
 
 class AuthViewModel(
-    private val client: FridayClient,
+    private val client: StrideClient,
     session: Session,
 ) : ViewModel() {
 
@@ -63,9 +63,9 @@ class AuthViewModel(
     }
 
     private fun message(error: Throwable): String = when (error) {
-        is FridayException.Unauthorized -> "Wrong username or password."
-        is FridayException.Http -> "Server error (${error.code})."
-        is FridayException.NotConfigured -> "Enter a valid server URL."
+        is StrideException.Unauthorized -> "Wrong username or password."
+        is StrideException.Http -> "Server error (${error.code})."
+        is StrideException.NotConfigured -> "Enter a valid server URL."
         else -> "Couldn't reach the server."
     }
 

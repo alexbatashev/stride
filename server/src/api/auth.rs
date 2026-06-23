@@ -362,8 +362,8 @@ mod tests {
         config::{Config, Server},
         runner::inproc::InProcessAgentPool,
     };
-    use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
     use minisql::ConnectionPool;
+    use stride_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
 
     use crate::{app, db, db::sessions};
 

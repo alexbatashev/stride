@@ -7,9 +7,9 @@ use std::{ffi::OsString, path::PathBuf, pin::Pin};
 
 use clap::Parser;
 use crossterm::style::Color;
-use friday_agent::{AgentError, AgentResponseChunk};
 use futures::{Stream, StreamExt};
 use minisql::ConnectionPool;
+use stride_agent::{AgentError, AgentResponseChunk};
 
 use crate::{
     agent::{CodeAgent, LocalAgent},
@@ -35,7 +35,7 @@ pub async fn cli_main() -> anyhow::Result<()> {
     let db_path: String = args
         .db_path
         .map(|p| p.into_string().unwrap())
-        .unwrap_or_else(|| "/tmp/friday.db".to_string());
+        .unwrap_or_else(|| "/tmp/stride.db".to_string());
 
     let db = ConnectionPool::new(&format!("sqlite://{}", db_path)).unwrap();
 

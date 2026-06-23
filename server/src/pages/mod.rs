@@ -135,7 +135,7 @@ fn render_messages(data: &ThreadPageData) -> String {
     if data.thread_id.is_empty() || data.messages.is_empty() {
         return r#"<div class="empty" data-empty>
                 <h2>What are we working on?</h2>
-                <p>Start a thread and Friday will keep the context here.</p>
+                <p>Start a thread and S.T.R.I.D.E. will keep the context here.</p>
             </div>"#
             .to_string();
     }
@@ -244,9 +244,9 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
     let files_button = files_button.replacen("</app-button>", "Files</app-button>", 1);
     let messages = render_messages(data);
     let placeholder = if data.thread_id.is_empty() {
-        "Ask Friday anything"
+        "Ask S.T.R.I.D.E. anything"
     } else {
-        "Message Friday"
+        "Message S.T.R.I.D.E."
     };
     let prompt = with_attrs(
         &AppPromptInput::new(false, data.running, placeholder).render(),
@@ -291,7 +291,7 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
         r#"id="threads-page" data-thread-id="{thread_id}" data-running="{running}""#,
         running = data.running,
     );
-    render_page("Friday", agent::PAGE_SCRIPT, &body_attrs, &body)
+    render_page("S.T.R.I.D.E.", agent::PAGE_SCRIPT, &body_attrs, &body)
 }
 
 const FILES_STYLE: &str = r#"<style>
@@ -333,7 +333,7 @@ pub fn render_files_page(data: &ThreadPageData) -> String {
 {NAVIGATE_SCRIPT}"#,
     );
     render_page(
-        "Files - Friday",
+        "Files - S.T.R.I.D.E.",
         files::PAGE_SCRIPT,
         r#"id="files-page""#,
         &body,
@@ -379,7 +379,7 @@ pub fn render_automations_page(data: &ThreadPageData) -> String {
 {NAVIGATE_SCRIPT}"#,
     );
     render_page(
-        "Automations - Friday",
+        "Automations - S.T.R.I.D.E.",
         automations::PAGE_SCRIPT,
         r#"id="automations-page""#,
         &body,
@@ -425,7 +425,7 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
     );
 
     render_page(
-        "Settings - Friday",
+        "Settings - S.T.R.I.D.E.",
         settings::PAGE_SCRIPT,
         r#"id="settings-page""#,
         &body,
@@ -523,7 +523,7 @@ mod tests {
         let html = super::render_threads_page(&data);
 
         assert!(html.contains("What are we working on?"));
-        assert!(html.contains("Ask Friday anything"));
+        assert!(html.contains("Ask S.T.R.I.D.E. anything"));
     }
 
     #[test]

@@ -9,13 +9,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import me.batashev.stride.data.FridayClient
-import me.batashev.stride.data.FridayException
+import me.batashev.stride.data.StrideClient
+import me.batashev.stride.data.StrideException
 import me.batashev.stride.data.Project
 import me.batashev.stride.data.ThreadSummary
 
 class ThreadsViewModel(
-    private val client: FridayClient,
+    private val client: StrideClient,
     private val onUnauthorized: () -> Unit,
 ) : ViewModel() {
 
@@ -34,8 +34,8 @@ class ThreadsViewModel(
             }
 
         fun projectTitle(thread: ThreadSummary): String {
-            val id = thread.projectId ?: return "Friday"
-            return projects.firstOrNull { it.id == id }?.title ?: "Friday"
+            val id = thread.projectId ?: return "S.T.R.I.D.E."
+            return projects.firstOrNull { it.id == id }?.title ?: "S.T.R.I.D.E."
         }
     }
 
@@ -58,7 +58,7 @@ class ThreadsViewModel(
                     threads.await() to projects.await()
                 }
                 _state.update { it.copy(isLoading = false, error = null, threads = threads, projects = projects) }
-            } catch (e: FridayException.Unauthorized) {
+            } catch (e: StrideException.Unauthorized) {
                 onUnauthorized()
             } catch (e: Throwable) {
                 _state.update { it.copy(isLoading = false, error = "Couldn't load your conversations.") }

@@ -6,13 +6,13 @@ edition = "2024"
 [lib]
 
 [[bin]]
-name = "friday"
+name = "stride"
 path = "main.rs"
 
 [dependencies]
 # Internal
 llm = { path = "../libs/llm" }
-friday-agent = { path = "../libs/agent" }
+stride-agent = { path = "../libs/agent" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }

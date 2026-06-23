@@ -11,8 +11,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.batashev.stride.data.EventKind
-import me.batashev.stride.data.FridayClient
-import me.batashev.stride.data.FridayException
+import me.batashev.stride.data.StrideClient
+import me.batashev.stride.data.StrideException
 import me.batashev.stride.data.Message
 import me.batashev.stride.data.MessageRole
 import me.batashev.stride.data.QuizQuestion
@@ -24,7 +24,7 @@ import me.batashev.stride.data.ThreadEvent
  * the reducer logic from the Apple app's `ChatFeature`.
  */
 class ChatViewModel(
-    private val client: FridayClient,
+    private val client: StrideClient,
     initialThreadId: String?,
     private val onThreadsChanged: () -> Unit,
     private val onUnauthorized: () -> Unit,
@@ -104,7 +104,7 @@ class ChatViewModel(
                     connect()
                     reloadHistory()
                 }
-            } catch (e: FridayException.Unauthorized) {
+            } catch (e: StrideException.Unauthorized) {
                 onUnauthorized()
             } catch (e: Throwable) {
                 failSend()
@@ -174,7 +174,7 @@ class ChatViewModel(
                 _state.update {
                     it.copy(loadingHistory = false, streaming = null, messages = messages.map(::toChatMessage))
                 }
-            } catch (e: FridayException.Unauthorized) {
+            } catch (e: StrideException.Unauthorized) {
                 onUnauthorized()
             } catch (e: Throwable) {
                 _state.update { it.copy(loadingHistory = false) }

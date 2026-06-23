@@ -57,7 +57,7 @@ fun AuthScreen(container: AppContainer) {
                         modifier = Modifier.size(40.dp),
                         tint = MaterialTheme.colorScheme.primary,
                     )
-                    Text("Friday", style = MaterialTheme.typography.headlineSmall)
+                    Text("S.T.R.I.D.E.", style = MaterialTheme.typography.headlineSmall)
                     Text(
                         text = if (state.mode == AuthViewModel.Mode.Login) "Sign in to your cloud agent" else "Create your account",
                         style = MaterialTheme.typography.bodyMedium,
@@ -84,7 +84,7 @@ fun AuthScreen(container: AppContainer) {
                     value = state.serverUrl,
                     onValueChange = vm::setServerUrl,
                     label = { Text("Server URL") },
-                    placeholder = { Text("https://friday.example.com") },
+                    placeholder = { Text("https://stride.example.com") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     modifier = Modifier.fillMaxWidth(),

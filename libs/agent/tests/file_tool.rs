@@ -1,4 +1,3 @@
-use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::file::ReadFileTool};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -7,6 +6,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+use stride_agent::{AgentConfig, ModelRegistry, Tool, tools::file::ReadFileTool};
 
 fn dummy_config() -> Arc<AgentConfig> {
     Arc::new(AgentConfig {
@@ -18,7 +18,7 @@ fn dummy_config() -> Arc<AgentConfig> {
 fn temp_dir() -> PathBuf {
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "friday-agent-file-test-{}-{}-{}",
+        "stride-agent-file-test-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

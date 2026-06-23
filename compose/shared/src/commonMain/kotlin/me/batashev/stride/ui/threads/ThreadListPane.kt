@@ -216,7 +216,7 @@ private fun EmptyThreads(searching: Boolean, onNew: () -> Unit) {
             )
             if (!searching) {
                 Text(
-                    text = "Start a new conversation with Friday.",
+                    text = "Start a new conversation with S.T.R.I.D.E.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

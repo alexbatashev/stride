@@ -247,7 +247,7 @@ fn generated_completion(model: &str) -> Response<Body> {
             "index": 0,
             "message": {
                 "role": "assistant",
-                "content": "friday-llm-e2e"
+                "content": "stride-llm-e2e"
             },
             "finish_reason": "stop"
         })],
@@ -271,7 +271,7 @@ fn generated_stream(model: &str) -> Response<Body> {
             "system_fingerprint": null,
             "choices": [{
                 "index": 0,
-                "delta": {"content": "friday-"},
+                "delta": {"content": "stride-"},
                 "finish_reason": null
             }]
         }),
@@ -385,7 +385,7 @@ fn request(model: &str) -> CompletionRequest {
         model,
         &[Message {
             role: Role::User,
-            content: "Reply with exactly this token and no other text: friday-llm-e2e".to_string(),
+            content: "Reply with exactly this token and no other text: stride-llm-e2e".to_string(),
             images: None,
             thinking: None,
             tool_calls: None,

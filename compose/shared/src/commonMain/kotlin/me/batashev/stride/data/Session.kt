@@ -38,7 +38,7 @@ class Session(private val settings: Settings) {
     private fun read() = Auth(settings.getString(KEY_BASE), settings.getString(KEY_TOKEN))
 
     private companion object {
-        const val KEY_BASE = "friday.baseURL"
-        const val KEY_TOKEN = "friday.token"
+        const val KEY_BASE = "stride.baseURL"
+        const val KEY_TOKEN = "stride.token"
     }
 }

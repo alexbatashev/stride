@@ -1,8 +1,8 @@
 use crate::postgres::PostgresBackend;
-use crate::{Migration, SchemaSet};
 use crate::query::{QueryResult, Transaction, Value};
 use crate::sql_builder::SQLBuilder;
 use crate::sqlite::SqliteBackend;
+use crate::{Migration, SchemaSet};
 use std::error::Error as StdError;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -237,7 +237,9 @@ impl<'a> Migrator<'a> {
 
         let transaction = self.pool.transaction().await?;
         for set in &self.sets {
-            self.pool.apply_pending(set.name(), set.migrations()).await?;
+            self.pool
+                .apply_pending(set.name(), set.migrations())
+                .await?;
         }
         transaction.commit().await
     }

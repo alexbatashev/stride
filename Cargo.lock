@@ -978,12 +978,12 @@ dependencies = [
  "cmake",
  "crossterm 0.28.1",
  "dirs 5.0.1",
- "friday-agent",
  "futures",
  "llm",
  "minisql",
  "serde",
  "serde_json",
+ "stride-agent",
  "termimad",
  "thiserror 2.0.18",
  "tokio",
@@ -1956,7 +1956,6 @@ dependencies = [
  "comemo 0.4.0",
  "eryx",
  "flate2",
- "friday-agent",
  "http-body-util",
  "hyper",
  "hyper-rustls",
@@ -1964,6 +1963,7 @@ dependencies = [
  "llm",
  "serde",
  "serde_json",
+ "stride-agent",
  "tar",
  "tempfile",
  "tokio",
@@ -2158,30 +2158,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "friday-agent"
-version = "0.1.0"
-dependencies = [
- "agent-macro",
- "async-stream",
- "async-trait",
- "base64",
- "bytes",
- "futures",
- "glob",
- "http-body-util",
- "hyper",
- "llm",
- "minisql",
- "patch",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tinynet",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -5049,7 +5025,6 @@ dependencies = [
  "bytes",
  "clap",
  "execenv",
- "friday-agent",
  "futures",
  "hex",
  "hmac 0.12.1",
@@ -5066,6 +5041,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "stride-agent",
  "tempfile",
  "tinynet",
  "tokio",
@@ -5348,6 +5324,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 dependencies = [
  "float-cmp",
+]
+
+[[package]]
+name = "stride-agent"
+version = "0.1.0"
+dependencies = [
+ "agent-macro",
+ "async-stream",
+ "async-trait",
+ "base64",
+ "bytes",
+ "futures",
+ "glob",
+ "http-body-util",
+ "hyper",
+ "llm",
+ "minisql",
+ "patch",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tinynet",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

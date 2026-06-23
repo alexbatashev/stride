@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use friday_agent::mcp::{self, McpTool};
 use hyper::{
     Uri,
     header::{HeaderName, HeaderValue},
 };
 use minisql::ConnectionPool;
 use serde::{Deserialize, Serialize};
+use stride_agent::mcp::{self, McpTool};
 use uuid::Uuid;
 
 use crate::db::mcp_servers;

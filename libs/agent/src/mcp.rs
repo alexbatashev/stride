@@ -56,7 +56,7 @@ pub async fn connect(server_name: &str, server: McpServer) -> Result<Vec<McpTool
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": { "name": "friday", "version": env!("CARGO_PKG_VERSION") },
+                "clientInfo": { "name": "stride", "version": env!("CARGO_PKG_VERSION") },
             }),
         )
         .await?;

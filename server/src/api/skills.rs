@@ -251,7 +251,10 @@ mod tests {
 
     #[test]
     fn accepts_slug_names() {
-        assert_eq!(normalize_name("python-debugging").unwrap(), "python-debugging");
+        assert_eq!(
+            normalize_name("python-debugging").unwrap(),
+            "python-debugging"
+        );
         assert_eq!(normalize_name("rust2024").unwrap(), "rust2024");
     }
 

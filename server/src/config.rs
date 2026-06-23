@@ -77,7 +77,7 @@ pub struct Server {
     pub ldap: Option<Ldap>,
     pub files: Option<Files>,
     pub telegram: Option<Telegram>,
-    /// Public base URL the server is reachable at, e.g. `https://friday.example.com`.
+    /// Public base URL the server is reachable at, e.g. `https://stride.example.com`.
     /// Used to build capability URLs for image attachments served to vision
     /// models. When unset, images are sent inline as base64 instead.
     pub public_url: Option<String>,
@@ -203,14 +203,14 @@ impl Provider {
     pub fn read_token(&self, name: &str) -> Option<String> {
         self.token
             .clone()
-            .or_else(|| env::var(format!("FRIDAY_{}_API_KEY", name.to_ascii_uppercase())).ok())
+            .or_else(|| env::var(format!("STRIDE_{}_API_KEY", name.to_ascii_uppercase())).ok())
     }
 }
 
 impl McpServer {
     /// Request headers for this server, including a bearer `Authorization`
     /// header when a token is configured (or available via
-    /// `FRIDAY_MCP_<NAME>_TOKEN`).
+    /// `STRIDE_MCP_<NAME>_TOKEN`).
     pub fn request_headers(&self, name: &str) -> Vec<(String, String)> {
         let mut headers: Vec<(String, String)> = self
             .headers
@@ -221,7 +221,7 @@ impl McpServer {
         let token = self
             .token
             .clone()
-            .or_else(|| env::var(format!("FRIDAY_MCP_{}_TOKEN", name.to_ascii_uppercase())).ok());
+            .or_else(|| env::var(format!("STRIDE_MCP_{}_TOKEN", name.to_ascii_uppercase())).ok());
         if let Some(token) = token {
             headers.push(("Authorization".to_string(), format!("Bearer {token}")));
         }
@@ -234,7 +234,7 @@ impl WebSearch {
     pub fn read_brave_api_key(&self) -> Option<String> {
         self.brave_api_key
             .clone()
-            .or_else(|| env::var("FRIDAY_BRAVE_API_KEY").ok())
+            .or_else(|| env::var("STRIDE_BRAVE_API_KEY").ok())
     }
 
     pub fn brave_endpoint(&self) -> &str {
@@ -248,13 +248,13 @@ impl Telegram {
     pub fn read_bot_api_key(&self) -> Option<String> {
         self.bot_api_key
             .clone()
-            .or_else(|| env::var("FRIDAY_TELEGRAM_BOT_API_KEY").ok())
+            .or_else(|| env::var("STRIDE_TELEGRAM_BOT_API_KEY").ok())
     }
 
     pub fn read_bot_username(&self) -> Option<String> {
         self.bot_username
             .clone()
-            .or_else(|| env::var("FRIDAY_TELEGRAM_BOT_USERNAME").ok())
+            .or_else(|| env::var("STRIDE_TELEGRAM_BOT_USERNAME").ok())
     }
 }
 
@@ -262,7 +262,7 @@ impl Firecrawl {
     pub fn read_api_key(&self) -> Option<String> {
         self.api_key
             .clone()
-            .or_else(|| env::var("FRIDAY_FIRECRAWL_API_KEY").ok())
+            .or_else(|| env::var("STRIDE_FIRECRAWL_API_KEY").ok())
     }
 
     pub fn api_url(&self) -> &str {
@@ -282,7 +282,7 @@ mod tests {
             providers: HashMap::new(),
             models: HashMap::new(),
             server: Some(Server {
-                db_path: Some("/tmp/friday-test.db".to_string()),
+                db_path: Some("/tmp/stride-test.db".to_string()),
                 listen_addr: Some("127.0.0.1:4000".to_string()),
                 allow_registration: Some(false),
                 ldap: None,
@@ -294,7 +294,7 @@ mod tests {
             mcp: HashMap::new(),
         };
 
-        assert_eq!(cfg.db_url(), "sqlite:///tmp/friday-test.db");
+        assert_eq!(cfg.db_url(), "sqlite:///tmp/stride-test.db");
         assert_eq!(cfg.listen_addr(), "127.0.0.1:4000");
         assert!(!cfg.allow_registration());
     }
@@ -355,7 +355,7 @@ mod tests {
 
             [tools.python]
             enabled = true
-            cache_dir = "/tmp/friday-execenv-test"
+            cache_dir = "/tmp/stride-execenv-test"
             backend = "Eryx"
             threads = 4
             preinit = true
@@ -368,7 +368,7 @@ mod tests {
         .unwrap();
 
         let python = cfg.tools.unwrap().python.unwrap();
-        assert_eq!(python.cache_dir.unwrap(), "/tmp/friday-execenv-test");
+        assert_eq!(python.cache_dir.unwrap(), "/tmp/stride-execenv-test");
         assert!(matches!(python.backend.unwrap(), PythonBackend::Eryx));
         assert_eq!(python.threads, Some(4));
         assert_eq!(python.max_runtime_seconds, Some(15));
@@ -386,7 +386,7 @@ mod tests {
 
             [server.telegram]
             bot_api_key = "123:abc"
-            bot_username = "friday_bot"
+            bot_username = "stride_bot"
             webhook_secret = "secret"
             "#,
         )
@@ -394,7 +394,7 @@ mod tests {
 
         let telegram = cfg.server.unwrap().telegram.unwrap();
         assert_eq!(telegram.read_bot_api_key().unwrap(), "123:abc");
-        assert_eq!(telegram.read_bot_username().unwrap(), "friday_bot");
+        assert_eq!(telegram.read_bot_username().unwrap(), "stride_bot");
         assert_eq!(telegram.webhook_secret.unwrap(), "secret");
     }
 

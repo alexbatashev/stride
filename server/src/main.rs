@@ -27,12 +27,12 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 use clap::Parser;
-use friday_agent::{
+use llm::{API, Anthropic, Ollama, OpenAI};
+use minisql::ConnectionPool;
+use stride_agent::{
     AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry,
     mcp::{self, McpTool},
 };
-use llm::{API, Anthropic, Ollama, OpenAI};
-use minisql::ConnectionPool;
 use tower_http::{
     services::ServeDir,
     trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
@@ -223,32 +223,32 @@ fn init_tracing() {
 }
 
 fn load_jwt_secret() -> anyhow::Result<String> {
-    let secret = std::env::var("FRIDAY_JWT_SECRET").map_err(|_| {
+    let secret = std::env::var("STRIDE_JWT_SECRET").map_err(|_| {
         anyhow::anyhow!(
-            "FRIDAY_JWT_SECRET is not set. Set a strong, random FRIDAY_JWT_SECRET (at least \
+            "STRIDE_JWT_SECRET is not set. Set a strong, random STRIDE_JWT_SECRET (at least \
              {MIN_JWT_SECRET_LEN} bytes) before starting the server."
         )
     })?;
 
     if secret == DEFAULT_DEV_JWT_SECRET {
         anyhow::bail!(
-            "FRIDAY_JWT_SECRET is set to the insecure default. Set a strong, random \
-             FRIDAY_JWT_SECRET (at least {MIN_JWT_SECRET_LEN} bytes) before starting the server."
+            "STRIDE_JWT_SECRET is set to the insecure default. Set a strong, random \
+             STRIDE_JWT_SECRET (at least {MIN_JWT_SECRET_LEN} bytes) before starting the server."
         );
     }
 
     if secret.len() < MIN_JWT_SECRET_LEN {
         anyhow::bail!(
-            "FRIDAY_JWT_SECRET is too short ({} bytes). Set a strong, random FRIDAY_JWT_SECRET \
+            "STRIDE_JWT_SECRET is too short ({} bytes). Set a strong, random STRIDE_JWT_SECRET \
              with at least {MIN_JWT_SECRET_LEN} bytes before starting the server.",
             secret.len()
         );
     }
 
-    if std::env::var("FRIDAY_EMAIL_ENCRYPTION_KEY").is_err() {
+    if std::env::var("STRIDE_EMAIL_ENCRYPTION_KEY").is_err() {
         tracing::warn!(
-            "FRIDAY_EMAIL_ENCRYPTION_KEY is not set; stored IMAP passwords fall back to the JWT \
-             secret for encryption. A dedicated FRIDAY_EMAIL_ENCRYPTION_KEY is recommended."
+            "STRIDE_EMAIL_ENCRYPTION_KEY is not set; stored IMAP passwords fall back to the JWT \
+             secret for encryption. A dedicated STRIDE_EMAIL_ENCRYPTION_KEY is recommended."
         );
     }
 

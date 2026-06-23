@@ -9,15 +9,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use friday_agent::{
-    AgentConfig, AgentResponseChunk, BaseAgent, Tool,
-    mcp::McpTool,
-    tools::email::{CreateEmailDraftTool, ListEmailsTool},
-};
 use futures::StreamExt;
 use llm::StreamResponseChunk;
 use minisql::ConnectionPool;
 use serde_json::Value as JsonValue;
+use stride_agent::{
+    AgentConfig, AgentResponseChunk, BaseAgent, Tool,
+    mcp::McpTool,
+    tools::email::{CreateEmailDraftTool, ListEmailsTool},
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use uuid::Uuid;
 
@@ -29,7 +29,7 @@ use crate::runner::inproc::{expert_tool_registry, python_tool_config};
 use crate::triggers;
 
 const POLL_SECS: u64 = 60;
-const AGENT_SYSTEM_PROMPT: &str = "You are Friday, running a scheduled automation with no interactive user. \
+const AGENT_SYSTEM_PROMPT: &str = "You are Stride, running a scheduled automation with no interactive user. \
      Complete the task and produce a concise final report. You cannot ask questions.";
 
 /// What caused a fire request, kept for logging and run metadata.
@@ -105,7 +105,7 @@ pub fn spawn(
         mcp_tools,
     };
     std::thread::Builder::new()
-        .name("friday-scheduler".to_string())
+        .name("stride-scheduler".to_string())
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -418,7 +418,7 @@ async fn run_python(
 async fn run_agent(
     model_config: Arc<AgentConfig>,
     prompt: &str,
-    email_provider: Arc<dyn friday_agent::tools::email::EmailProvider>,
+    email_provider: Arc<dyn stride_agent::tools::email::EmailProvider>,
     mcp_tools: Vec<McpTool>,
 ) -> Result<String, String> {
     let agent = BaseAgent::new(
@@ -524,7 +524,7 @@ mod tests {
 
     fn mock_model_config() -> Arc<AgentConfig> {
         Arc::new(AgentConfig {
-            model_registry: friday_agent::ModelRegistry::new(),
+            model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 2,
         })
     }

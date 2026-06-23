@@ -8,7 +8,9 @@ use std::{
 };
 
 use async_trait::async_trait;
-use friday_agent::{
+use futures::{StreamExt, channel::oneshot as futures_oneshot};
+use minisql::{ConnectionPool, Value};
+use stride_agent::{
     AgentConfig, AgentResponseChunk, BaseAgent, QuizQuestion, Tool, ToolRegistry,
     mcp::McpTool,
     tools::{
@@ -23,8 +25,6 @@ use friday_agent::{
         },
     },
 };
-use futures::{StreamExt, channel::oneshot as futures_oneshot};
-use minisql::{ConnectionPool, Value};
 use tokio::{
     runtime::Builder,
     sync::{mpsc, oneshot, watch},
@@ -56,7 +56,7 @@ use crate::{
 
 const WORKER_THREADS: usize = 8;
 const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(300);
-const BASE_SYSTEM_PROMPT: &str = "You are Friday, a semi-autonomous AI agent. Your task is to assist user with any requests.
+const BASE_SYSTEM_PROMPT: &str = "You are Stride, a semi-autonomous AI agent. Your task is to assist user with any requests.
 
 Be proactive and goal-driven. Resolve user's problems and complete tasks in a meaningful and helpful way.
 
@@ -526,7 +526,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
     let (tx, rx) = mpsc::unbounded_channel();
 
     std::thread::Builder::new()
-        .name(format!("friday-agent-pool-{idx}"))
+        .name(format!("stride-agent-pool-{idx}"))
         .spawn(move || {
             let runtime = Builder::new_current_thread()
                 .enable_all()
@@ -1204,7 +1204,7 @@ pub(crate) fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
 }
 
 fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
-    let mut providers: Vec<Box<dyn friday_agent::tools::web_search::SearchProvider>> =
+    let mut providers: Vec<Box<dyn stride_agent::tools::web_search::SearchProvider>> =
         vec![Box::new(SearxngProvider {
             endpoint: web_search.searxng_endpoint.clone(),
             request_delay: Duration::from_secs(
@@ -1233,7 +1233,7 @@ fn web_search_tool(web_search: &WebSearch) -> WebSearchTool {
 
     WebSearchTool {
         providers,
-        ranker: Box::new(friday_agent::tools::web_search::InterleaveRanker),
+        ranker: Box::new(stride_agent::tools::web_search::InterleaveRanker),
     }
 }
 
@@ -2074,8 +2074,8 @@ fn db_error(err: Box<dyn std::error::Error + Send + Sync>) -> AgentPoolError {
 #[cfg(test)]
 mod tests {
     use crate::config::{Firecrawl, WebSearch};
-    use friday_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
     use llm::{CompletionChoice, Delta, StreamResponseChunk, ToolCallChunk, ToolCallFunction};
+    use stride_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
 
     use super::*;
     use crate::db::{self, threads, users};
@@ -2094,9 +2094,9 @@ mod tests {
             Some(id),
             Some("/~workspace"),
             true,
-            Some("https://friday.example.com"),
+            Some("https://stride.example.com"),
         );
-        assert!(prompt.contains("https://friday.example.com/api/threads/"));
+        assert!(prompt.contains("https://stride.example.com/api/threads/"));
         assert!(prompt.contains("send_telegram_file"));
         assert!(prompt.contains("happens over Telegram"));
     }
@@ -2110,10 +2110,10 @@ mod tests {
             Some(id),
             Some("/~workspace"),
             false,
-            Some("https://friday.example.com"),
+            Some("https://stride.example.com"),
         );
         assert!(prompt.contains("`/api/threads/"));
-        assert!(!prompt.contains("https://friday.example.com"));
+        assert!(!prompt.contains("https://stride.example.com"));
         assert!(!prompt.contains("send_telegram_file"));
     }
 

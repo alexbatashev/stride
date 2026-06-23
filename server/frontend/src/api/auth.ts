@@ -4,7 +4,7 @@ type AuthResponse = {
 	token: string;
 };
 
-const TOKEN_KEY = 'friday.authToken';
+const TOKEN_KEY = 'stride.authToken';
 
 export function readToken(): string | null {
 	return localStorage.getItem(TOKEN_KEY);

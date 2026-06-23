@@ -1,6 +1,6 @@
 ---
 name: minisql
-description: Use Friday's MiniSQL library and `migrations!` macro to add or update SQLite schema, generated table modules, typed inserts, and typed selects. Use when working in this repo on code that defines `migrations!`, calls `get_migrations()`, or uses generated APIs like `table::insert()`, `table::select()`, and `table::select_cols(...)`.
+description: Use Stride's MiniSQL library and `migrations!` macro to add or update SQLite schema, generated table modules, typed inserts, and typed selects. Use when working in this repo on code that defines `migrations!`, calls `get_migrations()`, or uses generated APIs like `table::insert()`, `table::select()`, and `table::select_cols(...)`.
 ---
 
 # MiniSQL

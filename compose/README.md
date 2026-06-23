@@ -1,12 +1,12 @@
-# Friday — Compose Multiplatform client
+# Stride — Compose Multiplatform client
 
-A Jetpack Compose / Compose Multiplatform port of the Friday client (the SwiftUI
+A Jetpack Compose / Compose Multiplatform port of the Stride client (the SwiftUI
 app lives in `../apple/Stride`). Targets **Android** and **Desktop (JVM)** from a
 single `shared` module and follows [Material 3](https://m3.material.io/).
 
 This first cut implements the **threads** feature end to end:
 
-- Sign in / register against a Friday cloud server (server URL + credentials).
+- Sign in / register against a Stride cloud server (server URL + credentials).
 - Adaptive **list ↔ detail** layout (`ListDetailPaneScaffold`): a single navigable
   pane on a phone, two panes side by side on tablets and desktop.
 - Thread list with search, pull-to-refresh, avatars and a "New" FAB.
@@ -22,8 +22,8 @@ This first cut implements the **threads** feature end to end:
 - [`shared/commonMain`](./shared/src/commonMain/kotlin/me/batashev/stride) — all UI
   and logic:
     - `data/` — serializable models, `ThreadEvent` stream, `Session`, the Ktor
-      `FridayClient`.
-    - `ui/` — `FridayTheme`, the adaptive `MainScreen`, `auth/`, `threads/`, `chat/`.
+      `StrideClient`.
+    - `ui/` — `StrideTheme`, the adaptive `MainScreen`, `auth/`, `threads/`, `chat/`.
     - `Platform.kt` — `expect` for settings storage, dynamic color and the back
       handler; actuals in `androidMain` / `jvmMain`.
 - [`androidApp`](./androidApp) / [`desktopApp`](./desktopApp) — thin hosts that call
@@ -34,7 +34,7 @@ This first cut implements the **threads** feature end to end:
 - Android: `./gradlew :androidApp:assembleDebug` (or run from the IDE).
 - Desktop: `./gradlew :desktopApp:run`
 
-On first launch, enter your Friday server URL (e.g. `https://friday.example.com`
+On first launch, enter your Stride server URL (e.g. `https://stride.example.com`
 or `http://10.0.2.2:8080` from the Android emulator) plus your username and
 password. The session is persisted per platform.
 

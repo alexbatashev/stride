@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use friday_agent::QuizQuestion;
+use stride_agent::QuizQuestion;
 use uuid::Uuid;
 
 pub mod inproc;

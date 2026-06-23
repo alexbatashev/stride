@@ -1,8 +1,8 @@
-use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::glob::GlobTool};
 use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use stride_agent::{AgentConfig, ModelRegistry, Tool, tools::glob::GlobTool};
 
 fn dummy_config() -> Arc<AgentConfig> {
     Arc::new(AgentConfig {
@@ -14,7 +14,7 @@ fn dummy_config() -> Arc<AgentConfig> {
 #[test]
 fn execute_returns_file_sizes_in_bytes() {
     let dir = std::env::temp_dir().join(format!(
-        "friday-agent-glob-test-{}",
+        "stride-agent-glob-test-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

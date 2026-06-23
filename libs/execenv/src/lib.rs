@@ -5,10 +5,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use friday_agent::{AgentConfig, Tool, ToolDesc, ToolRegistry};
 use llm::{Function, Tool as LlmTool};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use stride_agent::{AgentConfig, Tool, ToolDesc, ToolRegistry};
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(feature = "eryx")]
@@ -511,7 +511,7 @@ pub struct PythonToolConfig {
 impl Default for PythonToolConfig {
     fn default() -> Self {
         Self {
-            cache_dir: std::env::temp_dir().join("friday-execenv"),
+            cache_dir: std::env::temp_dir().join("stride-execenv"),
             backend: BackendKind::Mock,
             threads: 1,
             preinit: true,
@@ -934,7 +934,7 @@ async fn fetch(url: &str) -> anyhow::Result<bytes::Bytes> {
     for _ in 0..MAX_REDIRECTS {
         let req = hyper::Request::builder()
             .uri(&url)
-            .header(hyper::header::USER_AGENT, "friday-execenv/0.1")
+            .header(hyper::header::USER_AGENT, "stride-execenv/0.1")
             .body(Empty::<bytes::Bytes>::new())?;
         let res = client.request(req).await?;
         let status = res.status();
@@ -1281,7 +1281,7 @@ mod eryx_backend {
             for idx in 0..threads {
                 let rx = rx.clone();
                 std::thread::Builder::new()
-                    .name(format!("friday-eryx-{idx}"))
+                    .name(format!("stride-eryx-{idx}"))
                     .spawn(move || worker_loop(rx))
                     .expect("eryx worker thread");
             }
@@ -1865,7 +1865,7 @@ mod tests {
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
-                    model_registry: friday_agent::ModelRegistry::new(),
+                    model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                 }),
                 json!({ "script": "print(1)" }),
@@ -1916,7 +1916,7 @@ mod tests {
 
     fn test_config() -> Arc<AgentConfig> {
         Arc::new(AgentConfig {
-            model_registry: friday_agent::ModelRegistry::new(),
+            model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 1,
         })
     }
@@ -2028,7 +2028,7 @@ mod tests {
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
-                    model_registry: friday_agent::ModelRegistry::new(),
+                    model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                 }),
                 json!({ "script": "print(2 + 2)" }),
@@ -2108,7 +2108,7 @@ mod tests {
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
-                    model_registry: friday_agent::ModelRegistry::new(),
+                    model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                 }),
                 json!({ "script": script }),
@@ -2133,7 +2133,7 @@ mod tests {
     #[ignore = "downloads pure-Python wheels and precompiles runtime"]
     async fn eryx_backend_imports_pure_python_packages() {
         let workspace = tempfile::tempdir().unwrap();
-        let cache_dir = std::env::temp_dir().join("friday-execenv-pure-test-cache");
+        let cache_dir = std::env::temp_dir().join("stride-execenv-pure-test-cache");
         tokio::fs::create_dir_all(&cache_dir).await.unwrap();
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
@@ -2160,7 +2160,7 @@ mod tests {
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
-                    model_registry: friday_agent::ModelRegistry::new(),
+                    model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                 }),
                 json!({ "script": script }),
@@ -2176,7 +2176,7 @@ mod tests {
     #[ignore = "downloads native WASI packages and precompiles runtime"]
     async fn eryx_backend_imports_native_packages() {
         let workspace = tempfile::tempdir().unwrap();
-        let cache_dir = std::env::temp_dir().join("friday-execenv-native-test-cache");
+        let cache_dir = std::env::temp_dir().join("stride-execenv-native-test-cache");
         tokio::fs::create_dir_all(&cache_dir).await.unwrap();
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
@@ -2211,7 +2211,7 @@ mod tests {
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
-                    model_registry: friday_agent::ModelRegistry::new(),
+                    model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                 }),
                 json!({ "script": script }),
@@ -2233,7 +2233,7 @@ mod tests {
         std::fs::create_dir_all(&ws_dir).unwrap();
         std::fs::write(ws_dir.join("doc.typ"), b"= Title\nHello from Typst").unwrap();
 
-        let cache_dir = std::env::temp_dir().join("friday-execenv-typst-test-cache");
+        let cache_dir = std::env::temp_dir().join("stride-execenv-typst-test-cache");
         tokio::fs::create_dir_all(&cache_dir).await.unwrap();
         let fs = Arc::new(
             DirectOsFileSystem::new(ws_dir.clone())
@@ -2261,7 +2261,7 @@ mod tests {
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
-                    model_registry: friday_agent::ModelRegistry::new(),
+                    model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                 }),
                 json!({ "script": script }),

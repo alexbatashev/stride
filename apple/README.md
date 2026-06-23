@@ -1,20 +1,20 @@
-# Friday — Apple Platform Client
+# Stride — Apple Platform Client
 
-A native SwiftUI client for the Friday cloud service, built with
+A native SwiftUI client for the Stride cloud service, built with
 [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture)
 (TCA). Runs on **iOS, iPadOS and macOS** (and visionOS) from a single codebase.
 
 The design is inspired by Apple Mail: a three-column layout (mailboxes →
-message list → reading view) mapped onto Friday's domain, and it adopts the
+message list → reading view) mapped onto Stride's domain, and it adopts the
 Liquid Glass material throughout.
 
 > The Xcode project is still named **Stride** (the scaffold it grew from). The
-> product is branded **Friday** in-app. To rename the bundle, set
-> `INFOPLIST_KEY_CFBundleDisplayName = Friday` in the target build settings.
+> product is branded **Stride** in-app. To rename the bundle, set
+> `INFOPLIST_KEY_CFBundleDisplayName = Stride` in the target build settings.
 
-## Mail → Friday mapping
+## Mail → Stride mapping
 
-| Apple Mail            | Friday                                   |
+| Apple Mail            | Stride                                   |
 | --------------------- | ---------------------------------------- |
 | Mailboxes / Favorites | Projects + "All Conversations"           |
 | Message list          | Threads in the selected project          |
@@ -22,7 +22,7 @@ Liquid Glass material throughout.
 
 ## Features
 
-- **Sign in / create account** against any Friday server (URL is configurable
+- **Sign in / create account** against any Stride server (URL is configurable
   and remembered).
 - **Three-column navigation** (`NavigationSplitView`) that collapses to a stack
   on iPhone.
@@ -49,9 +49,9 @@ AppFeature                      ← root: auth gate
 ```
 
 ```
-Friday/
+Stride/
   App/            AppFeature, RootView, StrideApp (entry)
-  Core/           Session, FridayClient (+Live), API models, ThreadEvent decoder
+  Core/           Session, StrideClient (+Live), API models, ThreadEvent decoder
   DesignSystem/   Metrics, colors, Liquid Glass helpers
   Markdown/       Block parser + SwiftUI renderer
   Features/
@@ -62,7 +62,7 @@ Friday/
 
 ### Networking
 
-`FridayClient` is a struct-of-closures dependency. The live implementation wraps
+`StrideClient` is a struct-of-closures dependency. The live implementation wraps
 `URLSession` for REST and `URLSessionWebSocketTask` for the event stream, exposed
 to the reducer as an `AsyncThrowingStream<ThreadEvent, Error>`. Credentials
 (server URL + bearer token) live in `Session` and are persisted to
@@ -85,7 +85,7 @@ Requires **Xcode 27 or newer** (the project uses the format-110 file). Open
 Swift Package dependencies (TCA and its transitive packages) are already pinned
 in `Package.resolved`; Xcode resolves them on first open.
 
-On first launch, enter your Friday server URL (e.g. `https://friday.example.com`)
+On first launch, enter your Stride server URL (e.g. `https://stride.example.com`)
 and sign in.
 
 ## Not yet covered

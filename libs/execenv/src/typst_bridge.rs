@@ -1,7 +1,7 @@
 //! Exposes the embedded Typst compiler to the in-sandbox Python interpreter as
 //! a `typst` module.
 //!
-//! A host [`eryx::Callback`] (`__friday_typst_compile`) runs the native compiler
+//! A host [`eryx::Callback`] (`__stride_typst_compile`) runs the native compiler
 //! on the host; the [`PREAMBLE`] defines a Python `typst` module that gathers
 //! project files from the sandbox filesystem, ships them to the callback and
 //! decodes the returned bytes. The module is injected on every execution, so
@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use crate::typst_doc::{self, CompileRequest, TypstFormat};
 
 /// Name the Python preamble uses to reach the host compile callback.
-pub(crate) const CALLBACK_NAME: &str = "__friday_typst_compile";
+pub(crate) const CALLBACK_NAME: &str = "__stride_typst_compile";
 
 /// Hard wall-clock bound on a single host-side compile.
 const MAX_COMPILE_TIME: std::time::Duration = std::time::Duration::from_secs(60);
@@ -159,7 +159,7 @@ fn parse_request(
 pub(crate) const PREAMBLE: &str = r##"
 import sys as _typst_sys, types as _typst_types, os as _typst_os, base64 as _typst_b64
 
-_TYPST_CALLBACK = "__friday_typst_compile"
+_TYPST_CALLBACK = "__stride_typst_compile"
 _TYPST_MAX_BYTES = 64 * 1024 * 1024
 
 

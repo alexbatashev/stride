@@ -535,7 +535,7 @@ class ThreadsPageHydrator {
 		title.textContent = "What are we working on?";
 
 		const body = document.createElement("p");
-		body.textContent = "Start a thread and Friday will keep the context here.";
+		body.textContent = "Start a thread and S.T.R.I.D.E. will keep the context here.";
 
 		empty.append(title, body);
 		return empty;
@@ -578,11 +578,11 @@ class ThreadsPageHydrator {
 	}
 
 	private composerPlaceholder(): string {
-		if (this.threadId) return "Message Friday";
+		if (this.threadId) return "Message S.T.R.I.D.E.";
 		const project = this.currentProjectId
 			? this.projects.find((p) => p.id === this.currentProjectId)
 			: undefined;
-		return project ? `New thread in ${project.title}` : "Ask Friday anything";
+		return project ? `New thread in ${project.title}` : "Ask S.T.R.I.D.E. anything";
 	}
 
 	private toggleFiles() {

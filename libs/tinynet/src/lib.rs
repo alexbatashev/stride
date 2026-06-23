@@ -228,15 +228,13 @@ where
         // deadlock on a chunked error response because nothing pumps the socket.
         let collect_fut = res.into_body().collect();
         futures::pin_mut!(collect_fut);
-        let collected = loop {
-            match futures::future::select(collect_fut.as_mut(), conn.as_mut()).await {
-                Either::Left((collected, _)) => break collected,
-                Either::Right((Ok(()), _)) => break collect_fut.await,
-                Either::Right((Err(err), _)) => {
-                    return Box::pin(futures::stream::once(async move {
-                        Err(Error::RequestError(err.to_string()))
-                    }));
-                }
+        let collected = match futures::future::select(collect_fut.as_mut(), conn.as_mut()).await {
+            Either::Left((collected, _)) => collected,
+            Either::Right((Ok(()), _)) => collect_fut.await,
+            Either::Right((Err(err), _)) => {
+                return Box::pin(futures::stream::once(async move {
+                    Err(Error::RequestError(err.to_string()))
+                }));
             }
         };
         let body_bytes = match collected {

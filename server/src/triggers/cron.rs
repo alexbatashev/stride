@@ -28,7 +28,7 @@ mod tests {
     #[tokio::test]
     async fn fires_on_matching_minute_once() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
-        // 2021-01-01 00:00:00 UTC is a Friday; "* * * * *" matches every minute.
+        // 2021-01-01 00:00:00 UTC is a Stride; "* * * * *" matches every minute.
         let trigger = CronTrigger::parse("* * * * *").unwrap();
         let now = 1_609_459_200;
         assert!(trigger.due(&db, now, None).await);

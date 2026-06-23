@@ -1,6 +1,6 @@
-# Friday
+# Stride
 
-Friday is a semi-autonomous agentic system that can handle tasks on behalf of
+Stride is a semi-autonomous agentic system that can handle tasks on behalf of
 its users. The goal of the project is to provide seamless experience for using
 LLMs to handle any day-to-day tasks, be it going through emails, planning the
 week in calendar, finding best deals online or coding.
@@ -23,10 +23,10 @@ computing or new tools that attack problem in a systematic way.
 
 A small glossary for you:
 - You - the agent reading this document
-- Me/we/us - the humans contributing to Friday
-- Users - people who will interact with Friday
-- Core - library in the libs/agent containing building blocks for Friday agents
-- Agents - LLM-based systems built within Friday infrastructure
+- Me/we/us - the humans contributing to Stride
+- Users - people who will interact with Stride
+- Core - library in the libs/agent containing building blocks for Stride agents
+- Agents - LLM-based systems built within Stride infrastructure
 - Cloud agent - client-server interface inside server directory
 
 ## General code guidelines

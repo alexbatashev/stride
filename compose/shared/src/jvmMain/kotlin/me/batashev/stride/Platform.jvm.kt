@@ -60,7 +60,7 @@ actual fun rememberFilePicker(onResult: (PickedFile?) -> Unit): () -> Unit {
 }
 
 actual suspend fun openFile(name: String, mimeType: String?, bytes: ByteArray) = withContext(Dispatchers.IO) {
-    val dir = Files.createTempDirectory("friday").toFile()
+    val dir = Files.createTempDirectory("stride").toFile()
     val file = File(dir, name.substringAfterLast('/').ifEmpty { "file" })
     file.writeBytes(bytes)
     if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {

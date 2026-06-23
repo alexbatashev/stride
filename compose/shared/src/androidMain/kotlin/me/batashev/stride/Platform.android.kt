@@ -31,7 +31,7 @@ object AndroidApp {
 }
 
 actual fun createSettings(): Settings = object : Settings {
-    private val prefs = AndroidApp.context.getSharedPreferences("friday.session", Context.MODE_PRIVATE)
+    private val prefs = AndroidApp.context.getSharedPreferences("stride.session", Context.MODE_PRIVATE)
 
     override fun getString(key: String): String? = prefs.getString(key, null)
 

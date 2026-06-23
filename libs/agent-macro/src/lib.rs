@@ -51,7 +51,6 @@ fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
                     r#type: #ty.to_string(),
                     description: #description.to_string(),
                     extra: #extra,
-                    ..Default::default()
                 },
             );
         });
@@ -92,7 +91,7 @@ fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
-        impl #impl_generics friday_agent::ToolDesc for #struct_name #ty_generics #where_clause {
+        impl #impl_generics stride_agent::ToolDesc for #struct_name #ty_generics #where_clause {
             fn function_parameters() -> llm::FunctionParameters {
                 let mut properties = std::collections::HashMap::new();
                 let mut required: Vec<String> = Vec::new();
@@ -115,7 +114,7 @@ fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
 
         impl #impl_generics From<#struct_name #ty_generics> for llm::FunctionParameters #where_clause {
             fn from(_: #struct_name #ty_generics) -> Self {
-                <#struct_name #ty_generics as friday_agent::ToolDesc>::function_parameters()
+                <#struct_name #ty_generics as stride_agent::ToolDesc>::function_parameters()
             }
         }
 

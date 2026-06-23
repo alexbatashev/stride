@@ -345,7 +345,7 @@ pub async fn migrate(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     db.migrator()
         .apply(minisql::SchemaSet::new("", get_migrations()))
-        .apply(friday_agent::memory::schema())
+        .apply(stride_agent::memory::schema())
         .run()
         .await
 }

@@ -106,9 +106,9 @@ test('app-prompt-input submits on Enter and clears', () => {
   const el = mount('app-prompt-input');
   const submitted = lastEvent(el, 'prompt-submit');
   const textarea = el.shadowRoot.querySelector('textarea');
-  textarea.value = '  hello friday  ';
+  textarea.value = '  hello stride  ';
   textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  assert.equal(submitted.detail.value, 'hello friday');
+  assert.equal(submitted.detail.value, 'hello stride');
   assert.equal(textarea.value, '');
 });
 

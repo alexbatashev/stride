@@ -1,5 +1,5 @@
-use friday_agent::ToolDesc;
 use serde_json::json;
+use stride_agent::ToolDesc;
 
 #[derive(Debug, PartialEq, ToolDesc)]
 struct SearchArgs {

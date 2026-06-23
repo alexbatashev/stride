@@ -385,7 +385,7 @@ fn is_font_file(path: &std::path::Path) -> bool {
 
 fn build_packages(cache_dir: Option<PathBuf>) -> Option<SystemPackages> {
     let cache_dir = cache_dir?;
-    let downloader = SystemDownloader::new("friday-typst");
+    let downloader = SystemDownloader::new("stride-typst");
     let universe = UniversePackages::new(downloader);
     let cache = FsPackages::new(cache_dir);
     Some(SystemPackages::from_parts(None, Some(cache), universe))
@@ -507,7 +507,7 @@ mod tests {
         let mut request = project("#sys.inputs.at(\"name\")", TypstFormat::Pdf);
         request
             .sys_inputs
-            .insert("name".to_string(), "Friday".to_string());
+            .insert("name".to_string(), "Stride".to_string());
         let out = compile(request).unwrap();
         assert_eq!(&out[..5], b"%PDF-");
     }
@@ -536,7 +536,7 @@ mod tests {
                 b"#import \"@preview/example:0.1.0\": *".to_vec(),
             )]),
             main: "main.typ".to_string(),
-            package_cache: Some(std::env::temp_dir().join("friday-typst-test-empty-cache")),
+            package_cache: Some(std::env::temp_dir().join("stride-typst-test-empty-cache")),
             allow_network: false,
             ..Default::default()
         };

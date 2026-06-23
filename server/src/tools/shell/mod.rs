@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bashkit::{Bash, PosixFs};
-use friday_agent::tools::shell::{ShellBackend, ShellResult};
+use stride_agent::tools::shell::{ShellBackend, ShellResult};
 
 use crate::vfs::MountedVfs;
 use vfs_backend::VfsBackend;

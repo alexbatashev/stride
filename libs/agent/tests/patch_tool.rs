@@ -1,9 +1,9 @@
-use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::patch::PatchTool};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use stride_agent::{AgentConfig, ModelRegistry, Tool, tools::patch::PatchTool};
 
 static TEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -17,7 +17,7 @@ fn dummy_config() -> Arc<AgentConfig> {
 fn temp_dir() -> PathBuf {
     let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "friday-agent-patch-test-{}-{}",
+        "stride-agent-patch-test-{}-{}",
         std::process::id(),
         id
     ));

@@ -5,7 +5,7 @@ mod tool;
 mod tool_registry;
 pub mod tools;
 
-extern crate self as friday_agent;
+extern crate self as stride_agent;
 
 pub use agent_macro::ToolDesc;
 pub use base::*;

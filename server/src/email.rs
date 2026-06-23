@@ -6,14 +6,14 @@ use aes_gcm::{
 };
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use friday_agent::tools::email::{
-    EmailAccount, EmailDraft, EmailMailbox, EmailMessage, EmailProvider,
-};
 use futures::TryStreamExt;
 use mail_parser::{Address, Message, MessageParser};
 use minisql::ConnectionPool;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
+use stride_agent::tools::email::{
+    EmailAccount, EmailDraft, EmailMailbox, EmailMessage, EmailProvider,
+};
 use tokio::net::TcpStream;
 use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
 use uuid::Uuid;
@@ -56,7 +56,7 @@ pub struct NewEmailBatch {
 }
 
 pub fn encryption_secret(fallback: &str) -> String {
-    std::env::var("FRIDAY_EMAIL_ENCRYPTION_KEY").unwrap_or_else(|_| fallback.to_string())
+    std::env::var("STRIDE_EMAIL_ENCRYPTION_KEY").unwrap_or_else(|_| fallback.to_string())
 }
 
 impl ImapService {
@@ -549,7 +549,7 @@ fn build_draft(
         "Message-ID: <{}@{}>",
         Uuid::now_v7(),
         if message_domain.is_empty() {
-            "friday.invalid"
+            "stride.invalid"
         } else {
             &message_domain
         }

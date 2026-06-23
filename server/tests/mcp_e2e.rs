@@ -7,11 +7,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use friday_agent::{
+use serde_json::{Value, json};
+use stride_agent::{
     AgentConfig, ModelRegistry,
     mcp::{self, McpServer},
 };
-use serde_json::{Value, json};
 
 const SESSION_ID: &str = "test-session";
 
@@ -101,8 +101,8 @@ async fn connects_lists_and_calls_mcp_tools() {
     assert_eq!(tools.len(), 1);
 
     let tool = &tools[0];
-    assert_eq!(friday_agent::Tool::name(tool), "mock_echo");
-    let definition = friday_agent::Tool::definition(tool);
+    assert_eq!(stride_agent::Tool::name(tool), "mock_echo");
+    let definition = stride_agent::Tool::definition(tool);
     let params = definition.function.parameters.unwrap();
     assert_eq!(params.required, Some(vec!["text".to_string()]));
     assert_eq!(params.properties["text"].r#type, "string");
@@ -111,7 +111,7 @@ async fn connects_lists_and_calls_mcp_tools() {
         model_registry: ModelRegistry::new(),
         max_iterations: 0,
     });
-    let result = friday_agent::Tool::execute(tool, config, json!({ "text": "hello" })).await;
+    let result = stride_agent::Tool::execute(tool, config, json!({ "text": "hello" })).await;
 
     assert_eq!(
         result.pointer("/content/0/text").and_then(Value::as_str),
@@ -166,5 +166,5 @@ async fn parses_sse_framed_responses() {
     .unwrap();
 
     assert_eq!(tools.len(), 1);
-    assert_eq!(friday_agent::Tool::name(&tools[0]), "remote_ping");
+    assert_eq!(stride_agent::Tool::name(&tools[0]), "remote_ping");
 }

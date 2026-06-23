@@ -1,12 +1,12 @@
 use std::{cell::RefCell, path::PathBuf, pin::Pin, rc::Rc, sync::Arc};
 
-use friday_agent::{
-    AgentConfig, AgentError, AgentResponseChunk, BaseAgent, ModelRegEntry, ModelRegistry, Tool,
-    tools::{explorer::make_explorer, file::ReadFileTool, glob::GlobTool, patch::PatchTool},
-};
 use futures::{Stream, StreamExt, stream};
 use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::ConnectionPool;
+use stride_agent::{
+    AgentConfig, AgentError, AgentResponseChunk, BaseAgent, ModelRegEntry, ModelRegistry, Tool,
+    tools::{explorer::make_explorer, file::ReadFileTool, glob::GlobTool, patch::PatchTool},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
 pub struct LocalAgent {
     db: ConnectionPool,
     workdir: PathBuf,
-    agent: friday_agent::BaseAgent,
+    agent: stride_agent::BaseAgent,
     thread: Rc<RefCell<ThreadState>>,
 }
 
@@ -36,7 +36,7 @@ struct AssistantMessageState {
 }
 
 const SYSTEM_PROMPT: &str =
-    "You are Friday, an AI assistant with deep expertise in software engineering.";
+    "You are Stride, an AI assistant with deep expertise in software engineering.";
 
 impl LocalAgent {
     pub fn new(config: &Config, db: ConnectionPool, workdir: PathBuf) -> Self {

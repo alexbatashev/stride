@@ -1,6 +1,6 @@
-use friday_agent::{AgentConfig, ModelRegistry, Tool, tools::calculator::CalculatorTool};
 use serde_json::json;
 use std::sync::Arc;
+use stride_agent::{AgentConfig, ModelRegistry, Tool, tools::calculator::CalculatorTool};
 
 fn dummy_config() -> Arc<AgentConfig> {
     Arc::new(AgentConfig {

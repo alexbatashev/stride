@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use friday_agent::{AgentConfig, Tool, ToolDesc};
 use llm::{Function, Tool as LlmTool};
 use minisql::ConnectionPool;
 use serde_json::{Value as JsonValue, json};
+use stride_agent::{AgentConfig, Tool, ToolDesc};
 use uuid::Uuid;
 
 use crate::api::images::publish_image;

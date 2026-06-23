@@ -13,13 +13,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use friday_agent::{AgentConfig, Tool, ToolDesc};
 use llm::{Function, Tool as LlmTool};
 use minisql::{ConnectionPool, Value};
 use serde_json::{Value as JsonValue, json};
+use stride_agent::{AgentConfig, Tool, ToolDesc};
 use uuid::Uuid;
 
-use friday_agent::memory::Embedding;
+use stride_agent::memory::Embedding;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -266,7 +266,7 @@ pub struct ConnectMemoriesTool {
 
 #[derive(ToolDesc)]
 struct RememberParams {
-    /// Top-level subject this memory belongs to (a project, person or theme), e.g. "friday-project".
+    /// Top-level subject this memory belongs to (a project, person or theme), e.g. "stride-project".
     /// Omit it inside a project to file the memory under the project's own wing.
     wing: Option<String>,
     /// Specific topic within the wing, e.g. "auth-design".
@@ -844,7 +844,7 @@ mod tests {
 
     fn config() -> Arc<AgentConfig> {
         Arc::new(AgentConfig {
-            model_registry: friday_agent::ModelRegistry::new(),
+            model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 0,
         })
     }
@@ -877,7 +877,7 @@ mod tests {
         remember(
             &db,
             user,
-            "friday",
+            "stride",
             "auth-design",
             "We chose JWT sessions over server-side cookies",
             "After weighing options we settled on stateless JWT sessions for the API.",
@@ -906,7 +906,7 @@ mod tests {
         remember(
             &db,
             user,
-            "friday",
+            "stride",
             "secrets",
             "private note",
             "very secret content",
@@ -940,7 +940,7 @@ mod tests {
         remember(
             &db,
             user,
-            "friday",
+            "stride",
             "auth-design",
             "jwt choice",
             "content one",
@@ -949,7 +949,7 @@ mod tests {
         remember(
             &db,
             user,
-            "friday",
+            "stride",
             "ci-pipeline",
             "use github actions",
             "content two",
@@ -962,14 +962,14 @@ mod tests {
         };
 
         let wings = explore.execute(config(), json!({})).await;
-        assert_eq!(wings["wings"][0]["wing"], "friday");
+        assert_eq!(wings["wings"][0]["wing"], "stride");
         assert_eq!(wings["wings"][0]["rooms"], 2);
 
-        let rooms = explore.execute(config(), json!({"wing": "friday"})).await;
+        let rooms = explore.execute(config(), json!({"wing": "stride"})).await;
         assert_eq!(rooms["rooms"].as_array().unwrap().len(), 2);
 
         let room = explore
-            .execute(config(), json!({"wing": "friday", "room": "auth-design"}))
+            .execute(config(), json!({"wing": "stride", "room": "auth-design"}))
             .await;
         assert_eq!(room["memories"][0]["content"], "content one");
     }
@@ -977,8 +977,8 @@ mod tests {
     #[tokio::test]
     async fn connect_links_rooms_and_shows_in_explore() {
         let (db, user) = setup().await;
-        remember(&db, user, "friday", "auth-design", "jwt", "a").await;
-        remember(&db, user, "friday", "api-design", "rest", "b").await;
+        remember(&db, user, "stride", "auth-design", "jwt", "a").await;
+        remember(&db, user, "stride", "api-design", "rest", "b").await;
 
         let connect = ConnectMemoriesTool {
             db: db.clone(),
@@ -988,8 +988,8 @@ mod tests {
             .execute(
                 config(),
                 json!({
-                    "from_wing": "friday", "from_room": "auth-design",
-                    "to_wing": "friday", "to_room": "api-design",
+                    "from_wing": "stride", "from_room": "auth-design",
+                    "to_wing": "stride", "to_room": "api-design",
                     "relation": "depends on"
                 }),
             )
@@ -1001,7 +1001,7 @@ mod tests {
             user_id: user,
         };
         let room = explore
-            .execute(config(), json!({"wing": "friday", "room": "auth-design"}))
+            .execute(config(), json!({"wing": "stride", "room": "auth-design"}))
             .await;
         assert_eq!(room["connected"][0]["room"], "api-design");
         assert_eq!(room["connected"][0]["relation"], "depends on");
@@ -1010,7 +1010,7 @@ mod tests {
     #[tokio::test]
     async fn vector_search_orders_by_cosine_distance() {
         let (db, user) = setup().await;
-        let wing = ensure_wing(&db, user, "friday", "").await.unwrap();
+        let wing = ensure_wing(&db, user, "stride", "").await.unwrap();
         let room = ensure_room(&db, user, wing, "vectors", "").await.unwrap();
 
         // Two memories pointing in different directions; the query leans toward
@@ -1076,9 +1076,9 @@ mod tests {
         let empty = palace_map(&db, user, None).await;
         assert!(empty.contains("empty"));
 
-        remember(&db, user, "friday", "auth-design", "jwt", "a").await;
+        remember(&db, user, "stride", "auth-design", "jwt", "a").await;
         let map = palace_map(&db, user, None).await;
-        assert!(map.contains("- friday"));
+        assert!(map.contains("- stride"));
         assert!(map.contains("  - auth-design"));
     }
 }

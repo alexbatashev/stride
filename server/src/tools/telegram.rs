@@ -3,13 +3,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use friday_agent::{AgentConfig, Tool, ToolDesc};
 use http_body_util::Full;
 use hyper::Request;
 use llm::{Function, Tool as LlmTool};
 use minisql::ConnectionPool;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
+use stride_agent::{AgentConfig, Tool, ToolDesc};
 use uuid::Uuid;
 
 use tokio::time::timeout;
@@ -26,7 +26,7 @@ pub struct SendTelegramMessageTool {
 
 #[derive(ToolDesc)]
 struct SendTelegramMessageParams {
-    /// Notification text to send to the connected Telegram chat. Keep it concise and include enough context for the user to understand why Friday is notifying them.
+    /// Notification text to send to the connected Telegram chat. Keep it concise and include enough context for the user to understand why Stride is notifying them.
     message: String,
 }
 
@@ -45,7 +45,7 @@ impl Tool for SendTelegramMessageTool {
             r#type: llm::ToolType::Function,
             function: Function {
                 name: self.name().to_owned(),
-                description: "Send a Telegram notification to the user in the connected chat's Common area. Use this only when the user asked to be notified or when sending an external notification is clearly part of the task. Replies to the Telegram message will continue this Friday thread.".to_string(),
+                description: "Send a Telegram notification to the user in the connected chat's Common area. Use this only when the user asked to be notified or when sending an external notification is clearly part of the task. Replies to the Telegram message will continue this Stride thread.".to_string(),
                 parameters: Some(SendTelegramMessageParams::function_parameters()),
             },
         }
@@ -270,7 +270,7 @@ async fn send_document(
         fields.push(("caption", caption.chars().take(1024).collect()));
     }
 
-    let boundary = format!("friday{}", Uuid::now_v7().as_simple());
+    let boundary = format!("stride{}", Uuid::now_v7().as_simple());
     let mime = mime_type.unwrap_or("application/octet-stream");
     let body = multipart_body(&boundary, &fields, "document", file_name, mime, data);
 

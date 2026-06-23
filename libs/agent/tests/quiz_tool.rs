@@ -1,11 +1,11 @@
-use friday_agent::{
-    AgentConfig, AgentResponseChunk, BaseAgent, DEFAULT_MODEL, ModelRegEntry, ModelRegistry,
-    tools::quiz::QuizTool,
-};
 use futures::{StreamExt, pin_mut};
 use llm::{CompletionChoice, Delta, StreamResponseChunk, ToolCallChunk, ToolCallFunction};
 use serde_json::json;
 use std::sync::Arc;
+use stride_agent::{
+    AgentConfig, AgentResponseChunk, BaseAgent, DEFAULT_MODEL, ModelRegEntry, ModelRegistry,
+    tools::quiz::QuizTool,
+};
 
 fn registry(mock: &llm::Mock) -> ModelRegistry {
     let mut registry = ModelRegistry::new();
@@ -152,7 +152,7 @@ fn quiz_yields_questions_and_returns_answers() {
 
 #[test]
 fn quiz_questions_parses_args() {
-    use friday_agent::Tool;
+    use stride_agent::Tool;
 
     let args = json!({
         "questions": [
@@ -167,7 +167,7 @@ fn quiz_questions_parses_args() {
 
 #[test]
 fn quiz_questions_returns_none_on_invalid_args() {
-    use friday_agent::Tool;
+    use stride_agent::Tool;
 
     let questions = QuizTool.quiz_questions(&json!({ "wrong": "field" }));
     assert!(questions.is_none());

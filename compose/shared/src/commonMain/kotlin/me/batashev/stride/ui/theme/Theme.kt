@@ -65,7 +65,7 @@ private val DarkColors = darkColorScheme(
 )
 
 @Composable
-fun FridayTheme(content: @Composable () -> Unit) {
+fun StrideTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val scheme = dynamicColorSchemeOrNull(dark) ?: if (dark) DarkColors else LightColors
     MaterialTheme(colorScheme = scheme, content = content)

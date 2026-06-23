@@ -10,11 +10,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import me.batashev.stride.ui.MainScreen
 import me.batashev.stride.ui.auth.AuthScreen
-import me.batashev.stride.ui.theme.FridayTheme
+import me.batashev.stride.ui.theme.StrideTheme
 
 @Composable
 fun App(container: AppContainer = remember { AppContainer() }) {
-    FridayTheme {
+    StrideTheme {
         val auth by container.session.state.collectAsState()
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             if (auth.isAuthenticated) {

@@ -24,7 +24,7 @@ use crate::{
     triggers::{vfs_change::VfsChangeTrigger, webhook},
 };
 
-const WEBHOOK_SECRET_HEADER: &str = "x-friday-webhook-secret";
+const WEBHOOK_SECRET_HEADER: &str = "x-stride-webhook-secret";
 
 #[derive(Serialize)]
 pub struct AutomationResponse {
@@ -438,7 +438,7 @@ pub async fn run_now(
 }
 
 /// Inbound webhook endpoint. Authenticates with the automation's secret (header
-/// `x-friday-webhook-secret` or `?token=`), not a user session.
+/// `x-stride-webhook-secret` or `?token=`), not a user session.
 pub async fn webhook(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
@@ -532,8 +532,8 @@ mod tests {
         extract::{Path, Query, State},
         http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
     };
-    use friday_agent::{AgentConfig, ModelRegistry};
     use minisql::ConnectionPool;
+    use stride_agent::{AgentConfig, ModelRegistry};
     use uuid::Uuid;
 
     use super::{AutomationApiError, WebhookQuery, webhook};

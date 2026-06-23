@@ -9,8 +9,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.batashev.stride.PickedFile
 import me.batashev.stride.data.FileEntry
-import me.batashev.stride.data.FridayClient
-import me.batashev.stride.data.FridayException
+import me.batashev.stride.data.StrideClient
+import me.batashev.stride.data.StrideException
 import me.batashev.stride.openFile
 
 /**
@@ -19,7 +19,7 @@ import me.batashev.stride.openFile
  * the reducer logic from the Apple app's `FilesFeature` (global scope).
  */
 class FilesViewModel(
-    private val client: FridayClient,
+    private val client: StrideClient,
     private val onUnauthorized: () -> Unit,
 ) : ViewModel() {
 
@@ -106,7 +106,7 @@ class FilesViewModel(
                 val bytes = client.downloadFile(entry.path)
                 openFile(entry.name, entry.mimeType, bytes)
                 _state.update { it.copy(busy = false) }
-            } catch (e: FridayException.Unauthorized) {
+            } catch (e: StrideException.Unauthorized) {
                 onUnauthorized()
             } catch (e: Throwable) {
                 _state.update { it.copy(busy = false, error = "Couldn't open ${entry.name}.") }
@@ -120,7 +120,7 @@ class FilesViewModel(
             try {
                 action()
                 fetch()
-            } catch (e: FridayException.Unauthorized) {
+            } catch (e: StrideException.Unauthorized) {
                 onUnauthorized()
             } catch (e: Throwable) {
                 _state.update { it.copy(busy = false, error = "Something went wrong. Try again.") }
@@ -144,7 +144,7 @@ class FilesViewModel(
                     entries = sortEntries(listing.entries),
                 )
             }
-        } catch (e: FridayException.Unauthorized) {
+        } catch (e: StrideException.Unauthorized) {
             onUnauthorized()
         } catch (e: Throwable) {
             _state.update { it.copy(isLoading = false, busy = false, error = "Couldn't load your files.") }

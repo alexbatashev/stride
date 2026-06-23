@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		AB00CA0000000000000000A2 /* ComposableArchitecture in Frameworks */ = {isa = PBXBuildFile; productRef = AB00CA0000000000000000A1 /* ComposableArchitecture */; };
 		AB00CA0000000000000000B2 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = AB00CA0000000000000000B1 /* Markdown */; };
-		FDFD010000000000000000E1 /* FridayFileProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FDFD010000000000000000A0 /* FridayFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		FDFD010000000000000000E1 /* StrideFileProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FDFD010000000000000000A0 /* StrideFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -32,7 +32,7 @@
 			containerPortal = FA9593472FE7ECAA00C23AFA /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = FDFD010000000000000000C0;
-			remoteInfo = FridayFileProvider;
+			remoteInfo = StrideFileProvider;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -42,7 +42,7 @@
 			dstPath = "";
 			dstSubfolder = PlugIns;
 			files = (
-				FDFD010000000000000000E1 /* FridayFileProvider.appex in Embed Foundation Extensions */,
+				FDFD010000000000000000E1 /* StrideFileProvider.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 		};
@@ -52,16 +52,16 @@
 		FA95934F2FE7ECAA00C23AFA /* Stride.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Stride.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FA95935E2FE7ECAB00C23AFA /* StrideTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StrideTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FA9593682FE7ECAB00C23AFA /* StrideUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StrideUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		FDFD010000000000000000A0 /* FridayFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FridayFileProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		FDFD010000000000000000A0 /* StrideFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = StrideFileProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		FDFD010000000000000000B1 /* Exceptions for "FridayFileProvider" folder in "FridayFileProvider" target */ = {
+		FDFD010000000000000000B1 /* Exceptions for "StrideFileProvider" folder in "StrideFileProvider" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = FDFD010000000000000000C0 /* FridayFileProvider */;
+			target = FDFD010000000000000000C0 /* StrideFileProvider */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -81,12 +81,12 @@
 			path = StrideUITests;
 			sourceTree = "<group>";
 		};
-		FDFD010000000000000000B0 /* FridayFileProvider */ = {
+		FDFD010000000000000000B0 /* StrideFileProvider */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				FDFD010000000000000000B1 /* Exceptions for "FridayFileProvider" folder in "FridayFileProvider" target */,
+				FDFD010000000000000000B1 /* Exceptions for "StrideFileProvider" folder in "StrideFileProvider" target */,
 			);
-			path = FridayFileProvider;
+			path = StrideFileProvider;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -123,7 +123,7 @@
 				FA9593512FE7ECAA00C23AFA /* Stride */,
 				FA9593612FE7ECAB00C23AFA /* StrideTests */,
 				FA95936B2FE7ECAB00C23AFA /* StrideUITests */,
-				FDFD010000000000000000B0 /* FridayFileProvider */,
+				FDFD010000000000000000B0 /* StrideFileProvider */,
 				FA9593502FE7ECAA00C23AFA /* Products */,
 			);
 			sourceTree = "<group>";
@@ -134,7 +134,7 @@
 				FA95934F2FE7ECAA00C23AFA /* Stride.app */,
 				FA95935E2FE7ECAB00C23AFA /* StrideTests.xctest */,
 				FA9593682FE7ECAB00C23AFA /* StrideUITests.xctest */,
-				FDFD010000000000000000A0 /* FridayFileProvider.appex */,
+				FDFD010000000000000000A0 /* StrideFileProvider.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -210,9 +210,9 @@
 			productReference = FA9593682FE7ECAB00C23AFA /* StrideUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
-		FDFD010000000000000000C0 /* FridayFileProvider */ = {
+		FDFD010000000000000000C0 /* StrideFileProvider */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = FDFD0100000000000000010A /* Build configuration list for PBXNativeTarget "FridayFileProvider" */;
+			buildConfigurationList = FDFD0100000000000000010A /* Build configuration list for PBXNativeTarget "StrideFileProvider" */;
 			buildPhases = (
 				FDFD010000000000000000D0 /* Sources */,
 				FDFD010000000000000000D1 /* Frameworks */,
@@ -221,11 +221,11 @@
 			buildRules = (
 			);
 			fileSystemSynchronizedGroups = (
-				FDFD010000000000000000B0 /* FridayFileProvider */,
+				FDFD010000000000000000B0 /* StrideFileProvider */,
 			);
-			name = FridayFileProvider;
-			productName = FridayFileProvider;
-			productReference = FDFD010000000000000000A0 /* FridayFileProvider.appex */;
+			name = StrideFileProvider;
+			productName = StrideFileProvider;
+			productReference = FDFD010000000000000000A0 /* StrideFileProvider.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
@@ -275,7 +275,7 @@
 				FA95934E2FE7ECAA00C23AFA /* Stride */,
 				FA95935D2FE7ECAB00C23AFA /* StrideTests */,
 				FA9593672FE7ECAB00C23AFA /* StrideUITests */,
-				FDFD010000000000000000C0 /* FridayFileProvider */,
+				FDFD010000000000000000C0 /* StrideFileProvider */,
 			);
 		};
 /* End PBXProject section */
@@ -339,7 +339,7 @@
 		};
 		FDFD010000000000000000F1 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = FDFD010000000000000000C0 /* FridayFileProvider */;
+			target = FDFD010000000000000000C0 /* StrideFileProvider */;
 			targetProxy = FDFD010000000000000000F0 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -655,10 +655,10 @@
 			};
 			name = Release;
 		};
-		FDFD0100000000000000010B /* Debug configuration for PBXNativeTarget "FridayFileProvider" */ = {
+		FDFD0100000000000000010B /* Debug configuration for PBXNativeTarget "StrideFileProvider" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = FridayFileProvider/FridayFileProvider.entitlements;
+				CODE_SIGN_ENTITLEMENTS = StrideFileProvider/StrideFileProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5Q23Q4QC3S;
@@ -666,7 +666,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = FridayFileProvider/Info.plist;
+				INFOPLIST_FILE = StrideFileProvider/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/Frameworks",
@@ -678,7 +678,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = me.batashev.Stride.FridayFileProvider;
+				PRODUCT_BUNDLE_IDENTIFIER = me.batashev.Stride.StrideFileProvider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -691,10 +691,10 @@
 			};
 			name = Debug;
 		};
-		FDFD0100000000000000010C /* Release configuration for PBXNativeTarget "FridayFileProvider" */ = {
+		FDFD0100000000000000010C /* Release configuration for PBXNativeTarget "StrideFileProvider" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = FridayFileProvider/FridayFileProvider.entitlements;
+				CODE_SIGN_ENTITLEMENTS = StrideFileProvider/StrideFileProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5Q23Q4QC3S;
@@ -702,7 +702,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = FridayFileProvider/Info.plist;
+				INFOPLIST_FILE = StrideFileProvider/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/Frameworks",
@@ -714,7 +714,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = me.batashev.Stride.FridayFileProvider;
+				PRODUCT_BUNDLE_IDENTIFIER = me.batashev.Stride.StrideFileProvider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -762,11 +762,11 @@
 			);
 			defaultConfigurationName = Release;
 		};
-		FDFD0100000000000000010A /* Build configuration list for PBXNativeTarget "FridayFileProvider" */ = {
+		FDFD0100000000000000010A /* Build configuration list for PBXNativeTarget "StrideFileProvider" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				FDFD0100000000000000010B /* Debug configuration for PBXNativeTarget "FridayFileProvider" */,
-				FDFD0100000000000000010C /* Release configuration for PBXNativeTarget "FridayFileProvider" */,
+				FDFD0100000000000000010B /* Debug configuration for PBXNativeTarget "StrideFileProvider" */,
+				FDFD0100000000000000010C /* Release configuration for PBXNativeTarget "StrideFileProvider" */,
 			);
 			defaultConfigurationName = Release;
 		};

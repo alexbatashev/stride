@@ -5,4 +5,4 @@ final-status-level = "all"
 
 [profile.ci.junit]
 path = "junit.xml"
-report-name = "Friday CI"
+report-name = "Stride CI"

@@ -182,7 +182,7 @@ private fun NewConversationHint() {
     ) {
         Text("What are we working on?", style = MaterialTheme.typography.titleLarge)
         Text(
-            text = "Ask Friday anything to get started.",
+            text = "Ask S.T.R.I.D.E. anything to get started.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

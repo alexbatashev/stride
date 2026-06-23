@@ -624,7 +624,7 @@ export function AppSettings({
               return;
             }
             case "del-email":
-              if (action.dataset.id && window.confirm("Remove this IMAP account from Friday?")) {
+              if (action.dataset.id && window.confirm("Remove this IMAP account from S.T.R.I.D.E.?")) {
                 void deleteEmailAccount(action.dataset.id)
                   .then(() => refreshEmails(this))
                   .catch(() => {
@@ -633,7 +633,7 @@ export function AppSettings({
               }
               return;
             case "del-mcp":
-              if (action.dataset.id && window.confirm("Remove this MCP server from Friday?")) {
+              if (action.dataset.id && window.confirm("Remove this MCP server from S.T.R.I.D.E.?")) {
                 void deleteMcpServer(action.dataset.id)
                   .then(() => refreshMcps(this))
                   .catch(() => {
@@ -664,7 +664,7 @@ export function AppSettings({
               this.editingSkill = null;
               return;
             case "del-skill":
-              if (action.dataset.id && window.confirm("Remove this skill from Friday?")) {
+              if (action.dataset.id && window.confirm("Remove this skill from S.T.R.I.D.E.?")) {
                 void deleteSkill(action.dataset.id)
                   .then(() => {
                     if (this.editingSkill?.id === action.dataset.id) this.editingSkill = null;
@@ -691,7 +691,7 @@ export function AppSettings({
         <div class="shell">
           <header>
             <h1 class="page-title">Settings</h1>
-            <p class="lead">Manage account integrations Friday uses on your behalf.</p>
+            <p class="lead">Manage account integrations S.T.R.I.D.E. uses on your behalf.</p>
           </header>
 
           <div class="layout" data-active={activeSection}>
@@ -704,7 +704,7 @@ export function AppSettings({
 
             <div class="panels">
               <section class="panel" data-panel="telegram">
-                <app-card title="Telegram" description="Connect your Telegram account with the Friday bot.">
+                <app-card title="Telegram" description="Connect your Telegram account with the S.T.R.I.D.E. bot.">
                   <div class="status-row">
                     {tgConnected
                       ? <app-badge>Connected</app-badge>
@@ -724,7 +724,7 @@ export function AppSettings({
               <section class="panel" data-panel="email">
                 <app-card
                   title="Email accounts"
-                  description="Connect one or more TLS IMAP accounts. Friday can read incoming and sent mail and save reply-all drafts. It cannot send email."
+                  description="Connect one or more TLS IMAP accounts. S.T.R.I.D.E. can read incoming and sent mail and save reply-all drafts. It cannot send email."
                 >
                   {emailViews.length > 0
                     ? (

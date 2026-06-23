@@ -872,7 +872,7 @@ export function AppAutomations({
               <div class="form-grid">
                 <label>URL<input class="secret" value={webhookUrl} readonly /></label>
                 <label>Secret<input class="secret" value={webhookSecret} readonly /></label>
-                <p class="muted">Send a POST request with <code>X-Friday-Webhook-Secret</code> or <code>?token=</code>. JSON bodies are forwarded to the task.</p>
+                <p class="muted">Send a POST request with <code>X-Stride-Webhook-Secret</code> or <code>?token=</code>. JSON bodies are forwarded to the task.</p>
               </div>
             </div>
           </div>

@@ -104,7 +104,7 @@ export function AuthForm({
   const isLogin = mode === "login";
   const title = isLogin ? "Log in" : "Create account";
   const description = isLogin
-    ? "Enter your credentials to access Friday."
+    ? "Enter your credentials to access S.T.R.I.D.E."
     : "Create an account to get started.";
   const submitLabel = isLogin ? "Log in" : "Register";
   const switchPrompt = isLogin ? "Don't have an account? " : "Already have an account? ";

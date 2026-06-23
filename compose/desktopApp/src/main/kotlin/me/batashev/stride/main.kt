@@ -9,7 +9,7 @@ fun main() = application {
     Window(
         onCloseRequest = ::exitApplication,
         state = rememberWindowState(width = 1100.dp, height = 760.dp),
-        title = "Friday",
+        title = "S.T.R.I.D.E.",
     ) {
         App()
     }

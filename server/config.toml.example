@@ -55,9 +55,9 @@ allow_registration = false
 # Public base URL the server is reachable at. When set, image attachments are
 # served to vision models via capability URLs under this host instead of being
 # embedded inline as base64.
-public_url = "https://friday.example.com"
+public_url = "https://stride.example.com"
 
-# Set FRIDAY_EMAIL_ENCRYPTION_KEY to a stable, high-entropy secret before users add IMAP accounts.
+# Set STRIDE_EMAIL_ENCRYPTION_KEY to a stable, high-entropy secret before users add IMAP accounts.
 # It encrypts stored IMAP passwords and must remain stable across restarts and JWT key rotation.
 
 [server.files]
@@ -65,14 +65,14 @@ keep_versions = 10
 
 [server.files.local]
 enabled = true
-base = "/tmp/friday-files"
+base = "/tmp/stride-files"
 
 # Account linking uses the Telegram Login Widget (https://core.telegram.org/bots/telegram-login).
 # Tell BotFather which domain hosts the widget with `/setdomain` (the host in `public_url`),
 # otherwise Telegram refuses to render the login button.
 [server.telegram]
 bot_api_key = "123456:telegram-bot-token"
-bot_username = "friday_bot"
+bot_username = "stride_bot"
 webhook_secret = "change-this-webhook-secret"
 
 [server.ldap]
@@ -100,7 +100,7 @@ headers = { X-Tenant = "acme" }
 
 [tools.python]
 enabled = true
-cache_dir = "/tmp/friday-execenv"
+cache_dir = "/tmp/stride-execenv"
 backend = "Eryx"
 threads = 2
 preinit = true

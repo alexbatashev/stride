@@ -38,7 +38,7 @@ tower-http = { version = "0.6", features = ["fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.23.1", features = ["v7"] }
-friday-agent = { path = "../libs/agent" }
+stride-agent = { path = "../libs/agent" }
 bashkit = { version = "0.11.0", default-features = false }
 
 [dev-dependencies]

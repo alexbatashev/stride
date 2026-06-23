@@ -8,7 +8,7 @@ import { basename, join, resolve } from 'node:path';
 // dist/components.js — the shared, cacheable script every page loads.
 const componentsDir = 'src/components';
 const iconsDir = join(componentsDir, 'icons');
-const argonOut = join(realpathSync(tmpdir()), 'friday-argon-js');
+const argonOut = join(realpathSync(tmpdir()), 'stride-argon-js');
 mkdirSync('dist', { recursive: true });
 mkdirSync(argonOut, { recursive: true });
 for (const stale of readdirSync(argonOut)) {

@@ -52,7 +52,7 @@ fun Composer(
             value = draft,
             onValueChange = onDraftChange,
             modifier = Modifier.weight(1f),
-            placeholder = { Text("Message Friday") },
+            placeholder = { Text("Message S.T.R.I.D.E.") },
             maxLines = 6,
             shape = RoundedCornerShape(24.dp),
         )
@@ -154,7 +154,7 @@ fun ChatEmptyState(onNew: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Friday", style = MaterialTheme.typography.headlineSmall)
+            Text("S.T.R.I.D.E.", style = MaterialTheme.typography.headlineSmall)
             Text(
                 text = "Select a conversation or start a new one to begin.",
                 style = MaterialTheme.typography.bodyMedium,

@@ -11,7 +11,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
-use friday_agent::QuizQuestion;
 use hmac::{Hmac, Mac};
 use http_body_util::Full;
 use hyper::Request;
@@ -20,6 +19,7 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use stride_agent::QuizQuestion;
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -106,7 +106,7 @@ pub async fn settings(
 
 /// Completes the Telegram Login Widget flow. The browser receives a signed user
 /// object from `oauth.telegram.org`, posts it here, and we link it to the
-/// authenticated Friday account only after verifying the signature with the bot
+/// authenticated Stride account only after verifying the signature with the bot
 /// token. See https://core.telegram.org/bots/telegram-login.
 pub async fn login(
     State(state): State<Arc<ServerState>>,
@@ -236,7 +236,7 @@ async fn handle_topic_message(
                 &state,
                 message.chat.id,
                 message.send_topic_id(),
-                "Open Friday Settings and connect your Telegram account with the login button.",
+                "Open Stride Settings and connect your Telegram account with the login button.",
             )
             .await;
         }
@@ -313,7 +313,7 @@ async fn handle_topic_message(
             &state,
             message.chat.id,
             message.send_topic_id(),
-            "Friday could not start: please try again.",
+            "Stride could not start: please try again.",
         )
         .await;
     }
@@ -338,7 +338,7 @@ async fn build_agent_content(
     let saved = download_attachments_to_workspace(state, user_id, thread_id, attachments).await;
     let note = if saved.is_empty() {
         format!(
-            "[The user attached {} file(s), but Friday could not download them.]",
+            "[The user attached {} file(s), but Stride could not download them.]",
             attachments.len()
         )
     } else {
@@ -795,7 +795,7 @@ impl TelegramSubscriber {
                         &self.state,
                         chat_id,
                         topic_id,
-                        &format!("Friday failed: {error}"),
+                        &format!("Stride failed: {error}"),
                     )
                     .await;
                     self.end_run(chat_id, topic_id);
@@ -2744,7 +2744,7 @@ mod tests {
     #[test]
     fn start_command_only_matches_bare_start_commands() {
         assert!(is_start_command("/start"));
-        assert!(is_start_command("/connect@friday_bot"));
+        assert!(is_start_command("/connect@stride_bot"));
         assert!(!is_start_command("hello"));
         assert!(!is_start_command("/start 123456"));
         assert!(!is_start_command("/connect 123456"));
@@ -2799,8 +2799,8 @@ mod tests {
             db: ConnectionPool::new("sqlite::memory:").unwrap(),
             jwt_secret: String::new(),
             runner: Arc::new(FakePool::default()),
-            model_config: Arc::new(friday_agent::AgentConfig {
-                model_registry: friday_agent::ModelRegistry::default(),
+            model_config: Arc::new(stride_agent::AgentConfig {
+                model_registry: stride_agent::ModelRegistry::default(),
                 max_iterations: 1,
             }),
             vfs: None,
@@ -2980,8 +2980,8 @@ mod tests {
             db,
             jwt_secret: String::new(),
             runner: pool,
-            model_config: Arc::new(friday_agent::AgentConfig {
-                model_registry: friday_agent::ModelRegistry::default(),
+            model_config: Arc::new(stride_agent::AgentConfig {
+                model_registry: stride_agent::ModelRegistry::default(),
                 max_iterations: 1,
             }),
             vfs: None,

@@ -14,8 +14,8 @@ use minisql::Value;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use friday_agent::DEFAULT_MODEL;
 use llm::{CompletionRequest, Message as LlmMessage, Role as LlmRole};
+use stride_agent::DEFAULT_MODEL;
 
 use crate::{
     ServerState,
@@ -480,7 +480,7 @@ pub(crate) fn spawn_title_generation(
 }
 
 async fn generate_title(
-    config: &Arc<friday_agent::AgentConfig>,
+    config: &Arc<stride_agent::AgentConfig>,
     content: &str,
 ) -> Result<(String, bool), llm::Error> {
     let model = config.model_registry.get_or_default(TITLE_GENERATOR_MODEL);
@@ -1281,7 +1281,7 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
 }
 
 fn quiz_questions_response(
-    questions: Vec<friday_agent::QuizQuestion>,
+    questions: Vec<stride_agent::QuizQuestion>,
 ) -> Vec<QuizQuestionResponse> {
     questions
         .into_iter()

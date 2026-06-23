@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use friday_agent::{AgentConfig, Tool, ToolDesc};
 use llm::{Function, Tool as LlmTool};
 use minisql::{ConnectionPool, Value};
 use serde_json::{Value as JsonValue, json};
+use stride_agent::{AgentConfig, Tool, ToolDesc};
 use uuid::Uuid;
 
 use super::static_skills;
@@ -292,8 +292,8 @@ impl Tool for CreateSkillTool {
 mod tests {
     use super::*;
     use crate::db;
-    use friday_agent::AgentConfig;
     use minisql::ConnectionPool;
+    use stride_agent::AgentConfig;
 
     async fn setup_db() -> (ConnectionPool, Uuid) {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
@@ -314,7 +314,7 @@ mod tests {
 
     fn dummy_config() -> Arc<AgentConfig> {
         Arc::new(AgentConfig {
-            model_registry: friday_agent::ModelRegistry::new(),
+            model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 0,
         })
     }

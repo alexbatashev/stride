@@ -2,9 +2,9 @@ mod local;
 
 use std::pin::Pin;
 
-use friday_agent::{AgentError, AgentResponseChunk};
 use futures::Stream;
 pub use local::LocalAgent;
+use stride_agent::{AgentError, AgentResponseChunk};
 
 pub trait CodeAgent {
     async fn make_turn(
