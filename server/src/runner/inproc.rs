@@ -1255,8 +1255,8 @@ pub(crate) fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
 /// The single source of truth for the tools a Python script can call through the
 /// `tools` package. Both the interactive agent loop and scheduled automations
 /// build their sandbox tool set from here, so a script behaves identically in
-/// either mode. Read-only MCP tools are auto-approved; state-changing ones still
-/// require approval and are refused from scripts, exactly as in the agent loop.
+/// either mode. Only read-only MCP tools are exposed; state-changing ones need
+/// interactive approval that a script cannot provide, so they are left out.
 pub(crate) fn scriptable_tool_registry(
     tools: &Tools,
     db: &ConnectionPool,
@@ -1328,6 +1328,9 @@ pub(crate) fn scriptable_tool_registry(
     registry.allow_tool("schedule_automation");
 
     for tool in mcp_tools {
+        if tool.requires_confirmation() {
+            continue;
+        }
         registry.register_searchable(tool.clone());
     }
 
