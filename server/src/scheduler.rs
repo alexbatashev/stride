@@ -25,7 +25,7 @@ use crate::config::Tools;
 use crate::db::{AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_runs, automations};
 use crate::email::ImapService;
 use crate::notify::{self, RunResult};
-use crate::runner::inproc::{expert_tool_registry, python_tool_config};
+use crate::runner::inproc::{python_tool_config, scriptable_tool_registry};
 use crate::triggers;
 
 const POLL_SECS: u64 = 60;
@@ -301,7 +301,11 @@ async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
     let result = match automation.kind {
         AutomationKind::Python => {
             let script = python_script(&automation.payload, request.payload.as_ref());
-            run_python(&ctx.tools, ctx.model_config.clone(), &script).await
+            let mut mcp_tools = ctx.mcp_tools.clone();
+            mcp_tools.extend(
+                crate::mcp_servers::connect_user_mcp_servers(&ctx.db, automation.owner).await,
+            );
+            run_python(&ctx, automation.owner, &script, mcp_tools).await
         }
         AutomationKind::Agent => {
             let prompt = agent_prompt(&automation.payload, request.payload.as_ref());
@@ -381,11 +385,12 @@ fn python_script(base: &str, payload: Option<&JsonValue>) -> String {
 }
 
 async fn run_python(
-    tools: &Tools,
-    model_config: Arc<AgentConfig>,
+    ctx: &ExecutorCtx,
+    owner: Uuid,
     script: &str,
+    mcp_tools: Vec<McpTool>,
 ) -> Result<String, String> {
-    let Some(python) = tools.python.as_ref().filter(|p| p.enabled != Some(false)) else {
+    let Some(python) = ctx.tools.python.as_ref().filter(|p| p.enabled != Some(false)) else {
         return Err("python execution is disabled".to_string());
     };
     let config = python_tool_config(python);
@@ -394,13 +399,23 @@ async fn run_python(
         .join("automations")
         .join(Uuid::now_v7().as_simple().to_string());
     let fs = execenv::DirectOsFileSystem::new(dir).map_err(|e| e.to_string())?;
+    // Same tool surface as the interactive agent loop, so scripts that work
+    // there work here too.
+    let registry = scriptable_tool_registry(
+        &ctx.tools,
+        &ctx.db,
+        owner,
+        Some(ctx.email_service.provider(owner)),
+        &mcp_tools,
+        None,
+    );
     let tool = execenv::PythonTool::new(config, Arc::new(fs))
         .await
         .map_err(|e| e.to_string())?
-        .with_tools(expert_tool_registry(tools));
+        .with_tools(registry);
 
     let result = tool
-        .execute(model_config, serde_json::json!({ "script": script }))
+        .execute(ctx.model_config.clone(), serde_json::json!({ "script": script }))
         .await;
     let stdout = result["stdout"].as_str().unwrap_or_default();
     let stderr = result["stderr"].as_str().unwrap_or_default();
