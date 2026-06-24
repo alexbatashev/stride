@@ -359,6 +359,23 @@ migrations! {
             foreign_key(user_id -> users.id);
         }
     }
+
+    user_writable_directories {
+        // Personal global directories a user has marked writable for the agent.
+        // `path` is a normalized global prefix (no leading slash); the directory
+        // and all of its descendants become writable in addition to the thread's
+        // own workspace or project folder.
+        table writable_dirs {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            path: String,
+            created_at: i64,
+
+            foreign_key(owner -> users.id);
+        }
+
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_writable_dirs_owner_path ON writable_dirs(owner, path)";
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

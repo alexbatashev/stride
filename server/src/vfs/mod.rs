@@ -1256,6 +1256,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mounted_extra_writable_dir_is_writable() {
+        let (vfs, owner) = setup_vfs().await;
+        let vfs = Arc::new(vfs);
+        let prefix = vfs.ensure_project_dir(owner, "Acme").await.unwrap();
+        vfs.write_global(owner, "Documents/old.txt", "old")
+            .await
+            .unwrap();
+
+        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::ProjectDir(prefix))
+            .with_writable_dirs(vec!["Documents".to_string()]);
+
+        // The configured directory and its children are writable.
+        fs.write_bytes("/Documents/new.txt", b"hi", None)
+            .await
+            .unwrap();
+        fs.write_bytes("/Documents/sub/deep.txt", b"deep", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            vfs.read_global(owner, "Documents/sub/deep.txt")
+                .await
+                .unwrap(),
+            "deep"
+        );
+
+        // A sibling outside the configured directory stays read-only.
+        vfs.write_global(owner, "Other/x.txt", "ro").await.unwrap();
+        assert!(fs.write_bytes("/Other/x.txt", b"no", None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn mounted_workspace_mode_extra_dir_is_writable() {
+        let (vfs, owner) = setup_vfs().await;
+        let vfs = Arc::new(vfs);
+        let ws = vfs
+            .get_or_create_workspace(Uuid::now_v7(), None, owner)
+            .await
+            .unwrap();
+
+        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::Workspace(ws))
+            .with_writable_dirs(vec!["Notes".to_string()]);
+
+        // The workspace mount is writable as before.
+        fs.write_bytes("/~workspace/a.txt", b"ws", None)
+            .await
+            .unwrap();
+        // The extra global directory is writable too, routed to global files.
+        fs.write_bytes("/Notes/todo.txt", b"todo", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            vfs.read_global(owner, "Notes/todo.txt").await.unwrap(),
+            "todo"
+        );
+        // Other global paths remain read-only.
+        vfs.write_global(owner, "Secret/s.txt", "ro").await.unwrap();
+        assert!(fs.write_bytes("/Secret/s.txt", b"no", None).await.is_err());
+    }
+
+    #[tokio::test]
     async fn versioning_prunes_old_objects() {
         let (vfs, owner) = setup_vfs().await;
         let ws = vfs

@@ -319,6 +319,14 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             "/api/settings/skills/{id}",
             patch(api::skills::update).delete(api::skills::delete),
         )
+        .route(
+            "/api/settings/writable-dirs",
+            get(api::writable_dirs::list).post(api::writable_dirs::create),
+        )
+        .route(
+            "/api/settings/writable-dirs/{id}",
+            delete(api::writable_dirs::delete),
+        )
         .route("/api/settings/telegram/login", post(api::telegram::login))
         .route(
             "/api/settings/telegram/disconnect",

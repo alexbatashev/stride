@@ -31,6 +31,9 @@ pub struct MountedVfs {
     vfs: Arc<Vfs>,
     owner: Uuid,
     area: WritableArea,
+    /// Extra writable global directories the user configured, as normalized
+    /// prefixes. These and their descendants are writable on top of `area`.
+    extra: Vec<String>,
 }
 
 enum Mount {
@@ -40,9 +43,26 @@ enum Mount {
     Global(String),
 }
 
+/// A resolved writable destination, telling the caller which backend to use.
+enum WriteTarget {
+    Workspace(Uuid, String),
+    Global(String),
+}
+
 impl MountedVfs {
     pub fn new(vfs: Arc<Vfs>, owner: Uuid, area: WritableArea) -> Self {
-        Self { vfs, owner, area }
+        Self {
+            vfs,
+            owner,
+            area,
+            extra: Vec::new(),
+        }
+    }
+
+    /// Adds extra writable global directories (normalized prefixes).
+    pub fn with_writable_dirs(mut self, dirs: Vec<String>) -> Self {
+        self.extra = dirs;
+        self
     }
 
     /// Normalizes an absolute or relative path into mount + relative path.
@@ -100,14 +120,13 @@ impl MountedVfs {
         content: &[u8],
         mime_type: Option<&str>,
     ) -> anyhow::Result<()> {
-        let rel = self.writable(path)?;
-        match self.area {
-            WritableArea::Workspace(id) => {
+        match self.writable(path)? {
+            WriteTarget::Workspace(id, rel) => {
                 self.vfs
                     .write_bytes(id, &rel, content, mime_type, self.owner)
                     .await
             }
-            WritableArea::ProjectDir(_) => {
+            WriteTarget::Global(rel) => {
                 self.vfs
                     .write_bytes_global(self.owner, &rel, content, mime_type)
                     .await
@@ -116,32 +135,44 @@ impl MountedVfs {
     }
 
     pub async fn create_dir(&self, path: &str) -> anyhow::Result<()> {
-        let rel = self.writable(path)?;
-        match self.area {
-            WritableArea::Workspace(id) => self.vfs.create_dir(id, &rel, self.owner).await,
-            WritableArea::ProjectDir(_) => self.vfs.create_dir_global(self.owner, &rel).await,
+        match self.writable(path)? {
+            WriteTarget::Workspace(id, rel) => self.vfs.create_dir(id, &rel, self.owner).await,
+            WriteTarget::Global(rel) => self.vfs.create_dir_global(self.owner, &rel).await,
         }
     }
 
     pub async fn delete(&self, path: &str) -> anyhow::Result<()> {
-        let rel = self.writable(path)?;
-        match self.area {
-            WritableArea::Workspace(id) => self.vfs.delete(id, &rel).await,
-            WritableArea::ProjectDir(_) => self.vfs.delete_global(self.owner, &rel).await,
+        match self.writable(path)? {
+            WriteTarget::Workspace(id, rel) => self.vfs.delete(id, &rel).await,
+            WriteTarget::Global(rel) => self.vfs.delete_global(self.owner, &rel).await,
         }
     }
 
-    /// Resolves `path` to a writable relative path, rejecting read-only
-    /// locations.
-    fn writable(&self, path: &str) -> anyhow::Result<String> {
+    /// True when `rel` (a global path) falls inside a user-configured extra
+    /// writable directory.
+    fn extra_allows(&self, rel: &str) -> bool {
+        self.extra
+            .iter()
+            .any(|prefix| rel == prefix || rel.starts_with(&format!("{prefix}/")))
+    }
+
+    /// Resolves `path` to a writable destination, rejecting read-only locations.
+    fn writable(&self, path: &str) -> anyhow::Result<WriteTarget> {
         match (&self.area, self.resolve(path)) {
-            (WritableArea::Workspace(_), Mount::Workspace(rel)) => Ok(rel),
-            (WritableArea::Workspace(_), Mount::Global(_)) => {
-                bail!("read-only: only /{WORKSPACE_MOUNT} is writable, {path} is not")
+            (WritableArea::Workspace(id), Mount::Workspace(rel)) => {
+                Ok(WriteTarget::Workspace(*id, rel))
+            }
+            (WritableArea::Workspace(_), Mount::Global(rel)) => {
+                if self.extra_allows(&rel) {
+                    Ok(WriteTarget::Global(rel))
+                } else {
+                    bail!("read-only: only /{WORKSPACE_MOUNT} is writable, {path} is not")
+                }
             }
             (WritableArea::ProjectDir(prefix), Mount::Global(rel)) => {
-                if rel == *prefix || rel.starts_with(&format!("{prefix}/")) {
-                    Ok(rel)
+                if rel == *prefix || rel.starts_with(&format!("{prefix}/")) || self.extra_allows(&rel)
+                {
+                    Ok(WriteTarget::Global(rel))
                 } else {
                     bail!("read-only: only /{prefix} is writable, {path} is not")
                 }
