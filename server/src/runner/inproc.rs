@@ -81,6 +81,7 @@ fn build_system_prompt(
     personality: Option<&str>,
     thread_id: Option<Uuid>,
     writable_root: Option<&str>,
+    writable_extra: &[String],
     telegram: bool,
     public_url: Option<&str>,
 ) -> String {
@@ -99,6 +100,17 @@ fn build_system_prompt(
              where `<path>` is relative to your writable directory (drop the leading `{root}/`). \
              Example: `{root}/report.pdf` → `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
         ));
+        if !writable_extra.is_empty() {
+            let list = writable_extra
+                .iter()
+                .map(|dir| format!("`/{dir}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            prompt.push_str(&format!(
+                " The user also granted write access to these directories and everything under \
+                 them: {list}. You may create and edit files there too."
+            ));
+        }
     }
     if telegram {
         prompt.push_str(
@@ -951,6 +963,13 @@ async fn ensure_runner(
         None => (None, None),
     };
     let writable_root = writable_area.as_ref().map(writable_root_path);
+    // Personal directories the user marked writable, layered on top of the
+    // thread's own workspace or project folder.
+    let writable_extra = if writable_area.is_some() {
+        crate::api::writable_dirs::writable_prefixes(&db, user_id).await
+    } else {
+        Vec::new()
+    };
     let personality = load_personality(&db, user_id).await?;
     // A thread bound to a Telegram chat enables the file-delivery tool and absolute download links.
     let telegram_chat = if telegram_bot_token.is_some() {
@@ -966,6 +985,7 @@ async fn ensure_runner(
         personality.as_deref(),
         vfs.as_ref().map(|_| thread_id),
         writable_root.as_deref(),
+        &writable_extra,
         telegram_chat.is_some(),
         public_url.as_deref(),
     );
@@ -1073,12 +1093,19 @@ async fn ensure_runner(
 
     // Build the Python interpreter first so the shell can expose it as a
     // `python` command sharing the same runtime and workspace.
-    let python = python_tool(&tools, thread_id, python_workspace.clone(), user_id)
-        .await
-        .map_err(AgentPoolError::Internal)?;
+    let python = python_tool(
+        &tools,
+        thread_id,
+        python_workspace.clone(),
+        writable_extra.clone(),
+        user_id,
+    )
+    .await
+    .map_err(AgentPoolError::Internal)?;
 
     if let Some((provider, area)) = python_workspace {
-        let fs = MountedVfs::new(provider.clone(), user_id, area.clone());
+        let fs = MountedVfs::new(provider.clone(), user_id, area.clone())
+            .with_writable_dirs(writable_extra.clone());
         if vision {
             agent.register_tool(AttachImageTool {
                 fs: fs.clone(),
@@ -1169,6 +1196,7 @@ async fn python_tool(
     tools: &Tools,
     thread_id: Uuid,
     workspace: Option<(Arc<Vfs>, WritableArea)>,
+    writable_extra: Vec<String>,
     user_id: Uuid,
 ) -> anyhow::Result<Option<execenv::PythonTool>> {
     let Some(python) = tools.python.as_ref() else {
@@ -1184,6 +1212,7 @@ async fn python_tool(
         Arc::new(VfsExecFileSystem::new(
             vfs,
             area,
+            writable_extra,
             user_id,
             cache_dir
                 .join("workspaces")
@@ -2217,6 +2246,7 @@ mod tests {
             None,
             Some(id),
             Some("/~workspace"),
+            &[],
             true,
             Some("https://stride.example.com"),
         );
@@ -2233,6 +2263,7 @@ mod tests {
             None,
             Some(id),
             Some("/~workspace"),
+            &[],
             false,
             Some("https://stride.example.com"),
         );

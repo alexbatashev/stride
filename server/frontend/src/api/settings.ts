@@ -68,6 +68,12 @@ export type NewMcpServer = {
 	enabled: boolean;
 };
 
+export type WritableDir = {
+	id: string;
+	path: string;
+	created_at: number;
+};
+
 export type Skill = {
 	id: string;
 	name: string;
@@ -172,6 +178,22 @@ export async function updateSkill(id: string, data: SkillUpdate): Promise<Skill>
 
 export async function deleteSkill(id: string): Promise<void> {
 	await request(`/api/settings/skills/${id}`, { method: "DELETE" });
+}
+
+export async function listWritableDirs(): Promise<WritableDir[]> {
+	return request("/api/settings/writable-dirs");
+}
+
+export async function createWritableDir(path: string): Promise<WritableDir> {
+	return request("/api/settings/writable-dirs", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ path }),
+	});
+}
+
+export async function deleteWritableDir(id: string): Promise<void> {
+	await request(`/api/settings/writable-dirs/${id}`, { method: "DELETE" });
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

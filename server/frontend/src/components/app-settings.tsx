@@ -3,9 +3,11 @@ import {
   createEmailAccount,
   createMcpServer,
   createSkill,
+  createWritableDir,
   deleteEmailAccount,
   deleteMcpServer,
   deleteSkill,
+  deleteWritableDir,
   disconnectGitHub,
   disconnectTelegram,
   getGitHubSettings,
@@ -13,6 +15,7 @@ import {
   listEmailAccounts,
   listMcpServers,
   listSkills,
+  listWritableDirs,
   loginTelegram,
   startGitHubAuthorize,
   updateSkill,
@@ -20,6 +23,7 @@ import {
   type McpServer,
   type Skill,
   type TelegramAuthData,
+  type WritableDir,
 } from "../api/settings.js";
 
 type SettingsHost = HTMLElement & {
@@ -44,6 +48,9 @@ type SettingsHost = HTMLElement & {
   skillLoaded: boolean;
   skillError: string;
   editingSkill: Skill | null;
+  writableDirs: WritableDir[];
+  writableDirLoaded: boolean;
+  writableDirError: string;
 };
 
 function escapeHtml(value: string): string {
@@ -81,6 +88,14 @@ function skillView(skill: Skill): SkillView {
     id: skill.id,
     name: escapeHtml(skill.title),
     meta: escapeHtml(`${skill.name} · ${skill.description}`),
+  };
+}
+
+function writableDirView(dir: WritableDir): AccountView {
+  return {
+    id: dir.id,
+    name: escapeHtml(`/${dir.path}`),
+    meta: "Writable by your agents, including every subdirectory.",
   };
 }
 
@@ -163,6 +178,28 @@ async function refreshSkills(host: SettingsHost): Promise<void> {
     host.skillError = "";
   } catch {
     host.skillError = "Failed to load skills.";
+  }
+}
+
+async function refreshWritableDirs(host: SettingsHost): Promise<void> {
+  try {
+    host.writableDirs = await listWritableDirs();
+    host.writableDirLoaded = true;
+    host.writableDirError = "";
+  } catch {
+    host.writableDirError = "Failed to load writable directories.";
+  }
+}
+
+async function submitWritableDir(host: SettingsHost, form: HTMLFormElement): Promise<void> {
+  const data = new FormData(form);
+  host.writableDirError = "";
+  try {
+    await createWritableDir(String(data.get("path") ?? "").trim());
+    form.reset();
+    await refreshWritableDirs(host);
+  } catch (error) {
+    host.writableDirError = error instanceof Error ? error.message : "Failed to add directory.";
   }
 }
 
@@ -331,6 +368,7 @@ const styles = css`
   .layout[data-active="connections"] .tab[data-section="connections"],
   .layout[data-active="email"] .tab[data-section="email"],
   .layout[data-active="mcp"] .tab[data-section="mcp"],
+  .layout[data-active="files"] .tab[data-section="files"],
   .layout[data-active="skills"] .tab[data-section="skills"] {
     background: var(--accent);
     color: var(--foreground);
@@ -353,6 +391,7 @@ const styles = css`
   .layout[data-active="connections"] .panel[data-panel="connections"],
   .layout[data-active="email"] .panel[data-panel="email"],
   .layout[data-active="mcp"] .panel[data-panel="mcp"],
+  .layout[data-active="files"] .panel[data-panel="files"],
   .layout[data-active="skills"] .panel[data-panel="skills"] {
     display: flex;
   }
@@ -562,6 +601,9 @@ export function AppSettings({
   skillLoaded = false,
   skillError = "",
   editingSkill = null,
+  writableDirs = [],
+  writableDirLoaded = false,
+  writableDirError = "",
 }: {
   activeSection?: string;
   tgConfigured?: boolean;
@@ -584,6 +626,9 @@ export function AppSettings({
   skillLoaded?: boolean;
   skillError?: string;
   editingSkill?: Skill | null;
+  writableDirs?: WritableDir[];
+  writableDirLoaded?: boolean;
+  writableDirError?: string;
 }): Component {
   onMount(() => {
     (window as unknown as Record<string, unknown>).onTelegramAuth = (user: TelegramAuthData) => {
@@ -594,6 +639,7 @@ export function AppSettings({
     void refreshEmails(this);
     void refreshMcps(this);
     void refreshSkills(this);
+    void refreshWritableDirs(this);
   });
 
   // Telegram's widget script finds its own <script> tag in the document and
@@ -629,6 +675,7 @@ export function AppSettings({
   const emailViews = emails.map(emailView);
   const mcpViews = mcps.map(mcpView);
   const skillViews = skills.map(skillView);
+  const writableDirViews = writableDirs.map(writableDirView);
   const editing = editingSkill
     ? {
         id: editingSkill.id,
@@ -680,6 +727,20 @@ export function AppSettings({
               if (form) void submitMcp(this, form);
               return;
             }
+            case "add-writable-dir": {
+              const form = action.closest<HTMLFormElement>("form");
+              if (form) void submitWritableDir(this, form);
+              return;
+            }
+            case "del-writable-dir":
+              if (action.dataset.id && window.confirm("Revoke write access to this directory?")) {
+                void deleteWritableDir(action.dataset.id)
+                  .then(() => refreshWritableDirs(this))
+                  .catch(() => {
+                    this.writableDirError = "Failed to remove directory.";
+                  });
+              }
+              return;
             case "del-email":
               if (action.dataset.id && window.confirm("Remove this IMAP account from S.T.R.I.D.E.?")) {
                 void deleteEmailAccount(action.dataset.id)
@@ -739,6 +800,7 @@ export function AppSettings({
           const form = event.target as HTMLFormElement;
           if (form.dataset.form === "email") void submitEmail(this, form);
           if (form.dataset.form === "mcp") void submitMcp(this, form);
+          if (form.dataset.form === "writable-dir") void submitWritableDir(this, form);
           if (form.dataset.form === "skill") void submitSkill(this, form);
           if (form.dataset.form === "skill-edit" && this.editingSkill) {
             void submitSkillEdit(this, form, this.editingSkill.id);
@@ -756,6 +818,7 @@ export function AppSettings({
               <button type="button" class="tab" data-section="connections">Connections</button>
               <button type="button" class="tab" data-section="email">Email</button>
               <button type="button" class="tab" data-section="mcp">MCP servers</button>
+              <button type="button" class="tab" data-section="files">Writable folders</button>
               <button type="button" class="tab" data-section="skills">Skills</button>
             </nav>
 
@@ -873,6 +936,37 @@ export function AppSettings({
                     <label class="full">Headers JSON<textarea name="headers_json" placeholder='{"X-Tenant":"acme"}'></textarea></label>
                     <div class="actions"><app-button data-action="add-mcp">Add server</app-button></div>
                     <p class="error">{mcpError}</p>
+                  </form>
+                </app-card>
+              </section>
+
+              <section class="panel" data-panel="files">
+                <app-card
+                  title="Writable folders"
+                  description="By default your agents may only write inside a thread's workspace or its project folder. Add personal folders here to let agents create and edit files in them. Every subfolder is included."
+                >
+                  {writableDirViews.length > 0
+                    ? (
+                      <div class="account-list">
+                        {writableDirViews.map((dir) => (
+                          <div class="account" key={dir.id}>
+                            <div>
+                              <div class="name">{dir.name}</div>
+                              <div class="meta">{dir.meta}</div>
+                            </div>
+                            <app-button variant="outline" size="sm" data-action="del-writable-dir" data-id={dir.id}>Remove</app-button>
+                          </div>
+                        )).join("")}
+                      </div>
+                    )
+                    : <p class="muted">{writableDirLoaded ? "No writable folders yet. Agents can still write to the thread workspace and project folders." : "Loading folders…"}</p>}
+                </app-card>
+
+                <app-card title="Add writable folder" description="Enter a path relative to your files, e.g. Documents or Notes/Personal. The folder and everything under it becomes writable.">
+                  <form data-form="writable-dir">
+                    <label class="full">Folder path<input name="path" required placeholder="Documents/Notes" autocomplete="off" /></label>
+                    <div class="actions"><app-button data-action="add-writable-dir">Add folder</app-button></div>
+                    <p class="error">{writableDirError}</p>
                   </form>
                 </app-card>
               </section>
