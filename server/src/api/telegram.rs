@@ -35,6 +35,7 @@ use crate::{
         AgentEvent, AgentEventKind, AgentRequest, RUNNER_LIFECYCLE_TOPIC, RunnerLifecycle,
         thread_events_topic,
     },
+    tools::telegram::{TELEGRAM_MESSAGE_LIMIT, TELEGRAM_RICH_MESSAGE_LIMIT, split_message},
     vfs::{WORKSPACE_MOUNT, WritableArea},
 };
 
@@ -1879,6 +1880,28 @@ async fn send_telegram_rich_message(
     topic_id: Option<i64>,
     text: &str,
 ) -> RichSend {
+    let mut last = RichSend::Failed;
+    for (index, chunk) in split_message(text, TELEGRAM_RICH_MESSAGE_LIMIT)
+        .into_iter()
+        .enumerate()
+    {
+        let sent = send_telegram_rich_message_chunk(state, chat_id, topic_id, &chunk).await;
+        // If the very first chunk fails, report failure so the caller falls back to plain text for
+        // the whole message rather than dropping it silently.
+        if index == 0 && matches!(sent, RichSend::Failed) {
+            return RichSend::Failed;
+        }
+        last = sent;
+    }
+    last
+}
+
+async fn send_telegram_rich_message_chunk(
+    state: &ServerState,
+    chat_id: i64,
+    topic_id: Option<i64>,
+    text: &str,
+) -> RichSend {
     let Some(token) = bot_token(state) else {
         return RichSend::Failed;
     };
@@ -1934,15 +1957,27 @@ pub(crate) async fn send_telegram_message(
     topic_id: Option<i64>,
     text: &str,
 ) -> Option<TelegramSentMessage> {
+    let mut last_sent = None;
+    for chunk in split_message(text, TELEGRAM_MESSAGE_LIMIT) {
+        last_sent = Some(send_telegram_message_chunk(state, chat_id, topic_id, &chunk).await?);
+    }
+    last_sent
+}
+
+async fn send_telegram_message_chunk(
+    state: &ServerState,
+    chat_id: i64,
+    topic_id: Option<i64>,
+    text: &str,
+) -> Option<TelegramSentMessage> {
     let token = bot_token(state)?;
 
-    let text: String = text.chars().take(4096).collect();
     let (message_thread_id, direct_messages_topic_id) = topic_request_fields(topic_id);
     let request = SendMessageRequest {
         chat_id,
         message_thread_id,
         direct_messages_topic_id,
-        text: &text,
+        text,
     };
     let Ok(body) = serde_json::to_vec(&request) else {
         return None;
@@ -2199,7 +2234,7 @@ fn telegram_draft_id(run_id: Uuid) -> i64 {
 }
 
 fn rich_markdown(text: &str) -> String {
-    text.chars().take(4096).collect()
+    text.chars().take(TELEGRAM_RICH_MESSAGE_LIMIT).collect()
 }
 
 fn telegram_draft_markdown(text: &str, thinking: &str) -> String {
