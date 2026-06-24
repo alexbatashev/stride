@@ -980,6 +980,24 @@ async fn ensure_runner(
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
     configure_agent_tools(&agent, &tools);
+    // The Python sandbox tool set is built from the same place as scheduled
+    // automations (`scriptable_tool_registry`), so scripts behave identically in
+    // the interactive loop and on cron. Built before `mcp_tools`/`email_service`
+    // are consumed below.
+    let python_enabled = tools
+        .python
+        .as_ref()
+        .is_some_and(|python| python.enabled != Some(false));
+    let python_tools = python_enabled.then(|| {
+        scriptable_tool_registry(
+            &tools,
+            &db,
+            user_id,
+            email_service.as_ref().map(|service| service.provider(user_id)),
+            &mcp_tools,
+            project_title.clone(),
+        )
+    });
     for tool in mcp_tools {
         agent.register_searchable_tool(tool);
     }
@@ -1101,8 +1119,8 @@ async fn ensure_runner(
         agent.register_tool(ShellTool::new(shell));
     }
 
-    if let Some(tool) = python {
-        agent.register_tool(tool.with_tools(agent.registry_snapshot()));
+    if let (Some(tool), Some(registry)) = (python, python_tools) {
+        agent.register_tool(tool.with_tools(registry));
         agent.allow_tool("python");
     }
 
@@ -1219,6 +1237,88 @@ pub(crate) fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
     {
         registry.allow_tool(tool.name());
         registry.register(tool);
+    }
+
+    registry
+}
+
+/// The single source of truth for the tools a Python script can call through the
+/// `tools` package. Both the interactive agent loop and scheduled automations
+/// build their sandbox tool set from here, so a script behaves identically in
+/// either mode. Read-only MCP tools are auto-approved; state-changing ones still
+/// require approval and are refused from scripts, exactly as in the agent loop.
+pub(crate) fn scriptable_tool_registry(
+    tools: &Tools,
+    db: &ConnectionPool,
+    user_id: Uuid,
+    email_provider: Option<Arc<dyn stride_agent::tools::email::EmailProvider>>,
+    mcp_tools: &[McpTool],
+    default_wing: Option<String>,
+) -> ToolRegistry {
+    let mut registry = expert_tool_registry(tools);
+
+    if let Some(provider) = email_provider {
+        registry.register(ListEmailsTool {
+            provider: provider.clone(),
+        });
+        registry.allow_tool("list_emails");
+        registry.register(CreateEmailDraftTool { provider });
+        registry.allow_tool("create_email_draft");
+    }
+
+    registry.register(RememberTool {
+        db: db.clone(),
+        user_id,
+        default_wing: default_wing.clone(),
+    });
+    registry.allow_tool("remember");
+    registry.register(RecallTool {
+        db: db.clone(),
+        user_id,
+        default_wing,
+    });
+    registry.allow_tool("recall");
+    registry.register(ExplorePalaceTool {
+        db: db.clone(),
+        user_id,
+    });
+    registry.allow_tool("explore_palace");
+    registry.register(ConnectMemoriesTool {
+        db: db.clone(),
+        user_id,
+    });
+    registry.allow_tool("connect_memories");
+
+    registry.register(SearchSkillsTool {
+        db: db.clone(),
+        user_id,
+    });
+    registry.allow_tool("search_skills");
+    registry.register(LoadSkillTool {
+        db: db.clone(),
+        user_id,
+    });
+    registry.allow_tool("load_skill");
+    registry.register(CreateSkillTool {
+        db: db.clone(),
+        user_id,
+    });
+    registry.allow_tool("create_skill");
+
+    registry.register(UpdatePersonalityTool {
+        db: db.clone(),
+        user_id,
+    });
+    registry.allow_tool("update_personality");
+
+    registry.register(ScheduleAutomationTool {
+        db: db.clone(),
+        user_id,
+    });
+    registry.allow_tool("schedule_automation");
+
+    for tool in mcp_tools {
+        registry.register_searchable(tool.clone());
     }
 
     registry
