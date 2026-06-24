@@ -988,7 +988,7 @@ async fn ensure_runner(
         .python
         .as_ref()
         .is_some_and(|python| python.enabled != Some(false));
-    let mut python_tools = python_enabled.then(|| {
+    let python_tools = python_enabled.then(|| {
         scriptable_tool_registry(
             &tools,
             &db,
@@ -1058,17 +1058,12 @@ async fn ensure_runner(
         agent.allow_tool("create_email_draft");
     }
     if let Some(bot_token) = telegram_bot_token.clone() {
-        let tool = SendTelegramMessageTool {
+        agent.register_tool(SendTelegramMessageTool {
             db: db.clone(),
             user_id,
             thread_id,
             bot_token,
-        };
-        if let Some(registry) = python_tools.as_mut() {
-            registry.register(tool.clone());
-            registry.allow_tool("send_telegram_message");
-        }
-        agent.register_tool(tool);
+        });
         agent.allow_tool("send_telegram_message");
     }
     let python_workspace = match (vfs, writable_area) {
@@ -1098,18 +1093,13 @@ async fn ensure_runner(
             .as_ref()
             .filter(|_| telegram_chat.is_some())
         {
-            let tool = SendTelegramFileTool {
+            agent.register_tool(SendTelegramFileTool {
                 db: db.clone(),
                 fs: fs.clone(),
                 user_id,
                 thread_id,
                 bot_token: bot_token.clone(),
-            };
-            if let Some(registry) = python_tools.as_mut() {
-                registry.register(tool.clone());
-                registry.allow_tool("send_telegram_file");
-            }
-            agent.register_tool(tool);
+            });
             agent.allow_tool("send_telegram_file");
         }
         let mut shell = EmulatedShellBackend::new(fs);

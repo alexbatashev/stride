@@ -17,7 +17,6 @@ use tokio::time::timeout;
 use crate::db::{telegram_connections, telegram_message_links, telegram_threads};
 use crate::vfs::MountedVfs;
 
-#[derive(Clone)]
 pub struct SendTelegramMessageTool {
     pub db: ConnectionPool,
     pub user_id: Uuid,
@@ -104,7 +103,6 @@ impl Tool for SendTelegramMessageTool {
 /// Sends a workspace file to the user as a native Telegram attachment in the chat this thread is
 /// bound to. Used in Telegram-originated threads to deliver files the agent produced; its plain
 /// text replies are already streamed back to Telegram automatically.
-#[derive(Clone)]
 pub struct SendTelegramFileTool {
     pub db: ConnectionPool,
     pub fs: MountedVfs,
