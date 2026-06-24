@@ -6,6 +6,12 @@ export type UploadedFile = {
 	size: number;
 };
 
+export type StagedUpload = {
+	id: string;
+	name: string;
+	size: number;
+};
+
 export type WorkspaceEntry = {
 	name: string;
 	path: string;
@@ -77,10 +83,10 @@ export async function listThreads(): Promise<ThreadSummary[]> {
 	return request('/api/threads');
 }
 
-export async function createThread(content: string, projectId?: string, filePaths?: string[]): Promise<SendMessageResponse> {
+export async function createThread(content: string, projectId?: string, stagedUploads?: string[]): Promise<SendMessageResponse> {
 	return request('/api/threads', {
 		method: 'POST',
-		body: JSON.stringify({content, project_id: projectId ?? null, file_paths: filePaths ?? []})
+		body: JSON.stringify({content, project_id: projectId ?? null, staged_uploads: stagedUploads ?? []})
 	});
 }
 
@@ -88,10 +94,10 @@ export async function listMessages(threadId: string): Promise<ThreadMessage[]> {
 	return request(`/api/threads/${threadId}/messages`);
 }
 
-export async function sendMessage(threadId: string, content: string, filePaths?: string[]): Promise<SendMessageResponse> {
+export async function sendMessage(threadId: string, content: string, stagedUploads?: string[]): Promise<SendMessageResponse> {
 	return request(`/api/threads/${threadId}/messages`, {
 		method: 'POST',
-		body: JSON.stringify({content, file_paths: filePaths ?? []})
+		body: JSON.stringify({content, staged_uploads: stagedUploads ?? []})
 	});
 }
 
@@ -136,6 +142,23 @@ export async function downloadWorkspaceFile(threadId: string, path: string): Pro
 	const response = await fetch(`/api/threads/${threadId}/files/${encodePath(path)}`, {headers});
 	if (!response.ok) throw new Error(`${response.status}`);
 	return response.blob();
+}
+
+export async function stageUploads(files: File[]): Promise<StagedUpload[]> {
+	const token = readToken();
+	const headers = new Headers();
+	headers.set('Accept', 'application/json');
+	if (token) headers.set('Authorization', `Bearer ${token}`);
+
+	const body = new FormData();
+	for (const file of files) {
+		body.append('file', file, file.name);
+	}
+
+	const response = await fetch('/api/uploads', {method: 'POST', headers, body});
+	if (!response.ok) throw new Error(`${response.status}`);
+	const data = await response.json() as {files: StagedUpload[]};
+	return data.files;
 }
 
 export async function uploadFiles(threadId: string, files: File[], path = ''): Promise<UploadedFile[]> {

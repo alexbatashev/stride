@@ -376,6 +376,24 @@ migrations! {
 
         raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_writable_dirs_owner_path ON writable_dirs(owner, path)";
     }
+
+    staged_uploads {
+        // Files uploaded before a thread exists. They live here until the owner
+        // creates or messages a thread that references them, at which point they
+        // are moved into that thread's workspace. A background sweep deletes rows
+        // older than 24 hours together with their stored blobs.
+        table staged_uploads {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            name: String,
+            mime_type: Option<String>,
+            location: String,
+            size: i64,
+            created_at: i64,
+
+            foreign_key(owner -> users.id);
+        }
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

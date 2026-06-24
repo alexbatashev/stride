@@ -9,4 +9,5 @@ pub mod projects;
 pub mod skills;
 pub mod telegram;
 pub mod threads;
+pub mod uploads;
 pub mod writable_dirs;

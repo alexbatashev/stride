@@ -19,6 +19,7 @@ mod vfs;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -45,6 +46,11 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use crate::{rate_limit::RateLimiter, runner::AgentPool};
 
 const UPLOAD_BODY_LIMIT: usize = 25 * 1024 * 1024;
+/// Staged uploads are dropped once they are this old without being attached to a
+/// thread.
+const STAGED_UPLOAD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often the staging area is swept for stale uploads.
+const STAGED_UPLOAD_SWEEP: Duration = Duration::from_secs(60 * 60);
 const DEFAULT_DEV_JWT_SECRET: &str = "change-this-development-secret";
 const MIN_JWT_SECRET_LEN: usize = 32;
 
@@ -197,6 +203,12 @@ async fn main() -> anyhow::Result<()> {
     // eviction) so per-thread forwarders do not accumulate.
     tokio::spawn(api::telegram::supervise(state.clone()));
 
+    // Sweep stale staged uploads so files attached to a thread that was never
+    // created do not accumulate forever.
+    if state.vfs.is_some() {
+        tokio::spawn(sweep_staged_uploads(state.clone()));
+    }
+
     // Register the webhook with callback_query updates enabled so inline button taps are delivered.
     if let Some(token) = telegram_bot_token {
         let telegram = state
@@ -232,6 +244,28 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+async fn sweep_staged_uploads(state: Arc<ServerState>) {
+    let Some(vfs) = state.vfs.clone() else {
+        return;
+    };
+    let mut interval = tokio::time::interval(STAGED_UPLOAD_SWEEP);
+    loop {
+        interval.tick().await;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let cutoff = now - STAGED_UPLOAD_TTL.as_millis() as i64;
+        match vfs.cleanup_staged_uploads(cutoff).await {
+            Ok(removed) if removed > 0 => {
+                tracing::info!(removed, "swept stale staged uploads")
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "failed to sweep staged uploads"),
+        }
+    }
 }
 
 fn init_tracing() {
@@ -372,6 +406,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route(
             "/api/threads/{id}/files/{*path}",
             get(api::threads::download_file).delete(api::threads::delete_file),
+        )
+        .route(
+            "/api/uploads",
+            post(api::uploads::upload).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
         )
         .route(
             "/api/files",
