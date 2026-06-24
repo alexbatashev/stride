@@ -29,8 +29,7 @@ impl Notifier for TelegramNotifier {
             RunStatus::Failed => "❌",
             RunStatus::Running => "⏳",
         };
-        let body: String = result.output.chars().take(3500).collect();
-        let text = format!("{icon} {}\n\n{body}", result.name);
+        let text = format!("{icon} {}\n\n{}", result.name, result.output);
 
         if send_message(&self.bot_token, chat_id, &text)
             .await

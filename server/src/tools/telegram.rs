@@ -388,17 +388,77 @@ async fn link_message(
     Ok(())
 }
 
+/// Telegram rejects `sendMessage` payloads longer than 4096 characters. Longer text is split into
+/// several messages instead of being truncated.
+pub(crate) const TELEGRAM_MESSAGE_LIMIT: usize = 4096;
+
+/// Telegram's rich (Markdown) messages allow a much larger body than plain `sendMessage`.
+pub(crate) const TELEGRAM_RICH_MESSAGE_LIMIT: usize = 32_768;
+
+/// Splits `text` into chunks of at most `limit` characters, preferring to break on newline, then
+/// whitespace, so each message stays readable. A run with no break point is hard-split on a
+/// character boundary. Empty chunks are dropped; the result is empty only when `text` has no
+/// non-whitespace content.
+pub(crate) fn split_message(text: &str, limit: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if limit == 0 || chars.len() <= limit {
+        return vec![text.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        if chars.len() - start <= limit {
+            chunks.push(chars[start..].iter().collect::<String>());
+            break;
+        }
+        let window_end = start + limit;
+        let (split_at, drop_separator) = preferred_break(&chars, start, window_end);
+        chunks.push(chars[start..split_at].iter().collect::<String>());
+        start = if drop_separator {
+            split_at + 1
+        } else {
+            split_at
+        };
+    }
+
+    chunks
+        .into_iter()
+        .map(|chunk| chunk.trim().to_string())
+        .filter(|chunk| !chunk.is_empty())
+        .collect()
+}
+
+/// Picks the index to break a chunk at within `[start, window_end)`. Returns the break index and
+/// whether the character at that index is a separator to drop (newline or space).
+fn preferred_break(chars: &[char], start: usize, window_end: usize) -> (usize, bool) {
+    if let Some(index) = (start..window_end).rev().find(|&i| chars[i] == '\n') {
+        return (index, true);
+    }
+    if let Some(index) = (start..window_end).rev().find(|&i| chars[i] == ' ') {
+        return (index, true);
+    }
+    (window_end, false)
+}
+
 pub(crate) async fn send_message(
     bot_token: &str,
     chat_id: i64,
     text: &str,
 ) -> Option<TelegramSentMessage> {
-    let text: String = text.chars().take(4096).collect();
-    let body = serde_json::to_vec(&SendMessageRequest {
-        chat_id,
-        text: &text,
-    })
-    .ok()?;
+    let mut last_sent = None;
+    for chunk in split_message(text, TELEGRAM_MESSAGE_LIMIT) {
+        last_sent = Some(send_message_chunk(bot_token, chat_id, &chunk).await?);
+    }
+    last_sent
+}
+
+async fn send_message_chunk(
+    bot_token: &str,
+    chat_id: i64,
+    text: &str,
+) -> Option<TelegramSentMessage> {
+    let body = serde_json::to_vec(&SendMessageRequest { chat_id, text }).ok()?;
     let uri = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
     let req = Request::builder()
         .method("POST")
@@ -474,6 +534,44 @@ mod tests {
         assert_eq!(file_name_from_path("/~workspace/report.pdf"), "report.pdf");
         assert_eq!(file_name_from_path("plain.txt"), "plain.txt");
         assert_eq!(file_name_from_path("/~workspace/"), "file");
+    }
+
+    #[test]
+    fn split_message_keeps_short_text_intact() {
+        assert_eq!(split_message("hello", 4096), vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn split_message_breaks_on_newline() {
+        let text = "aaa\nbbb\nccc";
+        let chunks = split_message(text, 5);
+        assert_eq!(
+            chunks,
+            vec!["aaa".to_string(), "bbb".to_string(), "ccc".to_string()]
+        );
+        assert!(chunks.iter().all(|c| c.chars().count() <= 5));
+    }
+
+    #[test]
+    fn split_message_breaks_on_space_when_no_newline() {
+        let chunks = split_message("aaaa bbbb cccc", 6);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 6));
+        assert_eq!(chunks.join(" "), "aaaa bbbb cccc");
+    }
+
+    #[test]
+    fn split_message_hard_splits_long_token() {
+        let text = "a".repeat(25);
+        let chunks = split_message(&text, 10);
+        assert_eq!(chunks, vec!["aaaaaaaaaa", "aaaaaaaaaa", "aaaaa"]);
+    }
+
+    #[test]
+    fn split_message_respects_limit_on_multibyte() {
+        let text = "😀".repeat(20);
+        let chunks = split_message(&text, 8);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 8));
+        assert_eq!(chunks.concat(), text);
     }
 
     #[test]
