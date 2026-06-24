@@ -11,7 +11,7 @@ import {
 	listThreads,
 	resolveApproval,
 	sendMessage,
-	uploadFiles,
+	stageUploads,
 } from "../api/threads.js";
 import { bindSidebar } from "./sidebar.js";
 
@@ -68,7 +68,7 @@ class ThreadsPageHydrator {
 	private projects: ProjectSummary[];
 	private currentProjectId: string | null = null;
 	private messages: ViewMessage[] = [];
-	private attachedFiles: { name: string; path: string }[] = [];
+	private attachedFiles: { name: string; id: string }[] = [];
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
@@ -402,7 +402,7 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		const filePaths = this.attachedFiles.map((f) => f.path);
+		const stagedUploads = this.attachedFiles.map((f) => f.id);
 		this.attachedFiles = [];
 		this.error = "";
 		this.running = true;
@@ -411,9 +411,9 @@ class ThreadsPageHydrator {
 
 		try {
 			if (this.threadId) {
-				await sendMessage(this.threadId, content, filePaths);
+				await sendMessage(this.threadId, content, stagedUploads);
 			} else {
-				const response = await createThread(content, this.currentProjectId ?? undefined, filePaths);
+				const response = await createThread(content, this.currentProjectId ?? undefined, stagedUploads);
 				this.threadId = response.thread_id;
 				this.root.dataset.threadId = this.threadId;
 				this.fileManagerEl.threadId = this.threadId;
@@ -638,19 +638,14 @@ class ThreadsPageHydrator {
 	}
 
 	private async onFilesAttach(event: CustomEvent<{ files: File[] }>) {
-		if (!this.threadId) {
-			this.flash("Start a thread before uploading files.");
-			return;
-		}
-
 		const { files } = event.detail;
 		const label = files.length === 1 ? files[0].name : `${files.length} files`;
 		this.flash(`Uploading ${label}…`);
 
 		try {
-			const uploaded = await uploadFiles(this.threadId, files);
-			for (const f of uploaded) {
-				this.attachedFiles.push({ name: f.name, path: f.path });
+			const staged = await stageUploads(files);
+			for (const f of staged) {
+				this.attachedFiles.push({ name: f.name, id: f.id });
 			}
 			const count = this.attachedFiles.length;
 			this.flash(`${count} file${count === 1 ? "" : "s"} attached`);

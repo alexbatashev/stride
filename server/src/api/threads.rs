@@ -97,6 +97,10 @@ pub struct SendMessageRequest {
     project_id: Option<Uuid>,
     #[serde(default)]
     file_paths: Vec<String>,
+    /// Ids of files uploaded to the staging area before this thread existed.
+    /// They are moved into the thread's workspace before the run starts.
+    #[serde(default)]
+    staged_uploads: Vec<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -395,14 +399,13 @@ pub async fn create_thread(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
-    let (content, images) = prepare_message(
-        &state,
-        thread_id,
-        owner,
-        request.content,
-        request.file_paths,
-    )
-    .await?;
+    let mut file_paths = request.file_paths;
+    let staged =
+        materialize_staged_uploads(&state, thread_id, owner, &request.staged_uploads).await?;
+    file_paths.extend(staged);
+
+    let (content, images) =
+        prepare_message(&state, thread_id, owner, request.content, file_paths).await?;
     let content = normalize_content(content)?;
 
     let run_id = send_to_runner_with_images(&state, thread_id, content.clone(), images).await?;
@@ -604,14 +607,14 @@ pub async fn send_message(
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
     require_thread_owner_for_user(&state, owner, thread_id).await?;
-    let (content, images) = prepare_message(
-        &state,
-        thread_id,
-        owner,
-        request.content,
-        request.file_paths,
-    )
-    .await?;
+
+    let mut file_paths = request.file_paths;
+    let staged =
+        materialize_staged_uploads(&state, thread_id, owner, &request.staged_uploads).await?;
+    file_paths.extend(staged);
+
+    let (content, images) =
+        prepare_message(&state, thread_id, owner, request.content, file_paths).await?;
     let content = normalize_content(content)?;
     let run_id = send_to_runner_with_images(&state, thread_id, content, images).await?;
 
@@ -1111,6 +1114,49 @@ pub async fn download_file(
         )
         .body(Body::from(bytes))
         .map_err(|_| ThreadApiError::Internal)
+}
+
+/// Moves the owner's staged uploads into a thread's writable area under
+/// `uploads/`, returning the agent-facing absolute paths. Unknown or non-owned
+/// ids are skipped so a stale reference never fails the whole message.
+async fn materialize_staged_uploads(
+    state: &ServerState,
+    thread_id: Uuid,
+    owner: Uuid,
+    staged_ids: &[Uuid],
+) -> Result<Vec<String>, ThreadApiError> {
+    if staged_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(ref vfs) = state.vfs else {
+        return Ok(Vec::new());
+    };
+
+    let area = thread_writable_area(state, thread_id, owner).await?;
+    let root = writable_root_path(&area);
+
+    let mut paths = Vec::new();
+    for &id in staged_ids {
+        let staged = match vfs.take_staged_upload(owner, id).await {
+            Ok(staged) => staged,
+            Err(error) => {
+                tracing::warn!(%thread_id, %id, %error, "skipping unknown staged upload");
+                continue;
+            }
+        };
+        let rel = join_workspace_path("uploads", &staged.name);
+        vfs.area_write_bytes(
+            &area,
+            owner,
+            &rel,
+            &staged.bytes,
+            staged.mime_type.as_deref(),
+        )
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+        paths.push(format!("{root}/{rel}"));
+    }
+    Ok(paths)
 }
 
 /// Resolves a thread's writable area: a project thread writes into the

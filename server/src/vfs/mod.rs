@@ -25,6 +25,22 @@ pub enum EntryKind {
     File,
 }
 
+/// A file uploaded before any thread exists. Referenced by id when the owner
+/// later creates or messages a thread.
+pub struct StagedUpload {
+    pub id: Uuid,
+    pub name: String,
+    pub size: i64,
+}
+
+/// The contents of a staged upload, taken out of the staging area so the caller
+/// can move it into a thread's workspace.
+pub struct StagedFile {
+    pub name: String,
+    pub mime_type: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
 /// Addresses a node tree: either a thread/project workspace or a user's global
 /// space (nodes with `parent_workspace` NULL, owned by the user).
 #[derive(Clone, Copy)]
@@ -118,6 +134,120 @@ impl Vfs {
     /// Loads raw bytes previously stored via [`Vfs::store_blob`].
     pub async fn load_blob(&self, location: &str) -> anyhow::Result<Vec<u8>> {
         self.storage.load(location).await
+    }
+
+    /// Stores an uploaded file in the staging area, detached from any thread,
+    /// and returns a handle the caller references when a thread is created.
+    pub async fn stage_upload(
+        &self,
+        owner: Uuid,
+        name: &str,
+        mime_type: Option<&str>,
+        content: &[u8],
+    ) -> anyhow::Result<StagedUpload> {
+        let location = self.storage.store(content).await?;
+        let id = Uuid::now_v7();
+        let size = content.len() as i64;
+        if let Err(error) = self
+            .db
+            .query_with_params(
+                "INSERT INTO staged_uploads (id, owner, name, mime_type, location, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                vec![
+                    Value::Uuid(id),
+                    Value::Uuid(owner),
+                    Value::Text(name.to_string()),
+                    mime_type
+                        .map(|m| Value::Text(m.to_string()))
+                        .unwrap_or(Value::Null),
+                    Value::Text(location.clone()),
+                    Value::Integer(size),
+                    Value::Integer(now_ms()),
+                ],
+            )
+            .await
+        {
+            let _ = self.storage.delete(&location).await;
+            bail!(error.to_string());
+        }
+
+        Ok(StagedUpload {
+            id,
+            name: name.to_string(),
+            size,
+        })
+    }
+
+    /// Removes a staged upload owned by `owner` and returns its contents so the
+    /// caller can write it into a thread's workspace. The staging row and its
+    /// blob are deleted; an unknown or non-owned id is an error.
+    pub async fn take_staged_upload(&self, owner: Uuid, id: Uuid) -> anyhow::Result<StagedFile> {
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT name, mime_type, location FROM staged_uploads WHERE id = ? AND owner = ? LIMIT 1",
+                vec![Value::Uuid(id), Value::Uuid(owner)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let row = rows
+            .rows()
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("staged upload not found: {id}"))?;
+        let name = row.get_text("name").unwrap_or_default().to_string();
+        let mime_type = row.get_text("mime_type").map(|s| s.to_string());
+        let location = row
+            .get_text("location")
+            .ok_or_else(|| anyhow::anyhow!("staged upload missing location: {id}"))?
+            .to_string();
+
+        let bytes = self.storage.load(&location).await?;
+        self.db
+            .query_with_params(
+                "DELETE FROM staged_uploads WHERE id = ?",
+                vec![Value::Uuid(id)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let _ = self.storage.delete(&location).await;
+
+        Ok(StagedFile {
+            name,
+            mime_type,
+            bytes,
+        })
+    }
+
+    /// Deletes staged uploads created before `cutoff_ms`, along with their stored
+    /// blobs, and returns how many were removed.
+    pub async fn cleanup_staged_uploads(&self, cutoff_ms: i64) -> anyhow::Result<usize> {
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT id, location FROM staged_uploads WHERE created_at < ?",
+                vec![Value::Integer(cutoff_ms)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        let mut removed = 0;
+        for row in rows.rows() {
+            let Some(id) = uuid_from_row(row, "id") else {
+                continue;
+            };
+            let location = row.get_text("location").map(|s| s.to_string());
+            self.db
+                .query_with_params(
+                    "DELETE FROM staged_uploads WHERE id = ?",
+                    vec![Value::Uuid(id)],
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if let Some(loc) = location {
+                let _ = self.storage.delete(&loc).await;
+            }
+            removed += 1;
+        }
+        Ok(removed)
     }
 
     /// Returns workspace id for the given thread, creating one if needed.
@@ -1313,6 +1443,73 @@ mod tests {
         // Other global paths remain read-only.
         vfs.write_global(owner, "Secret/s.txt", "ro").await.unwrap();
         assert!(fs.write_bytes("/Secret/s.txt", b"no", None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn staged_upload_round_trips_into_workspace() {
+        let (vfs, owner) = setup_vfs().await;
+        let staged = vfs
+            .stage_upload(owner, "photo.png", Some("image/png"), b"bytes")
+            .await
+            .unwrap();
+        assert_eq!(staged.name, "photo.png");
+        assert_eq!(staged.size, 5);
+
+        let taken = vfs.take_staged_upload(owner, staged.id).await.unwrap();
+        assert_eq!(taken.name, "photo.png");
+        assert_eq!(taken.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(taken.bytes, b"bytes");
+
+        // A staged upload can be consumed only once.
+        assert!(vfs.take_staged_upload(owner, staged.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn staged_upload_scoped_per_owner() {
+        let (vfs, owner) = setup_vfs().await;
+        let other = Uuid::now_v7();
+        vfs.db
+            .query_with_params(
+                "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
+                vec![
+                    Value::Uuid(other),
+                    Value::Text("bob".to_string()),
+                    Value::Text("hash".to_string()),
+                ],
+            )
+            .await
+            .unwrap();
+        let staged = vfs.stage_upload(owner, "a.txt", None, b"x").await.unwrap();
+        // Another user cannot take someone else's staged upload.
+        assert!(vfs.take_staged_upload(other, staged.id).await.is_err());
+        // The owner still can.
+        assert!(vfs.take_staged_upload(owner, staged.id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_only_stale_staged_uploads() {
+        let (vfs, owner) = setup_vfs().await;
+        let fresh = vfs
+            .stage_upload(owner, "fresh.txt", None, b"f")
+            .await
+            .unwrap();
+        let stale = vfs
+            .stage_upload(owner, "stale.txt", None, b"s")
+            .await
+            .unwrap();
+        // Backdate the stale upload's timestamp well past any cutoff.
+        vfs.db
+            .query_with_params(
+                "UPDATE staged_uploads SET created_at = 0 WHERE id = ?",
+                vec![Value::Uuid(stale.id)],
+            )
+            .await
+            .unwrap();
+
+        let removed = vfs.cleanup_staged_uploads(1).await.unwrap();
+        assert_eq!(removed, 1);
+        assert!(vfs.take_staged_upload(owner, stale.id).await.is_err());
+        assert!(vfs.take_staged_upload(owner, fresh.id).await.is_ok());
     }
 
     #[tokio::test]
