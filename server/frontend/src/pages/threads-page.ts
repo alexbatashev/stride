@@ -107,7 +107,27 @@ class ThreadsPageHydrator {
 		this.syncComposer();
 
 		if (this.threadId) {
-			this.openEvents(this.threadId);
+			void this.hydrateMessages(this.threadId);
+		}
+	}
+
+	// The server renders messages into the DOM, but the hydrator owns the
+	// `messages` array that every re-render reads from. Load it before opening
+	// the live stream so an incoming event never replaces the DOM with a list
+	// that is missing the server-rendered history.
+	private async hydrateMessages(threadId: string) {
+		try {
+			this.messages = await listMessages(threadId);
+			if (this.threadId !== threadId) {
+				return;
+			}
+			this.renderMessages();
+		} catch (error) {
+			this.handleError(error);
+		}
+
+		if (this.threadId === threadId) {
+			this.openEvents(threadId);
 		}
 	}
 
