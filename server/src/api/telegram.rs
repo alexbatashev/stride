@@ -336,7 +336,8 @@ async fn build_agent_content(
         return content;
     }
 
-    let saved = download_attachments_to_workspace(state, user_id, thread_id, attachments).await;
+    let DownloadedAttachments { saved, transcripts } =
+        download_attachments_to_workspace(state, user_id, thread_id, attachments).await;
     let note = if saved.is_empty() {
         format!(
             "[The user attached {} file(s), but Stride could not download them.]",
@@ -353,7 +354,36 @@ async fn build_agent_content(
         content.push_str("\n\n");
     }
     content.push_str(&note);
+    for transcript in transcripts {
+        content.push_str("\n\n");
+        content.push_str(&transcript);
+    }
     content
+}
+
+/// Transcribes audio bytes using the registered transcription model, returning
+/// the spoken text or `None` when no model is configured or the request fails.
+async fn transcribe_audio(
+    state: &ServerState,
+    bytes: &[u8],
+    file_name: &str,
+    mime_type: &str,
+) -> Option<String> {
+    let model = state.model_config.model_registry.transcription()?;
+    match model
+        .api
+        .transcribe(&model.token, bytes, file_name, mime_type, &model.model_name)
+        .await
+    {
+        Ok(transcription) => {
+            let text = transcription.text.trim().to_string();
+            (!text.is_empty()).then_some(text)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to transcribe Telegram voice message");
+            None
+        }
+    }
 }
 
 fn attachment_title_seed(attachments: &[IncomingAttachment]) -> String {
@@ -363,32 +393,51 @@ fn attachment_title_seed(attachments: &[IncomingAttachment]) -> String {
     }
 }
 
+/// Outcome of saving incoming Telegram attachments: the agent-facing workspace
+/// paths plus any transcripts produced from voice/audio clips.
+#[derive(Default)]
+struct DownloadedAttachments {
+    saved: Vec<String>,
+    transcripts: Vec<String>,
+}
+
 /// Downloads each attachment from Telegram and writes it into the thread's
 /// writable directory under `uploads/`, returning the agent-facing absolute
-/// paths (e.g. `/Projects/Acme/uploads/photo.jpg`) that were stored.
+/// paths (e.g. `/Projects/Acme/uploads/photo.jpg`) that were stored. Voice and
+/// audio clips are additionally transcribed.
 async fn download_attachments_to_workspace(
     state: &ServerState,
     user_id: Uuid,
     thread_id: Uuid,
     attachments: &[IncomingAttachment],
-) -> Vec<String> {
+) -> DownloadedAttachments {
     let Some(vfs) = state.vfs.as_ref() else {
         tracing::warn!(%thread_id, "no VFS configured; cannot save Telegram attachments");
-        return Vec::new();
+        return DownloadedAttachments::default();
     };
     let Some(token) = bot_token(state) else {
-        return Vec::new();
+        return DownloadedAttachments::default();
     };
     let Some((area, root)) = thread_writable_area(state, vfs, user_id, thread_id).await else {
         tracing::warn!(%thread_id, "failed to open writable area for Telegram attachments");
-        return Vec::new();
+        return DownloadedAttachments::default();
     };
 
-    let mut saved = Vec::new();
+    let mut result = DownloadedAttachments::default();
     for attachment in attachments {
         let Some(bytes) = download_telegram_file(state, &token, &attachment.file_id).await else {
             continue;
         };
+
+        if attachment.transcribe {
+            let mime = attachment.mime_type.as_deref().unwrap_or("audio/ogg");
+            if let Some(text) = transcribe_audio(state, &bytes, &attachment.file_name, mime).await {
+                result
+                    .transcripts
+                    .push(format!("[Transcript of voice message]\n{text}"));
+            }
+        }
+
         let rel = format!("uploads/{}", attachment.file_name);
         match vfs
             .area_write_bytes(
@@ -400,13 +449,13 @@ async fn download_attachments_to_workspace(
             )
             .await
         {
-            Ok(()) => saved.push(format!("{root}/{rel}")),
+            Ok(()) => result.saved.push(format!("{root}/{rel}")),
             Err(error) => {
                 tracing::warn!(%thread_id, rel, %error, "failed to write Telegram attachment");
             }
         }
     }
-    saved
+    result
 }
 
 /// Resolves a Telegram thread's writable area and the absolute path the agent
@@ -2328,6 +2377,9 @@ struct IncomingAttachment {
     file_id: String,
     file_name: String,
     mime_type: Option<String>,
+    /// Voice notes and audio clips are transcribed to text after download so the
+    /// agent receives the spoken words, not just a file path.
+    transcribe: bool,
 }
 
 impl TelegramMessage {
@@ -2355,6 +2407,7 @@ impl TelegramMessage {
                     "file",
                 ),
                 mime_type: doc.mime_type.clone(),
+                transcribe: false,
             });
         }
         if let Some(largest) = self
@@ -2366,6 +2419,7 @@ impl TelegramMessage {
                 file_id: largest.file_id.clone(),
                 file_name: format!("photo_{}.jpg", largest.file_unique_id),
                 mime_type: Some("image/jpeg".to_string()),
+                transcribe: false,
             });
         }
         if let Some(voice) = &self.voice {
@@ -2376,6 +2430,7 @@ impl TelegramMessage {
                     .mime_type
                     .clone()
                     .or_else(|| Some("audio/ogg".to_string())),
+                transcribe: true,
             });
         }
         if let Some(audio) = &self.audio {
@@ -2388,6 +2443,7 @@ impl TelegramMessage {
                     "audio",
                 ),
                 mime_type: audio.mime_type.clone(),
+                transcribe: true,
             });
         }
         if let Some(video) = &self.video {
@@ -2400,6 +2456,7 @@ impl TelegramMessage {
                     "video",
                 ),
                 mime_type: video.mime_type.clone(),
+                transcribe: false,
             });
         }
         if let Some(note) = &self.video_note {
@@ -2407,6 +2464,7 @@ impl TelegramMessage {
                 file_id: note.file_id.clone(),
                 file_name: format!("video_note_{}.mp4", note.file_unique_id),
                 mime_type: Some("video/mp4".to_string()),
+                transcribe: false,
             });
         }
         out

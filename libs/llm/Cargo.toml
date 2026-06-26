@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 async-stream = "0.3.6"
 axum = {version = "0.8.9", features = ["http1"] }
+base64 = "0.22.1"
 bytes = "1.11.1"
 futures = "0.3.32"
 http-body-util = "0.1.3"

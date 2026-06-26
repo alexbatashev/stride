@@ -2,8 +2,10 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, effect, ref } from "@frontiers-labs/argon";
+import { Component, css, effect, ref, state } from "@frontiers-labs/argon";
+import { transcribeAudio } from "../api/threads.js";
 import { IconArrowUp } from "./icons/arrow-up.js";
+import { IconMic } from "./icons/mic.js";
 import { IconPlus } from "./icons/plus.js";
 import { IconSettingsHorizontal } from "./icons/settings-horizontal.js";
 import { IconStop } from "./icons/stop.js";
@@ -170,6 +172,34 @@ const styles = css`
     opacity: 0.92;
   }
 
+  .tool-button.recording {
+    background: var(--prompt-record-bg, #b91c1c);
+    border-color: var(--prompt-record-bg, #b91c1c);
+    color: #ffffff;
+    animation: prompt-pulse 1.2s ease-in-out infinite;
+  }
+
+  .tool-button.recording:hover {
+    background: var(--prompt-record-hover-bg, #dc2626);
+    color: #ffffff;
+  }
+
+  .tool-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  @keyframes prompt-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.6;
+    }
+  }
+
   .sr-only {
     border: 0;
     clip: rect(0, 0, 0, 0);
@@ -232,6 +262,38 @@ function syncSendButton(root: ShadowRoot): void {
   if (send && textarea) send.disabled = textarea.disabled || !textarea.value.trim();
 }
 
+// MediaRecorder state lives outside the component body because the SSR pass
+// cannot evaluate `null`/MediaRecorder initializers; keying by host keeps it
+// alive across re-renders.
+type RecordingState = { recorder: MediaRecorder | null; chunks: Blob[] };
+const recordingStates = new WeakMap<EventTarget, RecordingState>();
+
+function recordingStateFor(host: EventTarget): RecordingState {
+  let entry = recordingStates.get(host);
+  if (!entry) {
+    entry = { recorder: null, chunks: [] };
+    recordingStates.set(host, entry);
+  }
+  return entry;
+}
+
+function emitPromptError(host: HTMLElement, message: string): void {
+  host.dispatchEvent(
+    new CustomEvent("prompt-error", { bubbles: true, composed: true, detail: { message } }),
+  );
+}
+
+function insertTranscript(root: ShadowRoot, text: string): void {
+  const textarea = root.querySelector<HTMLTextAreaElement>("textarea");
+  if (!textarea || !text) return;
+  const existing = textarea.value.trim();
+  textarea.value = existing ? `${existing} ${text}` : text;
+  textarea.style.height = "";
+  textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
+  syncSendButton(root);
+  textarea.focus();
+}
+
 export function AppPromptInput({
   disabled = false,
   running = false,
@@ -242,12 +304,24 @@ export function AppPromptInput({
   placeholder?: string;
 }): Component {
   const input = ref<HTMLTextAreaElement>();
+  const micButton = ref<HTMLButtonElement>();
+  let recording = state(false);
+  let transcribing = state(false);
+
   effect(() => {
+    // Boolean attributes can't be driven by JSX bindings here: server-side
+    // render emits a present `disabled` attribute even for `false`, so the
+    // control would stay greyed until a state change re-renders it. Toggle the
+    // disabled state imperatively instead, the way the textarea and send button
+    // are handled.
+    const mic = micButton.current;
+    if (mic) mic.disabled = transcribing;
     const textarea = input.current;
     if (!textarea) return;
-    textarea.toggleAttribute("disabled", disabled || running);
+    textarea.toggleAttribute("disabled", disabled || running || transcribing);
     syncSendButton(this.shadowRoot!);
   });
+
   return (
     <>
       <style>{styles}</style>
@@ -299,6 +373,75 @@ export function AppPromptInput({
             </button>
             <button class="tool-button icon" type="button" aria-label="Tools">
               <IconSettingsHorizontal />
+            </button>
+            <button
+              ref={micButton}
+              class={`tool-button icon${recording ? " recording" : ""}`}
+              type="button"
+              aria-label={recording ? "Stop recording" : "Record voice message"}
+              aria-pressed={recording ? "true" : "false"}
+              onClick={() => {
+                const rec = recordingStateFor(this);
+                if (transcribing) return;
+                if (recording) {
+                  rec.recorder?.stop();
+                  return;
+                }
+                if (disabled || running) return;
+                if (
+                  !navigator.mediaDevices?.getUserMedia ||
+                  typeof MediaRecorder === "undefined"
+                ) {
+                  emitPromptError(this, "Voice input is not supported in this browser.");
+                  return;
+                }
+                void (async () => {
+                  let stream: MediaStream;
+                  try {
+                    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                  } catch {
+                    emitPromptError(this, "Microphone access was denied.");
+                    return;
+                  }
+                  rec.chunks.length = 0;
+                  const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+                  const recorder = mime
+                    ? new MediaRecorder(stream, { mimeType: mime })
+                    : new MediaRecorder(stream);
+                  rec.recorder = recorder;
+                  recorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) rec.chunks.push(event.data);
+                  };
+                  recorder.onstop = () => {
+                    recording = false;
+                    for (const track of stream.getTracks()) track.stop();
+                    const type = recorder.mimeType || "audio/webm";
+                    rec.recorder = null;
+                    const blob = new Blob(rec.chunks, { type });
+                    rec.chunks.length = 0;
+                    if (blob.size === 0) return;
+                    transcribing = true;
+                    const ext = type.includes("ogg") ? "ogg" : "webm";
+                    void transcribeAudio(blob, `voice.${ext}`)
+                      .then((text) => insertTranscript(root as ShadowRoot, text))
+                      .catch((error) =>
+                        emitPromptError(
+                          this,
+                          error instanceof Error && error.message
+                            ? error.message
+                            : "Could not transcribe the recording.",
+                        ),
+                      )
+                      .finally(() => {
+                        transcribing = false;
+                      });
+                  };
+                  recorder.start();
+                  recording = true;
+                })();
+              }}
+            >
+              {recording ? <IconStop /> : <IconMic />}
             </button>
           </div>
           <div

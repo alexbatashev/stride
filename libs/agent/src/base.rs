@@ -24,6 +24,12 @@ pub const DEFAULT_MODEL: &str = "default";
 /// provider), features like the memory palace use it to embed text.
 pub const EMBEDDING_MODEL: &str = "embeddings";
 
+/// Registry key reserved for the audio transcription model. When a model is
+/// registered under this name (pointing at an OpenAI-compatible provider with a
+/// Whisper-style endpoint), voice input from the web UI and Telegram is
+/// transcribed before being handed to the agent.
+pub const TRANSCRIPTION_MODEL: &str = "transcription";
+
 pub struct BaseAgent(Rc<RefCell<BaseAgentInner>>);
 
 #[derive(Debug, Error)]
@@ -131,6 +137,12 @@ impl ModelRegistry {
     /// [`EMBEDDING_MODEL`] key.
     pub fn embedding(&self) -> Option<&ModelRegEntry> {
         self.models.get(EMBEDDING_MODEL)
+    }
+
+    /// The model designated for audio transcription, if one is registered under
+    /// the [`TRANSCRIPTION_MODEL`] key.
+    pub fn transcription(&self) -> Option<&ModelRegEntry> {
+        self.models.get(TRANSCRIPTION_MODEL)
     }
 }
 

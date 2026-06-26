@@ -1,6 +1,6 @@
 use crate::{
     Completion, CompletionRequest, EmbeddingResponse, Error, ImageSource, ModelDesc,
-    StreamResponseChunk,
+    StreamResponseChunk, Transcription,
 };
 
 use async_stream::stream;
@@ -139,6 +139,60 @@ mod tests {
     }
 
     #[test]
+    fn builds_multipart_transcription_body() {
+        let body = build_transcription_body(
+            "BOUND",
+            b"audiobytes",
+            "voice.ogg",
+            "audio/ogg",
+            "whisper-1",
+        );
+        let text = String::from_utf8_lossy(&body);
+
+        assert!(text.contains("--BOUND\r\n"));
+        assert!(text.contains("name=\"model\""));
+        assert!(text.contains("whisper-1"));
+        assert!(text.contains("name=\"response_format\""));
+        assert!(text.contains("name=\"file\"; filename=\"voice.ogg\""));
+        assert!(text.contains("Content-Type: audio/ogg"));
+        assert!(text.contains("audiobytes"));
+        assert!(text.ends_with("--BOUND--\r\n"));
+    }
+
+    #[test]
+    fn maps_audio_mime_to_openrouter_format() {
+        assert_eq!(audio_format_from_mime("audio/ogg"), "ogg");
+        assert_eq!(audio_format_from_mime("audio/webm;codecs=opus"), "webm");
+        assert_eq!(audio_format_from_mime("audio/mpeg"), "mp3");
+        assert_eq!(audio_format_from_mime("audio/x-wav"), "wav");
+        assert_eq!(
+            audio_format_from_mime("application/octet-stream"),
+            "octet-stream"
+        );
+    }
+
+    #[test]
+    fn openrouter_transcription_uses_json_base64_body() {
+        let client = OpenAI::openrouter("https://openrouter.ai/api/v1");
+        let req = client
+            .transcription_json_request("tok", b"audiobytes", "audio/ogg", "openai/whisper-1")
+            .unwrap();
+        assert_eq!(
+            req.headers().get("Content-Type").unwrap(),
+            "application/json"
+        );
+    }
+
+    #[test]
+    fn openrouter_url_selects_json_even_with_openai_kind() {
+        // A provider declared as plain `OpenAI` but pointed at openrouter.ai must
+        // still use the JSON body, since OpenRouter rejects multipart uploads.
+        assert!(OpenAI::new("https://openrouter.ai/api/v1").uses_openrouter_audio());
+        assert!(OpenAI::openrouter("https://openrouter.ai/api/v1").uses_openrouter_audio());
+        assert!(!OpenAI::new("https://api.openai.com/v1").uses_openrouter_audio());
+    }
+
+    #[test]
     fn parses_models_without_supported_parameters() {
         let body = br#"{"object":"list","data":[{"id":"openai/gpt-5.4","object":"model","created":1777057381,"owned_by":"proxy"}]}"#;
         let parsed: ModelListResponse = serde_json::from_slice(body).unwrap();
@@ -174,6 +228,59 @@ fn serialize_request(
     }
 
     serde_json::to_vec(&body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+}
+
+/// Builds a `multipart/form-data` body carrying the audio file plus the `model`
+/// and `response_format` fields the transcription endpoint expects.
+fn build_transcription_body(
+    boundary: &str,
+    audio: &[u8],
+    file_name: &str,
+    mime_type: &str,
+    model: &str,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    let mut text_field = |name: &str, value: &str| {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    };
+    text_field("model", model);
+    text_field("response_format", "json");
+
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(format!("Content-Type: {mime_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(audio);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+/// Maps an audio MIME type to the short format token OpenRouter expects
+/// (e.g. `audio/ogg` -> `ogg`), defaulting to the subtype after the slash.
+fn audio_format_from_mime(mime_type: &str) -> &str {
+    let subtype = mime_type
+        .split(';')
+        .next()
+        .unwrap_or(mime_type)
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .trim();
+    match subtype {
+        "mpeg" | "mp3" => "mp3",
+        "x-wav" | "wave" | "wav" => "wav",
+        "" => "webm",
+        other => other,
+    }
 }
 
 /// Rewrites the flat `reasoning_effort` string into OpenRouter's nested
@@ -299,6 +406,94 @@ impl OpenAI {
         }
 
         serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+    }
+
+    /// Whether this client should use OpenRouter's JSON+base64 transcription
+    /// body instead of OpenAI's multipart upload. True for clients built via
+    /// [`OpenAI::openrouter`] and, as a safety net, any client pointed at
+    /// `openrouter.ai` even when configured with the plain `OpenAI` kind.
+    fn uses_openrouter_audio(&self) -> bool {
+        self.reasoning_style == ReasoningStyle::Nested || self.base_url.contains("openrouter.ai")
+    }
+
+    /// Transcribes audio via the `/v1/audio/transcriptions` endpoint. OpenAI and
+    /// other Whisper-compatible providers take a `multipart/form-data` upload;
+    /// OpenRouter instead wants a JSON body carrying base64-encoded audio.
+    pub async fn transcribe(
+        &self,
+        token: &str,
+        audio: &[u8],
+        file_name: &str,
+        mime_type: &str,
+        model: &str,
+    ) -> Result<Transcription, Error> {
+        let req = if self.uses_openrouter_audio() {
+            self.transcription_json_request(token, audio, mime_type, model)
+        } else {
+            self.transcription_multipart_request(token, audio, file_name, mime_type, model)
+        }?;
+
+        let (status, res_body) = tinynet::send_request(req).await?;
+
+        if !(200..300).contains(&status) {
+            let message = String::from_utf8_lossy(&res_body).trim().to_string();
+            return Err(Error::ServerErrorWithMessage(status, message));
+        }
+
+        serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+    }
+
+    /// OpenAI-style `multipart/form-data` transcription request.
+    fn transcription_multipart_request(
+        &self,
+        token: &str,
+        audio: &[u8],
+        file_name: &str,
+        mime_type: &str,
+        model: &str,
+    ) -> Result<Request<Full<Bytes>>, Error> {
+        let boundary = format!("----stride{}", uuid::Uuid::new_v4().simple());
+        let body = build_transcription_body(&boundary, audio, file_name, mime_type, model);
+
+        Request::builder()
+            .method("POST")
+            .uri(self.endpoint("/v1/audio/transcriptions"))
+            .header(
+                "Content-Type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))
+    }
+
+    /// OpenRouter-style JSON transcription request with base64-encoded audio.
+    fn transcription_json_request(
+        &self,
+        token: &str,
+        audio: &[u8],
+        mime_type: &str,
+        model: &str,
+    ) -> Result<Request<Full<Bytes>>, Error> {
+        use base64::Engine;
+
+        let data = base64::engine::general_purpose::STANDARD.encode(audio);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "model": model,
+            "input_audio": {
+                "data": data,
+                "format": audio_format_from_mime(mime_type),
+            },
+        }))
+        .map_err(|e| Error::ParsingError(format!("{:?}", e)))?;
+
+        Request::builder()
+            .method("POST")
+            .uri(self.endpoint("/v1/audio/transcriptions"))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))
     }
 
     pub async fn get_model(&self, token: &str, model: &str) -> Result<ModelDesc, Error> {

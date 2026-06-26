@@ -47,6 +47,15 @@ provider = "ollama"
 slug = "text-embedding-3-small"
 provider = "openai"
 
+# A model registered under the reserved name `transcription` is used to convert
+# voice input into text: the web UI's mic button and incoming Telegram voice
+# messages are transcribed through it. It must point at an OpenAI-compatible
+# provider exposing a Whisper-style `/v1/audio/transcriptions` endpoint. Without
+# it, the mic button and Telegram voice transcription are disabled.
+[models.transcription]
+slug = "whisper-1"
+provider = "openai"
+
 [server]
 db_path = "/tmp/server.db"
 listen_addr = "0.0.0.0:3000"

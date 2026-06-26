@@ -294,7 +294,9 @@ async fn sync_prefix_in(
                     if let Some(parent) = child_local.parent() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
-                    let (bytes, _) = vfs.read_bytes_global(owner, &under(prefix, &child_rel)).await?;
+                    let (bytes, _) = vfs
+                        .read_bytes_global(owner, &under(prefix, &child_rel))
+                        .await?;
                     tokio::fs::write(child_local, bytes).await?;
                 }
             }

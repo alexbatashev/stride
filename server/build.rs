@@ -33,7 +33,10 @@ fn copy_prebuilt_ssr(src: &Path, out_dir: &Path) {
             copied += 1;
         }
     }
-    assert!(copied > 0, "STRIDE_PREBUILT_SSR_DIR {src:?} held no .rs modules");
+    assert!(
+        copied > 0,
+        "STRIDE_PREBUILT_SSR_DIR {src:?} held no .rs modules"
+    );
 }
 
 fn build_frontend(out_dir: &str) {
@@ -83,8 +86,7 @@ fn compile_ssr_modules(frontend: &Path, out_dir: &str) {
 
 fn read_ssr_components(frontend: &Path) -> Vec<String> {
     let manifest = frontend.join("ssr-components.txt");
-    let text =
-        fs::read_to_string(&manifest).unwrap_or_else(|e| panic!("read {manifest:?}: {e}"));
+    let text = fs::read_to_string(&manifest).unwrap_or_else(|e| panic!("read {manifest:?}: {e}"));
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))

@@ -125,6 +125,11 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transcription {
+    pub text: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EmbeddingData {
     pub object: String,

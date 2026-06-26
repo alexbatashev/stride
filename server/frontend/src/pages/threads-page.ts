@@ -170,6 +170,9 @@ class ThreadsPageHydrator {
 			this.onPromptSubmit(event as CustomEvent<{ value: string }>),
 		);
 		this.promptEl.addEventListener("prompt-stop", () => void this.onStop());
+		this.promptEl.addEventListener("prompt-error", (event) =>
+			this.setError((event as CustomEvent<{ message: string }>).detail.message),
+		);
 		this.promptEl.addEventListener("files-attach", (event) =>
 			void this.onFilesAttach(event as CustomEvent<{ files: File[] }>),
 		);

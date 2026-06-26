@@ -412,6 +412,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             post(api::uploads::upload).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
         )
         .route(
+            "/api/transcribe",
+            post(api::transcribe::transcribe).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
+        )
+        .route(
             "/api/files",
             get(api::files::list_files)
                 .post(api::files::upload_file)

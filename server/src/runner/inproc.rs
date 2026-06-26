@@ -1013,7 +1013,9 @@ async fn ensure_runner(
             &tools,
             &db,
             user_id,
-            email_service.as_ref().map(|service| service.provider(user_id)),
+            email_service
+                .as_ref()
+                .map(|service| service.provider(user_id)),
             &mcp_tools,
             project_title.clone(),
         )
