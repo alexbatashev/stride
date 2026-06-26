@@ -304,10 +304,18 @@ export function AppPromptInput({
   placeholder?: string;
 }): Component {
   const input = ref<HTMLTextAreaElement>();
+  const micButton = ref<HTMLButtonElement>();
   let recording = state(false);
   let transcribing = state(false);
 
   effect(() => {
+    // Boolean attributes can't be driven by JSX bindings here: server-side
+    // render emits a present `disabled` attribute even for `false`, so the
+    // control would stay greyed until a state change re-renders it. Toggle the
+    // disabled state imperatively instead, the way the textarea and send button
+    // are handled.
+    const mic = micButton.current;
+    if (mic) mic.disabled = transcribing;
     const textarea = input.current;
     if (!textarea) return;
     textarea.toggleAttribute("disabled", disabled || running || transcribing);
@@ -367,13 +375,14 @@ export function AppPromptInput({
               <IconSettingsHorizontal />
             </button>
             <button
+              ref={micButton}
               class={`tool-button icon${recording ? " recording" : ""}`}
               type="button"
               aria-label={recording ? "Stop recording" : "Record voice message"}
               aria-pressed={recording ? "true" : "false"}
-              disabled={transcribing || disabled || running}
               onClick={() => {
                 const rec = recordingStateFor(this);
+                if (transcribing) return;
                 if (recording) {
                   rec.recorder?.stop();
                   return;

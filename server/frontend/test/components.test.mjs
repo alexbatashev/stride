@@ -129,6 +129,7 @@ test('app-prompt-input exposes a voice record button', () => {
   const mic = el.shadowRoot.querySelector('button[aria-label="Record voice message"]');
   assert.ok(mic);
   assert.equal(mic.getAttribute('aria-pressed'), 'false');
+  assert.equal(mic.disabled, false);
 });
 
 test('app-approval-bar answers yes and no', () => {
