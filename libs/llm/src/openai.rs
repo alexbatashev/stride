@@ -184,6 +184,15 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_url_selects_json_even_with_openai_kind() {
+        // A provider declared as plain `OpenAI` but pointed at openrouter.ai must
+        // still use the JSON body, since OpenRouter rejects multipart uploads.
+        assert!(OpenAI::new("https://openrouter.ai/api/v1").uses_openrouter_audio());
+        assert!(OpenAI::openrouter("https://openrouter.ai/api/v1").uses_openrouter_audio());
+        assert!(!OpenAI::new("https://api.openai.com/v1").uses_openrouter_audio());
+    }
+
+    #[test]
     fn parses_models_without_supported_parameters() {
         let body = br#"{"object":"list","data":[{"id":"openai/gpt-5.4","object":"model","created":1777057381,"owned_by":"proxy"}]}"#;
         let parsed: ModelListResponse = serde_json::from_slice(body).unwrap();
@@ -399,10 +408,17 @@ impl OpenAI {
         serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
     }
 
+    /// Whether this client should use OpenRouter's JSON+base64 transcription
+    /// body instead of OpenAI's multipart upload. True for clients built via
+    /// [`OpenAI::openrouter`] and, as a safety net, any client pointed at
+    /// `openrouter.ai` even when configured with the plain `OpenAI` kind.
+    fn uses_openrouter_audio(&self) -> bool {
+        self.reasoning_style == ReasoningStyle::Nested || self.base_url.contains("openrouter.ai")
+    }
+
     /// Transcribes audio via the `/v1/audio/transcriptions` endpoint. OpenAI and
     /// other Whisper-compatible providers take a `multipart/form-data` upload;
-    /// OpenRouter instead wants a JSON body carrying base64-encoded audio, so the
-    /// request shape follows the same flavor used for reasoning effort.
+    /// OpenRouter instead wants a JSON body carrying base64-encoded audio.
     pub async fn transcribe(
         &self,
         token: &str,
@@ -411,13 +427,10 @@ impl OpenAI {
         mime_type: &str,
         model: &str,
     ) -> Result<Transcription, Error> {
-        let req = match self.reasoning_style {
-            ReasoningStyle::Nested => {
-                self.transcription_json_request(token, audio, mime_type, model)
-            }
-            ReasoningStyle::Effort => {
-                self.transcription_multipart_request(token, audio, file_name, mime_type, model)
-            }
+        let req = if self.uses_openrouter_audio() {
+            self.transcription_json_request(token, audio, mime_type, model)
+        } else {
+            self.transcription_multipart_request(token, audio, file_name, mime_type, model)
         }?;
 
         let (status, res_body) = tinynet::send_request(req).await?;
