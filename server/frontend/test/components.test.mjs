@@ -124,6 +124,13 @@ test('app-prompt-input swaps send for stop while running', () => {
   assert.ok(el.shadowRoot.querySelector('textarea').disabled);
 });
 
+test('app-prompt-input exposes a voice record button', () => {
+  const el = mount('app-prompt-input');
+  const mic = el.shadowRoot.querySelector('button[aria-label="Record voice message"]');
+  assert.ok(mic);
+  assert.equal(mic.getAttribute('aria-pressed'), 'false');
+});
+
 test('app-approval-bar answers yes and no', () => {
   const el = mount('app-approval-bar', { message: 'Run rm -rf /tmp/x?' });
   assert.match(el.shadowRoot.innerHTML, /Run rm -rf/);

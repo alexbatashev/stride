@@ -1,6 +1,6 @@
 use crate::{
     Completion, CompletionRequest, EmbeddingResponse, Error, ImageSource, ModelDesc,
-    StreamResponseChunk,
+    StreamResponseChunk, Transcription,
 };
 
 use async_stream::stream;
@@ -139,6 +139,27 @@ mod tests {
     }
 
     #[test]
+    fn builds_multipart_transcription_body() {
+        let body = build_transcription_body(
+            "BOUND",
+            b"audiobytes",
+            "voice.ogg",
+            "audio/ogg",
+            "whisper-1",
+        );
+        let text = String::from_utf8_lossy(&body);
+
+        assert!(text.contains("--BOUND\r\n"));
+        assert!(text.contains("name=\"model\""));
+        assert!(text.contains("whisper-1"));
+        assert!(text.contains("name=\"response_format\""));
+        assert!(text.contains("name=\"file\"; filename=\"voice.ogg\""));
+        assert!(text.contains("Content-Type: audio/ogg"));
+        assert!(text.contains("audiobytes"));
+        assert!(text.ends_with("--BOUND--\r\n"));
+    }
+
+    #[test]
     fn parses_models_without_supported_parameters() {
         let body = br#"{"object":"list","data":[{"id":"openai/gpt-5.4","object":"model","created":1777057381,"owned_by":"proxy"}]}"#;
         let parsed: ModelListResponse = serde_json::from_slice(body).unwrap();
@@ -174,6 +195,39 @@ fn serialize_request(
     }
 
     serde_json::to_vec(&body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+}
+
+/// Builds a `multipart/form-data` body carrying the audio file plus the `model`
+/// and `response_format` fields the transcription endpoint expects.
+fn build_transcription_body(
+    boundary: &str,
+    audio: &[u8],
+    file_name: &str,
+    mime_type: &str,
+    model: &str,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    let mut text_field = |name: &str, value: &str| {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    };
+    text_field("model", model);
+    text_field("response_format", "json");
+
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(format!("Content-Type: {mime_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(audio);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
 }
 
 /// Rewrites the flat `reasoning_effort` string into OpenRouter's nested
@@ -289,6 +343,39 @@ impl OpenAI {
             .method("POST")
             .uri(self.endpoint("/v1/embeddings"))
             .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", token))
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::InvalidRequest(e.to_string()))?;
+        let (status, res_body) = tinynet::send_request(req).await?;
+
+        if !(200..300).contains(&status) {
+            return Err(Error::ServerError(status));
+        }
+
+        serde_json::from_slice(&res_body).map_err(|e| Error::ParsingError(format!("{:?}", e)))
+    }
+
+    /// Transcribes audio bytes via the `/v1/audio/transcriptions` endpoint
+    /// (Whisper-compatible). The audio is sent as a multipart form alongside the
+    /// transcription model name.
+    pub async fn transcribe(
+        &self,
+        token: &str,
+        audio: &[u8],
+        file_name: &str,
+        mime_type: &str,
+        model: &str,
+    ) -> Result<Transcription, Error> {
+        let boundary = format!("----stride{}", uuid::Uuid::new_v4().simple());
+        let body = build_transcription_body(&boundary, audio, file_name, mime_type, model);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(self.endpoint("/v1/audio/transcriptions"))
+            .header(
+                "Content-Type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
             .header("Authorization", format!("Bearer {}", token))
             .body(Full::new(Bytes::from(body)))
             .map_err(|e| Error::InvalidRequest(e.to_string()))?;

@@ -4,7 +4,7 @@ use futures::Stream;
 
 use crate::{
     Anthropic, Completion, CompletionRequest, EmbeddingResponse, Error, Mock, ModelDesc, Ollama,
-    OpenAI, StreamResponseChunk,
+    OpenAI, StreamResponseChunk, Transcription,
 };
 
 #[derive(Debug, Clone)]
@@ -46,6 +46,25 @@ impl API {
             _ => Err(Error::InvalidRequest(
                 "embeddings are only supported by OpenAI- and Ollama-compatible providers"
                     .to_owned(),
+            )),
+        }
+    }
+
+    pub async fn transcribe(
+        &self,
+        token: &str,
+        audio: &[u8],
+        file_name: &str,
+        mime_type: &str,
+        model: &str,
+    ) -> Result<Transcription, Error> {
+        match self {
+            API::OpenAI(api) => {
+                api.transcribe(token, audio, file_name, mime_type, model)
+                    .await
+            }
+            _ => Err(Error::InvalidRequest(
+                "audio transcription is only supported by OpenAI-compatible providers".to_owned(),
             )),
         }
     }

@@ -178,6 +178,21 @@ export async function uploadFiles(threadId: string, files: File[], path = ''): P
 	return data.files;
 }
 
+export async function transcribeAudio(audio: Blob, fileName = 'voice.webm'): Promise<string> {
+	const token = readToken();
+	const headers = new Headers();
+	headers.set('Accept', 'application/json');
+	if (token) headers.set('Authorization', `Bearer ${token}`);
+
+	const body = new FormData();
+	body.append('file', audio, fileName);
+
+	const response = await fetch('/api/transcribe', {method: 'POST', headers, body});
+	if (!response.ok) throw new Error(`${response.status}`);
+	const data = await response.json() as {text: string};
+	return data.text;
+}
+
 function encodePath(path: string): string {
 	return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
 }
