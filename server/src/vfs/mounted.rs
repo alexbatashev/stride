@@ -170,7 +170,9 @@ impl MountedVfs {
                 }
             }
             (WritableArea::ProjectDir(prefix), Mount::Global(rel)) => {
-                if rel == *prefix || rel.starts_with(&format!("{prefix}/")) || self.extra_allows(&rel)
+                if rel == *prefix
+                    || rel.starts_with(&format!("{prefix}/"))
+                    || self.extra_allows(&rel)
                 {
                     Ok(WriteTarget::Global(rel))
                 } else {

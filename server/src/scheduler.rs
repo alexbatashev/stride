@@ -390,7 +390,12 @@ async fn run_python(
     script: &str,
     mcp_tools: Vec<McpTool>,
 ) -> Result<String, String> {
-    let Some(python) = ctx.tools.python.as_ref().filter(|p| p.enabled != Some(false)) else {
+    let Some(python) = ctx
+        .tools
+        .python
+        .as_ref()
+        .filter(|p| p.enabled != Some(false))
+    else {
         return Err("python execution is disabled".to_string());
     };
     let config = python_tool_config(python);
@@ -415,7 +420,10 @@ async fn run_python(
         .with_tools(registry);
 
     let result = tool
-        .execute(ctx.model_config.clone(), serde_json::json!({ "script": script }))
+        .execute(
+            ctx.model_config.clone(),
+            serde_json::json!({ "script": script }),
+        )
         .await;
     let stdout = result["stdout"].as_str().unwrap_or_default();
     let stderr = result["stderr"].as_str().unwrap_or_default();

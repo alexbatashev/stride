@@ -18,7 +18,7 @@ pub enum TranscribeApiError {
     Auth(AuthError),
     BadRequest,
     NotConfigured,
-    Upstream,
+    Upstream(String),
 }
 
 impl IntoResponse for TranscribeApiError {
@@ -31,11 +31,9 @@ impl IntoResponse for TranscribeApiError {
                 "no transcription model configured",
             )
                 .into_response(),
-            TranscribeApiError::Upstream => (
-                StatusCode::BAD_GATEWAY,
-                "transcription provider request failed",
-            )
-                .into_response(),
+            TranscribeApiError::Upstream(message) => {
+                (StatusCode::BAD_GATEWAY, message).into_response()
+            }
         }
     }
 }
@@ -104,7 +102,7 @@ pub async fn transcribe(
         .await
         .map_err(|error| {
             tracing::warn!(%error, "transcription request failed");
-            TranscribeApiError::Upstream
+            TranscribeApiError::Upstream(format!("transcription failed: {error}"))
         })?;
 
     Ok(Json(TranscribeResponse {

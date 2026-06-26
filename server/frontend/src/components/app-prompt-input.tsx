@@ -424,7 +424,14 @@ export function AppPromptInput({
                     const ext = type.includes("ogg") ? "ogg" : "webm";
                     void transcribeAudio(blob, `voice.${ext}`)
                       .then((text) => insertTranscript(root as ShadowRoot, text))
-                      .catch(() => emitPromptError(this, "Could not transcribe the recording."))
+                      .catch((error) =>
+                        emitPromptError(
+                          this,
+                          error instanceof Error && error.message
+                            ? error.message
+                            : "Could not transcribe the recording.",
+                        ),
+                      )
                       .finally(() => {
                         transcribing = false;
                       });

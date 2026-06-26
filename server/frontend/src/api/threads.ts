@@ -188,7 +188,10 @@ export async function transcribeAudio(audio: Blob, fileName = 'voice.webm'): Pro
 	body.append('file', audio, fileName);
 
 	const response = await fetch('/api/transcribe', {method: 'POST', headers, body});
-	if (!response.ok) throw new Error(`${response.status}`);
+	if (!response.ok) {
+		const detail = (await response.text()).trim();
+		throw new Error(detail || `Transcription failed (${response.status})`);
+	}
 	const data = await response.json() as {text: string};
 	return data.text;
 }
