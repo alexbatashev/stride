@@ -2140,8 +2140,7 @@ fn validate_secret(state: &ServerState, headers: &HeaderMap) -> Result<(), Teleg
         .server
         .as_ref()
         .and_then(|s| s.telegram.as_ref())
-        .and_then(|t| t.webhook_secret.as_deref())
-        .filter(|s| !s.is_empty())
+        .and_then(|t| t.read_webhook_secret())
         .ok_or(TelegramApiError::Unauthorized)?;
 
     let actual = headers
@@ -2149,7 +2148,7 @@ fn validate_secret(state: &ServerState, headers: &HeaderMap) -> Result<(), Teleg
         .and_then(|v| v.to_str().ok())
         .ok_or(TelegramApiError::Unauthorized)?;
 
-    if crate::triggers::webhook::verify_secret(expected, actual) {
+    if crate::triggers::webhook::verify_secret(&expected, actual) {
         Ok(())
     } else {
         Err(TelegramApiError::Unauthorized)

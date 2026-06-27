@@ -84,10 +84,16 @@ base = "/tmp/stride-files"
 # Account linking uses the Telegram Login Widget (https://core.telegram.org/bots/telegram-login).
 # Tell BotFather which domain hosts the widget with `/setdomain` (the host in `public_url`),
 # otherwise Telegram refuses to render the login button.
+# Each field may also be supplied via an environment variable, which takes over
+# when the field is unset: STRIDE_TELEGRAM_BOT_API_KEY, STRIDE_TELEGRAM_BOT_USERNAME,
+# STRIDE_TELEGRAM_WEBHOOK_SECRET, STRIDE_TELEGRAM_WEBHOOK_URL.
 [server.telegram]
 bot_api_key = "123456:telegram-bot-token"
 bot_username = "stride_bot"
 webhook_secret = "change-this-webhook-secret"
+# Public HTTPS URL Telegram posts updates to. Required for the server to register
+# the webhook on startup (with callback_query updates, so inline button taps work).
+webhook_url = "https://stride.example.com/api/telegram/webhook"
 
 # Linking a GitHub account uses a standard GitHub OAuth App. Register one at
 # https://github.com/settings/developers with the authorization callback URL set

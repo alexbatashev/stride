@@ -234,9 +234,9 @@ async fn main() -> anyhow::Result<()> {
             .server
             .as_ref()
             .and_then(|s| s.telegram.as_ref());
-        match telegram.and_then(|t| t.webhook_url.clone()) {
+        match telegram.and_then(|t| t.read_webhook_url()) {
             Some(url) => {
-                let secret = telegram.and_then(|t| t.webhook_secret.clone());
+                let secret = telegram.and_then(|t| t.read_webhook_secret());
                 api::telegram::register_webhook(token, url, secret).await;
             }
             None => tracing::warn!(

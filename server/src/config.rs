@@ -386,6 +386,20 @@ impl Telegram {
             .clone()
             .or_else(|| env::var("STRIDE_TELEGRAM_BOT_USERNAME").ok())
     }
+
+    pub fn read_webhook_secret(&self) -> Option<String> {
+        self.webhook_secret
+            .clone()
+            .or_else(|| env::var("STRIDE_TELEGRAM_WEBHOOK_SECRET").ok())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn read_webhook_url(&self) -> Option<String> {
+        self.webhook_url
+            .clone()
+            .or_else(|| env::var("STRIDE_TELEGRAM_WEBHOOK_URL").ok())
+            .filter(|value| !value.is_empty())
+    }
 }
 
 impl Firecrawl {
