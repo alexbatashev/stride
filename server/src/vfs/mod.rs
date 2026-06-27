@@ -870,7 +870,7 @@ impl Vfs {
                     COALESCE((SELECT o.created_at FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1), n.created_at) as updated_at \
                  FROM vfs_nodes n \
                  WHERE {scope_sql} AND n.parent_node = ? \
-                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, n.name COLLATE NOCASE ASC"
+                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, LOWER(n.name) ASC"
             )
         } else {
             format!(
@@ -879,7 +879,7 @@ impl Vfs {
                     COALESCE((SELECT o.created_at FROM vfs_objects o WHERE o.node = n.id ORDER BY o.version DESC LIMIT 1), n.created_at) as updated_at \
                  FROM vfs_nodes n \
                  WHERE {scope_sql} AND n.parent_node IS NULL AND n.name != '' \
-                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, n.name COLLATE NOCASE ASC"
+                 ORDER BY CASE n.kind WHEN 'dir' THEN 0 ELSE 1 END, LOWER(n.name) ASC"
             )
         };
         let rows = self
