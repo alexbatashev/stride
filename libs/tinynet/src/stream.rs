@@ -55,14 +55,16 @@ impl Read for AsyncTlsStream {
             }
         }
 
-        match this.tls_conn.read_tls(&mut this.socket) {
+        // `read_tls` returning `Ok(0)` is a TCP-level EOF (the peer closed the
+        // socket); `WouldBlock` just means no new bytes are available yet. In both
+        // cases we still fall through to drain any plaintext rustls has already
+        // decrypted — returning early on `WouldBlock` would strand buffered bytes.
+        let socket_eof = match this.tls_conn.read_tls(&mut this.socket) {
             Err(e) if !is_pending_socket_error(&e) => return Poll::Ready(Err(e)),
-            Err(_) => {
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            Ok(_) => {}
-        }
+            Err(_) => false,
+            Ok(0) => true,
+            Ok(_) => false,
+        };
 
         let io_state = match this.tls_conn.process_new_packets() {
             Ok(state) => state,
@@ -91,7 +93,11 @@ impl Read for AsyncTlsStream {
             return Poll::Ready(Ok(()));
         }
 
-        if io_state.peer_has_closed() {
+        // A zero-length read tells hyper the body is complete. Without surfacing
+        // EOF here, a response delimited by connection close (no Content-Length,
+        // or a close without a TLS close_notify) spins forever — which is what
+        // hung Telegram file downloads after the bytes had already arrived.
+        if io_state.peer_has_closed() || socket_eof {
             return Poll::Ready(Ok(()));
         }
 
