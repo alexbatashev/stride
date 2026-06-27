@@ -37,6 +37,7 @@ use crate::{
     db::{Role, messages},
     email::ImapService,
     github::GitHubRuntime,
+    google::GoogleRuntime,
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
         PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId, RunnerLifecycle,
@@ -208,6 +209,7 @@ struct WorkerInit {
     telegram_bot_token: Option<String>,
     public_url: Option<String>,
     github_runtime: Option<GitHubRuntime>,
+    google_runtime: Option<GoogleRuntime>,
     email_service: Option<ImapService>,
     system_prompt: String,
     idle_ttl: Duration,
@@ -222,6 +224,7 @@ struct WorkerState {
     telegram_bot_token: Option<String>,
     public_url: Option<String>,
     github_runtime: Option<GitHubRuntime>,
+    google_runtime: Option<GoogleRuntime>,
     email_service: Option<ImapService>,
     system_prompt: String,
     idle_ttl: Duration,
@@ -291,6 +294,7 @@ impl InProcessAgentPool {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -303,6 +307,7 @@ impl InProcessAgentPool {
         telegram_bot_token: Option<String>,
         public_url: Option<String>,
         github_runtime: Option<GitHubRuntime>,
+        google_runtime: Option<GoogleRuntime>,
         email_service: ImapService,
     ) -> Self {
         Self::with_system_prompt_and_tools(
@@ -315,6 +320,7 @@ impl InProcessAgentPool {
             telegram_bot_token,
             public_url,
             github_runtime,
+            google_runtime,
             Some(email_service),
         )
     }
@@ -337,6 +343,7 @@ impl InProcessAgentPool {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -350,6 +357,7 @@ impl InProcessAgentPool {
         telegram_bot_token: Option<String>,
         public_url: Option<String>,
         github_runtime: Option<GitHubRuntime>,
+        google_runtime: Option<GoogleRuntime>,
         email_service: ImapService,
     ) -> Self {
         Self::with_system_prompt_and_tools(
@@ -362,6 +370,7 @@ impl InProcessAgentPool {
             telegram_bot_token,
             public_url,
             github_runtime,
+            google_runtime,
             Some(email_service),
         )
     }
@@ -385,6 +394,7 @@ impl InProcessAgentPool {
         telegram_bot_token: Option<String>,
         public_url: Option<String>,
         github_runtime: Option<GitHubRuntime>,
+        google_runtime: Option<GoogleRuntime>,
         email_service: Option<ImapService>,
     ) -> Self {
         Self::from_init(WorkerInit {
@@ -396,6 +406,7 @@ impl InProcessAgentPool {
             telegram_bot_token,
             public_url,
             github_runtime,
+            google_runtime,
             email_service,
             system_prompt,
             idle_ttl: DEFAULT_IDLE_TTL,
@@ -437,6 +448,7 @@ impl InProcessAgentPool {
             telegram_bot_token: None,
             public_url: None,
             github_runtime: None,
+            google_runtime: None,
             email_service: None,
             system_prompt,
             idle_ttl,
@@ -567,6 +579,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 telegram_bot_token,
                 public_url,
                 github_runtime,
+                google_runtime,
                 email_service,
                 system_prompt,
                 idle_ttl,
@@ -580,6 +593,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 telegram_bot_token,
                 public_url,
                 github_runtime,
+                google_runtime,
                 email_service,
                 system_prompt,
                 idle_ttl,
@@ -922,6 +936,7 @@ async fn ensure_runner(
         telegram_bot_token,
         public_url,
         github_runtime,
+        google_runtime,
         email_service,
         base_system_prompt,
     ) = {
@@ -935,6 +950,7 @@ async fn ensure_runner(
             state.telegram_bot_token.clone(),
             state.public_url.clone(),
             state.github_runtime.clone(),
+            state.google_runtime.clone(),
             state.email_service.clone(),
             state.system_prompt.clone(),
         )
@@ -949,6 +965,10 @@ async fn ensure_runner(
     if let Some(github_runtime) = github_runtime.as_ref() {
         mcp_tools
             .extend(crate::github::connect_user_github_mcp(&db, user_id, github_runtime).await);
+    }
+    if let Some(google_runtime) = google_runtime.as_ref() {
+        mcp_tools
+            .extend(crate::google::connect_user_google_mcp(&db, user_id, google_runtime).await);
     }
     let project_id = thread_project_id(&db, thread_id).await?;
     // Resolve where this thread writes: a project thread writes into the
@@ -2636,6 +2656,7 @@ mod tests {
             telegram_bot_token: None,
             public_url: None,
             github_runtime: None,
+            google_runtime: None,
             email_service: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
@@ -2719,6 +2740,7 @@ mod tests {
             telegram_bot_token: None,
             public_url: None,
             github_runtime: None,
+            google_runtime: None,
             email_service: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),

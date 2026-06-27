@@ -6,6 +6,7 @@ mod crypto;
 mod db;
 mod email;
 mod github;
+mod google;
 mod mcp_servers;
 mod notify;
 mod pages;
@@ -124,6 +125,21 @@ async fn main() -> anyhow::Result<()> {
             mcp_url: github.mcp_url().to_string(),
             cipher: cipher.clone(),
         });
+    // Google tools require both OAuth credentials and an MCP endpoint; there is
+    // no official hosted server to fall back to.
+    let google_runtime = config
+        .server
+        .as_ref()
+        .and_then(|s| s.google.as_ref())
+        .filter(|google| google.is_configured())
+        .and_then(|google| {
+            Some(google::GoogleRuntime {
+                mcp_url: google.mcp_url()?.to_string(),
+                cipher: cipher.clone(),
+                client_id: google.read_client_id()?,
+                client_secret: google.read_client_secret()?,
+            })
+        });
     let vfs_provider = config
         .server
         .as_ref()
@@ -169,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
                 telegram_bot_token.clone(),
                 public_url,
                 github_runtime.clone(),
+                google_runtime.clone(),
                 email_service.clone(),
             ),
         )
@@ -182,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
                 telegram_bot_token.clone(),
                 public_url,
                 github_runtime.clone(),
+                google_runtime.clone(),
                 email_service,
             ),
         )
@@ -334,6 +352,16 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route(
             "/api/settings/github/disconnect",
             post(api::github::disconnect),
+        )
+        .route("/api/settings/google", get(api::google::settings))
+        .route(
+            "/api/settings/google/authorize",
+            get(api::google::authorize),
+        )
+        .route("/api/settings/google/callback", get(api::google::callback))
+        .route(
+            "/api/settings/google/disconnect",
+            post(api::google::disconnect),
         )
         .route(
             "/api/settings/mcp",
