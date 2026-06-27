@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::error::Error as StdError;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::thread;
 
+use futures::StreamExt;
+use futures::channel::{mpsc, oneshot};
 use postgres::types::{ToSql, Type};
 use postgres::{Client, NoTls};
 
@@ -11,20 +14,74 @@ use crate::sql_builder::SQLBuilder;
 
 #[derive(Clone)]
 pub struct PostgresBackend {
-    client: Arc<Mutex<Client>>,
+    request_tx: Arc<mpsc::UnboundedSender<WorkerRequest>>,
+}
+
+enum WorkerRequest {
+    Query {
+        query: String,
+        params: Vec<Value>,
+        response: oneshot::Sender<Result<QueryResult, String>>,
+    },
+    Rollback,
 }
 
 pub struct PostgresBuilder;
 
 impl PostgresBackend {
     pub fn new(url: &str) -> Result<Self, Box<dyn StdError + Send + Sync>> {
+        let url = url.to_string();
+        let (request_tx, mut request_rx) = mpsc::unbounded::<WorkerRequest>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+
+        // The synchronous `postgres` client drives its own Tokio runtime via
+        // `block_on`, which panics when invoked from a thread already inside the
+        // server's async runtime. Pin the client to a dedicated OS thread so its
+        // internal runtime is the only one on that thread.
+        thread::Builder::new()
+            .name("minisql-postgres-worker".to_string())
+            .spawn(move || {
+                let mut client = match Client::connect(&url, NoTls) {
+                    Ok(client) => {
+                        let _ = ready_tx.send(Ok(()));
+                        client
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+
+                futures::executor::block_on(async move {
+                    while let Some(request) = request_rx.next().await {
+                        match request {
+                            WorkerRequest::Query {
+                                query,
+                                params,
+                                response,
+                            } => {
+                                let result = run_query(&mut client, &query, params);
+                                let _ = response.send(result);
+                            }
+                            WorkerRequest::Rollback => {
+                                let _ = client.simple_query("ROLLBACK;");
+                            }
+                        }
+                    }
+                });
+            })?;
+
+        ready_rx
+            .recv()
+            .map_err(|_| "postgres worker stopped before connecting".to_string())??;
+
         Ok(Self {
-            client: Arc::new(Mutex::new(Client::connect(url, NoTls)?)),
+            request_tx: Arc::new(request_tx),
         })
     }
 
     pub async fn query(&self, query: &str) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
-        self.query_with_params(query, Vec::new()).await
+        self.send_query(query, Vec::new()).await
     }
 
     pub async fn query_with_params(
@@ -32,30 +89,27 @@ impl PostgresBackend {
         query: &str,
         params: Vec<Value>,
     ) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
-        let query = postgres_placeholders(query);
-        let params = postgres_params(params);
-        let param_refs = params
-            .iter()
-            .map(|p| &**p as &(dyn ToSql + Sync))
-            .collect::<Vec<_>>();
+        self.send_query(query, params).await
+    }
 
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|_| "postgres client lock is poisoned".to_string())?;
+    async fn send_query(
+        &self,
+        query: &str,
+        params: Vec<Value>,
+    ) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.request_tx
+            .unbounded_send(WorkerRequest::Query {
+                query: query.to_string(),
+                params,
+                response: response_tx,
+            })
+            .map_err(|_| "postgres worker is unavailable".to_string())?;
 
-        if returns_rows(&query) {
-            let rows = client.query(&query, &param_refs)?;
-            let rows = rows
-                .into_iter()
-                .map(postgres_row)
-                .collect::<Result<Vec<_>, _>>()?;
-            let affected_rows = rows.len();
-            Ok(QueryResult::new(rows, affected_rows))
-        } else {
-            let affected_rows = client.execute(&query, &param_refs)? as usize;
-            Ok(QueryResult::new(Vec::new(), affected_rows))
-        }
+        response_rx
+            .await
+            .map_err(|_| "postgres worker stopped before responding".to_string())?
+            .map_err(Into::into)
     }
 
     pub async fn begin_transaction(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
@@ -67,13 +121,38 @@ impl PostgresBackend {
     }
 
     pub(crate) fn rollback_transaction_fire_and_forget(&self) {
-        if let Ok(mut client) = self.client.lock() {
-            let _ = client.simple_query("ROLLBACK;");
-        }
+        let _ = self.request_tx.unbounded_send(WorkerRequest::Rollback);
     }
 
     pub fn builder(&self) -> SQLBuilder {
         SQLBuilder::Postgres(PostgresBuilder {})
+    }
+}
+
+fn run_query(client: &mut Client, query: &str, params: Vec<Value>) -> Result<QueryResult, String> {
+    let query = postgres_placeholders(query);
+    let params = postgres_params(params);
+    let param_refs = params
+        .iter()
+        .map(|p| &**p as &(dyn ToSql + Sync))
+        .collect::<Vec<_>>();
+
+    if returns_rows(&query) {
+        let rows = client
+            .query(&query, &param_refs)
+            .map_err(|e| e.to_string())?;
+        let rows = rows
+            .into_iter()
+            .map(postgres_row)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let affected_rows = rows.len();
+        Ok(QueryResult::new(rows, affected_rows))
+    } else {
+        let affected_rows = client
+            .execute(&query, &param_refs)
+            .map_err(|e| e.to_string())? as usize;
+        Ok(QueryResult::new(Vec::new(), affected_rows))
     }
 }
 
