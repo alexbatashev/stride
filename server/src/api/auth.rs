@@ -451,6 +451,7 @@ mod tests {
                     files: None,
                     telegram: None,
                     github: None,
+                    google: None,
                     public_url: None,
                 }),
                 ..empty_config()
@@ -503,6 +504,7 @@ mod tests {
                 files: None,
                 telegram: None,
                 github: None,
+                google: None,
                 public_url: None,
             }),
             tools: None,
