@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytes = "1"
 futures = "0.3.32"
 postgres = { version = "0.19.12", features = ["with-uuid-1"] }
 serde = { version = "1.0.228", features = ["derive"] }

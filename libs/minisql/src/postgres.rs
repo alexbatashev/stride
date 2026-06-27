@@ -3,9 +3,10 @@ use std::error::Error as StdError;
 use std::sync::Arc;
 use std::thread;
 
+use bytes::BytesMut;
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
-use postgres::types::{ToSql, Type};
+use postgres::types::{IsNull, ToSql, Type, to_sql_checked};
 use postgres::{Client, NoTls};
 
 use crate::migration::{AlterTable, Command, SqlType};
@@ -156,11 +157,33 @@ fn run_query(client: &mut Client, query: &str, params: Vec<Value>) -> Result<Que
     }
 }
 
+/// A SQL NULL that adapts to whatever column type Postgres expects. A typed
+/// `Option::<T>::None` would force a parameter OID (e.g. int4) and fail against
+/// a column of any other type, so bind NULLs through this instead.
+#[derive(Debug)]
+struct PgNull;
+
+impl ToSql for PgNull {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        _out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
+        Ok(IsNull::Yes)
+    }
+
+    fn accepts(_ty: &Type) -> bool {
+        true
+    }
+
+    to_sql_checked!();
+}
+
 fn postgres_params(params: Vec<Value>) -> Vec<Box<dyn ToSql + Sync>> {
     params
         .into_iter()
         .map(|param| match param {
-            Value::Null => Box::new(Option::<i32>::None) as Box<dyn ToSql + Sync>,
+            Value::Null => Box::new(PgNull) as Box<dyn ToSql + Sync>,
             Value::Integer(i) => Box::new(i),
             Value::Real(r) => Box::new(r),
             Value::Text(s) => Box::new(s),
