@@ -200,9 +200,7 @@ impl Google {
 
     /// Configured MCP endpoint, if any. There is no default Google MCP server.
     pub fn mcp_url(&self) -> Option<&str> {
-        self.mcp_url
-            .as_deref()
-            .filter(|value| !value.is_empty())
+        self.mcp_url.as_deref().filter(|value| !value.is_empty())
     }
 
     /// Whether the OAuth client credentials needed to link accounts are present.
@@ -606,10 +604,7 @@ mod tests {
         assert!(google.scopes().contains("auth/calendar"));
         assert!(google.scopes().contains("auth/gmail"));
         assert!(google.scopes().contains("auth/drive"));
-        assert_eq!(
-            google.mcp_url(),
-            Some("https://mcp.google.example.com/mcp")
-        );
+        assert_eq!(google.mcp_url(), Some("https://mcp.google.example.com/mcp"));
     }
 
     #[test]

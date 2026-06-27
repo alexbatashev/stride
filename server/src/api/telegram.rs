@@ -227,7 +227,8 @@ async fn handle_topic_message(
 
     let text = message.message_text();
     let attachments = message.attachments();
-    if text.is_none() && attachments.is_empty() {
+    let voice = message.voice_note();
+    if text.is_none() && attachments.is_empty() && voice.is_none() {
         return Ok(());
     }
 
@@ -265,6 +266,27 @@ async fn handle_topic_message(
         }
     }
 
+    // A voice note has no typed text: the recorded audio *is* the message. Transcribe it up front
+    // and treat the transcript as the user's words; the agent never sees the audio file.
+    let transcript = if let Some(voice) = &voice {
+        match transcribe_voice_note(&state, voice).await {
+            Some(transcript) => Some(transcript),
+            None => {
+                send_telegram_message(
+                    &state,
+                    message.chat.id,
+                    message.send_topic_id(),
+                    voice_transcription_error(&state),
+                )
+                .await;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+    let body = transcript.as_deref().or(text);
+
     let (thread_id, is_new) =
         if let Some(thread_id) = reply_thread(&state, user_id, &message).await? {
             (thread_id, false)
@@ -273,7 +295,7 @@ async fn handle_topic_message(
         };
 
     if is_new {
-        let title_seed = text
+        let title_seed = body
             .map(str::to_string)
             .unwrap_or_else(|| attachment_title_seed(&attachments));
         crate::api::threads::spawn_title_generation(
@@ -295,7 +317,7 @@ async fn handle_topic_message(
     .await?;
     ensure_telegram_mapping_for_message(&state, user_id, &message, thread_id).await;
 
-    let content = build_agent_content(&state, user_id, thread_id, text, &attachments).await;
+    let content = build_agent_content(&state, user_id, thread_id, body, &attachments).await;
 
     // The pool serializes concurrent messages per thread, so a plain send never collides.
     if let Err(error) = state
@@ -336,8 +358,7 @@ async fn build_agent_content(
         return content;
     }
 
-    let DownloadedAttachments { saved, transcripts } =
-        download_attachments_to_workspace(state, user_id, thread_id, attachments).await;
+    let saved = download_attachments_to_workspace(state, user_id, thread_id, attachments).await;
     let note = if saved.is_empty() {
         format!(
             "[The user attached {} file(s), but Stride could not download them.]",
@@ -354,10 +375,6 @@ async fn build_agent_content(
         content.push_str("\n\n");
     }
     content.push_str(&note);
-    for transcript in transcripts {
-        content.push_str("\n\n");
-        content.push_str(&transcript);
-    }
     content
 }
 
@@ -386,6 +403,24 @@ async fn transcribe_audio(
     }
 }
 
+/// Downloads a Telegram voice note and returns its transcription. The recorded
+/// audio is the message itself, so it is transcribed in memory and never stored.
+async fn transcribe_voice_note(state: &ServerState, voice: &VoiceNote) -> Option<String> {
+    let token = bot_token(state)?;
+    let bytes = download_telegram_file(state, &token, &voice.file_id).await?;
+    transcribe_audio(state, &bytes, "voice.ogg", &voice.mime_type).await
+}
+
+/// The reply shown when a voice note cannot be turned into text, distinguishing a
+/// missing transcription model from a transcription that failed.
+fn voice_transcription_error(state: &ServerState) -> &'static str {
+    if state.model_config.model_registry.transcription().is_some() {
+        "Sorry, I couldn't transcribe that voice message. Please try again."
+    } else {
+        "Voice messages aren't supported yet: no transcription model is configured."
+    }
+}
+
 fn attachment_title_seed(attachments: &[IncomingAttachment]) -> String {
     match attachments.first() {
         Some(first) => format!("Shared file {}", first.file_name),
@@ -393,50 +428,32 @@ fn attachment_title_seed(attachments: &[IncomingAttachment]) -> String {
     }
 }
 
-/// Outcome of saving incoming Telegram attachments: the agent-facing workspace
-/// paths plus any transcripts produced from voice/audio clips.
-#[derive(Default)]
-struct DownloadedAttachments {
-    saved: Vec<String>,
-    transcripts: Vec<String>,
-}
-
 /// Downloads each attachment from Telegram and writes it into the thread's
 /// writable directory under `uploads/`, returning the agent-facing absolute
-/// paths (e.g. `/Projects/Acme/uploads/photo.jpg`) that were stored. Voice and
-/// audio clips are additionally transcribed.
+/// paths (e.g. `/Projects/Acme/uploads/photo.jpg`) that were stored.
 async fn download_attachments_to_workspace(
     state: &ServerState,
     user_id: Uuid,
     thread_id: Uuid,
     attachments: &[IncomingAttachment],
-) -> DownloadedAttachments {
+) -> Vec<String> {
     let Some(vfs) = state.vfs.as_ref() else {
         tracing::warn!(%thread_id, "no VFS configured; cannot save Telegram attachments");
-        return DownloadedAttachments::default();
+        return Vec::new();
     };
     let Some(token) = bot_token(state) else {
-        return DownloadedAttachments::default();
+        return Vec::new();
     };
     let Some((area, root)) = thread_writable_area(state, vfs, user_id, thread_id).await else {
         tracing::warn!(%thread_id, "failed to open writable area for Telegram attachments");
-        return DownloadedAttachments::default();
+        return Vec::new();
     };
 
-    let mut result = DownloadedAttachments::default();
+    let mut saved = Vec::new();
     for attachment in attachments {
         let Some(bytes) = download_telegram_file(state, &token, &attachment.file_id).await else {
             continue;
         };
-
-        if attachment.transcribe {
-            let mime = attachment.mime_type.as_deref().unwrap_or("audio/ogg");
-            if let Some(text) = transcribe_audio(state, &bytes, &attachment.file_name, mime).await {
-                result
-                    .transcripts
-                    .push(format!("[Transcript of voice message]\n{text}"));
-            }
-        }
 
         let rel = format!("uploads/{}", attachment.file_name);
         match vfs
@@ -449,13 +466,13 @@ async fn download_attachments_to_workspace(
             )
             .await
         {
-            Ok(()) => result.saved.push(format!("{root}/{rel}")),
+            Ok(()) => saved.push(format!("{root}/{rel}")),
             Err(error) => {
                 tracing::warn!(%thread_id, rel, %error, "failed to write Telegram attachment");
             }
         }
     }
-    result
+    saved
 }
 
 /// Resolves a Telegram thread's writable area and the absolute path the agent
@@ -2375,14 +2392,20 @@ pub struct TelegramMessage {
 }
 
 /// A downloadable file attached to an incoming message, normalized across the
-/// various Telegram media kinds (document, photo, voice, ...).
+/// various Telegram media kinds (document, photo, audio, ...). Voice notes are
+/// handled separately as [`VoiceNote`]: they are spoken messages, not files.
 struct IncomingAttachment {
     file_id: String,
     file_name: String,
     mime_type: Option<String>,
-    /// Voice notes and audio clips are transcribed to text after download so the
-    /// agent receives the spoken words, not just a file path.
-    transcribe: bool,
+}
+
+/// A Telegram voice note. Unlike other media it is the message itself, so it is
+/// transcribed up front and the transcript used as the user's text, rather than
+/// downloaded and exposed to the agent as a file.
+struct VoiceNote {
+    file_id: String,
+    mime_type: String,
 }
 
 impl TelegramMessage {
@@ -2396,8 +2419,20 @@ impl TelegramMessage {
             .filter(|t| !t.is_empty())
     }
 
+    /// The voice note attached to this message, if any. A voice note is a spoken
+    /// message: it is transcribed before the agent runs, never stored as a file.
+    fn voice_note(&self) -> Option<VoiceNote> {
+        self.voice.as_ref().map(|voice| VoiceNote {
+            file_id: voice.file_id.clone(),
+            mime_type: voice
+                .mime_type
+                .clone()
+                .unwrap_or_else(|| "audio/ogg".to_string()),
+        })
+    }
+
     /// Files attached to this message, with a sanitized workspace file name and
-    /// best-known MIME type for each.
+    /// best-known MIME type for each. Voice notes are excluded; see [`voice_note`].
     fn attachments(&self) -> Vec<IncomingAttachment> {
         let mut out = Vec::new();
         if let Some(doc) = &self.document {
@@ -2410,7 +2445,6 @@ impl TelegramMessage {
                     "file",
                 ),
                 mime_type: doc.mime_type.clone(),
-                transcribe: false,
             });
         }
         if let Some(largest) = self
@@ -2422,18 +2456,6 @@ impl TelegramMessage {
                 file_id: largest.file_id.clone(),
                 file_name: format!("photo_{}.jpg", largest.file_unique_id),
                 mime_type: Some("image/jpeg".to_string()),
-                transcribe: false,
-            });
-        }
-        if let Some(voice) = &self.voice {
-            out.push(IncomingAttachment {
-                file_id: voice.file_id.clone(),
-                file_name: format!("voice_{}.ogg", voice.file_unique_id),
-                mime_type: voice
-                    .mime_type
-                    .clone()
-                    .or_else(|| Some("audio/ogg".to_string())),
-                transcribe: true,
             });
         }
         if let Some(audio) = &self.audio {
@@ -2446,7 +2468,6 @@ impl TelegramMessage {
                     "audio",
                 ),
                 mime_type: audio.mime_type.clone(),
-                transcribe: true,
             });
         }
         if let Some(video) = &self.video {
@@ -2459,7 +2480,6 @@ impl TelegramMessage {
                     "video",
                 ),
                 mime_type: video.mime_type.clone(),
-                transcribe: false,
             });
         }
         if let Some(note) = &self.video_note {
@@ -2467,7 +2487,6 @@ impl TelegramMessage {
                 file_id: note.file_id.clone(),
                 file_name: format!("video_note_{}.mp4", note.file_unique_id),
                 mime_type: Some("video/mp4".to_string()),
-                transcribe: false,
             });
         }
         out
@@ -2549,7 +2568,6 @@ pub struct TelegramPhotoSize {
 #[derive(Debug, Deserialize)]
 pub struct TelegramVoice {
     file_id: String,
-    file_unique_id: String,
     mime_type: Option<String>,
 }
 
@@ -2780,6 +2798,31 @@ mod tests {
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].file_id, "big");
         assert_eq!(attachments[0].file_name, "photo_b.jpg");
+    }
+
+    #[test]
+    fn voice_message_is_a_spoken_message_not_a_file() {
+        let update: TelegramUpdate = serde_json::from_str(
+            r#"{"message":{"message_id":1,"chat":{"id":1,"type":"private"},"from":{"id":2},"voice":{"duration":3,"mime_type":"audio/ogg","file_id":"VID","file_unique_id":"VU","file_size":4096}}}"#,
+        )
+        .unwrap();
+        let message = update.message().unwrap();
+        // A voice note carries no typed text and must never surface as a downloadable file.
+        assert_eq!(message.message_text(), None);
+        assert!(message.attachments().is_empty());
+        let voice = message.voice_note().expect("voice note recognized");
+        assert_eq!(voice.file_id, "VID");
+        assert_eq!(voice.mime_type, "audio/ogg");
+    }
+
+    #[test]
+    fn voice_message_defaults_mime_when_absent() {
+        let update: TelegramUpdate = serde_json::from_str(
+            r#"{"message":{"message_id":1,"chat":{"id":1,"type":"private"},"from":{"id":2},"voice":{"file_id":"VID","file_unique_id":"VU"}}}"#,
+        )
+        .unwrap();
+        let voice = update.message().unwrap().voice_note().unwrap();
+        assert_eq!(voice.mime_type, "audio/ogg");
     }
 
     #[test]
