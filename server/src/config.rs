@@ -71,6 +71,12 @@ pub struct Ldap {
 
 #[derive(Debug, Deserialize)]
 pub struct Server {
+    /// Full database connection URL. Takes precedence over `db_path`. Supports
+    /// `sqlite://<path>`, `postgres://...`, and `postgresql://...`. May also be
+    /// supplied via the `STRIDE_DATABASE_URL` environment variable.
+    pub db_url: Option<String>,
+    /// Filesystem path to a SQLite database. Used when `db_url` is unset; the
+    /// server connects to `sqlite://<db_path>`.
     pub db_path: Option<String>,
     pub listen_addr: Option<String>,
     pub allow_registration: Option<bool>,
@@ -277,9 +283,22 @@ impl Config {
     }
 
     pub fn db_url(&self) -> String {
-        let db_path = self
-            .server
-            .as_ref()
+        if let Ok(url) = env::var("STRIDE_DATABASE_URL")
+            && !url.is_empty()
+        {
+            return url;
+        }
+
+        let server = self.server.as_ref();
+
+        if let Some(url) = server
+            .and_then(|server| server.db_url.as_deref())
+            .filter(|url| !url.is_empty())
+        {
+            return url.to_string();
+        }
+
+        let db_path = server
             .and_then(|server| server.db_path.as_deref())
             .unwrap_or("/tmp/server.db");
 
@@ -393,6 +412,7 @@ mod tests {
             providers: HashMap::new(),
             models: HashMap::new(),
             server: Some(Server {
+                db_url: None,
                 db_path: Some("/tmp/stride-test.db".to_string()),
                 listen_addr: Some("127.0.0.1:4000".to_string()),
                 allow_registration: Some(false),
@@ -410,6 +430,23 @@ mod tests {
         assert_eq!(cfg.db_url(), "sqlite:///tmp/stride-test.db");
         assert_eq!(cfg.listen_addr(), "127.0.0.1:4000");
         assert!(!cfg.allow_registration());
+    }
+
+    #[test]
+    fn db_url_takes_precedence_over_db_path() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [server]
+            db_path = "/tmp/ignored.db"
+            db_url = "postgres://user:pass@localhost:5432/stride"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.db_url(), "postgres://user:pass@localhost:5432/stride");
     }
 
     #[test]

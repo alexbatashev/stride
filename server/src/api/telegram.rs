@@ -1710,9 +1710,13 @@ async fn ensure_telegram_thread(
         if let Some((thread_id,)) = rows.into_iter().next() {
             if let Err(error) = state
                 .db
-                .query(&format!(
-                    "UPDATE telegram_threads SET topic_id = {topic_id} WHERE thread_id = '{thread_id}';"
-                ))
+                .query_with_params(
+                    "UPDATE telegram_threads SET topic_id = ? WHERE thread_id = ?",
+                    vec![
+                        minisql::Value::Integer(topic_id),
+                        minisql::Value::Uuid(thread_id),
+                    ],
+                )
                 .await
             {
                 tracing::warn!(
@@ -2873,6 +2877,7 @@ mod tests {
             webhook_url: None,
         };
         let server = crate::config::Server {
+            db_url: None,
             db_path: None,
             listen_addr: None,
             allow_registration: None,

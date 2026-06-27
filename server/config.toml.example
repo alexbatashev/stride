@@ -57,7 +57,12 @@ slug = "whisper-1"
 provider = "openai"
 
 [server]
+# SQLite database path. Used when `db_url` (below) is unset.
 db_path = "/tmp/server.db"
+# Full database connection URL, taking precedence over `db_path`. Supports
+# sqlite, postgres, and postgresql schemes. Can also be set via the
+# STRIDE_DATABASE_URL environment variable.
+#   db_url = "postgres://user:password@localhost:5432/stride"
 listen_addr = "0.0.0.0:3000"
 # Self-signup is closed by default; set this to true to explicitly enable it.
 allow_registration = false

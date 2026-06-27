@@ -444,6 +444,7 @@ mod tests {
         let app = test_app(
             Config {
                 server: Some(Server {
+                    db_url: None,
                     db_path: None,
                     listen_addr: None,
                     allow_registration: Some(false),
@@ -497,6 +498,7 @@ mod tests {
             providers: HashMap::new(),
             models: HashMap::new(),
             server: Some(Server {
+                db_url: None,
                 db_path: None,
                 listen_addr: None,
                 allow_registration: Some(true),

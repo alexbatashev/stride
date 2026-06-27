@@ -1022,8 +1022,8 @@ impl Vfs {
         let rows = self
             .db
             .query_with_params(
-                "SELECT id, location FROM vfs_objects WHERE node = ? ORDER BY version DESC LIMIT -1 OFFSET ?",
-                vec![Value::Uuid(node_id), Value::Integer(keep)],
+                "SELECT id, location FROM vfs_objects WHERE node = ? ORDER BY version DESC LIMIT ? OFFSET ?",
+                vec![Value::Uuid(node_id), Value::Integer(i64::MAX), Value::Integer(keep)],
             )
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
