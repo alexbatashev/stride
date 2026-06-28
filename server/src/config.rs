@@ -84,6 +84,7 @@ pub struct Server {
     pub files: Option<Files>,
     pub telegram: Option<Telegram>,
     pub github: Option<GitHub>,
+    pub google: Option<Google>,
     /// Public base URL the server is reachable at, e.g. `https://stride.example.com`.
     /// Used to build capability URLs for image attachments served to vision
     /// models. When unset, images are sent inline as base64 instead.
@@ -148,6 +149,57 @@ impl GitHub {
     }
 
     /// Whether the OAuth App credentials needed to link accounts are present.
+    pub fn is_configured(&self) -> bool {
+        self.read_client_id().is_some() && self.read_client_secret().is_some()
+    }
+}
+
+/// Connection to Google via a standard OAuth 2.0 / OpenID Connect client. Linking
+/// an account redirects the user to Google's consent screen, exchanges the
+/// returned code for access and refresh tokens, and identifies the account with
+/// the OIDC `id_token`. The stored tokens drive the native Gmail, Calendar, and
+/// Drive tools. Setting `client_id` and `client_secret` activates the integration.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Google {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    /// OAuth scopes requested when linking an account. Defaults to a set covering
+    /// OIDC identity plus read access to Gmail/Drive and read-write Calendar, with
+    /// Gmail limited to drafting (never sending).
+    pub scopes: Option<String>,
+}
+
+/// Default scopes: OIDC identity, Gmail modify (read + draft, no send happens
+/// because the tools never call messages.send), Calendar events, and read-only
+/// Drive.
+const DEFAULT_GOOGLE_SCOPES: &str = "openid email profile \
+https://www.googleapis.com/auth/gmail.modify \
+https://www.googleapis.com/auth/calendar.events \
+https://www.googleapis.com/auth/drive.readonly";
+
+impl Google {
+    pub fn read_client_id(&self) -> Option<String> {
+        self.client_id
+            .clone()
+            .or_else(|| env::var("STRIDE_GOOGLE_CLIENT_ID").ok())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn read_client_secret(&self) -> Option<String> {
+        self.client_secret
+            .clone()
+            .or_else(|| env::var("STRIDE_GOOGLE_CLIENT_SECRET").ok())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn scopes(&self) -> &str {
+        self.scopes
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_GOOGLE_SCOPES)
+    }
+
+    /// Whether the OAuth client credentials needed to link accounts are present.
     pub fn is_configured(&self) -> bool {
         self.read_client_id().is_some() && self.read_client_secret().is_some()
     }
@@ -376,6 +428,7 @@ mod tests {
                 files: None,
                 telegram: None,
                 github: None,
+                google: None,
                 public_url: None,
             }),
             tools: None,
@@ -523,6 +576,29 @@ mod tests {
         assert!(github.is_configured());
         assert_eq!(github.scopes(), "repo read:org read:user");
         assert_eq!(github.mcp_url(), "https://api.githubcopilot.com/mcp/");
+    }
+
+    #[test]
+    fn google_config_loads() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [server.google]
+            client_id = "google-client-id"
+            client_secret = "google-secret"
+            "#,
+        )
+        .unwrap();
+
+        let google = cfg.server.unwrap().google.unwrap();
+        assert_eq!(google.read_client_id().unwrap(), "google-client-id");
+        assert_eq!(google.read_client_secret().unwrap(), "google-secret");
+        assert!(google.is_configured());
+        assert!(google.scopes().contains("openid"));
+        assert!(google.scopes().contains("gmail.modify"));
+        assert!(google.scopes().contains("calendar.events"));
     }
 
     #[test]

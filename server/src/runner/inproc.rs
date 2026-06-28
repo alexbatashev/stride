@@ -37,6 +37,7 @@ use crate::{
     db::{Role, messages},
     email::ImapService,
     github::GitHubRuntime,
+    google::GoogleService,
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
         PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId, RunnerLifecycle,
@@ -209,6 +210,7 @@ struct WorkerInit {
     public_url: Option<String>,
     github_runtime: Option<GitHubRuntime>,
     email_service: Option<ImapService>,
+    google_service: Option<GoogleService>,
     system_prompt: String,
     idle_ttl: Duration,
 }
@@ -223,6 +225,7 @@ struct WorkerState {
     public_url: Option<String>,
     github_runtime: Option<GitHubRuntime>,
     email_service: Option<ImapService>,
+    google_service: Option<GoogleService>,
     system_prompt: String,
     idle_ttl: Duration,
     threads: HashMap<Uuid, ThreadRunner>,
@@ -291,6 +294,7 @@ impl InProcessAgentPool {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -304,6 +308,7 @@ impl InProcessAgentPool {
         public_url: Option<String>,
         github_runtime: Option<GitHubRuntime>,
         email_service: ImapService,
+        google_service: Option<GoogleService>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -316,6 +321,7 @@ impl InProcessAgentPool {
             public_url,
             github_runtime,
             Some(email_service),
+            google_service,
         )
     }
 
@@ -337,6 +343,7 @@ impl InProcessAgentPool {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -351,6 +358,7 @@ impl InProcessAgentPool {
         public_url: Option<String>,
         github_runtime: Option<GitHubRuntime>,
         email_service: ImapService,
+        google_service: Option<GoogleService>,
     ) -> Self {
         Self::with_system_prompt_and_tools(
             db,
@@ -363,6 +371,7 @@ impl InProcessAgentPool {
             public_url,
             github_runtime,
             Some(email_service),
+            google_service,
         )
     }
 
@@ -386,6 +395,7 @@ impl InProcessAgentPool {
         public_url: Option<String>,
         github_runtime: Option<GitHubRuntime>,
         email_service: Option<ImapService>,
+        google_service: Option<GoogleService>,
     ) -> Self {
         Self::from_init(WorkerInit {
             db,
@@ -397,6 +407,7 @@ impl InProcessAgentPool {
             public_url,
             github_runtime,
             email_service,
+            google_service,
             system_prompt,
             idle_ttl: DEFAULT_IDLE_TTL,
         })
@@ -438,6 +449,7 @@ impl InProcessAgentPool {
             public_url: None,
             github_runtime: None,
             email_service: None,
+            google_service: None,
             system_prompt,
             idle_ttl,
         })
@@ -568,6 +580,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 public_url,
                 github_runtime,
                 email_service,
+                google_service,
                 system_prompt,
                 idle_ttl,
             } = init;
@@ -581,6 +594,7 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 public_url,
                 github_runtime,
                 email_service,
+                google_service,
                 system_prompt,
                 idle_ttl,
                 threads: HashMap::new(),
@@ -923,6 +937,7 @@ async fn ensure_runner(
         public_url,
         github_runtime,
         email_service,
+        google_service,
         base_system_prompt,
     ) = {
         let state = state.borrow();
@@ -936,6 +951,7 @@ async fn ensure_runner(
             state.public_url.clone(),
             state.github_runtime.clone(),
             state.email_service.clone(),
+            state.google_service.clone(),
             state.system_prompt.clone(),
         )
     };
@@ -950,6 +966,12 @@ async fn ensure_runner(
         mcp_tools
             .extend(crate::github::connect_user_github_mcp(&db, user_id, github_runtime).await);
     }
+    // Offer the native Google tools only when this user has actually linked an
+    // account; an unlinked user sees none of them.
+    let google_for_tools = match google_service {
+        Some(service) if service.is_connected(user_id).await => Some(service),
+        _ => None,
+    };
     let project_id = thread_project_id(&db, thread_id).await?;
     // Resolve where this thread writes: a project thread writes into the
     // project's folder in the user's global files; an ungrouped thread keeps a
@@ -1018,6 +1040,7 @@ async fn ensure_runner(
                 .map(|service| service.provider(user_id)),
             &mcp_tools,
             project_title.clone(),
+            google_for_tools.clone().map(|service| (service, user_id)),
         )
     });
     for tool in mcp_tools {
@@ -1078,6 +1101,9 @@ async fn ensure_runner(
         agent.allow_tool("list_emails");
         agent.register_searchable_tool(CreateEmailDraftTool { provider });
         agent.allow_tool("create_email_draft");
+    }
+    if let Some(service) = google_for_tools {
+        crate::tools::google::register(&agent, service, user_id);
     }
     if let Some(bot_token) = telegram_bot_token.clone() {
         agent.register_tool(SendTelegramMessageTool {
@@ -1285,6 +1311,7 @@ pub(crate) fn scriptable_tool_registry(
     email_provider: Option<Arc<dyn stride_agent::tools::email::EmailProvider>>,
     mcp_tools: &[McpTool],
     default_wing: Option<String>,
+    google: Option<(GoogleService, Uuid)>,
 ) -> ToolRegistry {
     let mut registry = expert_tool_registry(tools);
 
@@ -1295,6 +1322,10 @@ pub(crate) fn scriptable_tool_registry(
         registry.allow_tool("list_emails");
         registry.register(CreateEmailDraftTool { provider });
         registry.allow_tool("create_email_draft");
+    }
+
+    if let Some((service, user)) = google {
+        crate::tools::google::register_scriptable(&mut registry, service, user);
     }
 
     registry.register(RememberTool {
@@ -2637,6 +2668,7 @@ mod tests {
             public_url: None,
             github_runtime: None,
             email_service: None,
+            google_service: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
             threads,
@@ -2720,6 +2752,7 @@ mod tests {
             public_url: None,
             github_runtime: None,
             email_service: None,
+            google_service: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
             threads,

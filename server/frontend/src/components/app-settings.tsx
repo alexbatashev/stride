@@ -9,8 +9,10 @@ import {
   deleteSkill,
   deleteWritableDir,
   disconnectGitHub,
+  disconnectGoogle,
   disconnectTelegram,
   getGitHubSettings,
+  getGoogleSettings,
   getTelegramSettings,
   listEmailAccounts,
   listMcpServers,
@@ -18,6 +20,7 @@ import {
   listWritableDirs,
   loginTelegram,
   startGitHubAuthorize,
+  startGoogleAuthorize,
   updateSkill,
   type EmailAccount,
   type McpServer,
@@ -38,6 +41,11 @@ type SettingsHost = HTMLElement & {
   ghStatus: string;
   ghLogin: string;
   ghError: string;
+  goConfigured: boolean;
+  goConnected: boolean;
+  goStatus: string;
+  goEmail: string;
+  goError: string;
   emails: EmailAccount[];
   emailLoaded: boolean;
   emailError: string;
@@ -148,6 +156,34 @@ async function connectGitHub(host: SettingsHost): Promise<void> {
     window.location.assign(await startGitHubAuthorize());
   } catch {
     host.ghError = "Failed to start GitHub sign in.";
+  }
+}
+
+async function refreshGoogle(host: SettingsHost): Promise<void> {
+  try {
+    const settings = await getGoogleSettings();
+    host.goError = "";
+    host.goConfigured = settings.configured;
+    host.goConnected = settings.connected;
+    host.goEmail = settings.email ?? "";
+    if (!settings.configured) {
+      host.goStatus = "Google is not configured on this server.";
+    } else if (settings.connected) {
+      host.goStatus = settings.email ? `Connected as ${settings.email}.` : "Google is connected.";
+    } else {
+      host.goStatus = "Google is not connected.";
+    }
+  } catch {
+    host.goError = "Failed to load Google settings.";
+  }
+}
+
+async function connectGoogle(host: SettingsHost): Promise<void> {
+  host.goError = "";
+  try {
+    window.location.assign(await startGoogleAuthorize());
+  } catch {
+    host.goError = "Failed to start Google sign in.";
   }
 }
 
@@ -591,6 +627,11 @@ export function AppSettings({
   ghStatus = "Loading…",
   ghLogin = "",
   ghError = "",
+  goConfigured = false,
+  goConnected = false,
+  goStatus = "Loading…",
+  goEmail = "",
+  goError = "",
   emails = [],
   emailLoaded = false,
   emailError = "",
@@ -616,6 +657,11 @@ export function AppSettings({
   ghStatus?: string;
   ghLogin?: string;
   ghError?: string;
+  goConfigured?: boolean;
+  goConnected?: boolean;
+  goStatus?: string;
+  goEmail?: string;
+  goError?: string;
   emails?: EmailAccount[];
   emailLoaded?: boolean;
   emailError?: string;
@@ -636,6 +682,7 @@ export function AppSettings({
     };
     void refreshTelegram(this);
     void refreshGitHub(this);
+    void refreshGoogle(this);
     void refreshEmails(this);
     void refreshMcps(this);
     void refreshSkills(this);
@@ -715,6 +762,16 @@ export function AppSettings({
                 .then(() => refreshGitHub(this))
                 .catch(() => {
                   this.ghError = "Failed to disconnect GitHub.";
+                });
+              return;
+            case "go-connect":
+              void connectGoogle(this);
+              return;
+            case "go-disconnect":
+              void disconnectGoogle()
+                .then(() => refreshGoogle(this))
+                .catch(() => {
+                  this.goError = "Failed to disconnect Google.";
                 });
               return;
             case "add-email": {
@@ -855,6 +912,23 @@ export function AppSettings({
                       : <div><app-button data-action="gh-connect">Sign in with GitHub</app-button></div>)
                     : ""}
                   <p class="error">{ghError}</p>
+                </app-card>
+
+                <app-card title="Google" description="Connect your Google account to give your agents native Gmail, Calendar, and Drive tools, and to trigger automations on new Gmail. Gmail is read and draft only — agents never send mail.">
+                  <div class="status-row">
+                    {goConnected
+                      ? <app-badge>Connected</app-badge>
+                      : goConfigured
+                        ? <app-badge variant="outline">Not connected</app-badge>
+                        : <app-badge variant="secondary">Unavailable</app-badge>}
+                    <span class="status">{goStatus}</span>
+                  </div>
+                  {goConfigured
+                    ? (goConnected
+                      ? <div><app-button variant="outline" data-action="go-disconnect">Disconnect</app-button></div>
+                      : <div><app-button data-action="go-connect">Sign in with Google</app-button></div>)
+                    : ""}
+                  <p class="error">{goError}</p>
                 </app-card>
               </section>
 

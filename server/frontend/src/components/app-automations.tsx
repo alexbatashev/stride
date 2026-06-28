@@ -76,6 +76,7 @@ function describeTrigger(item: Automation, accounts: EmailAccount[]): string {
     const account = accounts.find((candidate) => candidate.id === accountId);
     return account ? `New mail in ${account.name}` : "New incoming email";
   }
+  if (item.trigger_kind === "gmail") return "New Gmail";
   if (item.trigger_kind === "webhook") return "Webhook";
   if (item.trigger_kind === "vfs_change") return "File change";
   return "Manual";
@@ -698,6 +699,8 @@ export function AppAutomations({
                   ? "vfs_change"
                   : trigger === "email"
                     ? "email"
+                    : trigger === "gmail"
+                      ? "gmail"
                   : "cron";
           void createAutomation({
             name: String(data.get("name") ?? "").trim(),
@@ -841,9 +844,10 @@ export function AppAutomations({
               </div>
               <div class="form-grid">
                 <label>Name<input name="name" required placeholder="Daily report" /></label>
-                <label>Trigger<select name="trigger"><option value="cron">Cron schedule</option><option value="email">Incoming email</option><option value="webhook">Webhook (HTTP)</option><option value="vfs_change">File change</option><option value="manual">Manual only</option></select></label>
+                <label>Trigger<select name="trigger"><option value="cron">Cron schedule</option><option value="email">Incoming email</option><option value="gmail">Incoming Gmail</option><option value="webhook">Webhook (HTTP)</option><option value="vfs_change">File change</option><option value="manual">Manual only</option></select></label>
                 {createTrigger === "cron" ? <label>Schedule<input name="schedule" required placeholder="*/30 * * * *" /><span class="hint">Standard five-field cron expression in UTC.</span></label> : <input name="schedule" type="hidden" value="" />}
                 {createTrigger === "email" ? <label>Inbox<select name="email_account" required><option value="">Choose an inbox</option>{emailAccounts.map((account) => <option value={account.id}>{account.name} — {account.email}</option>).join("")}</select><span class="hint">Add IMAP accounts in Settings. Existing mail is ignored when the automation is created.</span></label> : ""}
+                {createTrigger === "gmail" ? <span class="hint">Fires when new mail arrives in your connected Gmail inbox. Connect Google in Settings first. Existing mail is ignored when the automation is created.</span> : ""}
                 {createTrigger === "vfs_change" ? <label>Watch path<input name="watch_path" placeholder="reports/ (empty means all files)" /><span class="hint">Leave empty to watch all files.</span></label> : ""}
                 <label>Type<select name="kind"><option value="agent">Agent prompt</option><option value="python">Python script</option></select></label>
                 <label>Notify<select name="notify"><option value="none">Store output only</option><option value="telegram">Telegram</option></select></label>

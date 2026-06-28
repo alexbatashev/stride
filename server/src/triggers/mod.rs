@@ -45,6 +45,8 @@ pub fn polled(
                 }
             }
         }
-        TriggerKind::Email | TriggerKind::Webhook | TriggerKind::Manual => None,
+        TriggerKind::Email | TriggerKind::Gmail | TriggerKind::Webhook | TriggerKind::Manual => {
+            None
+        }
     }
 }

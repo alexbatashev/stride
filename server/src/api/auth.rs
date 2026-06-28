@@ -452,6 +452,7 @@ mod tests {
                     files: None,
                     telegram: None,
                     github: None,
+                    google: None,
                     public_url: None,
                 }),
                 ..empty_config()
@@ -505,6 +506,7 @@ mod tests {
                 files: None,
                 telegram: None,
                 github: None,
+                google: None,
                 public_url: None,
             }),
             tools: None,
@@ -532,6 +534,7 @@ mod tests {
                 )),
                 executor: crate::scheduler::ExecutorHandle::channel().0,
                 cipher: crate::crypto::SecretCipher::new("test-secret"),
+                google_service: None,
             }),
             PathBuf::from(crate::DEFAULT_STATIC_DIR),
         )
