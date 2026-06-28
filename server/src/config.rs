@@ -159,7 +159,7 @@ impl GitHub {
 /// returned code for access and refresh tokens, and identifies the account with
 /// the OIDC `id_token`. The stored tokens drive the native Gmail, Calendar, and
 /// Drive tools. Setting `client_id` and `client_secret` activates the integration.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct Google {
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
@@ -311,6 +311,17 @@ impl Config {
             .as_ref()
             .and_then(|server| server.allow_registration)
             .unwrap_or(false)
+    }
+
+    /// Resolve the effective Google OAuth config. Falls back to a default that
+    /// reads credentials from the environment, so setting only
+    /// `STRIDE_GOOGLE_CLIENT_ID`/`STRIDE_GOOGLE_CLIENT_SECRET` works without a
+    /// `[server.google]` section.
+    pub fn google(&self) -> Google {
+        self.server
+            .as_ref()
+            .and_then(|server| server.google.clone())
+            .unwrap_or_default()
     }
 
     /// Public base URL (without trailing slash) used to build externally
@@ -599,6 +610,25 @@ mod tests {
         assert!(google.scopes().contains("openid"));
         assert!(google.scopes().contains("gmail.modify"));
         assert!(google.scopes().contains("calendar.events"));
+    }
+
+    #[test]
+    fn google_resolves_without_section() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [server]
+            "#,
+        )
+        .unwrap();
+
+        // No [server.google] block: the resolver still returns a config that
+        // reads credentials from the environment, with the default scopes.
+        let google = cfg.google();
+        assert!(google.client_id.is_none());
+        assert!(google.scopes().contains("gmail.modify"));
     }
 
     #[test]

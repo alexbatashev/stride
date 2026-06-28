@@ -131,6 +131,22 @@ async fn main() -> anyhow::Result<()> {
     // Google account linking and native Gmail/Calendar/Drive tools, active once
     // OAuth credentials are present.
     let google_service = api::google::build_service(&config, &db, &cipher);
+    if google_service.is_some() {
+        if config.public_url().is_none() {
+            tracing::warn!(
+                "Google OAuth credentials are set but server.public_url is not; account linking \
+                 will fail because the redirect URI cannot be built. Set server.public_url to the \
+                 server's externally reachable base URL."
+            );
+        } else {
+            tracing::info!("Google integration enabled");
+        }
+    } else {
+        tracing::info!(
+            "Google integration disabled (set client_id/client_secret or \
+             STRIDE_GOOGLE_CLIENT_ID/STRIDE_GOOGLE_CLIENT_SECRET to enable)"
+        );
+    }
     let vfs_provider = config
         .server
         .as_ref()

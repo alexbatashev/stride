@@ -201,19 +201,11 @@ async fn consume_state(state: &ServerState, token: &str) -> Result<Uuid, String>
 }
 
 fn google_client_id(state: &ServerState) -> Option<String> {
-    google_config(state).and_then(|google| google.read_client_id())
+    state.config.google().read_client_id()
 }
 
 fn google_scopes(state: &ServerState) -> Option<String> {
-    google_config(state).map(|google| google.scopes().to_string())
-}
-
-fn google_config(state: &ServerState) -> Option<&crate::config::Google> {
-    state
-        .config
-        .server
-        .as_ref()
-        .and_then(|server| server.google.as_ref())
+    Some(state.config.google().scopes().to_string())
 }
 
 fn redirect_uri(state: &ServerState) -> Option<String> {
@@ -236,11 +228,10 @@ pub fn build_service(
     db: &minisql::ConnectionPool,
     cipher: &crate::crypto::SecretCipher,
 ) -> Option<GoogleService> {
-    let google = config
-        .server
-        .as_ref()
-        .and_then(|server| server.google.as_ref())
-        .filter(|google| google.is_configured())?;
+    let google = config.google();
+    if !google.is_configured() {
+        return None;
+    }
     Some(GoogleService::new(
         db.clone(),
         cipher.clone(),
