@@ -107,22 +107,6 @@ client_secret = "change-this-github-oauth-secret"
 # Optional. Override only for GitHub Enterprise Cloud; defaults to the official server.
 # mcp_url = "https://api.githubcopilot.com/mcp/"
 
-# Linking a Google account uses a standard OAuth 2.0 / OIDC client. Create one in
-# the Google Cloud console (APIs & Services -> Credentials -> OAuth client ID,
-# type "Web application") with the authorized redirect URI set to
-# `{public_url}/api/settings/google/callback`, and enable the Calendar, Gmail,
-# and Drive APIs for the project. Setting client_id and client_secret signs users
-# in with Google; tools are only exposed once `mcp_url` points at a Google MCP
-# server (there is no official hosted one).
-[server.google]
-client_id = "0123456789-abcdef.apps.googleusercontent.com"
-client_secret = "change-this-google-oauth-secret"
-# Required for any tools to load: the Streamable HTTP endpoint of a Google MCP server.
-# mcp_url = "https://mcp.google.example.com/mcp"
-# Optional. OAuth scopes requested when linking; defaults to OIDC identity plus
-# Calendar, Gmail (modify), and Drive.
-# scopes = "openid email profile https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive"
-
 [server.ldap]
 url = "ldap://localhost:389"
 user_dn_template = "uid={username},ou=users,dc=example,dc=com"

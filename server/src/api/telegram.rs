@@ -2927,7 +2927,6 @@ mod tests {
             files: None,
             telegram: Some(telegram),
             github: None,
-            google: None,
             public_url: None,
         };
         ServerState {

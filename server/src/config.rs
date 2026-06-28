@@ -84,7 +84,6 @@ pub struct Server {
     pub files: Option<Files>,
     pub telegram: Option<Telegram>,
     pub github: Option<GitHub>,
-    pub google: Option<Google>,
     /// Public base URL the server is reachable at, e.g. `https://stride.example.com`.
     /// Used to build capability URLs for image attachments served to vision
     /// models. When unset, images are sent inline as base64 instead.
@@ -149,61 +148,6 @@ impl GitHub {
     }
 
     /// Whether the OAuth App credentials needed to link accounts are present.
-    pub fn is_configured(&self) -> bool {
-        self.read_client_id().is_some() && self.read_client_secret().is_some()
-    }
-}
-
-/// Google account linking via a standard OAuth 2.0 / OIDC client. Linking signs
-/// the user in with Google, stores the resulting access and refresh tokens, and
-/// forwards the (refreshed) access token to a Google MCP server. Unlike GitHub
-/// there is no official hosted server, so `mcp_url` must point at a self-hosted
-/// or third-party Google MCP server for any tools to be exposed.
-#[derive(Clone, Debug, Deserialize)]
-pub struct Google {
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-    /// OAuth scopes requested when linking an account. Defaults to a set covering
-    /// OIDC identity plus Calendar, Gmail, and Drive.
-    pub scopes: Option<String>,
-    /// Streamable HTTP endpoint of the Google MCP server. No default: without it
-    /// no tools are exposed even when an account is linked.
-    pub mcp_url: Option<String>,
-}
-
-impl Google {
-    pub fn read_client_id(&self) -> Option<String> {
-        self.client_id
-            .clone()
-            .or_else(|| env::var("STRIDE_GOOGLE_CLIENT_ID").ok())
-            .filter(|value| !value.is_empty())
-    }
-
-    pub fn read_client_secret(&self) -> Option<String> {
-        self.client_secret
-            .clone()
-            .or_else(|| env::var("STRIDE_GOOGLE_CLIENT_SECRET").ok())
-            .filter(|value| !value.is_empty())
-    }
-
-    pub fn scopes(&self) -> &str {
-        self.scopes
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .unwrap_or(
-                "openid email profile \
-                 https://www.googleapis.com/auth/calendar \
-                 https://www.googleapis.com/auth/gmail.modify \
-                 https://www.googleapis.com/auth/drive",
-            )
-    }
-
-    /// Configured MCP endpoint, if any. There is no default Google MCP server.
-    pub fn mcp_url(&self) -> Option<&str> {
-        self.mcp_url.as_deref().filter(|value| !value.is_empty())
-    }
-
-    /// Whether the OAuth client credentials needed to link accounts are present.
     pub fn is_configured(&self) -> bool {
         self.read_client_id().is_some() && self.read_client_secret().is_some()
     }
@@ -432,7 +376,6 @@ mod tests {
                 files: None,
                 telegram: None,
                 github: None,
-                google: None,
                 public_url: None,
             }),
             tools: None,
@@ -580,50 +523,6 @@ mod tests {
         assert!(github.is_configured());
         assert_eq!(github.scopes(), "repo read:org read:user");
         assert_eq!(github.mcp_url(), "https://api.githubcopilot.com/mcp/");
-    }
-
-    #[test]
-    fn google_config_loads() {
-        let cfg: Config = toml::from_str(
-            r#"
-            providers = {}
-            models = {}
-
-            [server.google]
-            client_id = "google-client-id"
-            client_secret = "google-secret"
-            mcp_url = "https://mcp.google.example.com/mcp"
-            "#,
-        )
-        .unwrap();
-
-        let google = cfg.server.unwrap().google.unwrap();
-        assert_eq!(google.read_client_id().unwrap(), "google-client-id");
-        assert_eq!(google.read_client_secret().unwrap(), "google-secret");
-        assert!(google.is_configured());
-        assert!(google.scopes().contains("auth/calendar"));
-        assert!(google.scopes().contains("auth/gmail"));
-        assert!(google.scopes().contains("auth/drive"));
-        assert_eq!(google.mcp_url(), Some("https://mcp.google.example.com/mcp"));
-    }
-
-    #[test]
-    fn google_without_mcp_url_has_no_endpoint() {
-        let cfg: Config = toml::from_str(
-            r#"
-            providers = {}
-            models = {}
-
-            [server.google]
-            client_id = "google-client-id"
-            client_secret = "google-secret"
-            "#,
-        )
-        .unwrap();
-
-        let google = cfg.server.unwrap().google.unwrap();
-        assert!(google.is_configured());
-        assert_eq!(google.mcp_url(), None);
     }
 
     #[test]

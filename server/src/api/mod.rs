@@ -3,7 +3,6 @@ pub mod automations;
 pub mod email;
 pub mod files;
 pub mod github;
-pub mod google;
 pub mod images;
 pub mod mcp;
 pub mod projects;

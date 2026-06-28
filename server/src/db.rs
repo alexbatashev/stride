@@ -394,33 +394,6 @@ migrations! {
             foreign_key(owner -> users.id);
         }
     }
-
-    google_integration {
-        table google_connections {
-            id: Uuid [PrimaryKey],
-            user_id: Uuid [Unique],
-            google_user_id: String [Unique],
-            email: String,
-            access_token: String,
-            refresh_token: Option<String>,
-            scope: Option<String>,
-            expires_at: i64,
-            connected_at: i64,
-
-            foreign_key(user_id -> users.id);
-        }
-
-        // Short-lived CSRF tokens linking a pending OAuth flow to the user who
-        // started it. The browser returns from Google without credentials, so the
-        // signed-in user is recovered from the `state` parameter recorded here.
-        table google_oauth_states {
-            state: String [PrimaryKey],
-            user_id: Uuid,
-            expires_at: i64,
-
-            foreign_key(user_id -> users.id);
-        }
-    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema
