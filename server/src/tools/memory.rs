@@ -44,7 +44,10 @@ async fn embed(config: &AgentConfig, text: &str) -> Option<Embedding> {
         .get_embeddings(&entry.token, text, &entry.model_name)
         .await
     {
-        Ok(response) => Some(Embedding::from_floats(&response.data.embedding)),
+        Ok(response) => response
+            .data
+            .first()
+            .map(|d| Embedding::from_floats(&d.embedding)),
         Err(error) => {
             tracing::warn!(%error, "memory: embedding request failed, falling back to keywords");
             None

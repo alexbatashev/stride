@@ -121,11 +121,11 @@ impl From<OllamaEmbeddingsResponse> for EmbeddingResponse {
         EmbeddingResponse {
             object: "object".to_string(),
             model: val.model,
-            data: EmbeddingData {
+            data: vec![EmbeddingData {
                 object: "list".to_string(),
                 index: 0,
                 embedding: std::mem::take(&mut val.embeddings[0]),
-            },
+            }],
             usage: Usage {
                 prompt_tokens: val.prompt_eval_count,
                 completion_tokens: 0,

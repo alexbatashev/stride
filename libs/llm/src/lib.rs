@@ -141,7 +141,7 @@ pub struct EmbeddingData {
 pub struct EmbeddingResponse {
     pub object: String,
     pub model: String,
-    pub data: EmbeddingData,
+    pub data: Vec<EmbeddingData>,
     pub usage: Usage,
 }
 
