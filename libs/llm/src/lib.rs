@@ -121,6 +121,7 @@ pub struct CompletionChoice {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
+    #[serde(default)]
     pub completion_tokens: u32,
     pub total_tokens: u32,
 }
@@ -201,5 +202,24 @@ mod tests {
         let parsed: Completion = serde_json::from_slice(body).unwrap();
         let message = parsed.choices.into_iter().next().unwrap().message.unwrap();
         assert_eq!(message.content, "");
+    }
+
+    #[test]
+    fn embedding_usage_allows_missing_completion_tokens() {
+        let body = br#"{
+            "object": "list",
+            "model": "embedding-model",
+            "data": [{
+                "object": "embedding",
+                "index": 0,
+                "embedding": [0.1, 0.2, 0.3]
+            }],
+            "usage": {"prompt_tokens": 2, "total_tokens": 2}
+        }"#;
+
+        let parsed: EmbeddingResponse = serde_json::from_slice(body).unwrap();
+        assert_eq!(parsed.usage.prompt_tokens, 2);
+        assert_eq!(parsed.usage.completion_tokens, 0);
+        assert_eq!(parsed.usage.total_tokens, 2);
     }
 }
