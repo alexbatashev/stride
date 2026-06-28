@@ -1,7 +1,7 @@
 import { readToken } from "./auth.js";
 
 export type AutomationKind = "python" | "agent";
-export type TriggerKind = "cron" | "email" | "webhook" | "manual" | "vfs_change";
+export type TriggerKind = "cron" | "email" | "gmail" | "webhook" | "manual" | "vfs_change";
 export type NotifyKind = "none" | "telegram";
 
 export type Automation = {

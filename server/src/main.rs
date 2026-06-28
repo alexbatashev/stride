@@ -6,6 +6,7 @@ mod crypto;
 mod db;
 mod email;
 mod github;
+mod google;
 mod mcp_servers;
 mod notify;
 mod pages;
@@ -68,6 +69,9 @@ struct ServerState {
     pub(crate) executor: scheduler::ExecutorHandle,
     /// Protects secrets stored at rest, such as linked GitHub access tokens.
     pub(crate) cipher: crypto::SecretCipher,
+    /// Present when Google OAuth credentials are configured; drives account
+    /// linking and the native Gmail/Calendar/Drive tools.
+    pub(crate) google_service: Option<google::GoogleService>,
 }
 
 #[derive(Debug, Parser)]
@@ -124,6 +128,9 @@ async fn main() -> anyhow::Result<()> {
             mcp_url: github.mcp_url().to_string(),
             cipher: cipher.clone(),
         });
+    // Google account linking and native Gmail/Calendar/Drive tools, active once
+    // OAuth credentials are present.
+    let google_service = api::google::build_service(&config, &db, &cipher);
     let vfs_provider = config
         .server
         .as_ref()
@@ -155,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
         telegram_bot_token.clone(),
         email_service.clone(),
         mcp_tools.clone(),
+        google_service.clone(),
     );
 
     let public_url = config.public_url();
@@ -170,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
                 public_url,
                 github_runtime.clone(),
                 email_service.clone(),
+                google_service.clone(),
             ),
         )
     } else {
@@ -183,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
                 public_url,
                 github_runtime.clone(),
                 email_service,
+                google_service.clone(),
             ),
         )
     };
@@ -197,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
         telegram_interactions: Arc::new(Mutex::new(api::telegram::Interactions::default())),
         executor,
         cipher,
+        google_service,
     });
 
     // Bind Telegram subscriber tasks to agent runner lifetimes (created on activation, aborted on
@@ -334,6 +345,16 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route(
             "/api/settings/github/disconnect",
             post(api::github::disconnect),
+        )
+        .route("/api/settings/google", get(api::google::settings))
+        .route(
+            "/api/settings/google/authorize",
+            get(api::google::authorize),
+        )
+        .route("/api/settings/google/callback", get(api::google::callback))
+        .route(
+            "/api/settings/google/disconnect",
+            post(api::google::disconnect),
         )
         .route(
             "/api/settings/mcp",

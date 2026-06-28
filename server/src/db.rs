@@ -38,6 +38,7 @@ pub enum RunStatus {
 pub enum TriggerKind {
     Cron,
     Email,
+    Gmail,
     Webhook,
     Manual,
     VfsChange,
@@ -48,6 +49,7 @@ impl TriggerKind {
         match self {
             TriggerKind::Cron => "cron",
             TriggerKind::Email => "email",
+            TriggerKind::Gmail => "gmail",
             TriggerKind::Webhook => "webhook",
             TriggerKind::Manual => "manual",
             TriggerKind::VfsChange => "vfs_change",
@@ -59,6 +61,7 @@ impl TriggerKind {
         match value {
             Some("webhook") => TriggerKind::Webhook,
             Some("email") => TriggerKind::Email,
+            Some("gmail") => TriggerKind::Gmail,
             Some("manual") => TriggerKind::Manual,
             Some("vfs_change") => TriggerKind::VfsChange,
             _ => TriggerKind::Cron,
@@ -392,6 +395,37 @@ migrations! {
             created_at: i64,
 
             foreign_key(owner -> users.id);
+        }
+    }
+
+    google_integration {
+        // A linked Google account. Tokens are encrypted at rest with the row id
+        // bound as associated data (see `crate::crypto`). `expires_at` is the
+        // unix second the access token stops working; the client refreshes it
+        // with the long-lived refresh token before that.
+        table google_connections {
+            id: Uuid [PrimaryKey],
+            user_id: Uuid [Unique],
+            google_user_id: String [Unique],
+            email: String,
+            access_token: String,
+            refresh_token: String,
+            scope: Option<String>,
+            expires_at: i64,
+            connected_at: i64,
+
+            foreign_key(user_id -> users.id);
+        }
+
+        // Short-lived CSRF tokens linking a pending OAuth flow to the user who
+        // started it. Google redirects back without credentials, so the signed-in
+        // user is recovered from the `state` parameter recorded here.
+        table google_oauth_states {
+            state: String [PrimaryKey],
+            user_id: Uuid,
+            expires_at: i64,
+
+            foreign_key(user_id -> users.id);
         }
     }
 }

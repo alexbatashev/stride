@@ -24,6 +24,7 @@ use uuid::Uuid;
 use crate::config::Tools;
 use crate::db::{AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_runs, automations};
 use crate::email::ImapService;
+use crate::google::GoogleService;
 use crate::notify::{self, RunResult};
 use crate::runner::inproc::{python_tool_config, scriptable_tool_registry};
 use crate::triggers;
@@ -40,6 +41,7 @@ pub enum TriggerSource {
     Manual,
     VfsChange,
     Email,
+    Gmail,
 }
 
 /// A request to run one automation now, optionally with a trigger payload.
@@ -85,8 +87,10 @@ struct ExecutorCtx {
     telegram_bot_token: Option<String>,
     email_service: ImapService,
     mcp_tools: Vec<McpTool>,
+    google_service: Option<GoogleService>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     db: ConnectionPool,
     model_config: Arc<AgentConfig>,
@@ -94,6 +98,7 @@ pub fn spawn(
     telegram_bot_token: Option<String>,
     email_service: ImapService,
     mcp_tools: Vec<McpTool>,
+    google_service: Option<GoogleService>,
 ) -> ExecutorHandle {
     let (tx, rx) = unbounded_channel();
     let ctx = ExecutorCtx {
@@ -103,6 +108,7 @@ pub fn spawn(
         telegram_bot_token,
         email_service,
         mcp_tools,
+        google_service,
     };
     std::thread::Builder::new()
         .name("stride-scheduler".to_string())
@@ -154,6 +160,11 @@ async fn poll_due(ctx: &ExecutorCtx) {
         if kind == TriggerKind::Email {
             let ctx = ctx.clone();
             tokio::task::spawn_local(async move { poll_email(&ctx, row).await });
+            continue;
+        }
+        if kind == TriggerKind::Gmail {
+            let ctx = ctx.clone();
+            tokio::task::spawn_local(async move { poll_gmail(&ctx, row).await });
             continue;
         }
         let Some(trigger) = triggers::polled(
@@ -257,6 +268,55 @@ async fn poll_email(ctx: &ExecutorCtx, automation: crate::db::automations::Row) 
     });
 }
 
+/// Poll a Gmail-triggered automation: fetch inbox messages newer than the stored
+/// watermark and fire the automation with them as the payload.
+async fn poll_gmail(ctx: &ExecutorCtx, automation: crate::db::automations::Row) {
+    let Some(service) = ctx.google_service.as_ref() else {
+        return;
+    };
+    let cursor = automation
+        .trigger_cursor
+        .as_deref()
+        .and_then(|cursor| cursor.parse::<i64>().ok())
+        .unwrap_or(0);
+    let batch = match service.gmail_new_since(automation.owner, cursor).await {
+        Ok(batch) => batch,
+        Err(error) => {
+            tracing::warn!(%error, automation_id = %automation.id, "gmail trigger poll failed");
+            return;
+        }
+    };
+    if batch.messages.is_empty() {
+        return;
+    }
+    if let Err(error) = automations::update()
+        .last_run(Some(unix_now()))
+        .trigger_cursor(Some(batch.cursor.to_string().as_str()))
+        .where_(automations::id.eq(automation.id))
+        .execute(&ctx.db)
+        .await
+    {
+        tracing::warn!(%error, "scheduler failed to advance gmail cursor");
+        return;
+    }
+    let payload = serde_json::json!({
+        "source": "gmail",
+        "messages": batch.messages,
+    });
+    let ctx = ctx.clone();
+    tokio::task::spawn_local(async move {
+        run_automation(
+            ctx,
+            FireRequest {
+                automation_id: automation.id,
+                payload: Some(payload),
+                source: TriggerSource::Gmail,
+            },
+        )
+        .await
+    });
+}
+
 async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
     let rows = match automations::select()
         .where_(automations::id.eq(request.automation_id))
@@ -298,6 +358,14 @@ async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
         "running automation"
     );
 
+    // Offer the native Google tools to the run only when the owner is linked.
+    let google = match ctx.google_service.as_ref() {
+        Some(service) if service.is_connected(automation.owner).await => {
+            Some((service.clone(), automation.owner))
+        }
+        _ => None,
+    };
+
     let result = match automation.kind {
         AutomationKind::Python => {
             let script = python_script(&automation.payload, request.payload.as_ref());
@@ -305,7 +373,7 @@ async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
             mcp_tools.extend(
                 crate::mcp_servers::connect_user_mcp_servers(&ctx.db, automation.owner).await,
             );
-            run_python(&ctx, automation.owner, &script, mcp_tools).await
+            run_python(&ctx, automation.owner, &script, mcp_tools, google).await
         }
         AutomationKind::Agent => {
             let prompt = agent_prompt(&automation.payload, request.payload.as_ref());
@@ -318,6 +386,7 @@ async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
                 &prompt,
                 ctx.email_service.provider(automation.owner),
                 mcp_tools,
+                google,
             )
             .await
         }
@@ -389,6 +458,7 @@ async fn run_python(
     owner: Uuid,
     script: &str,
     mcp_tools: Vec<McpTool>,
+    google: Option<(GoogleService, Uuid)>,
 ) -> Result<String, String> {
     let Some(python) = ctx
         .tools
@@ -413,6 +483,7 @@ async fn run_python(
         Some(ctx.email_service.provider(owner)),
         &mcp_tools,
         None,
+        google,
     );
     let tool = execenv::PythonTool::new(config, Arc::new(fs))
         .await
@@ -443,6 +514,7 @@ async fn run_agent(
     prompt: &str,
     email_provider: Arc<dyn stride_agent::tools::email::EmailProvider>,
     mcp_tools: Vec<McpTool>,
+    google: Option<(GoogleService, Uuid)>,
 ) -> Result<String, String> {
     let agent = BaseAgent::new(
         "default".to_string(),
@@ -461,6 +533,9 @@ async fn run_agent(
         provider: email_provider,
     });
     agent.allow_tool("create_email_draft");
+    if let Some((service, user)) = google {
+        crate::tools::google::register(&agent, service, user);
+    }
     let mut stream = agent.make_turn(prompt.to_string(), Vec::new()).await;
     let mut output = String::new();
     while let Some(item) = stream.next().await {
@@ -647,6 +722,7 @@ mod tests {
                     telegram_bot_token: None,
                     email_service: ImapService::new(db.clone(), "test-secret"),
                     mcp_tools: Vec::new(),
+                    google_service: None,
                 };
                 run_automation(
                     ctx,

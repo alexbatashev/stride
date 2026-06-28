@@ -2927,6 +2927,7 @@ mod tests {
             files: None,
             telegram: Some(telegram),
             github: None,
+            google: None,
             public_url: None,
         };
         ServerState {
@@ -2948,6 +2949,7 @@ mod tests {
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
             executor: crate::scheduler::ExecutorHandle::channel().0,
             cipher: crate::crypto::SecretCipher::new("test-secret"),
+            google_service: None,
         }
     }
 
@@ -3130,6 +3132,7 @@ mod tests {
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
             executor: crate::scheduler::ExecutorHandle::channel().0,
             cipher: crate::crypto::SecretCipher::new("test-secret"),
+            google_service: None,
         })
     }
 

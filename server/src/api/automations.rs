@@ -130,6 +130,7 @@ fn trigger_from_str(kind: &str) -> Option<TriggerKind> {
     match kind {
         "cron" => Some(TriggerKind::Cron),
         "email" => Some(TriggerKind::Email),
+        "gmail" => Some(TriggerKind::Gmail),
         "webhook" => Some(TriggerKind::Webhook),
         "manual" => Some(TriggerKind::Manual),
         "vfs_change" => Some(TriggerKind::VfsChange),
@@ -229,6 +230,20 @@ pub async fn create(
                 Some(cursor.to_string()),
             )
         }
+        TriggerKind::Gmail => {
+            let service = state
+                .google_service
+                .as_ref()
+                .ok_or(AutomationApiError::BadRequest)?;
+            if !service.is_connected(owner).await {
+                return Err(AutomationApiError::BadRequest);
+            }
+            let cursor = service
+                .gmail_latest_internal_date(owner)
+                .await
+                .map_err(|_| AutomationApiError::BadRequest)?;
+            (None, Some(cursor.to_string()))
+        }
     };
 
     // Webhook automations get an opaque secret; vfs_change is baselined so
@@ -241,7 +256,7 @@ pub async fn create(
     let enabled = request.enabled.unwrap_or(true);
     let created_at = now();
     let last_run = match trigger_kind {
-        TriggerKind::VfsChange | TriggerKind::Email => Some(created_at),
+        TriggerKind::VfsChange | TriggerKind::Email | TriggerKind::Gmail => Some(created_at),
         _ => None,
     };
 
@@ -571,6 +586,7 @@ mod tests {
                 crate::api::telegram::Interactions::default(),
             )),
             cipher: crate::crypto::SecretCipher::new("test-secret"),
+            google_service: None,
             executor,
         })
     }

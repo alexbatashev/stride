@@ -25,6 +25,12 @@ export type GitHubSettings = {
 	login: string | null;
 };
 
+export type GoogleSettings = {
+	configured: boolean;
+	connected: boolean;
+	email: string | null;
+};
+
 export type EmailAccount = {
 	id: string;
 	name: string;
@@ -122,6 +128,19 @@ export async function startGitHubAuthorize(): Promise<string> {
 
 export async function disconnectGitHub(): Promise<void> {
 	await request("/api/settings/github/disconnect", { method: "POST" });
+}
+
+export async function getGoogleSettings(): Promise<GoogleSettings> {
+	return request("/api/settings/google");
+}
+
+export async function startGoogleAuthorize(): Promise<string> {
+	const response = await request<{ url: string }>("/api/settings/google/authorize");
+	return response.url;
+}
+
+export async function disconnectGoogle(): Promise<void> {
+	await request("/api/settings/google/disconnect", { method: "POST" });
 }
 
 export async function listEmailAccounts(): Promise<EmailAccount[]> {
