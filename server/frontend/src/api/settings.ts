@@ -102,6 +102,42 @@ export type SkillUpdate = {
 	content: string;
 };
 
+export type MemoryWing = {
+	id: string;
+	name: string;
+	description: string;
+	rooms: number;
+	memories: number;
+	created_at: number;
+};
+
+export type MemoryRoom = {
+	id: string;
+	wing: string;
+	name: string;
+	description: string;
+	memories: number;
+	created_at: number;
+};
+
+export type Memory = {
+	id: string;
+	wing: string;
+	room: string;
+	title: string;
+	summary: string;
+	content: string;
+	source: string | null;
+	keywords: string;
+	created_at: number;
+};
+
+export type MemorySettings = {
+	wings: MemoryWing[];
+	rooms: MemoryRoom[];
+	memories: Memory[];
+};
+
 export async function getTelegramSettings(): Promise<TelegramSettings> {
 	return request("/api/settings/telegram");
 }
@@ -222,6 +258,14 @@ export async function createWritableDir(path: string): Promise<WritableDir> {
 
 export async function deleteWritableDir(id: string): Promise<void> {
 	await request(`/api/settings/writable-dirs/${id}`, { method: "DELETE" });
+}
+
+export async function listMemories(): Promise<MemorySettings> {
+	return request("/api/settings/memories");
+}
+
+export async function deleteMemory(id: string): Promise<void> {
+	await request(`/api/settings/memories/${id}`, { method: "DELETE" });
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

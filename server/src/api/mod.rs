@@ -5,6 +5,7 @@ pub mod files;
 pub mod github;
 pub mod google;
 pub mod images;
+pub mod memories;
 pub mod mcp;
 pub mod projects;
 pub mod skills;

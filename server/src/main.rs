@@ -386,6 +386,11 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             "/api/settings/writable-dirs/{id}",
             delete(api::writable_dirs::delete),
         )
+        .route("/api/settings/memories", get(api::memories::list))
+        .route(
+            "/api/settings/memories/{id}",
+            delete(api::memories::delete),
+        )
         .route("/api/settings/telegram/login", post(api::telegram::login))
         .route(
             "/api/settings/telegram/disconnect",

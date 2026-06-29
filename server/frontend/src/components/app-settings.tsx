@@ -6,6 +6,7 @@ import {
   createSkill,
   createWritableDir,
   deleteEmailAccount,
+  deleteMemory,
   deleteMcpServer,
   deleteSkill,
   deleteWritableDir,
@@ -16,6 +17,7 @@ import {
   getGoogleSettings,
   getTelegramSettings,
   listEmailAccounts,
+  listMemories,
   listMcpServers,
   listSkills,
   listWritableDirs,
@@ -24,6 +26,10 @@ import {
   startGoogleAuthorize,
   updateSkill,
   type EmailAccount,
+  type Memory,
+  type MemoryRoom,
+  type MemorySettings,
+  type MemoryWing,
   type McpServer,
   type Skill,
   type TelegramAuthData,
@@ -60,6 +66,13 @@ type SettingsHost = HTMLElement & {
   writableDirs: WritableDir[];
   writableDirLoaded: boolean;
   writableDirError: string;
+  memoryWings: MemoryWing[];
+  memoryRooms: MemoryRoom[];
+  memories: Memory[];
+  memoryLoaded: boolean;
+  memoryError: string;
+  memoryQuery: string;
+  selectedMemoryId: string;
 };
 
 function escapeHtml(value: string): string {
@@ -105,6 +118,77 @@ function writableDirView(dir: WritableDir): AccountView {
     id: dir.id,
     name: escapeHtml(`/${dir.path}`),
     meta: "Writable by your agents, including every subdirectory.",
+  };
+}
+
+type MemoryView = {
+  id: string;
+  title: string;
+  path: string;
+  summary: string;
+  content: string;
+  source: string;
+  keywords: string;
+  created: string;
+  rawSearch: string;
+};
+
+type RoomView = {
+  id: string;
+  wing: string;
+  name: string;
+  description: string;
+  memories: number;
+};
+
+type WingView = {
+  id: string;
+  name: string;
+  memories: number;
+  rooms: RoomView[];
+};
+
+function formatDate(seconds: number): string {
+  if (!seconds) return "Unknown date";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(seconds * 1000));
+}
+
+function memoryView(memory: Memory): MemoryView {
+  const title = memory.title || memory.summary || "Untitled memory";
+  const summary = memory.summary || memory.content.slice(0, 180);
+  const source = memory.source || "Agent memory";
+  return {
+    id: memory.id,
+    title: escapeHtml(title),
+    path: escapeHtml(`${memory.wing} / ${memory.room}`),
+    summary: escapeHtml(summary),
+    content: escapeHtml(memory.content),
+    source: escapeHtml(source),
+    keywords: escapeHtml(memory.keywords),
+    created: escapeHtml(formatDate(memory.created_at)),
+    rawSearch: `${title} ${summary} ${memory.content} ${memory.wing} ${memory.room} ${memory.keywords}`.toLowerCase(),
+  };
+}
+
+function roomView(room: MemoryRoom): RoomView {
+  return {
+    id: room.id,
+    wing: escapeHtml(room.wing),
+    name: escapeHtml(room.name),
+    description: escapeHtml(room.description),
+    memories: room.memories,
+  };
+}
+
+function wingView(wing: MemoryWing, rooms: MemoryRoom[]): WingView {
+  return {
+    id: wing.id,
+    name: escapeHtml(wing.name),
+    memories: wing.memories,
+    rooms: rooms.filter((room) => room.wing === wing.name).map(roomView),
   };
 }
 
@@ -245,6 +329,22 @@ async function refreshWritableDirs(host: SettingsHost): Promise<void> {
     host.writableDirError = "";
   } catch {
     host.writableDirError = "Failed to load writable directories.";
+  }
+}
+
+async function refreshMemories(host: SettingsHost): Promise<void> {
+  try {
+    const settings: MemorySettings = await listMemories();
+    host.memoryWings = settings.wings;
+    host.memoryRooms = settings.rooms;
+    host.memories = settings.memories;
+    host.memoryLoaded = true;
+    host.memoryError = "";
+    if (host.selectedMemoryId && !settings.memories.some((memory) => memory.id === host.selectedMemoryId)) {
+      host.selectedMemoryId = settings.memories[0]?.id ?? "";
+    }
+  } catch {
+    host.memoryError = "Failed to load memories.";
   }
 }
 
@@ -426,6 +526,7 @@ const styles = css`
   .layout[data-active="email"] .tab[data-section="email"],
   .layout[data-active="mcp"] .tab[data-section="mcp"],
   .layout[data-active="files"] .tab[data-section="files"],
+  .layout[data-active="memories"] .tab[data-section="memories"],
   .layout[data-active="skills"] .tab[data-section="skills"] {
     background: var(--accent);
     color: var(--foreground);
@@ -449,6 +550,7 @@ const styles = css`
   .layout[data-active="email"] .panel[data-panel="email"],
   .layout[data-active="mcp"] .panel[data-panel="mcp"],
   .layout[data-active="files"] .panel[data-panel="files"],
+  .layout[data-active="memories"] .panel[data-panel="memories"],
   .layout[data-active="skills"] .panel[data-panel="skills"] {
     display: flex;
   }
@@ -469,6 +571,234 @@ const styles = css`
     color: var(--muted-foreground);
     font-size: 14px;
     line-height: 1.5;
+  }
+
+  .memory-overview {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .memory-stat {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .memory-stat .value {
+    color: var(--foreground);
+    font-size: 24px;
+    font-weight: 650;
+    line-height: 1;
+  }
+
+  .memory-stat .label {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    margin-top: 7px;
+    text-transform: uppercase;
+  }
+
+  .memory-workspace {
+    align-items: start;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+  }
+
+  .memory-map,
+  .memory-ledger,
+  .memory-detail {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-width: 0;
+  }
+
+  .memory-map {
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px) 0 0 / 24px 24px,
+      linear-gradient(color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px) 0 0 / 24px 24px;
+    padding: 14px;
+  }
+
+  .map-wing {
+    display: grid;
+    gap: 8px;
+  }
+
+  .map-wing + .map-wing {
+    border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    margin-top: 14px;
+    padding-top: 14px;
+  }
+
+  .map-wing-head {
+    align-items: baseline;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+  }
+
+  .map-wing-name {
+    color: var(--foreground);
+    font-size: 13px;
+    font-weight: 650;
+    overflow-wrap: anywhere;
+  }
+
+  .map-wing-count {
+    color: var(--muted-foreground);
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .map-room {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: grid;
+    font-size: 12px;
+    gap: 8px;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    min-height: 24px;
+  }
+
+  .map-room::before {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    content: "";
+    height: 7px;
+    justify-self: center;
+    width: 7px;
+  }
+
+  .map-room .room-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .map-room .room-count {
+    color: var(--foreground);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .memory-tools {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .memory-search {
+    position: relative;
+  }
+
+  .memory-search input {
+    padding-left: 34px;
+  }
+
+  .memory-search::before {
+    color: var(--muted-foreground);
+    content: "⌕";
+    font-size: 19px;
+    left: 12px;
+    line-height: 1;
+    position: absolute;
+    top: 8px;
+  }
+
+  .memory-ledger {
+    overflow: hidden;
+  }
+
+  .memory-row {
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    color: inherit;
+    cursor: pointer;
+    display: grid;
+    gap: 5px;
+    padding: 12px 14px;
+    text-align: left;
+    width: 100%;
+  }
+
+  .memory-row:last-child {
+    border-bottom: 0;
+  }
+
+  .memory-row:hover,
+  .memory-row[aria-current="true"] {
+    background: var(--accent);
+  }
+
+  .memory-row-title {
+    color: var(--foreground);
+    font-size: 14px;
+    font-weight: 650;
+    overflow-wrap: anywhere;
+  }
+
+  .memory-row-path,
+  .memory-row-summary {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .memory-row-summary {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .memory-detail {
+    display: grid;
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .memory-detail-head {
+    align-items: start;
+    display: flex;
+    gap: 14px;
+    justify-content: space-between;
+  }
+
+  .memory-detail h3 {
+    color: var(--foreground);
+    font-size: 16px;
+    line-height: 1.25;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .memory-detail-meta {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .memory-detail-content {
+    color: var(--foreground);
+    font-size: 13px;
+    line-height: 1.55;
+    max-height: 280px;
+    overflow: auto;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .memory-tags {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
   }
 
   .tg-widget:not(:has(::slotted(*))) {
@@ -633,6 +963,11 @@ const styles = css`
     .grid {
       grid-template-columns: 1fr;
     }
+
+    .memory-overview,
+    .memory-workspace {
+      grid-template-columns: 1fr;
+    }
   }
 `;
 
@@ -666,6 +1001,13 @@ export function AppSettings({
   writableDirs = [],
   writableDirLoaded = false,
   writableDirError = "",
+  memoryWings = [],
+  memoryRooms = [],
+  memories = [],
+  memoryLoaded = false,
+  memoryError = "",
+  memoryQuery = "",
+  selectedMemoryId = "",
 }: {
   activeSection?: string;
   tgConfigured?: boolean;
@@ -696,6 +1038,13 @@ export function AppSettings({
   writableDirs?: WritableDir[];
   writableDirLoaded?: boolean;
   writableDirError?: string;
+  memoryWings?: MemoryWing[];
+  memoryRooms?: MemoryRoom[];
+  memories?: Memory[];
+  memoryLoaded?: boolean;
+  memoryError?: string;
+  memoryQuery?: string;
+  selectedMemoryId?: string;
 }): Component {
   onMount(() => {
     (window as unknown as Record<string, unknown>).onTelegramAuth = (user: TelegramAuthData) => {
@@ -708,6 +1057,7 @@ export function AppSettings({
     void refreshMcps(this);
     void refreshSkills(this);
     void refreshWritableDirs(this);
+    void refreshMemories(this);
   });
 
   // Telegram's widget script finds its own <script> tag in the document and
@@ -744,6 +1094,17 @@ export function AppSettings({
   const mcpViews = mcps.map(mcpView);
   const skillViews = skills.map(skillView);
   const writableDirViews = writableDirs.map(writableDirView);
+  const query = memoryQuery.trim().toLowerCase();
+  const memoryViews = memories.map(memoryView);
+  const filteredMemories = query
+    ? memoryViews.filter((memory) => memory.rawSearch.includes(query))
+    : memoryViews;
+  const selectedMemory = filteredMemories.find((memory) => memory.id === selectedMemoryId)
+    ?? filteredMemories[0]
+    ?? null;
+  const totalRooms = memoryRooms.length;
+  const totalMemories = memories.length;
+  const memoryWingViews = memoryWings.map((wing) => wingView(wing, memoryRooms));
   const editing = editingSkill
     ? {
         id: editingSkill.id,
@@ -824,6 +1185,21 @@ export function AppSettings({
                   });
               }
               return;
+            case "refresh-memories":
+              void refreshMemories(this);
+              return;
+            case "select-memory":
+              this.selectedMemoryId = action.dataset.id ?? "";
+              return;
+            case "del-memory":
+              if (action.dataset.id && window.confirm("Remove this memory? This cannot be undone.")) {
+                void deleteMemory(action.dataset.id)
+                  .then(() => refreshMemories(this))
+                  .catch(() => {
+                    this.memoryError = "Failed to remove memory.";
+                  });
+              }
+              return;
             case "del-email":
               if (action.dataset.id && window.confirm("Remove this IMAP account from S.T.R.I.D.E.?")) {
                 void deleteEmailAccount(action.dataset.id)
@@ -878,6 +1254,12 @@ export function AppSettings({
               return;
           }
         }}
+        onInput={(event: Event) => {
+          const input = event.target as HTMLInputElement;
+          if (input.name === "memory-query") {
+            this.memoryQuery = input.value;
+          }
+        }}
         onSubmit={(event: Event) => {
           event.preventDefault();
           const form = event.target as HTMLFormElement;
@@ -902,6 +1284,7 @@ export function AppSettings({
               <button type="button" class="tab" data-section="email">Email</button>
               <button type="button" class="tab" data-section="mcp">MCP servers</button>
               <button type="button" class="tab" data-section="files">Writable folders</button>
+              <button type="button" class="tab" data-section="memories">Memories</button>
               <button type="button" class="tab" data-section="skills">Skills</button>
             </nav>
 
@@ -1086,6 +1469,110 @@ export function AppSettings({
                     <p class="error">{writableDirError}</p>
                   </form>
                 </app-card>
+              </section>
+
+              <section class="panel" data-panel="memories">
+                <app-card
+                  title="Memory palace"
+                  description="Review durable memories your agents can recall across threads. New memories are still created by asking the agent to remember something."
+                >
+                  <div class="memory-overview">
+                    <div class="memory-stat">
+                      <div class="value">{memoryWings.length}</div>
+                      <div class="label">Wings</div>
+                    </div>
+                    <div class="memory-stat">
+                      <div class="value">{totalRooms}</div>
+                      <div class="label">Rooms</div>
+                    </div>
+                    <div class="memory-stat">
+                      <div class="value">{totalMemories}</div>
+                      <div class="label">Memories</div>
+                    </div>
+                  </div>
+                  <div class="status-row">
+                    <app-button variant="outline" size="sm" data-action="refresh-memories">Refresh</app-button>
+                    <span class="muted">{memoryLoaded ? "Showing saved memory structure." : "Loading memories…"}</span>
+                  </div>
+                  <p class="error">{memoryError}</p>
+                </app-card>
+
+                <div class="memory-workspace">
+                  <app-card title="Palace map" description="Wings hold rooms; rooms hold individual memories. Empty rooms stay visible so the structure is easy to audit.">
+                    {memoryWings.length > 0
+                      ? (
+                        <div class="memory-map">
+                          {memoryWingViews.map((wing) => (
+                            <div class="map-wing" key={wing.id}>
+                              <div class="map-wing-head">
+                                <div class="map-wing-name">{wing.name}</div>
+                                <div class="map-wing-count">{wing.memories} memories</div>
+                              </div>
+                              {wing.rooms.length > 0
+                                ? wing.rooms.map((room) => (
+                                  <div class="map-room" key={room.id} title={room.description}>
+                                    <span class="room-name">{room.name}</span>
+                                    <span class="room-count">{room.memories}</span>
+                                  </div>
+                                )).join("")
+                                : <p class="muted">No rooms yet.</p>}
+                            </div>
+                          )).join("")}
+                        </div>
+                      )
+                      : <p class="muted">{memoryLoaded ? "No memory wings yet." : "Loading palace map…"}</p>}
+                  </app-card>
+
+                  <div class="panels">
+                    <app-card title="Memory ledger" description="Search titles, summaries, rooms, and original contents. Removing a memory deletes the saved drawer and its search card.">
+                      <div class="memory-tools">
+                        <label class="memory-search">
+                          <input name="memory-query" value={memoryQuery} placeholder="Search memories" aria-label="Search memories" autocomplete="off" />
+                        </label>
+                        <span class="hint">{filteredMemories.length} of {totalMemories} memories shown</span>
+                      </div>
+                      {filteredMemories.length > 0
+                        ? (
+                          <div class="memory-ledger">
+                            {filteredMemories.map((memory) => (
+                              <button
+                                type="button"
+                                class="memory-row"
+                                data-action="select-memory"
+                                data-id={memory.id}
+                                aria-current={selectedMemory?.id === memory.id ? "true" : "false"}
+                              >
+                                <span class="memory-row-title">{memory.title}</span>
+                                <span class="memory-row-path">{memory.path}</span>
+                                <span class="memory-row-summary">{memory.summary}</span>
+                              </button>
+                            )).join("")}
+                          </div>
+                        )
+                        : <p class="muted">{memoryLoaded ? "No memories match this search." : "Loading memories…"}</p>}
+                    </app-card>
+
+                    <app-card title="Selected memory" description="Inspect the stored summary, original content, source, and search keywords before removing anything.">
+                      {selectedMemory
+                        ? (
+                          <div class="memory-detail">
+                            <div class="memory-detail-head">
+                              <div>
+                                <h3>{selectedMemory.title}</h3>
+                                <div class="memory-detail-meta">{selectedMemory.path} · {selectedMemory.created}</div>
+                              </div>
+                              <app-button variant="outline" size="sm" data-action="del-memory" data-id={selectedMemory.id}>Remove</app-button>
+                            </div>
+                            <p class="muted">{selectedMemory.summary}</p>
+                            <div class="memory-detail-content">{selectedMemory.content}</div>
+                            <div class="memory-tags">Source: {selectedMemory.source}</div>
+                            {selectedMemory.keywords ? <div class="memory-tags">Keywords: {selectedMemory.keywords}</div> : ""}
+                          </div>
+                        )
+                        : <p class="muted">{memoryLoaded ? "Select a memory to inspect it." : "Loading selected memory…"}</p>}
+                    </app-card>
+                  </div>
+                </div>
               </section>
 
               <section class="panel" data-panel="skills">

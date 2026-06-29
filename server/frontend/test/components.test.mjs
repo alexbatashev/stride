@@ -200,6 +200,26 @@ test('app-settings switches sections and lists integrations', () => {
   assert.match(el.shadowRoot.innerHTML, /deepwiki/);
 });
 
+test('app-settings renders memory palace management', () => {
+  const el = mount('app-settings', {
+    activeSection: 'memories',
+    memoryLoaded: true,
+    memoryWings: [{ id: 'w1', name: 'stride-project', description: 'Project memory', rooms: 1, memories: 1, created_at: 1 }],
+    memoryRooms: [{ id: 'r1', wing: 'stride-project', name: 'settings', description: 'Settings work', memories: 1, created_at: 1 }],
+    memories: [{ id: 'd1', wing: 'stride-project', room: 'settings', title: 'Memory UI direction', summary: 'Use a ledger and palace map.', content: 'Full stored memory text.', source: 'thread', keywords: 'settings memory', created_at: 1 }],
+  });
+
+  assert.match(el.shadowRoot.innerHTML, /Memory palace/);
+  assert.match(el.shadowRoot.innerHTML, /stride-project/);
+  assert.match(el.shadowRoot.innerHTML, /Memory UI direction/);
+  assert.ok(el.shadowRoot.querySelector('[data-action="del-memory"][data-id="d1"]'), 'remove memory button missing');
+
+  const search = el.shadowRoot.querySelector('input[name="memory-query"]');
+  search.value = 'missing';
+  search.dispatchEvent(new Event('input', { bubbles: true }));
+  assert.match(el.shadowRoot.innerHTML, /No memories match this search/);
+});
+
 test('app-settings escapes account names', () => {
   const el = mount('app-settings', {
     activeSection: 'email',
