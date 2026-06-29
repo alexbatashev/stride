@@ -1,7 +1,9 @@
+use std::future::poll_fn;
 use std::io::{self, Read as IoRead, Write as IoWrite};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use hyper::rt::{Read, ReadBufCursor, Write};
 use mio::net::TcpStream;
@@ -14,12 +16,20 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 pub struct AsyncTlsStream {
     socket: TcpStream,
     tls_conn: ClientConnection,
+    deadline: Option<Instant>,
 }
 
-pub struct AsyncTcpStream(TcpStream);
+pub struct AsyncTcpStream {
+    socket: TcpStream,
+    deadline: Option<Instant>,
+}
 
 impl AsyncTlsStream {
-    pub fn connect(addr: SocketAddr, server_name: &str) -> std::io::Result<Self> {
+    pub fn connect(
+        addr: SocketAddr,
+        server_name: &str,
+        deadline: Option<Instant>,
+    ) -> std::io::Result<Self> {
         let socket = TcpStream::connect(addr)?;
         let server_name = ServerName::try_from(server_name)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?
@@ -28,9 +38,17 @@ impl AsyncTlsStream {
         let tls_conn = ClientConnection::new(config.clone(), server_name)
             .map_err(|e| io::Error::other(e.to_string()))?;
 
-        // FIXME: mio docs say I need to wait for a (writable) event and check TcpStream::take_err?
+        Ok(Self {
+            socket,
+            tls_conn,
+            deadline,
+        })
+    }
 
-        Ok(Self { socket, tls_conn })
+    /// Wait for the non-blocking TCP connect to finish before any TLS bytes flow.
+    /// Lets the caller fall back to the next address if this one stalls or fails.
+    pub async fn wait_connected(&self, deadline: Instant) -> io::Result<()> {
+        wait_tcp_connected(&self.socket, deadline).await
     }
 }
 
@@ -41,6 +59,10 @@ impl Read for AsyncTlsStream {
         mut buf: ReadBufCursor<'_>,
     ) -> Poll<Result<(), io::Error>> {
         let this = self.get_mut();
+
+        if this.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Poll::Ready(Err(timed_out()));
+        }
 
         // Flush pending TLS data first (e.g. handshake messages from a prior
         // process_new_packets call).  If we only flush *after* read_tls, we miss
@@ -114,6 +136,10 @@ impl Write for AsyncTlsStream {
     ) -> Poll<Result<usize, io::Error>> {
         let this = self.get_mut();
 
+        if this.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Poll::Ready(Err(timed_out()));
+        }
+
         // Drain the TLS write buffer first so rustls's plaintext buffer has room.
         // rustls caps sendable_plaintext at 64 KB; if it's full, writer().write()
         // returns Ok(0), which hyper treats as a terminal write error.
@@ -142,6 +168,9 @@ impl Write for AsyncTlsStream {
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
         let this = self.get_mut();
+        if this.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Poll::Ready(Err(timed_out()));
+        }
         while this.tls_conn.wants_write() {
             match this.tls_conn.write_tls(&mut this.socket) {
                 Ok(_) => {}
@@ -160,6 +189,9 @@ impl Write for AsyncTlsStream {
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
         let this = self.get_mut();
+        if this.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Poll::Ready(Err(timed_out()));
+        }
         this.tls_conn.send_close_notify();
         while this.tls_conn.wants_write() {
             match this.tls_conn.write_tls(&mut this.socket) {
@@ -176,13 +208,41 @@ impl Write for AsyncTlsStream {
 }
 
 impl AsyncTcpStream {
-    pub fn new(addr: SocketAddr) -> std::io::Result<Self> {
-        let conn = TcpStream::connect(addr)?;
+    pub fn new(addr: SocketAddr, deadline: Option<Instant>) -> std::io::Result<Self> {
+        let socket = TcpStream::connect(addr)?;
 
-        // FIXME: mio docs say I need to wait for a (writable) event and check TcpStream::take_err?
-
-        Ok(Self(conn))
+        Ok(Self { socket, deadline })
     }
+
+    /// See [`AsyncTlsStream::wait_connected`].
+    pub async fn wait_connected(&self, deadline: Instant) -> io::Result<()> {
+        wait_tcp_connected(&self.socket, deadline).await
+    }
+}
+
+/// Drive a non-blocking `connect` to completion by busy-polling (matching the
+/// rest of this reactor-less client). `take_error` surfaces a failed connect
+/// (e.g. ECONNREFUSED) fast; `peer_addr` turning `Ok` means it succeeded.
+async fn wait_tcp_connected(socket: &TcpStream, deadline: Instant) -> io::Result<()> {
+    poll_fn(|cx| {
+        if Instant::now() >= deadline {
+            return Poll::Ready(Err(timed_out()));
+        }
+        match socket.take_error() {
+            Ok(Some(err)) => return Poll::Ready(Err(err)),
+            Ok(None) => {}
+            Err(err) => return Poll::Ready(Err(err)),
+        }
+        match socket.peer_addr() {
+            Ok(_) => Poll::Ready(Ok(())),
+            Err(err) if is_pending_socket_error(&err) => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    })
+    .await
 }
 
 impl Read for AsyncTcpStream {
@@ -191,11 +251,15 @@ impl Read for AsyncTcpStream {
         cx: &mut Context<'_>,
         mut buf: ReadBufCursor<'_>,
     ) -> Poll<Result<(), io::Error>> {
+        let this = self.get_mut();
+        if this.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Poll::Ready(Err(timed_out()));
+        }
         // Safety: we write exactly `n` bytes before advancing the cursor
         let dst = unsafe { buf.as_mut() };
         let dst_slice =
             unsafe { std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, dst.len()) };
-        match self.get_mut().0.read(dst_slice) {
+        match this.socket.read(dst_slice) {
             Ok(n) => {
                 unsafe { buf.advance(n) };
                 Poll::Ready(Ok(()))
@@ -215,7 +279,11 @@ impl Write for AsyncTcpStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        match self.get_mut().0.write(buf) {
+        let this = self.get_mut();
+        if this.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Poll::Ready(Err(timed_out()));
+        }
+        match this.socket.write(buf) {
             Ok(n) => Poll::Ready(Ok(n)),
             Err(e) if is_pending_socket_error(&e) => {
                 cx.waker().wake_by_ref();
@@ -229,14 +297,14 @@ impl Write for AsyncTcpStream {
         self: std::pin::Pin<&mut Self>,
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        Poll::Ready(self.get_mut().0.flush())
+        Poll::Ready(self.get_mut().socket.flush())
     }
 
     fn poll_shutdown(
         self: std::pin::Pin<&mut Self>,
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        Poll::Ready(self.get_mut().0.shutdown(std::net::Shutdown::Write))
+        Poll::Ready(self.get_mut().socket.shutdown(std::net::Shutdown::Write))
     }
 }
 
@@ -302,6 +370,10 @@ impl ServerCertVerifier for NoCertificateVerification {
             SignatureScheme::RSA_PSS_SHA512,
         ]
     }
+}
+
+fn timed_out() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "tinynet: request timed out")
 }
 
 fn is_pending_socket_error(err: &io::Error) -> bool {

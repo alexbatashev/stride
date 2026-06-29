@@ -12,7 +12,7 @@ use futures::{StreamExt, stream};
 use http_body_util::Empty;
 use hyper::Request;
 use rcgen::generate_simple_self_signed;
-use tinynet::{Error, send_request, stream_request};
+use tinynet::{Error, send_request, send_request_with_timeout, stream_request};
 
 type AppState = &'static str;
 
@@ -221,6 +221,48 @@ async fn send_request_reads_connection_close_delimited_tls_body() {
 
     assert_eq!(status, 200);
     assert_eq!(body, Bytes::from_static(b"closed-body"));
+}
+
+#[tokio::test]
+async fn stalled_server_times_out_instead_of_hanging() {
+    use std::io::Read as _;
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Accept the connection, read the request, then never respond — the kind of
+    // tarpit that previously made the busy-polling client spin forever.
+    std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = socket.read(&mut buf);
+        std::thread::sleep(Duration::from_secs(5));
+        drop(socket);
+    });
+
+    let req = Request::builder()
+        .uri(format!("http://{addr}/mock"))
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        send_request_with_timeout(req, Duration::from_secs(1)),
+    )
+    .await
+    .expect("request must not hang past its own deadline");
+
+    assert!(
+        result.is_err(),
+        "stalled request should error, got {result:?}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "should time out near the 1s deadline, took {:?}",
+        start.elapsed()
+    );
 }
 
 struct InsecureTlsGuard;

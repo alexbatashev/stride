@@ -1,7 +1,8 @@
 mod stream;
 
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::FutureExt;
@@ -27,13 +28,105 @@ pub enum Error {
     ServerError(u16, String),
 }
 
+/// Default overall request deadline (connect + handshake + transfer). Without
+/// this, a stalled host makes the busy-polling stream spin forever, which hung
+/// `web_search` academic lookups indefinitely with nothing in the logs.
+/// Override with `TINYNET_TIMEOUT_SECS`.
+const DEFAULT_TIMEOUT_SECS: u64 = 20;
+
+fn default_timeout() -> Duration {
+    std::env::var("TINYNET_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+}
+
+/// Per-address TCP connect timeout. DNS often returns several addresses (and a
+/// mix of IPv4/IPv6); without a bound, the client commits to the first one and a
+/// single unreachable or tarpitting address hangs the whole request. With it, a
+/// stalled address fails fast and we try the next. Override with
+/// `TINYNET_CONNECT_TIMEOUT_SECS`.
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+fn connect_timeout() -> Duration {
+    std::env::var("TINYNET_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
+}
+
+/// Deadline for a single connect attempt: the connect timeout, but never past
+/// the overall transfer deadline when one is set.
+fn attempt_deadline(connect_timeout: Duration, transfer_deadline: Option<Instant>) -> Instant {
+    let by_connect = Instant::now() + connect_timeout;
+    match transfer_deadline {
+        Some(d) => by_connect.min(d),
+        None => by_connect,
+    }
+}
+
+async fn connect_first_tls(
+    addrs: &[SocketAddr],
+    host: &str,
+    connect_timeout: Duration,
+    transfer_deadline: Option<Instant>,
+) -> Result<AsyncTlsStream, Error> {
+    let mut last_err = None;
+    for &addr in addrs {
+        match AsyncTlsStream::connect(addr, host, transfer_deadline) {
+            Ok(io) => match io.wait_connected(attempt_deadline(connect_timeout, transfer_deadline)).await {
+                Ok(()) => return Ok(io),
+                Err(err) => last_err = Some(format!("{addr}: {err}")),
+            },
+            Err(err) => last_err = Some(format!("{addr}: {err}")),
+        }
+    }
+    Err(Error::RequestError(
+        last_err.unwrap_or_else(|| "failed to connect".to_string()),
+    ))
+}
+
+async fn connect_first_tcp(
+    addrs: &[SocketAddr],
+    connect_timeout: Duration,
+    transfer_deadline: Option<Instant>,
+) -> Result<AsyncTcpStream, Error> {
+    let mut last_err = None;
+    for &addr in addrs {
+        match AsyncTcpStream::new(addr, transfer_deadline) {
+            Ok(io) => match io.wait_connected(attempt_deadline(connect_timeout, transfer_deadline)).await {
+                Ok(()) => return Ok(io),
+                Err(err) => last_err = Some(format!("{addr}: {err}")),
+            },
+            Err(err) => last_err = Some(format!("{addr}: {err}")),
+        }
+    }
+    Err(Error::RequestError(
+        last_err.unwrap_or_else(|| "failed to connect".to_string()),
+    ))
+}
+
 pub async fn send_request<T>(req: Request<T>) -> Result<(u16, Bytes), Error>
 where
     T: Body + Send + 'static,
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let (status, _headers, body) = send_request_with_headers(req).await?;
+    send_request_with_timeout(req, default_timeout()).await
+}
+
+pub async fn send_request_with_timeout<T>(
+    req: Request<T>,
+    timeout: Duration,
+) -> Result<(u16, Bytes), Error>
+where
+    T: Body + Send + 'static,
+    T::Data: Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let (status, _headers, body) = send_request_with_headers_timeout(req, timeout).await?;
     Ok((status, body))
 }
 
@@ -45,34 +138,28 @@ where
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
+    send_request_with_headers_timeout(req, default_timeout()).await
+}
+
+pub async fn send_request_with_headers_timeout<T>(
+    req: Request<T>,
+    timeout: Duration,
+) -> Result<(u16, hyper::HeaderMap, Bytes), Error>
+where
+    T: Body + Send + 'static,
+    T::Data: Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let (host, is_https, addrs, req) = prepare_request(req)?;
+    let transfer_deadline = Some(Instant::now() + timeout);
+    let connect_timeout = connect_timeout();
 
     if is_https {
-        let mut last_err = None;
-        for addr in addrs {
-            match AsyncTlsStream::connect(addr, &host) {
-                Ok(io) => return do_request(io, req).await,
-                Err(err) => last_err = Some(err),
-            }
-        }
-        Err(Error::RequestError(
-            last_err
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "failed to connect".to_string()),
-        ))
+        let io = connect_first_tls(&addrs, &host, connect_timeout, transfer_deadline).await?;
+        do_request(io, req).await
     } else {
-        let mut last_err = None;
-        for addr in addrs {
-            match AsyncTcpStream::new(addr) {
-                Ok(io) => return do_request(io, req).await,
-                Err(err) => last_err = Some(err),
-            }
-        }
-        Err(Error::RequestError(
-            last_err
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "failed to connect".to_string()),
-        ))
+        let io = connect_first_tcp(&addrs, connect_timeout, transfer_deadline).await?;
+        do_request(io, req).await
     }
 }
 
@@ -90,35 +177,23 @@ where
             return Box::pin(futures::stream::once(async move { Err(err) }));
         }
     };
+    // Streaming responses (e.g. LLM SSE) are long-lived; an overall deadline
+    // would truncate them. The connect phase is still bounded so an unreachable
+    // address can't hang setup. Stalls mid-stream surface through the caller's
+    // own stream handling instead.
+    let transfer_deadline = None;
+    let connect_timeout = connect_timeout();
 
     if is_https {
-        let mut last_err = None;
-        for addr in addrs {
-            match AsyncTlsStream::connect(addr, &host) {
-                Ok(io) => return do_stream_request(io, req).await,
-                Err(err) => last_err = Some(err),
-            }
+        match connect_first_tls(&addrs, &host, connect_timeout, transfer_deadline).await {
+            Ok(io) => do_stream_request(io, req).await,
+            Err(err) => Box::pin(futures::stream::once(async move { Err(err) })),
         }
-        let msg = last_err
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "failed to connect".to_string());
-        Box::pin(futures::stream::once(async move {
-            Err(Error::RequestError(msg))
-        }))
     } else {
-        let mut last_err = None;
-        for addr in addrs {
-            match AsyncTcpStream::new(addr) {
-                Ok(io) => return do_stream_request(io, req).await,
-                Err(err) => last_err = Some(err),
-            }
+        match connect_first_tcp(&addrs, connect_timeout, transfer_deadline).await {
+            Ok(io) => do_stream_request(io, req).await,
+            Err(err) => Box::pin(futures::stream::once(async move { Err(err) })),
         }
-        let msg = last_err
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "failed to connect".to_string());
-        Box::pin(futures::stream::once(async move {
-            Err(Error::RequestError(msg))
-        }))
     }
 }
 
@@ -449,4 +524,57 @@ fn trim_ascii(mut s: &[u8]) -> &[u8] {
         s = &s[..s.len() - 1];
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    // Bind and immediately release a port so connecting to it is refused.
+    fn refused_addr() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    }
+
+    #[tokio::test]
+    async fn connect_first_falls_back_to_reachable_address() {
+        let dead = refused_addr();
+        // Bound but never accept()ed: the kernel still completes the handshake.
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let live_addr = live.local_addr().unwrap();
+
+        let addrs = vec![dead, live_addr];
+        let start = Instant::now();
+        let result = connect_first_tcp(
+            &addrs,
+            Duration::from_secs(5),
+            Some(Instant::now() + Duration::from_secs(5)),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "should fall back from the refused address to the live one: {:?}",
+            result.err()
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "fallback should be fast, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_first_errors_when_all_addresses_unreachable() {
+        let result = connect_first_tcp(
+            &[refused_addr()],
+            Duration::from_secs(2),
+            Some(Instant::now() + Duration::from_secs(2)),
+        )
+        .await;
+        assert!(result.is_err());
+    }
 }
