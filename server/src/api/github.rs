@@ -1,10 +1,16 @@
-//! GitHub account linking via a standard OAuth App.
+//! GitHub account linking, either via a standard OAuth App or a Personal Access
+//! Token.
 //!
-//! The browser is sent to GitHub's authorize page, returns to [`callback`] with a
-//! short-lived `code`, and the server exchanges it for a user access token. That
-//! token is stored and later forwarded to the hosted GitHub MCP server (see
-//! [`crate::github`]). The signed-in user is recovered from the `state` parameter
+//! With an OAuth App the browser is sent to GitHub's authorize page, returns to
+//! [`callback`] with a short-lived `code`, and the server exchanges it for a user
+//! access token. The signed-in user is recovered from the `state` parameter
 //! because GitHub redirects back without the session cookie.
+//!
+//! Without an OAuth App, a user can paste a Personal Access Token (see
+//! [`connect_pat`]); the token is validated against the GitHub user endpoint and
+//! stored directly. Either way the stored token is later forwarded to the hosted
+//! GitHub MCP server (see [`crate::github`]), which accepts it as a bearer
+//! credential regardless of how it was obtained.
 
 use std::{
     sync::Arc,
@@ -41,9 +47,18 @@ const USER_URL: &str = "https://api.github.com/user";
 
 #[derive(Serialize)]
 pub struct GitHubSettingsResponse {
+    /// Whether an OAuth App is configured, enabling the "Sign in with GitHub"
+    /// flow. Personal Access Token entry is always available regardless.
     configured: bool,
     connected: bool,
     login: Option<String>,
+    /// How the active connection was established, when connected.
+    auth_method: Option<&'static str>,
+}
+
+#[derive(Deserialize)]
+pub struct PatRequest {
+    token: String,
 }
 
 #[derive(Serialize)]
@@ -61,6 +76,7 @@ pub struct CallbackParams {
 pub enum GitHubApiError {
     Auth(AuthError),
     NotConfigured,
+    InvalidToken(String),
     Internal,
 }
 
@@ -73,6 +89,9 @@ impl IntoResponse for GitHubApiError {
                 Json(json!({"error": "GitHub is not configured on this server"})),
             )
                 .into_response(),
+            GitHubApiError::InvalidToken(message) => {
+                (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
+            }
             GitHubApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }
@@ -89,19 +108,27 @@ pub async fn settings(
     headers: HeaderMap,
 ) -> Result<Json<GitHubSettingsResponse>, GitHubApiError> {
     let user_id = auth::authenticated_user(&state, &headers).await?;
-    let login = github_connections::select_cols((github_connections::login,))
-        .where_(github_connections::user_id.eq(user_id))
-        .all(&state.db)
-        .await
-        .map_err(|_| GitHubApiError::Internal)?
-        .into_iter()
-        .next()
-        .map(|(login,)| login);
+    let connection =
+        github_connections::select_cols((github_connections::login, github_connections::scope))
+            .where_(github_connections::user_id.eq(user_id))
+            .all(&state.db)
+            .await
+            .map_err(|_| GitHubApiError::Internal)?
+            .into_iter()
+            .next();
+
+    // OAuth connections record the granted scopes; a Personal Access Token
+    // connection stores none. Use that to report how the account was linked.
+    let auth_method = connection
+        .as_ref()
+        .map(|(_, scope)| if scope.is_some() { "oauth" } else { "pat" });
+    let login = connection.map(|(login, _)| login);
 
     Ok(Json(GitHubSettingsResponse {
         configured: github_config(&state).is_some(),
         connected: login.is_some(),
         login,
+        auth_method,
     }))
 }
 
@@ -191,10 +218,63 @@ async fn complete(state: &ServerState, params: CallbackParams) -> Result<(), Str
     let (github_user_id, login) = fetch_user(&access_token).await?;
     let scope = github.scopes().to_string();
 
-    // The token is bound to the row id as associated data, so encrypt under the
-    // id we are about to insert.
+    store_connection(
+        state,
+        user_id,
+        github_user_id,
+        &login,
+        &access_token,
+        Some(&scope),
+    )
+    .await
+}
+
+/// Link a GitHub account from a user-supplied Personal Access Token. The token is
+/// validated by fetching the GitHub user it belongs to, then stored for the MCP
+/// server. No OAuth App is required.
+pub async fn connect_pat(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(body): Json<PatRequest>,
+) -> Result<StatusCode, GitHubApiError> {
+    let user_id = auth::authenticated_user(&state, &headers).await?;
+    let token = body.token.trim();
+    if token.is_empty() {
+        return Err(GitHubApiError::InvalidToken(
+            "A personal access token is required".to_string(),
+        ));
+    }
+
+    let (github_user_id, login) = fetch_user(token).await.map_err(|error| {
+        tracing::warn!(%error, user_id = %user_id, "GitHub PAT validation failed");
+        GitHubApiError::InvalidToken("GitHub rejected the token".to_string())
+    })?;
+
+    // PAT connections store no scope; that absence marks them apart from OAuth
+    // connections when reporting the active auth method.
+    store_connection(&state, user_id, github_user_id, &login, token, None)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, user_id = %user_id, "failed to store GitHub PAT connection");
+            GitHubApiError::Internal
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Persist a GitHub connection, replacing any prior link for this user or for the
+/// same GitHub account. The token is bound to the row id as associated data, so it
+/// is encrypted under the id about to be inserted.
+async fn store_connection(
+    state: &ServerState,
+    user_id: Uuid,
+    github_user_id: i64,
+    login: &str,
+    token: &str,
+    scope: Option<&str>,
+) -> Result<(), String> {
     let id = Uuid::now_v7();
-    let access_ciphertext = state.cipher.encrypt(id, &access_token)?;
+    let access_ciphertext = state.cipher.encrypt(id, token)?;
 
     // A user may relink, and a GitHub account may move between users; clear both
     // sides of the unique constraints before inserting the fresh row.
@@ -211,9 +291,9 @@ async fn complete(state: &ServerState, params: CallbackParams) -> Result<(), Str
         .id(id)
         .user_id(user_id)
         .github_user_id(github_user_id)
-        .login(login.as_str())
+        .login(login)
         .access_token(access_ciphertext.as_str())
-        .scope(Some(scope.as_str()))
+        .scope(scope)
         .connected_at(now())
         .execute(&state.db)
         .await

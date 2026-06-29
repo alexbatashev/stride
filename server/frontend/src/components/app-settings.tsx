@@ -1,5 +1,6 @@
 import { Component, css, effect, onMount } from "@frontiers-labs/argon";
 import {
+  connectGitHubPat,
   createEmailAccount,
   createMcpServer,
   createSkill,
@@ -138,15 +139,35 @@ async function refreshGitHub(host: SettingsHost): Promise<void> {
     host.ghConfigured = settings.configured;
     host.ghConnected = settings.connected;
     host.ghLogin = settings.login ?? "";
-    if (!settings.configured) {
-      host.ghStatus = "GitHub is not configured on this server.";
-    } else if (settings.connected) {
-      host.ghStatus = settings.login ? `Connected as @${settings.login}.` : "GitHub is connected.";
-    } else {
+    if (settings.connected) {
+      const via = settings.auth_method === "pat" ? " via personal access token" : "";
+      host.ghStatus = settings.login
+        ? `Connected as @${settings.login}${via}.`
+        : "GitHub is connected.";
+    } else if (settings.configured) {
       host.ghStatus = "GitHub is not connected.";
+    } else {
+      host.ghStatus = "Connect a personal access token below to enable GitHub tools.";
     }
   } catch {
     host.ghError = "Failed to load GitHub settings.";
+  }
+}
+
+async function connectGitHubWithPat(host: SettingsHost, form: HTMLFormElement): Promise<void> {
+  const data = new FormData(form);
+  const token = String(data.get("token") ?? "").trim();
+  host.ghError = "";
+  if (!token) {
+    host.ghError = "Enter a personal access token.";
+    return;
+  }
+  try {
+    await connectGitHubPat(token);
+    form.reset();
+    await refreshGitHub(host);
+  } catch (error) {
+    host.ghError = error instanceof Error ? error.message : "Failed to connect GitHub.";
   }
 }
 
@@ -757,6 +778,11 @@ export function AppSettings({
             case "gh-connect":
               void connectGitHub(this);
               return;
+            case "gh-pat": {
+              const form = action.closest<HTMLFormElement>("form");
+              if (form) void connectGitHubWithPat(this, form);
+              return;
+            }
             case "gh-disconnect":
               void disconnectGitHub()
                 .then(() => refreshGitHub(this))
@@ -897,20 +923,37 @@ export function AppSettings({
                   <p class="error">{tgError}</p>
                 </app-card>
 
-                <app-card title="GitHub" description="Sign in with GitHub to give your agents the official GitHub MCP tools for repositories, issues, and pull requests.">
+                <app-card title="GitHub" description="Give your agents the official GitHub MCP tools for repositories, issues, and pull requests. Sign in with GitHub, or paste a personal access token if your server has no GitHub app configured.">
                   <div class="status-row">
                     {ghConnected
                       ? <app-badge>Connected</app-badge>
-                      : ghConfigured
-                        ? <app-badge variant="outline">Not connected</app-badge>
-                        : <app-badge variant="secondary">Unavailable</app-badge>}
+                      : <app-badge variant="outline">Not connected</app-badge>}
                     <span class="status">{ghStatus}</span>
                   </div>
-                  {ghConfigured
-                    ? (ghConnected
-                      ? <div><app-button variant="outline" data-action="gh-disconnect">Disconnect</app-button></div>
-                      : <div><app-button data-action="gh-connect">Sign in with GitHub</app-button></div>)
-                    : ""}
+                  {ghConnected
+                    ? <div><app-button variant="outline" data-action="gh-disconnect">Disconnect</app-button></div>
+                    : (
+                      <>
+                        {ghConfigured
+                          ? <div><app-button data-action="gh-connect">Sign in with GitHub</app-button></div>
+                          : ""}
+                        <form data-form="github-pat">
+                          <label>
+                            Personal access token
+                            <input
+                              name="token"
+                              type="password"
+                              placeholder="ghp_… or github_pat_…"
+                              autocomplete="off"
+                            />
+                          </label>
+                          <p class="muted">
+                            Create a token with the scopes your agents need (for example <code>repo</code> and <code>read:org</code>) at github.com/settings/tokens. It is encrypted at rest and forwarded only to the GitHub MCP server.
+                          </p>
+                          <div class="actions"><app-button data-action="gh-pat">Connect with token</app-button></div>
+                        </form>
+                      </>
+                    )}
                   <p class="error">{ghError}</p>
                 </app-card>
 
