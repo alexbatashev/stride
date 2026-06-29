@@ -102,11 +102,12 @@ pub struct Telegram {
     pub webhook_url: Option<String>,
 }
 
-/// Connection to the official, hosted GitHub MCP server. Linking an account uses
-/// a standard GitHub OAuth App: the server redirects the user to GitHub, exchanges
-/// the returned code for a user access token, and forwards that token to the MCP
-/// server. Setting `client_id` and `client_secret` is all that is required to
-/// activate the integration.
+/// Connection to the official, hosted GitHub MCP server. A user can always link
+/// an account by pasting a Personal Access Token, which is forwarded to the MCP
+/// server as a bearer credential, so this section is optional. Setting
+/// `client_id` and `client_secret` additionally enables the one-click OAuth App
+/// flow: the server redirects the user to GitHub, exchanges the returned code for
+/// a user access token, and stores it the same way.
 #[derive(Clone, Debug, Deserialize)]
 pub struct GitHub {
     pub client_id: Option<String>,

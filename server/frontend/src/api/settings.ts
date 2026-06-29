@@ -23,6 +23,7 @@ export type GitHubSettings = {
 	configured: boolean;
 	connected: boolean;
 	login: string | null;
+	auth_method: "oauth" | "pat" | null;
 };
 
 export type GoogleSettings = {
@@ -124,6 +125,14 @@ export async function getGitHubSettings(): Promise<GitHubSettings> {
 export async function startGitHubAuthorize(): Promise<string> {
 	const response = await request<{ url: string }>("/api/settings/github/authorize");
 	return response.url;
+}
+
+export async function connectGitHubPat(token: string): Promise<void> {
+	await request("/api/settings/github/pat", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ token }),
+	});
 }
 
 export async function disconnectGitHub(): Promise<void> {

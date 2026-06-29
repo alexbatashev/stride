@@ -117,17 +117,20 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.telegram.as_ref())
         .and_then(|t| t.read_bot_api_key())
         .filter(|token| !token.is_empty());
-    // The hosted GitHub MCP server is offered to every linked user once the
-    // OAuth App credentials are present; resolve its endpoint once at startup.
-    let github_runtime = config
+    // The hosted GitHub MCP server is offered to every user who has linked an
+    // account, whether through the OAuth App or a Personal Access Token. The
+    // runtime only needs the endpoint and the cipher, so it is always available;
+    // the per-user connection lookup decides whether any tools are attached.
+    let github_mcp_url = config
         .server
         .as_ref()
         .and_then(|s| s.github.as_ref())
-        .filter(|github| github.is_configured())
-        .map(|github| github::GitHubRuntime {
-            mcp_url: github.mcp_url().to_string(),
-            cipher: cipher.clone(),
-        });
+        .map(|github| github.mcp_url().to_string())
+        .unwrap_or_else(|| github::DEFAULT_MCP_URL.to_string());
+    let github_runtime = Some(github::GitHubRuntime {
+        mcp_url: github_mcp_url,
+        cipher: cipher.clone(),
+    });
     // Google account linking and native Gmail/Calendar/Drive tools, active once
     // OAuth credentials are present.
     let google_service = api::google::build_service(&config, &db, &cipher);
@@ -342,6 +345,7 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             get(api::github::authorize),
         )
         .route("/api/settings/github/callback", get(api::github::callback))
+        .route("/api/settings/github/pat", post(api::github::connect_pat))
         .route(
             "/api/settings/github/disconnect",
             post(api::github::disconnect),

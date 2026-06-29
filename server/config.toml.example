@@ -95,10 +95,13 @@ webhook_secret = "change-this-webhook-secret"
 # the webhook on startup (with callback_query updates, so inline button taps work).
 webhook_url = "https://stride.example.com/api/telegram/webhook"
 
-# Linking a GitHub account uses a standard GitHub OAuth App. Register one at
+# The hosted GitHub MCP server is available to every user who links an account.
+# Users can always link by pasting a Personal Access Token in settings, so this
+# whole section is optional. Configure an OAuth App only if you also want the
+# one-click "Sign in with GitHub" flow: register one at
 # https://github.com/settings/developers with the authorization callback URL set
-# to `{public_url}/api/settings/github/callback`. Setting client_id and
-# client_secret activates the hosted GitHub MCP server for every linked user.
+# to `{public_url}/api/settings/github/callback`, then set client_id and
+# client_secret below.
 [server.github]
 client_id = "Iv1.0123456789abcdef"
 client_secret = "change-this-github-oauth-secret"
