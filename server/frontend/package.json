@@ -8,6 +8,7 @@
   "devDependencies": {
     "@frontiers-labs/argon": "0.3.0",
     "@happy-dom/global-registrator": "^20.10.2",
+    "d3": "^7.9.0",
     "esbuild": "^0.28.0",
     "typescript": "^6.0.3"
   }

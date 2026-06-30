@@ -83,6 +83,13 @@ Output formatting:
 - Use img, video, audio, and iframe only when their src starts with the configured public URL. If no configured public URL is provided, do not use media tags.
 - Do not include style, class, id, event-handler, script, SVG, or form markup.
 - Use ordinary text when no formatting is needed.
+
+Interactive widgets:
+- When a user asks for an interactive explanation, simulation, chart, calculator, or visualization, load the `inline-widget` skill before answering.
+- Inline widgets are standalone HTML files you create in the writable directory, then embed with an iframe in the final answer.
+- The iframe `src` for a generated widget must be the configured public URL plus `/api/threads/<thread-id>/files/<path>`, where `<path>` is relative to the writable directory. Do not use `/static` for generated widgets; `/static` is only for built-in CSS and JS assets.
+- Widget HTML must load `/static/common.css` and `/static/widget-frame.js`; use `/static/vendor/d3.global.js` if D3 is needed.
+- Name widget files with URL-safe ASCII names such as `sorting-widget.html` to avoid broken iframe URLs.
 ";
 
 fn build_system_prompt(
@@ -97,6 +104,7 @@ fn build_system_prompt(
     let date = current_date();
     let mut prompt = base.to_string();
     prompt.push_str(&format!("\nCurrent date: {date}"));
+    let public_url = public_url.map(|url| url.trim_end_matches('/'));
     if let Some(public_url) = public_url {
         prompt.push_str(&format!(
             "\nConfigured public URL for HTML media src values: {public_url}"
@@ -114,6 +122,16 @@ fn build_system_prompt(
              where `<path>` is relative to your writable directory (drop the leading `{root}/`). \
              Example: `{root}/report.pdf` → `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
         ));
+        if let Some(public_url) = public_url {
+            prompt.push_str(&format!(
+                " For HTML media tags such as iframe/img/video/audio, the src must be absolute: \
+                 `{public_url}/api/threads/{id}/files/<path>`. \
+                 For example, if you create `{root}/sorting-widget.html`, embed it as \
+                 `<iframe src=\"{public_url}/api/threads/{id}/files/sorting-widget.html\"></iframe>`. \
+                 Do not use a relative `/api/threads/...` iframe src, do not use `/static/...` for \
+                 generated files, and do not include the `{root}/` prefix in the URL path."
+            ));
+        }
         if !writable_extra.is_empty() {
             let list = writable_extra
                 .iter()
@@ -2319,6 +2337,11 @@ mod tests {
         assert!(prompt.contains(
             "Configured public URL for HTML media src values: https://stride.example.com"
         ));
+        assert!(prompt.contains(&format!(
+            "<iframe src=\"https://stride.example.com/api/threads/{id}/files/sorting-widget.html\"></iframe>"
+        )));
+        assert!(prompt.contains("Do not use a relative `/api/threads/...` iframe src"));
+        assert!(prompt.contains("do not use `/static/...` for"));
         assert!(!prompt.contains("send_telegram_file"));
     }
 

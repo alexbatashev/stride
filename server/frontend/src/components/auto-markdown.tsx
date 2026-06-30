@@ -148,6 +148,7 @@ const styles = css`
 
   iframe {
     border: 1px solid var(--border, #d0d0d0);
+    overflow: hidden;
     min-height: 320px;
     width: 100%;
   }
@@ -176,6 +177,7 @@ export function AutoMarkdown({ text = "" }: { text?: string }): Component {
     if (host.current) {
       host.current.innerHTML = text;
       wrapTables(host.current);
+      return connectWidgetFrames(host.current);
     }
   });
   return (
@@ -183,6 +185,43 @@ export function AutoMarkdown({ text = "" }: { text?: string }): Component {
       <style>{styles}</style>
       <div ref={host}>{text}</div>
     </>
+  );
+}
+
+type WidgetHeightMessage = {
+  type: "stride-widget-height";
+  height: number;
+  href?: string;
+};
+
+function connectWidgetFrames(root: HTMLElement): () => void {
+  const frames = [...root.querySelectorAll("iframe")];
+  for (const frame of frames) {
+    frame.setAttribute("scrolling", "no");
+  }
+
+  const onMessage = (event: MessageEvent<unknown>) => {
+    if (!isWidgetHeightMessage(event.data)) {
+      return;
+    }
+    const frame = frames.find((item) => item.contentWindow === event.source);
+    if (!frame) {
+      return;
+    }
+    const height = Math.max(320, Math.min(4000, Math.ceil(event.data.height)));
+    frame.style.height = `${height}px`;
+  };
+
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
+function isWidgetHeightMessage(value: unknown): value is WidgetHeightMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as WidgetHeightMessage).type === "stride-widget-height" &&
+    Number.isFinite((value as WidgetHeightMessage).height)
   );
 }
 

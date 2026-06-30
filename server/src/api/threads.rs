@@ -2,12 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json,
-    body::Body,
     extract::{
         Multipart, Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use minisql::Value;
@@ -1103,17 +1102,7 @@ pub async fn download_file(
         .await
         .map_err(|_| ThreadApiError::NotFound)?;
 
-    let content_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    let filename = path.split('/').next_back().unwrap_or(&path).to_string();
-
-    Response::builder()
-        .header(header::CONTENT_TYPE, content_type)
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{filename}\""),
-        )
-        .body(Body::from(bytes))
-        .map_err(|_| ThreadApiError::Internal)
+    super::file_response(&path, bytes, mime_type).map_err(|_| ThreadApiError::Internal)
 }
 
 /// Moves the owner's staged uploads into a thread's writable area under

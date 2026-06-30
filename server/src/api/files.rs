@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    body::Body,
     extract::{Multipart, Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -241,17 +240,7 @@ pub async fn download_file(
         .await
         .map_err(|_| FilesApiError::NotFound)?;
 
-    let content_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    let filename = path.split('/').next_back().unwrap_or(&path).to_string();
-
-    Response::builder()
-        .header(header::CONTENT_TYPE, content_type)
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{filename}\""),
-        )
-        .body(Body::from(bytes))
-        .map_err(|_| FilesApiError::Internal)
+    super::file_response(&path, bytes, mime_type).map_err(|_| FilesApiError::Internal)
 }
 
 fn clean_path(path: Option<&str>) -> String {

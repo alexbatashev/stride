@@ -9,7 +9,9 @@ import { basename, join, resolve } from 'node:path';
 const componentsDir = 'src/components';
 const iconsDir = join(componentsDir, 'icons');
 const argonOut = join(realpathSync(tmpdir()), 'stride-argon-js');
+const vendorDir = 'dist/vendor';
 mkdirSync('dist', { recursive: true });
+mkdirSync(vendorDir, { recursive: true });
 mkdirSync(argonOut, { recursive: true });
 for (const stale of readdirSync(argonOut)) {
   unlinkSync(join(argonOut, stale));
@@ -86,6 +88,31 @@ await Promise.all([
     minify: true,
     target,
     outfile: 'dist/api.js',
+  }),
+  esbuild.build({
+    entryPoints: ['src/widget-frame.ts'],
+    bundle: true,
+    format: 'iife',
+    minify: true,
+    target,
+    outfile: 'dist/widget-frame.js',
+  }),
+  esbuild.build({
+    entryPoints: ['d3'],
+    bundle: true,
+    format: 'esm',
+    minify: true,
+    target,
+    outfile: join(vendorDir, 'd3.js'),
+  }),
+  esbuild.build({
+    entryPoints: ['d3'],
+    bundle: true,
+    format: 'iife',
+    globalName: 'd3',
+    minify: true,
+    target,
+    outfile: join(vendorDir, 'd3.global.js'),
   }),
   esbuild.build({
     entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/automations-page.ts', 'src/pages/settings-page.ts'],
