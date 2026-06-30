@@ -78,6 +78,22 @@ test('app-sidebar footer dispatches logout and new-project', () => {
   assert.equal(newProject.count, 1);
 });
 
+test('app-sidebar collapse keeps rail icons left aligned during width transition', async () => {
+  const el = mount('app-sidebar');
+  await Promise.resolve();
+
+  window.dispatchEvent(new CustomEvent('app-sidebar-toggle'));
+  await Promise.resolve();
+
+  const root = el.shadowRoot.querySelector('.root');
+  assert.match(root.getAttribute('class'), /collapsed/);
+
+  const css = el.shadowRoot.querySelector('style').textContent;
+  assert.match(css, /\.root\.collapsed \.nav-item a\s*{[^}]*width: var\(--sidebar-menu-button-size\)/s);
+  assert.match(css, /\.root\.collapsed \.nav-item a\s*{[^}]*padding: 0 8px/s);
+  assert.doesNotMatch(css, /\.root\.collapsed \.nav-item a\s*{[^}]*justify-content: center/s);
+});
+
 test('app-message renders html for agent text', () => {
   const el = mount('app-message', { kind: 'agent', text: '<p>plain <strong>bold</strong> text</p>' });
   const html = el.shadowRoot.querySelector('auto-markdown');

@@ -33,6 +33,10 @@ function announce(status: string): void {
 
 const styles = css`
   :host {
+    --sidebar-width: 260px;
+    --sidebar-width-icon: 48px;
+    --sidebar-menu-button-size: 32px;
+
     display: block;
     height: 100%;
     width: fit-content;
@@ -48,12 +52,12 @@ const styles = css`
     height: 100%;
     overflow: hidden;
     position: relative;
-    transition: width 180ms ease;
-    width: 260px;
+    transition: width 200ms linear;
+    width: var(--sidebar-width);
   }
 
   .root.collapsed {
-    width: 48px;
+    width: var(--sidebar-width-icon);
   }
 
   .root.hidden {
@@ -101,7 +105,6 @@ const styles = css`
   }
 
   .root.collapsed .brand {
-    justify-content: center;
     padding: 8px;
   }
 
@@ -115,6 +118,10 @@ const styles = css`
     overflow: auto;
     padding: 8px 0;
     width: 100%;
+  }
+
+  .root.collapsed .main {
+    overflow: hidden;
   }
 
   .footer {
@@ -161,7 +168,8 @@ const styles = css`
     text-decoration: none;
     transition:
       background-color 140ms ease,
-      color 140ms ease;
+      color 140ms ease,
+      width 200ms linear;
     user-select: none;
     white-space: nowrap;
     width: 100%;
@@ -203,13 +211,13 @@ const styles = css`
   }
 
   .root.collapsed .nav-item {
-    padding: 2px 4px;
+    padding: 0 8px;
   }
 
   .root.collapsed .nav-item a {
     height: 32px;
-    justify-content: center;
-    padding: 0;
+    padding: 0 8px;
+    width: var(--sidebar-menu-button-size);
   }
 
   .root.collapsed .nav-item .label {
@@ -434,6 +442,13 @@ const styles = css`
 
     .group ul {
       padding-left: 8px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .root,
+    .nav-item a {
+      transition: none;
     }
   }
 `;
