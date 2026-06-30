@@ -1,5 +1,6 @@
 import { ProjectSummary, listProjects } from "../api/projects.js";
 import {
+	MessagePart,
 	QuizQuestion,
 	ThreadEvent,
 	ThreadMessage,
@@ -28,6 +29,8 @@ type SidebarEl = HTMLElement & {
 	threads: { id: string; title: string }[];
 	activeThread: string;
 };
+
+type MessagePartView = { type: "text" | "artifact"; content: string; complete: boolean };
 
 type MessageEl = HTMLElement & {
 	messageId: string;
@@ -72,7 +75,8 @@ class ThreadsPageHydrator {
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
-	private pendingAssistant = "";
+	private pendingParts: MessagePart[] = [];
+	private pendingThinking = "";
 	private pendingApproval: { id: string; message: string } | null = null;
 	private pendingQuiz: PendingQuiz | null = null;
 	private refreshSeq = 0;
@@ -250,15 +254,10 @@ class ThreadsPageHydrator {
 					)
 				: null;
 			this.syncComposer();
-			if (event.kind.in_progress?.content) {
-				const last = this.messages[this.messages.length - 1];
-				if (
-					last?.role !== "agent" ||
-					last.content !== event.kind.in_progress.content
-				) {
-					this.pendingAssistant = event.kind.in_progress.content;
-					this.upsertPendingAssistant();
-				}
+			if (event.kind.in_progress && event.kind.in_progress.parts.length > 0) {
+				this.pendingParts = event.kind.in_progress.parts.map((part) => ({ ...part }));
+				this.pendingThinking = event.kind.in_progress.thinking ?? "";
+				this.upsertPendingAssistant();
 			}
 		}
 
@@ -277,13 +276,37 @@ class ThreadsPageHydrator {
 			}
 		}
 
-		if (event.kind.type === "AgentDelta") {
-			this.pendingAssistant += event.kind.content;
+		// AgentDelta carries the raw text stream for non-web consumers (Telegram);
+		// the web client renders the structured part events instead.
+		if (event.kind.type === "MessagePartStarted") {
+			this.pendingParts[event.kind.index] = {
+				type: event.kind.kind,
+				content: "",
+				lang: event.kind.lang,
+				complete: false,
+			};
 			this.upsertPendingAssistant();
 		}
 
+		if (event.kind.type === "MessagePartDelta") {
+			const part = this.pendingParts[event.kind.index];
+			if (part) {
+				part.content += event.kind.content;
+				this.upsertPendingAssistant();
+			}
+		}
+
+		if (event.kind.type === "MessagePartCompleted") {
+			const part = this.pendingParts[event.kind.index];
+			if (part) {
+				part.complete = true;
+				this.upsertPendingAssistant();
+			}
+		}
+
 		if (event.kind.type === "ThinkingDelta") {
-			this.upsertPendingAssistant(event.kind.thinking);
+			this.pendingThinking += event.kind.thinking;
+			this.upsertPendingAssistant();
 		}
 
 		if (event.kind.type === "WaitingForApproval") {
@@ -354,7 +377,8 @@ class ThreadsPageHydrator {
 			this.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
-			this.pendingAssistant = "";
+			this.pendingParts = [];
+			this.pendingThinking = "";
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
@@ -368,13 +392,16 @@ class ThreadsPageHydrator {
 		return { id, questions, index: 0, answers: [] };
 	}
 
-	private upsertPendingAssistant(thinking?: string) {
+	private upsertPendingAssistant() {
 		const last = this.messages[this.messages.length - 1];
+		const parts = this.pendingParts.map((part) => ({ ...part }));
+		const thinking = this.pendingThinking !== "" ? this.pendingThinking : null;
 
 		if (last?.role === "agent" && !last.tool_call_name) {
 			last.pending = true;
-			last.content = this.pendingAssistant;
-			last.thinking = thinking ? `${last.thinking ?? ""}${thinking}` : last.thinking;
+			last.content = "";
+			last.parts = parts;
+			last.thinking = thinking;
 			this.updateMessageElement(last);
 			return;
 		}
@@ -383,9 +410,10 @@ class ThreadsPageHydrator {
 			id: "pending-agent",
 			seq: Number.MAX_SAFE_INTEGER,
 			role: "agent",
-			content: this.pendingAssistant,
-			thinking: thinking ?? null,
+			content: "",
+			thinking,
 			tool_call_name: null,
+			parts,
 			pending: true,
 		};
 		this.messages.push(message);
@@ -398,7 +426,8 @@ class ThreadsPageHydrator {
 		}
 
 		const refreshSeq = ++this.refreshSeq;
-		this.pendingAssistant = "";
+		this.pendingParts = [];
+		this.pendingThinking = "";
 		const [messages, threads, projects] = await Promise.all([
 			listMessages(this.threadId),
 			listThreads(),
@@ -462,6 +491,7 @@ class ThreadsPageHydrator {
 			content,
 			thinking: null,
 			tool_call_name: null,
+			parts: [],
 			pending: true,
 		};
 		this.messages.push(message);
@@ -471,7 +501,8 @@ class ThreadsPageHydrator {
 	private async loadThread(threadId: string) {
 		this.closeEvents();
 		this.lastEventSeq = 0;
-		this.pendingAssistant = "";
+		this.pendingParts = [];
+		this.pendingThinking = "";
 		this.pendingApproval = null;
 		this.pendingQuiz = null;
 		this.attachedFiles = [];
@@ -520,6 +551,79 @@ class ThreadsPageHydrator {
 		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
 	}
 
+	// The body — markdown prose and interactive artifacts — is built as light DOM
+	// owned here and projected through app-message's slot. Because the hydrator
+	// owns these nodes, re-rendering the bubble never recreates an artifact's
+	// sandbox; reconcileBody updates each part in place and reuses a completed
+	// artifact element across streaming updates.
+	private bodySpec(message: ViewMessage): MessagePartView[] {
+		if (message.role === "agent" && message.parts && message.parts.length > 0) {
+			return message.parts.map((part) => ({
+				type: part.type,
+				content: part.content,
+				complete: part.complete,
+			}));
+		}
+		const content = message.content ?? "";
+		if (content === "" && message.pending) {
+			return [{ type: "text", content: "Thinking...", complete: true }];
+		}
+		return [{ type: "text", content, complete: true }];
+	}
+
+	private reconcileBody(element: MessageEl, message: ViewMessage) {
+		const spec = this.bodySpec(message);
+		spec.forEach((part, index) => {
+			const existing = element.children[index] as (HTMLElement & { source?: string }) | undefined;
+			if (part.type === "text") {
+				if (existing && existing.tagName === "AUTO-MARKDOWN") {
+					(existing as HTMLElement & { text: string }).text = esc(part.content);
+				} else {
+					this.placeBodyNode(element, index, this.makeTextNode(part.content));
+				}
+			} else if (!part.complete) {
+				if (!(existing && existing.classList.contains("artifact-pending"))) {
+					this.placeBodyNode(element, index, this.makePendingNode());
+				}
+			} else if (!(existing && existing.tagName === "STRIDE-ARTIFACT" && existing.source === part.content)) {
+				this.placeBodyNode(element, index, this.makeArtifactNode(part.content));
+			}
+		});
+		while (element.children.length > spec.length) {
+			element.lastChild?.remove();
+		}
+	}
+
+	private placeBodyNode(element: MessageEl, index: number, node: HTMLElement) {
+		const existing = element.children[index];
+		if (existing) {
+			element.replaceChild(node, existing);
+		} else {
+			element.append(node);
+		}
+	}
+
+	private makeTextNode(content: string): HTMLElement {
+		const node = document.createElement("auto-markdown") as HTMLElement & { text: string };
+		node.text = esc(content);
+		return node;
+	}
+
+	private makeArtifactNode(content: string): HTMLElement {
+		const node = document.createElement("stride-artifact") as HTMLElement & { source: string };
+		node.source = content;
+		return node;
+	}
+
+	private makePendingNode(): HTMLElement {
+		const node = document.createElement("div");
+		node.className = "artifact-pending";
+		node.textContent = "Building interactive view…";
+		node.style.cssText =
+			"border:1px dashed var(--border,#d0d0d0);border-radius:12px;color:var(--muted-foreground,#666);font-size:0.95em;margin:0.75em 0;padding:12px";
+		return node;
+	}
+
 	private updateMessageElement(message: ViewMessage) {
 		const element = this.messagesEl.querySelector<MessageEl>(
 			`app-message[data-message-id="${message.id}"]`,
@@ -528,9 +632,11 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		element.text = message.content ? esc(message.content) : message.pending ? "Thinking..." : "";
 		if (message.thinking) {
 			element.thinking = esc(message.thinking);
+		}
+		if (this.messageType(message).type !== "tool_output") {
+			this.reconcileBody(element, message);
 		}
 
 		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
@@ -545,7 +651,11 @@ class ThreadsPageHydrator {
 		element.kind = messageType.type;
 		element.toolName = esc(messageType.toolName ?? "");
 		element.thinking = message.thinking ? esc(message.thinking) : "";
-		element.text = message.content ? esc(message.content) : message.pending ? "Thinking..." : "";
+		if (messageType.type === "tool_output") {
+			element.text = message.content ? esc(message.content) : "";
+		} else {
+			this.reconcileBody(element, message);
+		}
 		return element;
 	}
 

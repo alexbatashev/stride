@@ -3,6 +3,7 @@ use stride_agent::QuizQuestion;
 use uuid::Uuid;
 
 pub mod inproc;
+pub mod parts;
 
 pub type EventSeq = u64;
 
@@ -113,6 +114,24 @@ pub enum AgentEventKind {
     },
     AgentDelta {
         content: String,
+    },
+    /// A new part (prose or artifact) of the agent message began streaming.
+    MessagePartStarted {
+        message_id: Uuid,
+        index: u32,
+        kind: parts::PartKind,
+        lang: Option<String>,
+    },
+    /// Content appended to a part.
+    MessagePartDelta {
+        message_id: Uuid,
+        index: u32,
+        content: String,
+    },
+    /// A part is final; artifacts render only once their part completes.
+    MessagePartCompleted {
+        message_id: Uuid,
+        index: u32,
     },
     ThinkingDelta {
         thinking: String,

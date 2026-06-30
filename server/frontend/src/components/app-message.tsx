@@ -1,7 +1,10 @@
 import { Component, css } from "@frontiers-labs/argon";
 import { AppSpoiler } from "./app-spoiler.js";
-import { AutoMarkdown } from "./auto-markdown.js";
 
+// The message body (markdown + interactive artifacts) is projected through a
+// slot as light DOM owned by the page hydrator. Keeping it out of this shadow
+// template means re-rendering the bubble never tears down a streaming
+// artifact's sandbox.
 const styles = css`
   :host {
     width: 100%;
@@ -68,7 +71,7 @@ export function AppMessage({
       ) : (
         <div class={kind === "user" ? "bubble user" : "bubble"}>
           {thinking !== "" && <AppSpoiler title="Thinking" content={thinking} />}
-          <AutoMarkdown text={text} />
+          <slot></slot>
           {toolName !== "" && <p class="tool-call">Called tool {toolName}</p>}
         </div>
       )}

@@ -89,16 +89,13 @@ test('app-sidebar footer dispatches logout and new-project', () => {
   assert.equal(newProject.count, 1);
 });
 
-test('app-message renders markdown for agent text', () => {
-  const el = mount('app-message', { kind: 'agent', text: 'plain **bold** text' });
-  const markdown = el.shadowRoot.querySelector('auto-markdown');
-  assert.ok(markdown);
+test('auto-markdown renders markdown for agent text', () => {
+  const markdown = mount('auto-markdown', { text: 'plain **bold** text' });
   assert.match(markdown.shadowRoot.innerHTML, /<strong>bold<\/strong>/);
 });
 
-test('app-message escaped text round-trips through markdown', () => {
-  const el = mount('app-message', { kind: 'agent', text: 'a &lt;tag&gt; &amp; more' });
-  const markdown = el.shadowRoot.querySelector('auto-markdown');
+test('auto-markdown round-trips escaped text', () => {
+  const markdown = mount('auto-markdown', { text: 'a &lt;tag&gt; &amp; more' });
   const paragraph = markdown.shadowRoot.querySelector('p');
   assert.equal(paragraph.textContent, 'a <tag> & more');
 });
@@ -121,31 +118,36 @@ test('stride-artifact falls back when the source is too large', () => {
   assert.equal(el.shadowRoot.querySelector('iframe'), null);
 });
 
-test('auto-markdown routes an html fence to a sandboxed artifact', () => {
-  const html = '<button onclick="go()">Go</button>';
-  const el = mount('app-message', { kind: 'agent', text: esc('```html\n' + html + '\n```') });
-  const markdown = el.shadowRoot.querySelector('auto-markdown');
-  const artifact = markdown.shadowRoot.querySelector('stride-artifact');
-  assert.ok(artifact, 'artifact missing');
-  assert.equal(artifact.source, html);
-  const doc = artifact.shadowRoot.querySelector('iframe').srcdoc ?? '';
-  assert.match(doc, /<button onclick="go\(\)">Go<\/button>/);
-});
-
-test('auto-markdown shows a placeholder while an html fence is still streaming', () => {
-  const el = mount('app-message', { kind: 'agent', text: esc('```html\n<div>partial') });
-  const markdown = el.shadowRoot.querySelector('auto-markdown');
-  assert.ok(markdown.shadowRoot.querySelector('.artifact-pending'));
-  assert.equal(markdown.shadowRoot.querySelector('stride-artifact'), null);
-});
-
-test('auto-markdown renders a non-artifact fence as verbatim code', () => {
-  const el = mount('app-message', { kind: 'agent', text: esc('```js\nconst a = 1 < 2;\n```') });
-  const markdown = el.shadowRoot.querySelector('auto-markdown');
-  const code = markdown.shadowRoot.querySelector('pre.code-block code');
+test('auto-markdown renders a fenced block as verbatim code, not an artifact', () => {
+  const md = mount('auto-markdown', { text: esc('```js\nconst a = 1 < 2;\n```') });
+  const code = md.shadowRoot.querySelector('pre.code-block code');
   assert.ok(code, 'code block missing');
   assert.equal(code.textContent, 'const a = 1 < 2;');
   assert.equal(code.dataset.lang, 'js');
+  // Interactive artifacts arrive as message parts, never parsed from markdown.
+  assert.equal(md.shadowRoot.querySelector('stride-artifact'), null);
+});
+
+test('app-message projects a slotted light-DOM body', () => {
+  const el = mount('app-message', { kind: 'agent' });
+  const artifact = document.createElement('stride-artifact');
+  artifact.source = '<button>Go</button>';
+  el.appendChild(artifact);
+  // The bubble shadow renders a slot; the body lives in light DOM.
+  assert.ok(el.shadowRoot.querySelector('slot'), 'slot missing');
+  assert.ok(el.querySelector('stride-artifact'), 'slotted artifact missing');
+});
+
+test('app-message keeps the slotted artifact stable across a shadow re-render', () => {
+  const el = mount('app-message', { kind: 'agent' });
+  const artifact = document.createElement('stride-artifact');
+  artifact.source = '<b>x</b>';
+  el.appendChild(artifact);
+
+  // A reactive prop change re-renders the bubble shadow; the hydrator-owned
+  // light-DOM artifact must survive untouched (its sandbox is never reloaded).
+  el.thinking = 'reasoning…';
+  assert.ok(el.querySelector('stride-artifact') === artifact, 'slotted artifact must persist');
 });
 
 test('app-message tool output folds into a spoiler', () => {

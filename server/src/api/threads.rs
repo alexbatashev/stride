@@ -26,7 +26,7 @@ use crate::{
     db::{Role, messages, projects, threads},
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
-        ThreadStatus, thread_events_topic,
+        ThreadStatus, parts, thread_events_topic,
     },
 };
 
@@ -52,6 +52,39 @@ pub struct MessageResponse {
     content: String,
     thinking: Option<String>,
     tool_call_name: Option<String>,
+    parts: Vec<PartResponse>,
+}
+
+#[derive(Serialize)]
+struct PartResponse {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    content: String,
+    lang: Option<String>,
+    complete: bool,
+}
+
+/// Artifacts are extracted only from agent messages; user/tool/system content is
+/// a single text part so a user can never make their own message render an
+/// interactive view.
+fn part_responses(role: &str, content: &str) -> Vec<PartResponse> {
+    if role != "agent" {
+        return vec![PartResponse {
+            kind: "text",
+            content: content.to_string(),
+            lang: None,
+            complete: true,
+        }];
+    }
+    parts::segment(content, true)
+        .into_iter()
+        .map(|part| PartResponse {
+            kind: part.kind.as_str(),
+            content: part.content,
+            lang: part.lang,
+            complete: part.closed,
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -132,6 +165,7 @@ struct SnapshotMessageResponse {
     run_id: String,
     content: String,
     thinking: Option<String>,
+    parts: Vec<PartResponse>,
 }
 
 #[derive(Serialize)]
@@ -168,6 +202,21 @@ enum EventKindResponse {
     },
     AgentDelta {
         content: String,
+    },
+    MessagePartStarted {
+        message_id: String,
+        index: u32,
+        kind: &'static str,
+        lang: Option<String>,
+    },
+    MessagePartDelta {
+        message_id: String,
+        index: u32,
+        content: String,
+    },
+    MessagePartCompleted {
+        message_id: String,
+        index: u32,
     },
     ThinkingDelta {
         thinking: String,
@@ -582,13 +631,18 @@ async fn thread_messages(
 
     Ok(rows
         .into_iter()
-        .map(|row| MessageResponse {
-            id: row.id.to_string(),
-            seq: row.seq,
-            role: role_name(row.role),
-            content: row.content,
-            thinking: row.thinking,
-            tool_call_name: tool_call_name(row.tool_calls.as_deref()),
+        .map(|row| {
+            let role = role_name(row.role);
+            let parts = part_responses(role, &row.content);
+            MessageResponse {
+                id: row.id.to_string(),
+                seq: row.seq,
+                role,
+                content: row.content,
+                thinking: row.thinking,
+                tool_call_name: tool_call_name(row.tool_calls.as_deref()),
+                parts,
+            }
         })
         .filter(|message| {
             message.role != "agent"
@@ -1250,6 +1304,32 @@ fn event_response(event: AgentEvent) -> EventResponse {
                 }
             }
             AgentEventKind::AgentDelta { content } => EventKindResponse::AgentDelta { content },
+            AgentEventKind::MessagePartStarted {
+                message_id,
+                index,
+                kind,
+                lang,
+            } => EventKindResponse::MessagePartStarted {
+                message_id: message_id.to_string(),
+                index,
+                kind: kind.as_str(),
+                lang,
+            },
+            AgentEventKind::MessagePartDelta {
+                message_id,
+                index,
+                content,
+            } => EventKindResponse::MessagePartDelta {
+                message_id: message_id.to_string(),
+                index,
+                content,
+            },
+            AgentEventKind::MessagePartCompleted { message_id, index } => {
+                EventKindResponse::MessagePartCompleted {
+                    message_id: message_id.to_string(),
+                    index,
+                }
+            }
             AgentEventKind::ThinkingDelta { thinking } => {
                 EventKindResponse::ThinkingDelta { thinking }
             }
@@ -1308,6 +1388,15 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
                     run_id: message.run_id.0.to_string(),
                     content: message.content.clone(),
                     thinking: message.thinking.clone(),
+                    parts: parts::segment(&message.content, false)
+                        .into_iter()
+                        .map(|part| PartResponse {
+                            kind: part.kind.as_str(),
+                            content: part.content,
+                            lang: part.lang,
+                            complete: part.closed,
+                        })
+                        .collect(),
                 }),
             pending_approval: snapshot
                 .pending_approval

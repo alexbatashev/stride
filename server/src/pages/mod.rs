@@ -4,7 +4,7 @@ pub mod automations;
 pub mod files;
 pub mod settings;
 
-use crate::api::threads::ThreadPageData;
+use crate::api::threads::{MessageTemplateData, ThreadPageData};
 use crate::components::{
     app_approval_bar::AppApprovalBar,
     app_button::AppButton,
@@ -13,6 +13,7 @@ use crate::components::{
     app_quiz_bar::AppQuizBar,
     app_sidebar::{AppSidebar, AppSidebarToggle, SidebarProject, SidebarThread},
     auth_form::AuthForm,
+    auto_markdown::AutoMarkdown,
 };
 
 fn html_escape(value: &str) -> String {
@@ -142,28 +143,47 @@ fn render_messages(data: &ThreadPageData) -> String {
 
     data.messages
         .iter()
-        .map(|message| {
-            AppMessage::new(
-                &message.id,
-                message.seq as f64,
-                message.role,
-                message.message_type,
-                html_escape(&message.content),
-                message
-                    .thinking
-                    .as_deref()
-                    .map(html_escape)
-                    .unwrap_or_default(),
-                message
-                    .tool_name
-                    .as_deref()
-                    .map(html_escape)
-                    .unwrap_or_default(),
-            )
-            .render()
-        })
+        .map(render_message)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// The message body is projected through app-message's slot. Tool output folds
+// into the shadow spoiler (carried by the `text` prop); every other message
+// paints its prose as a slotted markdown child for first paint, which the page
+// hydrator later swaps for the live, part-based body.
+fn render_message(message: &MessageTemplateData) -> String {
+    let thinking = message
+        .thinking
+        .as_deref()
+        .map(html_escape)
+        .unwrap_or_default();
+    let tool_name = message
+        .tool_name
+        .as_deref()
+        .map(html_escape)
+        .unwrap_or_default();
+    let is_tool = message.message_type == "tool_output";
+    let text = if is_tool {
+        html_escape(&message.content)
+    } else {
+        String::new()
+    };
+    let shell = AppMessage::new(
+        &message.id,
+        message.seq as f64,
+        message.role,
+        message.message_type,
+        text,
+        thinking,
+        tool_name,
+    )
+    .render();
+    if is_tool {
+        return shell;
+    }
+    let body = AutoMarkdown::new(html_escape(&message.content)).render();
+    shell.replacen("</app-message>", &format!("{body}</app-message>"), 1)
 }
 
 const THREADS_STYLE: &str = r#"<style>

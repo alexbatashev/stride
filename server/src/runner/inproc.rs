@@ -41,7 +41,7 @@ use crate::{
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
         PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId, RunnerLifecycle,
-        ThreadSnapshot, ThreadStatus, thread_events_topic,
+        ThreadSnapshot, ThreadStatus, parts, thread_events_topic,
     },
     tools::{
         attach_image::AttachImageTool,
@@ -267,6 +267,15 @@ struct AssistantMessageState {
     content: String,
     thinking: Option<String>,
     tool_calls: BTreeMap<usize, PartialToolCall>,
+    emitted_parts: Vec<EmittedPart>,
+}
+
+/// Per-part bookkeeping for the streaming part emitter: how much of each part's
+/// content has been sent and whether its completion has been announced.
+struct EmittedPart {
+    kind: parts::PartKind,
+    len: usize,
+    completed: bool,
 }
 
 #[derive(Default)]
@@ -1468,6 +1477,7 @@ async fn run_agent_turn(
         content: String::new(),
         thinking: None,
         tool_calls: BTreeMap::new(),
+        emitted_parts: Vec::new(),
     };
 
     loop {
@@ -1622,6 +1632,7 @@ async fn handle_agent_chunk(
     chunk: llm::StreamResponseChunk,
 ) -> Result<(), AgentPoolError> {
     let mut has_message_delta = false;
+    let content_before = assistant.content.len();
 
     for choice in &chunk.choices {
         if let Some(message) = &choice.message {
@@ -1738,6 +1749,10 @@ async fn handle_agent_chunk(
         }
     }
 
+    if assistant.content.len() != content_before {
+        emit_content_parts(state, thread_id, run_id, assistant).await;
+    }
+
     if has_message_delta && let Some(id) = assistant.id {
         let db = state.borrow().db.clone();
         update_message(
@@ -1765,16 +1780,16 @@ async fn handle_agent_chunk(
     {
         if let (Some(message_id), Some(seq)) = (assistant.id, assistant.seq) {
             let tool_calls = serialize_tool_calls(&assistant.tool_calls)?;
-            let content = sanitize_artifacts(&assistant.content);
             let db = state.borrow().db.clone();
             update_message(
                 &db,
                 message_id,
-                &content,
+                &assistant.content,
                 assistant.thinking.as_deref(),
                 tool_calls.as_deref(),
             )
             .await?;
+            finalize_parts(state, thread_id, run_id, message_id, assistant).await;
 
             emit(
                 state,
@@ -2262,68 +2277,103 @@ fn db_error(err: Box<dyn std::error::Error + Send + Sync>) -> AgentPoolError {
     AgentPoolError::Internal(anyhow::anyhow!(err.to_string()))
 }
 
-/// Largest artifact body handed to clients. Mirrors the cap in
-/// `stride-artifact.tsx`; an oversized artifact is downgraded to a plain code
-/// block so stored content never carries a giant active artifact.
-const MAX_ARTIFACT_BYTES: usize = 256 * 1024;
-
-const ARTIFACT_LANGS: &[&str] = &["html"];
-
-/// A fenced-block opener `(marker, lang)` for ``` lines, else `None`.
-fn artifact_fence_open(line: &str) -> Option<(String, String)> {
-    let trimmed = line.trim_start();
-    let ticks = trimmed.chars().take_while(|c| *c == '`').count();
-    if ticks < 3 {
-        return None;
+/// Re-segment the in-progress content and emit the part events the change
+/// produced: a `MessagePartStarted` for each new part, a `MessagePartDelta` for
+/// appended content, and `MessagePartCompleted` when a part closes. Keeps the
+/// flat `AgentDelta` stream intact for consumers that want raw text (Telegram).
+async fn emit_content_parts(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    run_id: RunId,
+    assistant: &mut AssistantMessageState,
+) {
+    let Some(message_id) = assistant.id else {
+        return;
+    };
+    let parts = parts::segment(&assistant.content, false);
+    for (index, part) in parts.iter().enumerate() {
+        if index >= assistant.emitted_parts.len() {
+            assistant.emitted_parts.push(EmittedPart {
+                kind: part.kind,
+                len: 0,
+                completed: false,
+            });
+            emit(
+                state,
+                thread_id,
+                Some(run_id),
+                AgentEventKind::MessagePartStarted {
+                    message_id,
+                    index: index as u32,
+                    kind: part.kind,
+                    lang: part.lang.clone(),
+                },
+            )
+            .await;
+        }
+        // Prose streams token by token; an artifact body is sent only once its
+        // fence closes, so the client renders a stable "generating" card and then
+        // the final source exactly once — and never reloads the sandbox.
+        let emitted = &mut assistant.emitted_parts[index];
+        let stream_body = part.kind == parts::PartKind::Text || part.closed;
+        if stream_body && part.content.len() > emitted.len {
+            let delta = part.content[emitted.len..].to_string();
+            emitted.len = part.content.len();
+            emit(
+                state,
+                thread_id,
+                Some(run_id),
+                AgentEventKind::MessagePartDelta {
+                    message_id,
+                    index: index as u32,
+                    content: delta,
+                },
+            )
+            .await;
+        }
+        if part.closed && !emitted.completed {
+            emitted.completed = true;
+            emit(
+                state,
+                thread_id,
+                Some(run_id),
+                AgentEventKind::MessagePartCompleted {
+                    message_id,
+                    index: index as u32,
+                },
+            )
+            .await;
+        }
     }
-    let marker = "`".repeat(ticks);
-    let lang = trimmed[ticks..].trim().to_string();
-    Some((marker, lang))
 }
 
-/// Downgrade artifact fences whose body exceeds [`MAX_ARTIFACT_BYTES`] to plain
-/// `text` blocks, so a runaway artifact renders as code instead of executing in
-/// the sandbox. Untouched when the message has no artifact fence.
-fn sanitize_artifacts(content: &str) -> String {
-    if !content.contains("```") {
-        return content.to_string();
-    }
-    let lines: Vec<&str> = content.split('\n').collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    let mut i = 0;
-    while i < lines.len() {
-        let Some((marker, lang)) = artifact_fence_open(lines[i]) else {
-            out.push(lines[i].to_string());
-            i += 1;
+/// Close the trailing part once the turn ends. An artifact whose fence never
+/// closed is left pending — the client reloads authoritative parts from REST on
+/// `AgentMessageCommitted`.
+async fn finalize_parts(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    run_id: RunId,
+    message_id: Uuid,
+    assistant: &mut AssistantMessageState,
+) {
+    for index in 0..assistant.emitted_parts.len() {
+        let part = &mut assistant.emitted_parts[index];
+        if part.completed || part.kind != parts::PartKind::Text {
             continue;
-        };
-        let mut j = i + 1;
-        let mut closed = false;
-        let mut body_len = 0usize;
-        while j < lines.len() {
-            let t = lines[j].trim();
-            if t.starts_with(&marker) && t[marker.len()..].trim().is_empty() {
-                closed = true;
-                break;
-            }
-            body_len += lines[j].len() + 1;
-            j += 1;
         }
-        let is_artifact = ARTIFACT_LANGS.iter().any(|l| lang.eq_ignore_ascii_case(l));
-        if is_artifact && body_len > MAX_ARTIFACT_BYTES {
-            out.push(format!("{marker}text"));
-        } else {
-            out.push(lines[i].to_string());
-        }
-        out.extend(lines[i + 1..j].iter().map(|l| l.to_string()));
-        if closed {
-            out.push(lines[j].to_string());
-            i = j + 1;
-        } else {
-            i = j;
-        }
+        part.completed = true;
+        emit(
+            state,
+            thread_id,
+            Some(run_id),
+            AgentEventKind::MessagePartCompleted {
+                message_id,
+                index: index as u32,
+            },
+        )
+        .await;
     }
-    out.join("\n")
 }
 
 #[cfg(test)]
@@ -2361,30 +2411,6 @@ mod tests {
     fn base_prompt_documents_artifacts() {
         assert!(BASE_SYSTEM_PROMPT.contains("```html"));
         assert!(BASE_SYSTEM_PROMPT.contains("sandboxed"));
-    }
-
-    #[test]
-    fn sanitize_keeps_small_artifacts_and_prose() {
-        let content = "Here is a demo\n\n```html\n<button>Hi</button>\n```\n\nDone.";
-        assert_eq!(sanitize_artifacts(content), content);
-    }
-
-    #[test]
-    fn sanitize_ignores_non_artifact_fences() {
-        let big = "x".repeat(MAX_ARTIFACT_BYTES + 10);
-        let content = format!("```js\n{big}\n```");
-        assert_eq!(sanitize_artifacts(&content), content);
-    }
-
-    #[test]
-    fn sanitize_downgrades_oversized_artifact() {
-        let big = "x".repeat(MAX_ARTIFACT_BYTES + 10);
-        let content = format!("intro\n\n```html\n{big}\n```\ntail");
-        let out = sanitize_artifacts(&content);
-        assert!(out.starts_with("intro\n\n```text\n"));
-        assert!(out.contains(&big));
-        assert!(out.ends_with("```\ntail"));
-        assert!(!out.contains("```html"));
     }
 
     #[test]
@@ -3065,6 +3091,13 @@ mod tests {
         }
     }
 
+    /// A content chunk that does not end the turn, for multi-chunk streams.
+    fn streaming_chunk(content: &str) -> StreamResponseChunk {
+        let mut chunk = text_chunk(content);
+        chunk.choices[0].finish_reason = None;
+        chunk
+    }
+
     fn empty_delta_chunk() -> StreamResponseChunk {
         StreamResponseChunk {
             id: "mock-stream-id".to_string(),
@@ -3650,5 +3683,105 @@ mod tests {
         assert!(saw_started, "subscriber must receive RunStarted");
         assert!(saw_delta, "subscriber must receive AgentDelta");
         assert!(saw_finished, "subscriber must receive RunFinished");
+    }
+
+    #[tokio::test]
+    async fn part_events_split_text_and_artifact() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![vec![
+                        streaming_chunk("Here is a demo\n\n"),
+                        streaming_chunk("```html\n"),
+                        streaming_chunk("<b>hi</b>\n"),
+                        text_chunk("```"),
+                    ]])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                reasoning_effort: None,
+                vision: false,
+            },
+        );
+
+        let pool = InProcessAgentPool::with_idle_ttl(
+            db.clone(),
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+            "System prompt".to_string(),
+            Duration::from_secs(60),
+        );
+
+        let mut sub = subscribe_events(thread_id);
+        pool.send(
+            thread_id,
+            AgentRequest {
+                content: "go".to_string(),
+                images: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut text_started = false;
+        let mut artifact_started = false;
+        let mut artifact_source = String::new();
+        let mut artifact_completed = false;
+        for _ in 0..100 {
+            let Ok(Ok(event)) = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await
+            else {
+                break;
+            };
+            match event.kind {
+                AgentEventKind::MessagePartStarted { kind, index, .. } => {
+                    if kind == parts::PartKind::Text && index == 0 {
+                        text_started = true;
+                    }
+                    if kind == parts::PartKind::Artifact {
+                        artifact_started = true;
+                    }
+                }
+                AgentEventKind::MessagePartDelta {
+                    index: 1, content, ..
+                } => {
+                    artifact_source.push_str(&content);
+                }
+                AgentEventKind::MessagePartCompleted { index: 1, .. } => {
+                    artifact_completed = true;
+                }
+                AgentEventKind::RunFinished => break,
+                _ => {}
+            }
+        }
+
+        assert!(text_started, "prose part must start");
+        assert!(artifact_started, "artifact part must start");
+        assert!(artifact_completed, "artifact part must complete");
+        // The body is delivered once, in full, when the fence closes.
+        assert_eq!(artifact_source, "<b>hi</b>");
     }
 }

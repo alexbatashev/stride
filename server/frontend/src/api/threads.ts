@@ -32,6 +32,13 @@ export type ThreadSummary = {
 	project_id: string | null;
 };
 
+export type MessagePart = {
+	type: 'text' | 'artifact';
+	content: string;
+	lang: string | null;
+	complete: boolean;
+};
+
 export type ThreadMessage = {
 	id: string;
 	seq: number;
@@ -39,6 +46,7 @@ export type ThreadMessage = {
 	content: string;
 	thinking: string | null;
 	tool_call_name: string | null;
+	parts: MessagePart[];
 };
 
 export type SendMessageResponse = {
@@ -54,13 +62,16 @@ export type ThreadEvent = {
 		| {
 				type: 'Snapshot';
 				status: 'idle' | 'running';
-				in_progress: {run_id: string; content: string; thinking: string | null} | null;
+				in_progress: {run_id: string; content: string; thinking: string | null; parts: MessagePart[]} | null;
 				pending_approval: {approval_id: string; message: string} | null;
 				pending_quiz: {quiz_id: string; questions: QuizQuestion[]} | null;
 		  }
 		| {type: 'RunStarted'}
 		| {type: 'UserMessageCommitted'; message_id: string; seq: number}
 		| {type: 'AgentDelta'; content: string}
+		| {type: 'MessagePartStarted'; message_id: string; index: number; kind: 'text' | 'artifact'; lang: string | null}
+		| {type: 'MessagePartDelta'; message_id: string; index: number; content: string}
+		| {type: 'MessagePartCompleted'; message_id: string; index: number}
 		| {type: 'ThinkingDelta'; thinking: string}
 		| {type: 'AgentMessageCommitted'; message_id: string; seq: number}
 		| {type: 'ToolStarted'; name: string}
