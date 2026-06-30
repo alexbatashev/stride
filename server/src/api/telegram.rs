@@ -756,7 +756,7 @@ impl TelegramSubscriber {
                     let Some(active) = self.active.as_mut().filter(|a| a.run_id == run_id) else {
                         return;
                     };
-                    active.content.push_str(content);
+                    active.content = content.clone();
                     let draft = telegram_draft_markdown(&active.content, &active.thinking);
                     if draft != active.last_draft_text
                         && active.last_draft.elapsed() >= DRAFT_INTERVAL

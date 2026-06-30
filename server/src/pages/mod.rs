@@ -143,12 +143,17 @@ fn render_messages(data: &ThreadPageData) -> String {
     data.messages
         .iter()
         .map(|message| {
+            let content = if message.message_type == "agent" {
+                message.content.clone()
+            } else {
+                html_escape(&message.content)
+            };
             AppMessage::new(
                 &message.id,
                 message.seq as f64,
                 message.role,
                 message.message_type,
-                html_escape(&message.content),
+                content,
                 message
                     .thinking
                     .as_deref()

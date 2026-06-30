@@ -26,6 +26,11 @@ const styles = css`
     font-weight: bold;
   }
 
+  .plain {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
   @media print {
     .user {
       float: none;
@@ -68,7 +73,7 @@ export function AppMessage({
       ) : (
         <div class={kind === "user" ? "bubble user" : "bubble"}>
           {thinking !== "" && <AppSpoiler title="Thinking" content={thinking} />}
-          <AutoMarkdown text={text} />
+          {kind === "agent" ? <AutoMarkdown text={text} /> : <div class="plain">{text}</div>}
           {toolName !== "" && <p class="tool-call">Called tool {toolName}</p>}
         </div>
       )}

@@ -278,7 +278,7 @@ class ThreadsPageHydrator {
 		}
 
 		if (event.kind.type === "AgentDelta") {
-			this.pendingAssistant += event.kind.content;
+			this.pendingAssistant = event.kind.content;
 			this.upsertPendingAssistant();
 		}
 
@@ -528,7 +528,10 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		element.text = message.content ? esc(message.content) : message.pending ? "Thinking..." : "";
+		const messageType = this.messageType(message);
+		element.text = message.content
+			? this.messageText(message, messageType.type)
+			: message.pending ? "Thinking..." : "";
 		if (message.thinking) {
 			element.thinking = esc(message.thinking);
 		}
@@ -545,8 +548,14 @@ class ThreadsPageHydrator {
 		element.kind = messageType.type;
 		element.toolName = esc(messageType.toolName ?? "");
 		element.thinking = message.thinking ? esc(message.thinking) : "";
-		element.text = message.content ? esc(message.content) : message.pending ? "Thinking..." : "";
+		element.text = message.content
+			? this.messageText(message, messageType.type)
+			: message.pending ? "Thinking..." : "";
 		return element;
+	}
+
+	private messageText(message: ThreadMessage, messageType: string): string {
+		return messageType === "agent" ? message.content : esc(message.content);
 	}
 
 	private createEmptyElement() {

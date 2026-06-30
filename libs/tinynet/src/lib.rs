@@ -76,7 +76,10 @@ async fn connect_first_tls(
     let mut last_err = None;
     for &addr in addrs {
         match AsyncTlsStream::connect(addr, host, transfer_deadline) {
-            Ok(io) => match io.wait_connected(attempt_deadline(connect_timeout, transfer_deadline)).await {
+            Ok(io) => match io
+                .wait_connected(attempt_deadline(connect_timeout, transfer_deadline))
+                .await
+            {
                 Ok(()) => return Ok(io),
                 Err(err) => last_err = Some(format!("{addr}: {err}")),
             },
@@ -96,7 +99,10 @@ async fn connect_first_tcp(
     let mut last_err = None;
     for &addr in addrs {
         match AsyncTcpStream::new(addr, transfer_deadline) {
-            Ok(io) => match io.wait_connected(attempt_deadline(connect_timeout, transfer_deadline)).await {
+            Ok(io) => match io
+                .wait_connected(attempt_deadline(connect_timeout, transfer_deadline))
+                .await
+            {
                 Ok(()) => return Ok(io),
                 Err(err) => last_err = Some(format!("{addr}: {err}")),
             },

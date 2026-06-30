@@ -1,6 +1,7 @@
 mod base;
 pub mod mcp;
 pub mod memory;
+pub mod sanitizer;
 mod tool;
 mod tool_registry;
 pub mod tools;
@@ -9,6 +10,7 @@ extern crate self as stride_agent;
 
 pub use agent_macro::ToolDesc;
 pub use base::*;
+pub use sanitizer::*;
 pub use tool::*;
 pub use tool_registry::*;
 

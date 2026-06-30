@@ -78,18 +78,29 @@ test('app-sidebar footer dispatches logout and new-project', () => {
   assert.equal(newProject.count, 1);
 });
 
-test('app-message renders markdown for agent text', () => {
-  const el = mount('app-message', { kind: 'agent', text: 'plain **bold** text' });
-  const markdown = el.shadowRoot.querySelector('auto-markdown');
-  assert.ok(markdown);
-  assert.match(markdown.shadowRoot.innerHTML, /<strong>bold<\/strong>/);
+test('app-message renders html for agent text', () => {
+  const el = mount('app-message', { kind: 'agent', text: '<p>plain <strong>bold</strong> text</p>' });
+  const html = el.shadowRoot.querySelector('auto-markdown');
+  assert.ok(html);
+  assert.match(html.shadowRoot.innerHTML, /<strong>bold<\/strong>/);
 });
 
-test('app-message escaped text round-trips through markdown', () => {
+test('app-message escaped text stays text in html renderer', () => {
   const el = mount('app-message', { kind: 'agent', text: 'a &lt;tag&gt; &amp; more' });
-  const markdown = el.shadowRoot.querySelector('auto-markdown');
-  const paragraph = markdown.shadowRoot.querySelector('p');
-  assert.equal(paragraph.textContent, 'a <tag> & more');
+  const html = el.shadowRoot.querySelector('auto-markdown');
+  assert.equal(html.shadowRoot.querySelector('tag'), null);
+  assert.match(html.shadowRoot.textContent, /a <tag> & more/);
+});
+
+test('app-message wraps html tables for horizontal scrolling', () => {
+  const el = mount('app-message', {
+    kind: 'agent',
+    text: '<table><tr><th>First</th><th>Second</th></tr><tr><td>A</td><td>B</td></tr></table>',
+  });
+  const html = el.shadowRoot.querySelector('auto-markdown');
+  const wrap = html.shadowRoot.querySelector('.table-wrap');
+  assert.ok(wrap);
+  assert.equal(wrap.querySelector('table')?.tagName, 'TABLE');
 });
 
 test('app-message tool output folds into a spoiler', () => {
