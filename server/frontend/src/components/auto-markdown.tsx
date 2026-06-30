@@ -83,6 +83,37 @@ function buildTable(tableLines: string[]): HTMLDivElement {
 
 const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"];
 
+// Info strings whose fenced block is an interactive artifact rendered in a
+// sandboxed frame rather than shown as source.
+const ARTIFACT_LANGS = new Set(["html"]);
+
+function buildArtifact(source: string): HTMLElement {
+  const el = document.createElement("stride-artifact") as HTMLElement & { source: string };
+  el.source = source;
+  return el;
+}
+
+// Shown while an artifact fence is still streaming and has no closing fence yet;
+// partial HTML must never reach the sandbox.
+function buildArtifactPlaceholder(): HTMLElement {
+  const div = document.createElement("div");
+  div.className = "artifact-pending";
+  div.textContent = "Building interactive view…";
+  return div;
+}
+
+function buildCodeBlock(lang: string, code: string): HTMLElement {
+  const pre = document.createElement("pre");
+  pre.className = "code-block";
+  const codeEl = document.createElement("code");
+  if (lang) {
+    codeEl.dataset.lang = lang;
+  }
+  codeEl.textContent = code;
+  pre.append(codeEl);
+  return pre;
+}
+
 function renderMarkdown(text: string): Node[] {
   const nodes: Node[] = [];
   const lines = text.split("\n");
@@ -93,6 +124,34 @@ function renderMarkdown(text: string): Node[] {
 
     if (line.trim() === "") {
       i++;
+      continue;
+    }
+
+    // Fenced code block: artifact langs render in a sandboxed frame, everything
+    // else as verbatim source. An unterminated fence is still streaming.
+    const fence = line.match(/^(\s*)(`{3,})(.*)$/);
+    if (fence) {
+      const marker = fence[2];
+      const lang = fence[3].trim().toLowerCase();
+      const bodyLines: string[] = [];
+      i++;
+      let closed = false;
+      while (i < lines.length) {
+        const candidate = lines[i].trim();
+        if (candidate.startsWith(marker) && candidate.slice(marker.length).trim() === "") {
+          closed = true;
+          i++;
+          break;
+        }
+        bodyLines.push(lines[i]);
+        i++;
+      }
+      const body = bodyLines.join("\n");
+      if (ARTIFACT_LANGS.has(lang)) {
+        nodes.push(closed ? buildArtifact(body) : buildArtifactPlaceholder());
+      } else {
+        nodes.push(buildCodeBlock(lang, body));
+      }
       continue;
     }
 
@@ -267,6 +326,33 @@ const styles = css`
 
   a:hover {
     text-decoration: underline;
+  }
+
+  .code-block {
+    background: var(--muted, rgba(0, 0, 0, 0.05));
+    border-radius: 8px;
+    margin: 0.75em 0;
+    overflow-x: auto;
+    padding: 0.75em 1em;
+  }
+
+  .code-block:last-child {
+    margin-bottom: 0;
+  }
+
+  .code-block code {
+    font-family: ui-monospace, monospace;
+    font-size: 0.9em;
+    white-space: pre;
+  }
+
+  .artifact-pending {
+    border: 1px dashed var(--border, #d0d0d0);
+    border-radius: 12px;
+    color: var(--muted-foreground, #666);
+    font-size: 0.95em;
+    margin: 0.75em 0;
+    padding: 12px;
   }
 `;
 

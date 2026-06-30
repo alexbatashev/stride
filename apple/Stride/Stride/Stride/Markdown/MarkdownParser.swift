@@ -13,7 +13,20 @@ enum MarkdownBlock {
     case code(language: String?, code: String)
     case image(alt: String, url: String)
     case rule
+    /// A self-contained interactive view rendered in a sandboxed web view.
+    case artifact(ArtifactSource)
+    /// An artifact fence that is still streaming; rendered as a placeholder so
+    /// partial HTML never reaches the sandbox.
+    case artifactPending
 }
+
+/// The kinds of interactive artifact an agent can emit. v1 is HTML/JS only.
+enum ArtifactSource: Equatable {
+    case html(String)
+}
+
+/// Fence info strings treated as interactive artifacts rather than source code.
+private let artifactLangs: Set<String> = ["html"]
 
 /// Turns Markdown into ``MarkdownBlock``s using swift-markdown's CommonMark
 /// parser. Replaces a hand-rolled line scanner, so nested lists, blockquotes and
@@ -21,7 +34,37 @@ enum MarkdownBlock {
 enum MarkdownParser {
     static func parse(_ source: String, baseURL: URL?) -> [MarkdownBlock] {
         let document = Document(parsing: source)
-        return blocks(Array(document.children), baseURL: baseURL)
+        var result = blocks(Array(document.children), baseURL: baseURL)
+        // CommonMark runs an unterminated fence to the end of the document, so a
+        // still-streaming artifact arrives as a trailing artifact block. Swap it
+        // for a placeholder until its closing fence lands.
+        if endsInsideOpenArtifactFence(source), case .artifact = result.last {
+            result[result.count - 1] = .artifactPending
+        }
+        return result
+    }
+
+    private static func fenceMarker(_ trimmed: String) -> String? {
+        let ticks = trimmed.prefix { $0 == "`" }.count
+        return ticks >= 3 ? String(repeating: "`", count: ticks) : nil
+    }
+
+    private static func endsInsideOpenArtifactFence(_ source: String) -> Bool {
+        var openMarker: String?
+        var openLang = ""
+        for rawLine in source.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = String(rawLine).trimmingCharacters(in: .whitespaces)
+            if let marker = openMarker {
+                let rest = String(trimmed.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix(marker), rest.isEmpty {
+                    openMarker = nil
+                }
+            } else if let marker = fenceMarker(trimmed) {
+                openMarker = marker
+                openLang = String(trimmed.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces).lowercased()
+            }
+        }
+        return openMarker != nil && artifactLangs.contains(openLang)
     }
 
     // MARK: - Blocks
@@ -44,6 +87,9 @@ enum MarkdownParser {
             return .quote(blocks(Array(quote.children), baseURL: baseURL))
         case let code as CodeBlock:
             let language = code.language.flatMap { $0.isEmpty ? nil : $0 }
+            if let language, artifactLangs.contains(language.lowercased()) {
+                return .artifact(.html(trimmingTrailingNewlines(code.code)))
+            }
             return .code(language: language, code: trimmingTrailingNewlines(code.code))
         case is ThematicBreak:
             return .rule

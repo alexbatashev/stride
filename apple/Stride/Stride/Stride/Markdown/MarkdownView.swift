@@ -75,6 +75,12 @@ private struct BlockView: View {
 
         case .rule:
             Divider().padding(.vertical, 2)
+
+        case let .artifact(.html(html)):
+            ArtifactWebView(html: html)
+
+        case .artifactPending:
+            ArtifactPlaceholder()
         }
     }
 

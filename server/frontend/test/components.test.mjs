@@ -27,10 +27,21 @@ function lastEvent(el, name) {
   return seen;
 }
 
+// Mirrors the page hydrator: message content is escaped before it reaches the
+// `text` prop, then AutoMarkdown unescapes it before parsing.
+function esc(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 test('all custom elements register', () => {
   for (const tag of [
     'app-button', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
-    'app-message', 'app-spoiler', 'auto-markdown', 'app-prompt-input',
+    'app-message', 'app-spoiler', 'auto-markdown', 'stride-artifact', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
     'app-file-manager', 'app-automations', 'app-settings', 'icon-arrow-up', 'icon-x',
     'app-badge', 'app-label', 'app-separator', 'app-skeleton', 'app-aspect-ratio',
@@ -90,6 +101,51 @@ test('app-message escaped text round-trips through markdown', () => {
   const markdown = el.shadowRoot.querySelector('auto-markdown');
   const paragraph = markdown.shadowRoot.querySelector('p');
   assert.equal(paragraph.textContent, 'a <tag> & more');
+});
+
+test('stride-artifact renders a sandboxed, network-denied iframe', () => {
+  const el = mount('stride-artifact', { source: '<p id="x">hi</p>' });
+  const frame = el.shadowRoot.querySelector('iframe');
+  assert.ok(frame, 'iframe missing');
+  assert.equal(frame.getAttribute('sandbox'), 'allow-scripts');
+  assert.doesNotMatch(frame.getAttribute('sandbox') ?? '', /allow-same-origin/);
+  const doc = frame.srcdoc ?? frame.getAttribute('srcdoc') ?? '';
+  assert.match(doc, /<p id="x">hi<\/p>/);
+  assert.match(doc, /Content-Security-Policy/);
+  assert.match(doc, /connect-src 'none'/);
+});
+
+test('stride-artifact falls back when the source is too large', () => {
+  const el = mount('stride-artifact', { source: 'x'.repeat(256 * 1024 + 1) });
+  assert.ok(el.shadowRoot.querySelector('.fallback'));
+  assert.equal(el.shadowRoot.querySelector('iframe'), null);
+});
+
+test('auto-markdown routes an html fence to a sandboxed artifact', () => {
+  const html = '<button onclick="go()">Go</button>';
+  const el = mount('app-message', { kind: 'agent', text: esc('```html\n' + html + '\n```') });
+  const markdown = el.shadowRoot.querySelector('auto-markdown');
+  const artifact = markdown.shadowRoot.querySelector('stride-artifact');
+  assert.ok(artifact, 'artifact missing');
+  assert.equal(artifact.source, html);
+  const doc = artifact.shadowRoot.querySelector('iframe').srcdoc ?? '';
+  assert.match(doc, /<button onclick="go\(\)">Go<\/button>/);
+});
+
+test('auto-markdown shows a placeholder while an html fence is still streaming', () => {
+  const el = mount('app-message', { kind: 'agent', text: esc('```html\n<div>partial') });
+  const markdown = el.shadowRoot.querySelector('auto-markdown');
+  assert.ok(markdown.shadowRoot.querySelector('.artifact-pending'));
+  assert.equal(markdown.shadowRoot.querySelector('stride-artifact'), null);
+});
+
+test('auto-markdown renders a non-artifact fence as verbatim code', () => {
+  const el = mount('app-message', { kind: 'agent', text: esc('```js\nconst a = 1 < 2;\n```') });
+  const markdown = el.shadowRoot.querySelector('auto-markdown');
+  const code = markdown.shadowRoot.querySelector('pre.code-block code');
+  assert.ok(code, 'code block missing');
+  assert.equal(code.textContent, 'const a = 1 < 2;');
+  assert.equal(code.dataset.lang, 'js');
 });
 
 test('app-message tool output folds into a spoiler', () => {
