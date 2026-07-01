@@ -53,6 +53,7 @@ export function AppMessage({
   seq = 0,
   role = "user",
   kind = "user",
+  format = "markdown",
   text = "",
   thinking = "",
   toolName = "",
@@ -61,6 +62,7 @@ export function AppMessage({
   seq?: number;
   role?: string;
   kind?: string;
+  format?: string;
   text?: string;
   thinking?: string;
   toolName?: string;
@@ -73,7 +75,11 @@ export function AppMessage({
       ) : (
         <div class={kind === "user" ? "bubble user" : "bubble"}>
           {thinking !== "" && <AppSpoiler title="Thinking" content={thinking} />}
-          {kind === "agent" ? <AutoMarkdown text={text} /> : <div class="plain">{text}</div>}
+          {kind === "agent" ? (
+            <AutoMarkdown text={text} format={format} />
+          ) : (
+            <div class="plain">{text}</div>
+          )}
           {toolName !== "" && <p class="tool-call">Called tool {toolName}</p>}
         </div>
       )}

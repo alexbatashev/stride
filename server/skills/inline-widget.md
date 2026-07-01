@@ -1,7 +1,7 @@
 +++
 name = "inline-widget"
 title = "Create inline HTML widgets"
-description = "Build small interactive HTML pages for iframe replies, using common.css, bundled static libraries, responsive layout, and no external network requests."
+description = "Build small interactive inline experiences for rich responses. Use this skill to provide interactive widgets by embedding an iframe with a small HTML page."
 +++
 Create inline HTML widgets
 
@@ -44,7 +44,7 @@ and must not rely on parent-window access.
 
 Generated widget files are not served from `/static`. `/static` is only for
 built-in assets such as `/static/common.css`, `/static/widget-frame.js`, and
-`/static/vendor/d3.global.js`.
+bundled libraries in `/static/vendor/`.
 
 The final message iframe must use an absolute `src` beginning with the configured
 public URL and pointing at the thread file-download route:
@@ -84,7 +84,7 @@ and adds the sandbox.
 - Do not call `fetch()` unless the URL starts with the same base URL as the
   iframe page.
 - Prefer embedding small datasets directly in the HTML.
-- If you need D3, use the bundled global build:
+- If you need a bundled library, use the global builds:
 
 ```html
 <script src="/static/vendor/d3.global.js"></script>
@@ -93,12 +93,69 @@ and adds the sandbox.
 </script>
 ```
 
+Available bundled libraries:
+
+- `/static/vendor/d3.global.js` exposes `d3`. Use it for scales, axes, shapes,
+  force layouts, transitions, data joins, hierarchy, geo rendering, and lower
+  level visualization work.
+- `/static/vendor/plot.global.js` exposes `Plot`. Use it for concise
+  Observable Plot charts when a standard chart should take less code than raw
+  D3.
+- `/static/vendor/decimal.global.js` exposes `Decimal`. Use it for calculators
+  where decimal precision matters, especially money, percentages, rates, and
+  unit conversions.
+- `/static/vendor/dagre.global.js` exposes `dagre`. Use it for directed graph
+  layout such as workflows, state machines, dependency graphs, and execution
+  plans.
+
+Common library patterns:
+
+```html
+<script src="/static/vendor/plot.global.js"></script>
+<script>
+  const data = [
+    { label: "A", value: 4 },
+    { label: "B", value: 9 },
+  ];
+  document.querySelector("#vis").append(
+    Plot.plot({
+      width: 640,
+      height: 260,
+      marginLeft: 36,
+      x: { label: null },
+      y: { grid: true },
+      marks: [Plot.barY(data, { x: "label", y: "value" })],
+    }),
+  );
+</script>
+```
+
+```html
+<script src="/static/vendor/decimal.global.js"></script>
+<script>
+  const total = new Decimal("19.99").times("1.0825").toFixed(2);
+</script>
+```
+
+```html
+<script src="/static/vendor/dagre.global.js"></script>
+<script>
+  const graph = new dagre.graphlib.Graph();
+  graph.setGraph({ rankdir: "LR", nodesep: 32, ranksep: 56 });
+  graph.setDefaultEdgeLabel(() => ({}));
+  graph.setNode("start", { width: 96, height: 40 });
+  graph.setNode("finish", { width: 96, height: 40 });
+  graph.setEdge("start", "finish");
+  dagre.layout(graph);
+</script>
+```
+
 Avoid ES module imports inside widgets unless you have a specific reason. The
 iframe is sandboxed without same-origin privileges, and classic scripts are the
 most reliable way to load bundled widget libraries.
 
-Use native browser APIs first. Use D3 for scales, axes, shapes, force layouts,
-transitions, and data joins when it keeps the code clearer.
+Use native browser APIs first. Use bundled libraries when they materially reduce
+complexity or improve correctness.
 
 ## Page skeleton
 

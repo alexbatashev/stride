@@ -22,7 +22,7 @@ use crate::{
         auth::{self, AuthError},
         projects::ProjectResponse,
     },
-    db::{Role, messages, projects, threads},
+    db::{MessageFormat, Role, messages, projects, threads},
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
         ThreadStatus, thread_events_topic,
@@ -48,6 +48,7 @@ pub struct MessageResponse {
     id: String,
     seq: u64,
     role: &'static str,
+    format: &'static str,
     content: String,
     thinking: Option<String>,
     tool_call_name: Option<String>,
@@ -83,6 +84,7 @@ pub struct MessageTemplateData {
     pub id: String,
     pub seq: u64,
     pub role: &'static str,
+    pub format: &'static str,
     pub message_type: &'static str,
     pub tool_name: Option<String>,
     pub content: String,
@@ -130,6 +132,7 @@ struct EventResponse {
 struct SnapshotMessageResponse {
     run_id: String,
     content: String,
+    format: &'static str,
     thinking: Option<String>,
 }
 
@@ -167,6 +170,7 @@ enum EventKindResponse {
     },
     AgentDelta {
         content: String,
+        format: &'static str,
     },
     ThinkingDelta {
         thinking: String,
@@ -314,6 +318,7 @@ pub async fn thread_page_data(
                     id: message.id,
                     seq: message.seq,
                     role: message.role,
+                    format: message.format,
                     message_type,
                     tool_name,
                     content: message.content,
@@ -585,6 +590,7 @@ async fn thread_messages(
             id: row.id.to_string(),
             seq: row.seq,
             role: role_name(row.role),
+            format: message_format_name(row.content_format.unwrap_or(MessageFormat::Markdown)),
             content: row.content,
             thinking: row.thinking,
             tool_call_name: tool_call_name(row.tool_calls.as_deref()),
@@ -858,6 +864,13 @@ fn role_name(role: Role) -> &'static str {
         Role::Agent => "agent",
         Role::User => "user",
         Role::Tool => "tool",
+    }
+}
+
+fn message_format_name(format: MessageFormat) -> &'static str {
+    match format {
+        MessageFormat::Markdown => "markdown",
+        MessageFormat::Html => "html",
     }
 }
 
@@ -1238,7 +1251,10 @@ fn event_response(event: AgentEvent) -> EventResponse {
                     seq,
                 }
             }
-            AgentEventKind::AgentDelta { content } => EventKindResponse::AgentDelta { content },
+            AgentEventKind::AgentDelta { content, format } => EventKindResponse::AgentDelta {
+                content,
+                format: message_format_name(format),
+            },
             AgentEventKind::ThinkingDelta { thinking } => {
                 EventKindResponse::ThinkingDelta { thinking }
             }
@@ -1296,6 +1312,7 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
                 .map(|message| SnapshotMessageResponse {
                     run_id: message.run_id.0.to_string(),
                     content: message.content.clone(),
+                    format: message_format_name(message.format),
                     thinking: message.thinking.clone(),
                 }),
             pending_approval: snapshot

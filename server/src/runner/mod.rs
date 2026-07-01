@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use stride_agent::QuizQuestion;
 use uuid::Uuid;
 
+use crate::db::MessageFormat;
+
 pub mod inproc;
 
 pub type EventSeq = u64;
@@ -82,6 +84,7 @@ pub struct PartialAgentMessage {
     pub run_id: RunId,
     pub content: String,
     pub thinking: Option<String>,
+    pub format: MessageFormat,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +116,7 @@ pub enum AgentEventKind {
     },
     AgentDelta {
         content: String,
+        format: MessageFormat,
     },
     ThinkingDelta {
         thinking: String,

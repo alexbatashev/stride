@@ -14,9 +14,18 @@ importers:
       '@happy-dom/global-registrator':
         specifier: ^20.10.2
         version: 20.10.2
+      '@observablehq/plot':
+        specifier: ^0.6.17
+        version: 0.6.17
       d3:
         specifier: ^7.9.0
         version: 7.9.0
+      dagre:
+        specifier: ^0.8.5
+        version: 0.8.5
+      decimal.js:
+        specifier: ^10.6.0
+        version: 10.6.0
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
@@ -191,6 +200,10 @@ packages:
     resolution: {integrity: sha512-/DC0hluanNJDVPUu69cidD46sGwzt8MJATiGx7WgCScn+ZH48fJQ0fvTfMPXY82/ASXWxnNo8P4BdHyU/dI/EA==}
     engines: {node: '>=20.0.0'}
 
+  '@observablehq/plot@0.6.17':
+    resolution: {integrity: sha512-/qaXP/7mc4MUS0s4cPPFASDRjtsWp85/TbfsciqDgU1HwYixbSbbytNuInD8AcTYC3xaxACgVX06agdfQy9W+g==}
+    engines: {node: '>=12'}
+
   '@types/node@25.9.3':
     resolution: {integrity: sha512-603BddQMv3pUcr4U2dhujk83N2tTDVr/34wII2B6bJy6g+8WD6yUb11jszNs0gdi4PesVWl7ABt8nYMVpnLUcg==}
 
@@ -199,6 +212,9 @@ packages:
 
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
+  binary-search-bounds@2.0.5:
+    resolution: {integrity: sha512-H0ea4Fd3lS1+sTEB2TgcLoK21lLhwEJzlQv3IN47pJS976Gx4zoWe0ak3q+uYh60ppQxg9F16Ri4tS1sfD4+jA==}
 
   buffer-image-size@0.6.4:
     resolution: {integrity: sha512-nEh+kZOPY1w+gcCMobZ6ETUp9WfibndnosbpwB1iJk/8Gt5ZF2bhS6+B6bPYz424KtwsR6Rflc3tCz1/ghX2dQ==}
@@ -335,6 +351,12 @@ packages:
     resolution: {integrity: sha512-e1U46jVP+w7Iut8Jt8ri1YsPOvFpg46k+K8TpCb0P+zjCkjkPnV7WzfDJzMHy1LnA+wj5pLT1wjO901gLXeEhA==}
     engines: {node: '>=12'}
 
+  dagre@0.8.5:
+    resolution: {integrity: sha512-/aTqmnRta7x7MCCpExk7HQL2O4owCT2h8NT//9I1OQ9vt29Pa0BzSAkR5lwFUcQ7491yVi/3CXU9jQ5o0Mn2Sw==}
+
+  decimal.js@10.6.0:
+    resolution: {integrity: sha512-YpgQiITW3JXGntzdUmyUR1V812Hn8T1YVXhCu+wO3OpS4eU9l4YdD3qjyiKdV6mvV29zapkMeD390UVEf2lkUg==}
+
   delaunator@5.1.0:
     resolution: {integrity: sha512-AGrQ4QSgssa1NGmWmLPqN5NY2KajF5MqxetNEO+o0n3ZwZZeTmt7bBnvzHWrmkZFxGgr4HdyFgelzgi06otLuQ==}
 
@@ -347,6 +369,9 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  graphlib@2.1.8:
+    resolution: {integrity: sha512-jcLLfkpoVGmH7/InMC/1hIvOPSUh38oJtGhvrOFGzioE1DZ+0YW16RgmOJhHiuWTvGiJQ9Z1Ik43JvkRPRvE+A==}
+
   happy-dom@20.10.2:
     resolution: {integrity: sha512-5p9Sxis3eowDJKqx90QCsgbNA02XXqJ59NOHvD4V6cxp+rP4d/xOyVx7uY3hS8hiUbY1VeiFH8lbJ81AyuDVLQ==}
     engines: {node: '>=20.0.0'}
@@ -358,6 +383,15 @@ packages:
   internmap@2.0.3:
     resolution: {integrity: sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg==}
     engines: {node: '>=12'}
+
+  interval-tree-1d@1.0.4:
+    resolution: {integrity: sha512-wY8QJH+6wNI0uh4pDQzMvl+478Qh7Rl4qLmqiluxALlNvl+I+o5x38Pw3/z7mDPTPS1dQalZJXsmbvxx5gclhQ==}
+
+  isoformat@0.2.1:
+    resolution: {integrity: sha512-tFLRAygk9NqrRPhJSnNGh7g7oaVWDwR0wKh/GM2LgmPa50Eg4UfyaCO4I8k6EqJHl1/uh2RAD6g06n5ygEnrjQ==}
+
+  lodash@4.18.1:
+    resolution: {integrity: sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==}
 
   robust-predicates@3.0.3:
     resolution: {integrity: sha512-NS3levdsRIUOmiJ8FZWCP7LG3QpJyrs/TE0Zpf1yvZu8cAJJ6QMW92H1c7kWpdIHo8RvmLxN/o2JXTKHp74lUA==}
@@ -489,6 +523,12 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  '@observablehq/plot@0.6.17':
+    dependencies:
+      d3: 7.9.0
+      interval-tree-1d: 1.0.4
+      isoformat: 0.2.1
+
   '@types/node@25.9.3':
     dependencies:
       undici-types: 7.24.6
@@ -498,6 +538,8 @@ snapshots:
   '@types/ws@8.18.1':
     dependencies:
       '@types/node': 25.9.3
+
+  binary-search-bounds@2.0.5: {}
 
   buffer-image-size@0.6.4:
     dependencies:
@@ -657,6 +699,13 @@ snapshots:
       d3-transition: 3.0.1(d3-selection@3.0.0)
       d3-zoom: 3.0.0
 
+  dagre@0.8.5:
+    dependencies:
+      graphlib: 2.1.8
+      lodash: 4.18.1
+
+  decimal.js@10.6.0: {}
+
   delaunator@5.1.0:
     dependencies:
       robust-predicates: 3.0.3
@@ -692,6 +741,10 @@ snapshots:
       '@esbuild/win32-ia32': 0.28.0
       '@esbuild/win32-x64': 0.28.0
 
+  graphlib@2.1.8:
+    dependencies:
+      lodash: 4.18.1
+
   happy-dom@20.10.2:
     dependencies:
       '@types/node': 25.9.3
@@ -710,6 +763,14 @@ snapshots:
       safer-buffer: 2.1.2
 
   internmap@2.0.3: {}
+
+  interval-tree-1d@1.0.4:
+    dependencies:
+      binary-search-bounds: 2.0.5
+
+  isoformat@0.2.1: {}
+
+  lodash@4.18.1: {}
 
   robust-predicates@3.0.3: {}
 

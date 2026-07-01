@@ -143,7 +143,7 @@ fn render_messages(data: &ThreadPageData) -> String {
     data.messages
         .iter()
         .map(|message| {
-            let content = if message.message_type == "agent" {
+            let content = if message.message_type == "agent" && message.format == "html" {
                 message.content.clone()
             } else {
                 html_escape(&message.content)
@@ -153,6 +153,7 @@ fn render_messages(data: &ThreadPageData) -> String {
                 message.seq as f64,
                 message.role,
                 message.message_type,
+                message.format,
                 content,
                 message
                     .thinking
@@ -469,6 +470,7 @@ mod tests {
                     id: "message-1".to_string(),
                     seq: 1,
                     role: "tool",
+                    format: "markdown",
                     message_type: "tool_output",
                     tool_name: Some("Tool output".to_string()),
                     content: "done".to_string(),
@@ -479,6 +481,7 @@ mod tests {
                     id: "message-2".to_string(),
                     seq: 2,
                     role: "agent",
+                    format: "html",
                     message_type: "agent",
                     tool_name: None,
                     content: "hello & <world>".to_string(),

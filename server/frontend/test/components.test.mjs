@@ -95,22 +95,31 @@ test('app-sidebar collapse keeps rail icons left aligned during width transition
 });
 
 test('app-message renders html for agent text', () => {
-  const el = mount('app-message', { kind: 'agent', text: '<p>plain <strong>bold</strong> text</p>' });
+  const el = mount('app-message', { kind: 'agent', format: 'html', text: '<p>plain <strong>bold</strong> text</p>' });
   const html = el.shadowRoot.querySelector('auto-markdown');
   assert.ok(html);
   assert.match(html.shadowRoot.innerHTML, /<strong>bold<\/strong>/);
 });
 
 test('app-message escaped text stays text in html renderer', () => {
-  const el = mount('app-message', { kind: 'agent', text: 'a &lt;tag&gt; &amp; more' });
+  const el = mount('app-message', { kind: 'agent', format: 'html', text: 'a &lt;tag&gt; &amp; more' });
   const html = el.shadowRoot.querySelector('auto-markdown');
   assert.equal(html.shadowRoot.querySelector('tag'), null);
   assert.match(html.shadowRoot.textContent, /a <tag> & more/);
 });
 
+test('app-message renders markdown for agent text by default', () => {
+  const el = mount('app-message', { kind: 'agent', text: '# Title\n\nHello **boss**' });
+  const html = el.shadowRoot.querySelector('auto-markdown');
+  assert.ok(html);
+  assert.equal(html.shadowRoot.querySelector('h1')?.textContent, 'Title');
+  assert.equal(html.shadowRoot.querySelector('strong')?.textContent, 'boss');
+});
+
 test('app-message wraps html tables for horizontal scrolling', () => {
   const el = mount('app-message', {
     kind: 'agent',
+    format: 'html',
     text: '<table><tr><th>First</th><th>Second</th></tr><tr><td>A</td><td>B</td></tr></table>',
   });
   const html = el.shadowRoot.querySelector('auto-markdown');

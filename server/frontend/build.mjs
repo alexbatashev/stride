@@ -65,6 +65,34 @@ const argonImportsPlugin = {
 // runs and every hydrated control (login button included) is dead. Downlevel to
 // a baseline that covers phones a few years old.
 const target = ['es2020'];
+const vendorBuilds = [
+  ['d3', 'd3'],
+  ['@observablehq/plot', 'plot', 'Plot'],
+  ['decimal.js', 'decimal', 'Decimal'],
+  ['dagre', 'dagre', 'dagre'],
+];
+
+function buildVendor(entryPoint, filename, globalName) {
+  return [
+    esbuild.build({
+      entryPoints: [entryPoint],
+      bundle: true,
+      format: 'esm',
+      minify: true,
+      target,
+      outfile: join(vendorDir, `${filename}.js`),
+    }),
+    esbuild.build({
+      entryPoints: [entryPoint],
+      bundle: true,
+      format: 'iife',
+      globalName,
+      minify: true,
+      target,
+      outfile: join(vendorDir, `${filename}.global.js`),
+    }),
+  ];
+}
 
 await Promise.all([
   esbuild.build({
@@ -97,23 +125,9 @@ await Promise.all([
     target,
     outfile: 'dist/widget-frame.js',
   }),
-  esbuild.build({
-    entryPoints: ['d3'],
-    bundle: true,
-    format: 'esm',
-    minify: true,
-    target,
-    outfile: join(vendorDir, 'd3.js'),
-  }),
-  esbuild.build({
-    entryPoints: ['d3'],
-    bundle: true,
-    format: 'iife',
-    globalName: 'd3',
-    minify: true,
-    target,
-    outfile: join(vendorDir, 'd3.global.js'),
-  }),
+  ...vendorBuilds.flatMap(([entryPoint, filename, globalName = filename]) =>
+    buildVendor(entryPoint, filename, globalName),
+  ),
   esbuild.build({
     entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/automations-page.ts', 'src/pages/settings-page.ts'],
     bundle: true,

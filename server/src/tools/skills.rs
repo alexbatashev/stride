@@ -12,11 +12,13 @@ use super::static_skills;
 pub struct SearchSkillsTool {
     pub db: ConnectionPool,
     pub user_id: Uuid,
+    pub excluded_static_skills: Vec<String>,
 }
 
 pub struct LoadSkillTool {
     pub db: ConnectionPool,
     pub user_id: Uuid,
+    pub excluded_static_skills: Vec<String>,
 }
 
 pub struct CreateSkillTool {
@@ -51,9 +53,14 @@ struct CreateSkillParams {
 /// Renders the catalog of available skills (static plus the user's own) as a
 /// system-prompt section, so the model knows what exists without searching for
 /// it. Returns an empty string when there are no skills.
-pub async fn skill_catalog(db: &ConnectionPool, user_id: Uuid) -> String {
+pub async fn skill_catalog(
+    db: &ConnectionPool,
+    user_id: Uuid,
+    excluded_static_skills: &[String],
+) -> String {
     let mut entries: Vec<(String, String)> = static_skills::static_skills()
         .iter()
+        .filter(|skill| !static_skill_excluded(&skill.name, excluded_static_skills))
         .map(|skill| (skill.name.clone(), skill.description.clone()))
         .collect();
 
@@ -91,6 +98,12 @@ pub async fn skill_catalog(db: &ConnectionPool, user_id: Uuid) -> String {
     catalog
 }
 
+fn static_skill_excluded(name: &str, excluded_static_skills: &[String]) -> bool {
+    excluded_static_skills
+        .iter()
+        .any(|excluded| excluded == name)
+}
+
 #[async_trait(?Send)]
 impl Tool for SearchSkillsTool {
     fn name(&self) -> &str {
@@ -122,6 +135,7 @@ impl Tool for SearchSkillsTool {
 
         let mut matches: Vec<JsonValue> = static_skills::static_skills()
             .iter()
+            .filter(|skill| !static_skill_excluded(&skill.name, &self.excluded_static_skills))
             .filter(|skill| static_skills::skill_matches_query(skill, &query))
             .map(|skill| {
                 json!({
@@ -196,7 +210,9 @@ impl Tool for LoadSkillTool {
             Err(e) => return json!({"error": e}),
         };
 
-        if let Some(skill) = static_skills::find_static_skill(&params.name) {
+        if !static_skill_excluded(&params.name, &self.excluded_static_skills)
+            && let Some(skill) = static_skills::find_static_skill(&params.name)
+        {
             return json!({"title": skill.title, "content": skill.content});
         }
 
@@ -346,6 +362,7 @@ mod tests {
         let search = SearchSkillsTool {
             db: db.clone(),
             user_id,
+            excluded_static_skills: Vec::new(),
         };
         let result = search
             .execute(config.clone(), json!({"query": "rust"}))
@@ -379,6 +396,7 @@ mod tests {
         let load = LoadSkillTool {
             db: db.clone(),
             user_id,
+            excluded_static_skills: Vec::new(),
         };
         let result = load
             .execute(config.clone(), json!({"name": "my-skill"}))
@@ -393,7 +411,11 @@ mod tests {
         let (db, user_id) = setup_db().await;
         let config = dummy_config();
 
-        let load = LoadSkillTool { db, user_id };
+        let load = LoadSkillTool {
+            db,
+            user_id,
+            excluded_static_skills: Vec::new(),
+        };
         let result = load.execute(config, json!({"name": "nonexistent"})).await;
 
         assert!(result["error"].as_str().unwrap().contains("nonexistent"));
@@ -404,7 +426,11 @@ mod tests {
         let (db, user_id) = setup_db().await;
         let config = dummy_config();
 
-        let search = SearchSkillsTool { db, user_id };
+        let search = SearchSkillsTool {
+            db,
+            user_id,
+            excluded_static_skills: Vec::new(),
+        };
         let result = search.execute(config, json!({"query": "zzznomatch"})).await;
 
         assert_eq!(result["found"], 0);
@@ -446,6 +472,7 @@ mod tests {
         let load = LoadSkillTool {
             db: db.clone(),
             user_id,
+            excluded_static_skills: Vec::new(),
         };
         let result = load
             .execute(config.clone(), json!({"name": "secret-skill"}))
@@ -456,6 +483,7 @@ mod tests {
         let search = SearchSkillsTool {
             db: db.clone(),
             user_id,
+            excluded_static_skills: Vec::new(),
         };
         let result = search.execute(config, json!({"query": "secret"})).await;
 
@@ -471,7 +499,11 @@ mod tests {
             return;
         };
 
-        let search = SearchSkillsTool { db, user_id };
+        let search = SearchSkillsTool {
+            db,
+            user_id,
+            excluded_static_skills: Vec::new(),
+        };
         let result = search.execute(config, json!({"query": sample.name})).await;
 
         let names: Vec<&str> = result["skills"]
@@ -492,11 +524,43 @@ mod tests {
             return;
         };
 
-        let load = LoadSkillTool { db, user_id };
+        let load = LoadSkillTool {
+            db,
+            user_id,
+            excluded_static_skills: Vec::new(),
+        };
         let result = load.execute(config, json!({"name": sample.name})).await;
 
         assert_eq!(result["title"], sample.title);
         assert_eq!(result["content"], sample.content);
+    }
+
+    #[tokio::test]
+    async fn excluded_static_skill_is_not_available() {
+        let (db, user_id) = setup_db().await;
+        let config = dummy_config();
+        let excluded = vec!["inline-widget".to_string()];
+
+        let search = SearchSkillsTool {
+            db: db.clone(),
+            user_id,
+            excluded_static_skills: excluded.clone(),
+        };
+        let result = search
+            .execute(config.clone(), json!({"query": "inline-widget"}))
+            .await;
+        assert_eq!(result["found"], 0);
+
+        let load = LoadSkillTool {
+            db: db.clone(),
+            user_id,
+            excluded_static_skills: excluded.clone(),
+        };
+        let result = load.execute(config, json!({"name": "inline-widget"})).await;
+        assert!(result["error"].as_str().unwrap().contains("inline-widget"));
+
+        let catalog = skill_catalog(&db, user_id, &excluded).await;
+        assert!(!catalog.contains("inline-widget"));
     }
 
     #[tokio::test]
@@ -586,7 +650,7 @@ mod tests {
             )
             .await;
 
-        let catalog = skill_catalog(&db, user_id).await;
+        let catalog = skill_catalog(&db, user_id, &[]).await;
 
         assert!(catalog.contains("## Skills"));
         assert!(catalog.contains("- user-skill: A skill owned by the user."));
@@ -628,7 +692,7 @@ mod tests {
             )
             .await;
 
-        let catalog = skill_catalog(&db, user_id).await;
+        let catalog = skill_catalog(&db, user_id, &[]).await;
 
         assert!(!catalog.contains("carol-private"));
     }
