@@ -76,7 +76,7 @@ impl GoogleService {
                 messages.push(message);
             }
         }
-        messages.sort_by(|a, b| b.internal_date.cmp(&a.internal_date));
+        messages.sort_by_key(|message| std::cmp::Reverse(message.internal_date));
         Ok(messages)
     }
 
