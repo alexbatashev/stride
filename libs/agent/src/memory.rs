@@ -77,6 +77,8 @@ migrations! {
                 foreign_key(room -> memory_rooms.id);
                 foreign_key(drawer -> memory_drawers.id);
                 foreign_key(hall -> memory_halls.id);
+
+                enable_vectors;
             }
 
             table memory_doors {
@@ -100,35 +102,42 @@ migrations! {
     }
 }
 
-/// A vector embedding stored as a raw little-endian `f32` blob. Kept as an
-/// opaque byte column so the schema is independent of the embedding model's
-/// dimension; cosine distance is computed by sqlite-vec at query time.
+/// A vector embedding stored using the backend's native vector representation.
+/// Legacy Postgres installs may still have little-endian `f32` blobs until the
+/// explicit repair command converts them to pgvector.
 #[derive(Clone, Debug)]
-pub struct Embedding(pub Vec<u8>);
+pub struct Embedding(pub Vec<f32>);
 
 impl Embedding {
-    /// Pack a float vector into the little-endian byte layout sqlite-vec reads.
     pub fn from_floats(values: &[f32]) -> Self {
-        let mut bytes = Vec::with_capacity(values.len() * 4);
-        for v in values {
-            bytes.extend_from_slice(&v.to_le_bytes());
+        Embedding(values.to_vec())
+    }
+
+    pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        if !bytes.len().is_multiple_of(std::mem::size_of::<f32>()) {
+            return Err(DecodeError("Embedding blob len not multiple of 4".into()));
         }
-        Embedding(bytes)
+        let values = bytes
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        Ok(Embedding(values))
     }
 }
 
 impl SqlLikeType for Embedding {
     fn as_sql_type() -> minisql::SqlType {
-        minisql::SqlType::Blob
+        minisql::SqlType::FloatVector(0)
     }
 }
 
 impl FromValue for Embedding {
     fn from_value(v: &Value) -> Result<Self, DecodeError> {
         match v {
-            Value::Blob(b) => Ok(Embedding(b.clone())),
+            Value::FloatVector(v) => Ok(Embedding(v.clone())),
+            Value::Blob(b) => Embedding::from_le_bytes(b),
             other => Err(DecodeError(format!(
-                "expected BLOB for Embedding, got {other}"
+                "expected float vector for Embedding, got {other}"
             ))),
         }
     }
@@ -136,12 +145,12 @@ impl FromValue for Embedding {
 
 impl From<Embedding> for Value {
     fn from(val: Embedding) -> Value {
-        Value::Blob(val.0)
+        Value::FloatVector(val.0)
     }
 }
 
 impl IntoValue for Embedding {
     fn into_value(self) -> Value {
-        Value::Blob(self.0)
+        Value::FloatVector(self.0)
     }
 }

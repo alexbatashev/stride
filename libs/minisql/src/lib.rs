@@ -9,6 +9,7 @@ mod sqlite;
 pub use connection_pool::{ConnectionPool, Migrator};
 pub use dsl::{
     Column, ColumnInput, Delete, Expr, IntoValue, Select, SelectCols, SelectList, Update,
+    VectorSearch, vector_search,
 };
 pub use migration::{
     AlterTable, BitVec, FloatVec, Int8Vec, Migration, SchemaSet, SqlLikeType, SqlTag, SqlType,

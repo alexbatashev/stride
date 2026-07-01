@@ -138,6 +138,12 @@ fn execute_query(
             Value::Blob(b) => statement
                 .bind((idx + 1, b.as_slice()))
                 .map_err(|e| e.to_string())?,
+            Value::FloatVector(v) => {
+                let bytes = float_vector_bytes(v);
+                statement
+                    .bind((idx + 1, bytes.as_slice()))
+                    .map_err(|e| e.to_string())?
+            }
             Value::Uuid(u) => statement
                 .bind((idx + 1, u.as_bytes().as_slice()))
                 .map_err(|e| e.to_string())?,
@@ -182,6 +188,13 @@ fn execute_query(
 }
 
 impl SqliteBuilder {
+    pub(crate) fn build_table_setup(
+        &self,
+        _table: &crate::Table,
+    ) -> Result<Vec<String>, crate::sql_builder::SQLError> {
+        Ok(Vec::new())
+    }
+
     pub(crate) fn build_table(
         &self,
         table: &crate::Table,
@@ -231,6 +244,23 @@ impl SqliteBuilder {
             sql_type,
         ))
     }
+
+    pub(crate) fn build_vector_search<Tab>(
+        &self,
+        search: &crate::VectorSearch<Tab>,
+    ) -> Result<(String, Vec<Value>), crate::sql_builder::SQLError> {
+        let mut sql = format!(
+            "SELECT {} AS id, vec_distance_cosine({}, ?) AS distance FROM {}",
+            search.id_column(),
+            search.vector_column(),
+            search.table()
+        );
+        let mut params = vec![search.query()];
+        search.append_where(&mut sql, &mut params);
+        sql.push_str(" ORDER BY distance ASC");
+        search.append_limit(&mut sql, &mut params);
+        Ok((sql, params))
+    }
 }
 
 fn sql_type(ty: &SqlType) -> String {
@@ -242,7 +272,15 @@ fn sql_type(ty: &SqlType) -> String {
         SqlType::Uuid => "BINARY(16)".into(),
         SqlType::Enum(_) => "TEXT".into(),
         SqlType::BitVector(dim) => format!("bit[{}]", dim),
-        SqlType::FloatVector(dim) => format!("float[{}]", dim),
+        SqlType::FloatVector(_) => "BLOB".into(),
         SqlType::Int8Vector(dim) => format!("int8[{}]", dim),
     }
+}
+
+fn float_vector_bytes(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }

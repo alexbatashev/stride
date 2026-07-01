@@ -75,12 +75,7 @@ impl<T: IntoValue> IntoValue for Option<T> {
 
 impl<const DIM: u32> IntoValue for crate::migration::FloatVec<DIM> {
     fn into_value(self) -> Value {
-        // Serialize as BLOB in native-endian f32 bytes
-        let mut bytes = Vec::with_capacity(self.0.len() * 4);
-        for f in self.0 {
-            bytes.extend_from_slice(&f.to_ne_bytes());
-        }
-        Value::Blob(bytes)
+        Value::FloatVector(self.0)
     }
 }
 
@@ -150,6 +145,10 @@ impl<T, Tab> Column<T, Tab> {
         }
     }
 
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
     pub fn eq<U: ColumnInput<T>>(&self, v: U) -> Expr<Tab> {
         Expr::<Tab>::Compare {
             column: self.name,
@@ -215,6 +214,83 @@ impl<T, Tab> Column<T, Tab> {
         Expr::<Tab>::IsNotNull {
             column: self.name,
             _p: PhantomData,
+        }
+    }
+}
+
+pub struct VectorSearch<Tab> {
+    table: &'static str,
+    id_column: &'static str,
+    vector_column: &'static str,
+    query: Value,
+    where_clause: Option<Expr<Tab>>,
+    limit: Option<u64>,
+    _p: PhantomData<Tab>,
+}
+
+pub fn vector_search<Tab, Id, VecTy, Query>(
+    table: &'static str,
+    id_column: Column<Id, Tab>,
+    vector_column: Column<VecTy, Tab>,
+    query: Query,
+) -> VectorSearch<Tab>
+where
+    Query: IntoValue,
+{
+    VectorSearch {
+        table,
+        id_column: id_column.name,
+        vector_column: vector_column.name,
+        query: query.into_value(),
+        where_clause: None,
+        limit: None,
+        _p: PhantomData,
+    }
+}
+
+impl<Tab> VectorSearch<Tab> {
+    pub fn where_(mut self, predicate: Expr<Tab>) -> Self {
+        self.where_clause = Some(predicate);
+        self
+    }
+
+    pub fn limit(mut self, n: u64) -> Self {
+        self.limit = Some(n);
+        self
+    }
+
+    pub(crate) fn table(&self) -> &'static str {
+        self.table
+    }
+
+    pub(crate) fn id_column(&self) -> &'static str {
+        self.id_column
+    }
+
+    pub(crate) fn vector_column(&self) -> &'static str {
+        self.vector_column
+    }
+
+    pub(crate) fn query(&self) -> Value {
+        self.query.clone()
+    }
+
+    pub(crate) fn append_where(&self, sql: &mut String, params: &mut Vec<Value>) {
+        if let Some(expr) = &self.where_clause {
+            sql.push_str(" WHERE ");
+            expr.to_sql(sql, params);
+            sql.push_str(" AND ");
+        } else {
+            sql.push_str(" WHERE ");
+        }
+        sql.push_str(self.vector_column);
+        sql.push_str(" IS NOT NULL");
+    }
+
+    pub(crate) fn append_limit(&self, sql: &mut String, params: &mut Vec<Value>) {
+        if let Some(limit) = self.limit {
+            sql.push_str(" LIMIT ?");
+            params.push(Value::Integer(limit as i64));
         }
     }
 }

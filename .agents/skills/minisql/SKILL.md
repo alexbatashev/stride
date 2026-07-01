@@ -36,7 +36,7 @@ Prefer the `migrations!` macro path over manual `Migration` or `Table` builders.
 - Use `table::delete()` for single-table deletes.
 - Build predicates with generated column consts like `users::email.eq("x")` and combine them with `.and(...)`, `.or(...)`, `.not()`.
 - `update()` and `delete()` require a `.where_(...)` predicate; call `.all()` to intentionally affect every row.
-- Use raw SQL with `query_with_params` when the query needs joins, aggregates, or anything beyond the single-table DSL.
+- ONLY use raw SQL with `query_with_params` when the query needs joins, aggregates, or anything beyond the single-table DSL. NEVER use raw SQL, UNLESS absolutely required.
 
 ## Sharing Schema Across Crates
 

@@ -1,5 +1,5 @@
-use crate::Table;
 use crate::migration::{AlterAction, AlterTable, SqlType};
+use crate::{Table, Value, VectorSearch};
 
 #[derive(Debug, Clone)]
 pub enum SQLError {
@@ -11,6 +11,13 @@ pub enum SQLBuilder {
     Sqlite(crate::sqlite::SqliteBuilder),
 }
 impl SQLBuilder {
+    pub fn build_table_setup(&self, table: &Table) -> Result<Vec<String>, SQLError> {
+        match self {
+            SQLBuilder::Postgres(b) => b.build_table_setup(table),
+            SQLBuilder::Sqlite(b) => b.build_table_setup(table),
+        }
+    }
+
     pub fn build_table(&self, table: &Table) -> Result<String, SQLError> {
         match self {
             SQLBuilder::Postgres(b) => b.build_table(table),
@@ -22,6 +29,16 @@ impl SQLBuilder {
         match self {
             SQLBuilder::Postgres(b) => b.build_alter_table(alter),
             SQLBuilder::Sqlite(b) => b.build_alter_table(alter),
+        }
+    }
+
+    pub fn build_vector_search<Tab>(
+        &self,
+        search: &VectorSearch<Tab>,
+    ) -> Result<(String, Vec<Value>), SQLError> {
+        match self {
+            SQLBuilder::Postgres(b) => b.build_vector_search(search),
+            SQLBuilder::Sqlite(b) => b.build_vector_search(search),
         }
     }
 }

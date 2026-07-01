@@ -135,6 +135,9 @@ impl ConnectionPool {
             .skip(existing.len())
         {
             for t in m.get_tables() {
+                for sql in self.backend.builder().build_table_setup(t).unwrap() {
+                    self.query(&sql).await?;
+                }
                 // FIXME correctly handle error
                 let sql = t.to_sql(&self.backend).unwrap();
                 self.query(&sql).await?;
@@ -185,6 +188,156 @@ impl ConnectionPool {
         }
     }
 
+    pub async fn vector_search<Tab>(
+        &self,
+        search: crate::VectorSearch<Tab>,
+    ) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
+        let (query, params) = self.backend.builder().build_vector_search(&search).unwrap();
+        self.query_with_params(&query, params).await
+    }
+
+    pub async fn repair_legacy_vector_column(
+        &self,
+        schema: &SchemaSet,
+        migration_id: usize,
+        table: &'static str,
+        id_column: &'static str,
+        vector_column: &'static str,
+    ) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        validate_identifier(table)?;
+        validate_identifier(id_column)?;
+        validate_identifier(vector_column)?;
+
+        match &*self.backend {
+            Backend::Postgres(_) => {
+                self.repair_postgres_legacy_vector_column(table, id_column, vector_column)
+                    .await?;
+            }
+            Backend::Sqlite(_) => {
+                self.query(&format!(
+                    "SELECT {id_column}, {vector_column} FROM {table} LIMIT 0"
+                ))
+                .await?;
+            }
+        }
+
+        self.repair_migration_hash(schema, migration_id).await
+    }
+
+    async fn repair_postgres_legacy_vector_column(
+        &self,
+        table: &'static str,
+        id_column: &'static str,
+        vector_column: &'static str,
+    ) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        self.query("CREATE EXTENSION IF NOT EXISTS vector;").await?;
+
+        let column = self
+            .query_with_params(
+                "SELECT udt_name FROM information_schema.columns \
+                 WHERE table_name = ? AND column_name = ?",
+                vec![
+                    Value::Text(table.to_string()),
+                    Value::Text(vector_column.to_string()),
+                ],
+            )
+            .await?;
+        let Some(row) = column.rows().first() else {
+            return Err(format!("missing column {table}.{vector_column}").into());
+        };
+        match row.get_text("udt_name") {
+            Some("vector") => return Ok(()),
+            Some("bytea") => {}
+            Some(other) => {
+                return Err(format!("cannot repair {table}.{vector_column}: got {other}").into());
+            }
+            None => return Err(format!("cannot read type of {table}.{vector_column}").into()),
+        }
+
+        let repair_column = "__minisql_vector_repair";
+        let select_sql =
+            format!("SELECT {id_column} AS id, {vector_column} AS vector FROM {table}");
+        let rows = self.query(&select_sql).await?;
+        let mut converted = Vec::new();
+        for row in rows.rows() {
+            let id = row.decode::<uuid::Uuid>("id")?;
+            match row.get("vector") {
+                Some(Value::Null) => {}
+                Some(Value::Blob(bytes)) => {
+                    converted.push((id, legacy_float_vector(bytes)?));
+                }
+                Some(other) => {
+                    return Err(format!("expected legacy vector blob, got {other}").into());
+                }
+                None => return Err("missing selected vector column".into()),
+            }
+        }
+
+        self.query(&format!(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {repair_column} vector;"
+        ))
+        .await?;
+        for (id, vector) in converted {
+            self.query_with_params(
+                &format!("UPDATE {table} SET {repair_column} = ? WHERE {id_column} = ?"),
+                vec![Value::FloatVector(vector), Value::Uuid(id)],
+            )
+            .await?;
+        }
+
+        let transaction = self.transaction().await?;
+        self.query(&format!("ALTER TABLE {table} DROP COLUMN {vector_column};"))
+            .await?;
+        self.query(&format!(
+            "ALTER TABLE {table} RENAME COLUMN {repair_column} TO {vector_column};"
+        ))
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    async fn repair_migration_hash(
+        &self,
+        schema: &SchemaSet,
+        migration_id: usize,
+    ) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        self.ensure_migrations_table().await?;
+        let Some(migration) = schema.migrations().get(migration_id) else {
+            return Err(format!("missing migration index {migration_id}").into());
+        };
+        let namespace = schema.name().to_string();
+        let migration_id = migration_id as i64;
+        let hash = migration_hash(migration) as i64;
+        let existing = self
+            .query_with_params(
+                "SELECT hash FROM __migrations WHERE namespace = ? AND id = ?",
+                vec![Value::Text(namespace.clone()), Value::Integer(migration_id)],
+            )
+            .await?;
+        if existing.is_empty() {
+            self.query_with_params(
+                "INSERT INTO __migrations (namespace, id, hash) VALUES (?, ?, ?)",
+                vec![
+                    Value::Text(namespace),
+                    Value::Integer(migration_id),
+                    Value::Integer(hash),
+                ],
+            )
+            .await?;
+        } else {
+            self.query_with_params(
+                "UPDATE __migrations SET hash = ? WHERE namespace = ? AND id = ?",
+                vec![
+                    Value::Integer(hash),
+                    Value::Text(namespace),
+                    Value::Integer(migration_id),
+                ],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn transaction(&self) -> Result<Transaction, Box<dyn StdError + Send + Sync>> {
         match &*self.backend {
             Backend::Postgres(postgres) => postgres
@@ -212,6 +365,30 @@ fn migration_hash(m: &Migration) -> u64 {
     let mut h = DefaultHasher::new();
     m.hash(&mut h);
     h.finish()
+}
+
+fn validate_identifier(identifier: &str) -> Result<(), Box<dyn StdError + Send + Sync>> {
+    let mut chars = identifier.chars();
+    let Some(first) = chars.next() else {
+        return Err("empty SQL identifier".into());
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return Err(format!("invalid SQL identifier: {identifier}").into());
+    }
+    if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
+        return Err(format!("invalid SQL identifier: {identifier}").into());
+    }
+    Ok(())
+}
+
+fn legacy_float_vector(bytes: &[u8]) -> Result<Vec<f32>, Box<dyn StdError + Send + Sync>> {
+    if !bytes.len().is_multiple_of(std::mem::size_of::<f32>()) {
+        return Err("legacy vector blob length is not a multiple of 4".into());
+    }
+    Ok(bytes
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
 }
 
 /// Composes several named [`SchemaSet`]s onto a single pool. Each namespace

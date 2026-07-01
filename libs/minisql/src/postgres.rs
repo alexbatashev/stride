@@ -6,7 +6,7 @@ use std::thread;
 use bytes::BytesMut;
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
-use postgres::types::{IsNull, ToSql, Type, to_sql_checked};
+use postgres::types::{FromSql, IsNull, ToSql, Type, to_sql_checked};
 use postgres::{Client, NoTls};
 
 use crate::migration::{AlterTable, Command, SqlType};
@@ -188,6 +188,7 @@ fn postgres_params(params: Vec<Value>) -> Vec<Box<dyn ToSql + Sync>> {
             Value::Real(r) => Box::new(r),
             Value::Text(s) => Box::new(s),
             Value::Blob(b) => Box::new(b),
+            Value::FloatVector(v) => Box::new(PgVector(v)),
             Value::Uuid(u) => Box::new(u),
         })
         .collect()
@@ -248,6 +249,10 @@ fn postgres_row(row: postgres::Row) -> Result<Row, Box<dyn StdError + Send + Syn
             row.try_get::<_, Option<Vec<u8>>>(idx)?
                 .map(Value::Blob)
                 .unwrap_or(Value::Null)
+        } else if ty.name() == "vector" {
+            row.try_get::<_, Option<PgVector>>(idx)?
+                .map(|v| Value::FloatVector(v.0))
+                .unwrap_or(Value::Null)
         } else if *ty == Type::UUID {
             row.try_get::<_, Option<uuid::Uuid>>(idx)?
                 .map(Value::Uuid)
@@ -271,6 +276,17 @@ fn postgres_row(row: postgres::Row) -> Result<Row, Box<dyn StdError + Send + Syn
 }
 
 impl PostgresBuilder {
+    pub(crate) fn build_table_setup(
+        &self,
+        table: &crate::Table,
+    ) -> Result<Vec<String>, crate::sql_builder::SQLError> {
+        if table.enable_vectors {
+            Ok(vec!["CREATE EXTENSION IF NOT EXISTS vector;".to_string()])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     pub(crate) fn build_table(
         &self,
         table: &crate::Table,
@@ -318,6 +334,23 @@ impl PostgresBuilder {
             sql_type,
         ))
     }
+
+    pub(crate) fn build_vector_search<Tab>(
+        &self,
+        search: &crate::VectorSearch<Tab>,
+    ) -> Result<(String, Vec<Value>), crate::sql_builder::SQLError> {
+        let mut sql = format!(
+            "SELECT {} AS id, {} <=> ? AS distance FROM {}",
+            search.id_column(),
+            search.vector_column(),
+            search.table()
+        );
+        let mut params = vec![search.query()];
+        search.append_where(&mut sql, &mut params);
+        sql.push_str(" ORDER BY distance ASC");
+        search.append_limit(&mut sql, &mut params);
+        Ok((sql, params))
+    }
 }
 
 fn sql_type(ty: &SqlType) -> String {
@@ -329,8 +362,69 @@ fn sql_type(ty: &SqlType) -> String {
         SqlType::Uuid => "UUID".into(),
         SqlType::Enum(_) => "TEXT".into(),
         SqlType::BitVector(_) => "BYTEA".into(),
-        SqlType::FloatVector(_) => "BYTEA".into(),
+        SqlType::FloatVector(dim) if *dim == 0 => "vector".into(),
+        SqlType::FloatVector(dim) => format!("vector({dim})"),
         SqlType::Int8Vector(_) => "BYTEA".into(),
+    }
+}
+
+#[derive(Debug)]
+struct PgVector(Vec<f32>);
+
+impl ToSql for PgVector {
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
+        if !<Self as ToSql>::accepts(ty) {
+            return Err(format!("expected pgvector type, got {}", ty.name()).into());
+        }
+        let len = i16::try_from(self.0.len())?;
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&0_i16.to_be_bytes());
+        for value in &self.0 {
+            out.extend_from_slice(&value.to_bits().to_be_bytes());
+        }
+        Ok(IsNull::No)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "vector"
+    }
+
+    to_sql_checked!();
+}
+
+impl<'a> FromSql<'a> for PgVector {
+    fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn StdError + Sync + Send>> {
+        if !<Self as FromSql>::accepts(ty) {
+            return Err(format!("expected pgvector type, got {}", ty.name()).into());
+        }
+        if raw.len() < 4 {
+            return Err("invalid pgvector value".into());
+        }
+        let dims = i16::from_be_bytes([raw[0], raw[1]]);
+        if dims < 0 {
+            return Err("invalid pgvector dimensions".into());
+        }
+        let dims = dims as usize;
+        let values = &raw[4..];
+        if values.len() != dims * std::mem::size_of::<f32>() {
+            return Err("invalid pgvector length".into());
+        }
+
+        let values = values
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|chunk| {
+                f32::from_bits(u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            })
+            .collect();
+        Ok(PgVector(values))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        ty.name() == "vector"
     }
 }
 
@@ -376,7 +470,7 @@ mod tests {
 
         assert_eq!(
             PostgresBuilder.build_table(&table).unwrap(),
-            "CREATE TABLE users (id BIGINT PRIMARY KEY , external_id UUID  UNIQUE, name TEXT  , embedding BYTEA  );"
+            "CREATE TABLE users (id BIGINT PRIMARY KEY , external_id UUID  UNIQUE, name TEXT  , embedding vector(3)  );"
         );
     }
 }

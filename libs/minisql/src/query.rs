@@ -15,6 +15,7 @@ pub enum Value {
     Real(f64),
     Text(String),
     Blob(Vec<u8>),
+    FloatVector(Vec<f32>),
     Uuid(Uuid),
 }
 
@@ -43,6 +44,7 @@ impl fmt::Display for Value {
             Value::Real(r) => write!(f, "{}", r),
             Value::Text(s) => write!(f, "\"{}\"", s),
             Value::Blob(b) => write!(f, "{:?}", b),
+            Value::FloatVector(v) => write!(f, "{:?}", v),
             Value::Uuid(u) => write!(f, "{}", u),
         }
     }
@@ -81,6 +83,13 @@ impl Row {
     pub fn get_blob(&self, column: &str) -> Option<&[u8]> {
         match self.get(column) {
             Some(Value::Blob(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub fn get_float_vector(&self, column: &str) -> Option<&[f32]> {
+        match self.get(column) {
+            Some(Value::FloatVector(v)) => Some(v),
             _ => None,
         }
     }
@@ -252,6 +261,7 @@ impl FromValue for String {
 impl<const DIM: u32> FromValue for crate::migration::FloatVec<DIM> {
     fn from_value(v: &Value) -> Result<Self, DecodeError> {
         match v {
+            Value::FloatVector(v) => Ok(crate::migration::FloatVec::<DIM>(v.clone())),
             Value::Blob(b) => {
                 if b.len() % 4 != 0 {
                     return Err(DecodeError("FloatVec blob len not multiple of 4".into()));

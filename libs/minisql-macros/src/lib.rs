@@ -595,6 +595,8 @@ impl Table {
                 /// Marker type for this table
                 pub struct Table;
 
+                pub const TABLE_NAME: &str = #table_name_str;
+
                 /// Strongly-typed row for this table
                 pub struct Row { #( #row_fields, )* }
 
@@ -605,7 +607,7 @@ impl Table {
 
                 /// Start a SELECT * query for this table
                 pub fn select() -> SelectQuery {
-                    SelectQuery(::minisql::Select::new(#table_name_str))
+                    SelectQuery(::minisql::Select::new(TABLE_NAME))
                 }
 
                 impl SelectQuery {
@@ -655,7 +657,7 @@ impl Table {
 
                 /// Start a SELECT of specific columns
                 pub fn select_cols<C: ::minisql::SelectList<Table>>(cols: C) -> SelectColsQuery<C> {
-                    SelectColsQuery(::minisql::Select::new(#table_name_str).select(cols))
+                    SelectColsQuery(::minisql::Select::new(TABLE_NAME).select(cols))
                 }
 
                 impl<C: ::minisql::SelectList<Table>> SelectColsQuery<C> {
@@ -717,7 +719,7 @@ impl Table {
                             .join(", ");
                         let sql = format!(
                             "INSERT INTO {} ({}) VALUES ({});",
-                            #table_name_str,
+                            TABLE_NAME,
                             self.cols.join(", "),
                             placeholders
                         );
@@ -731,7 +733,7 @@ impl Table {
 
                 /// Start an UPDATE builder for this table
                 pub fn update() -> UpdateBuilder {
-                    UpdateBuilder(::minisql::Update::new(#table_name_str))
+                    UpdateBuilder(::minisql::Update::new(TABLE_NAME))
                 }
 
                 impl UpdateBuilder {
@@ -764,7 +766,7 @@ impl Table {
 
                 /// Start a DELETE builder for this table
                 pub fn delete() -> DeleteBuilder {
-                    DeleteBuilder(::minisql::Delete::new(#table_name_str))
+                    DeleteBuilder(::minisql::Delete::new(TABLE_NAME))
                 }
 
                 impl DeleteBuilder {

@@ -19,7 +19,7 @@ use serde_json::{Value as JsonValue, json};
 use stride_agent::{AgentConfig, Tool, ToolDesc};
 use uuid::Uuid;
 
-use stride_agent::memory::Embedding;
+use stride_agent::memory::{Embedding, memory_closets, memory_drawers, memory_rooms, memory_wings};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -366,22 +366,17 @@ impl RememberTool {
         let embedded = embedding.is_some();
 
         let closet_id = Uuid::now_v7();
-        self.db
-            .query_with_params(
-                "INSERT INTO memory_closets (id, owner, room, drawer, hall, summary, keywords, embedding, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                vec![
-                    Value::Uuid(closet_id),
-                    Value::Uuid(owner),
-                    Value::Uuid(room_id),
-                    Value::Uuid(drawer_id),
-                    hall_id.map(Value::Uuid).unwrap_or(Value::Null),
-                    Value::Text(params.summary.clone()),
-                    Value::Text(keywords),
-                    embedding.map(|e| e.into()).unwrap_or(Value::Null),
-                    Value::Integer(now_secs()),
-                ],
-            )
+        memory_closets::insert()
+            .id(closet_id)
+            .owner(owner)
+            .room(room_id)
+            .drawer(drawer_id)
+            .hall(hall_id)
+            .summary(params.summary.clone())
+            .keywords(keywords)
+            .embedding(embedding)
+            .created_at(now_secs())
+            .execute(&self.db)
             .await?;
 
         Ok(json!({
@@ -437,39 +432,73 @@ impl RecallTool {
         wing: Option<&str>,
         limit: i64,
     ) -> Result<Vec<JsonValue>, DynError> {
-        let mut sql = String::from(
-            "SELECT w.name AS wing, r.name AS room, d.title AS title, c.summary AS summary, \
-             d.content AS content, vec_distance_cosine(c.embedding, ?) AS dist \
-             FROM memory_closets c \
-             JOIN memory_drawers d ON d.id = c.drawer \
-             JOIN memory_rooms r ON r.id = c.room \
-             JOIN memory_wings w ON w.id = r.wing \
-             WHERE c.owner = ? AND c.embedding IS NOT NULL",
-        );
-        let mut params = vec![Value::Blob(query.0.clone()), Value::Uuid(self.user_id)];
-        if let Some(wing) = wing {
-            sql.push_str(" AND w.name = ?");
-            params.push(Value::Text(wing.to_string()));
-        }
-        sql.push_str(" ORDER BY dist ASC LIMIT ?");
-        params.push(Value::Integer(limit));
+        let search_limit = if wing.is_some() {
+            (limit * 20).clamp(limit, 1000)
+        } else {
+            limit
+        };
+        let rows = self
+            .db
+            .vector_search(
+                minisql::vector_search(
+                    memory_closets::TABLE_NAME,
+                    memory_closets::id,
+                    memory_closets::embedding,
+                    query.clone(),
+                )
+                .where_(memory_closets::owner.eq(self.user_id))
+                .limit(search_limit as u64),
+            )
+            .await?;
 
-        let rows = self.db.query_with_params(&sql, params).await?;
-        Ok(rows
-            .rows()
-            .iter()
-            .map(|row| {
-                let dist = row.get_real("dist").unwrap_or(1.0);
-                json!({
-                    "wing": row.get_text("wing").unwrap_or_default(),
-                    "room": row.get_text("room").unwrap_or_default(),
-                    "title": row.get_text("title").unwrap_or_default(),
-                    "summary": row.get_text("summary").unwrap_or_default(),
-                    "content": row.get_text("content").unwrap_or_default(),
-                    "score": (1.0 - dist).clamp(0.0, 1.0),
-                })
-            })
-            .collect())
+        let mut memories = Vec::new();
+        for row in rows.rows() {
+            let id = row.decode::<Uuid>("id")?;
+            let dist = row.get_real("distance").unwrap_or(1.0);
+            if let Some(memory) = self.memory_from_closet(id, wing, dist).await? {
+                memories.push(memory);
+                if memories.len() >= limit as usize {
+                    break;
+                }
+            }
+        }
+        Ok(memories)
+    }
+
+    async fn memory_from_closet(
+        &self,
+        closet_id: Uuid,
+        wing_filter: Option<&str>,
+        dist: f64,
+    ) -> Result<Option<JsonValue>, DynError> {
+        let closet = memory_closets::select()
+            .where_(memory_closets::id.eq(closet_id))
+            .one(&self.db)
+            .await?;
+        let drawer = memory_drawers::select()
+            .where_(memory_drawers::id.eq(closet.drawer))
+            .one(&self.db)
+            .await?;
+        let room = memory_rooms::select()
+            .where_(memory_rooms::id.eq(closet.room))
+            .one(&self.db)
+            .await?;
+        let wing = memory_wings::select()
+            .where_(memory_wings::id.eq(room.wing))
+            .one(&self.db)
+            .await?;
+        if wing_filter.is_some_and(|filter| filter != wing.name) {
+            return Ok(None);
+        }
+
+        Ok(Some(json!({
+            "wing": wing.name,
+            "room": room.name,
+            "title": drawer.title,
+            "summary": closet.summary,
+            "content": drawer.content,
+            "score": (1.0 - dist).clamp(0.0, 1.0),
+        })))
     }
 
     async fn keyword_search(
@@ -479,31 +508,49 @@ impl RecallTool {
         limit: i64,
     ) -> Result<Vec<JsonValue>, DynError> {
         let pattern = format!("%{}%", query.to_lowercase());
-        let mut sql = String::from(
-            "SELECT w.name AS wing, r.name AS room, d.title AS title, c.summary AS summary, \
-             d.content AS content \
-             FROM memory_closets c \
-             JOIN memory_drawers d ON d.id = c.drawer \
-             JOIN memory_rooms r ON r.id = c.room \
-             JOIN memory_wings w ON w.id = r.wing \
-             WHERE c.owner = ? AND (lower(c.summary) LIKE ? OR lower(c.keywords) LIKE ? \
-             OR lower(d.title) LIKE ? OR lower(d.content) LIKE ?)",
-        );
-        let mut params = vec![
-            Value::Uuid(self.user_id),
-            Value::Text(pattern.clone()),
-            Value::Text(pattern.clone()),
-            Value::Text(pattern.clone()),
-            Value::Text(pattern),
-        ];
-        if let Some(wing) = wing {
-            sql.push_str(" AND w.name = ?");
-            params.push(Value::Text(wing.to_string()));
-        }
-        sql.push_str(" ORDER BY c.created_at DESC LIMIT ?");
-        params.push(Value::Integer(limit));
+        let (sql, params) = match wing {
+            Some(wing) => (
+                "SELECT w.name AS wing, r.name AS room, d.title AS title, c.summary AS summary, \
+                 d.content AS content \
+                 FROM memory_closets c \
+                 JOIN memory_drawers d ON d.id = c.drawer \
+                 JOIN memory_rooms r ON r.id = c.room \
+                 JOIN memory_wings w ON w.id = r.wing \
+                 WHERE c.owner = ? AND (lower(c.summary) LIKE ? OR lower(c.keywords) LIKE ? \
+                 OR lower(d.title) LIKE ? OR lower(d.content) LIKE ?) AND w.name = ? \
+                 ORDER BY c.created_at DESC LIMIT ?",
+                vec![
+                    Value::Uuid(self.user_id),
+                    Value::Text(pattern.clone()),
+                    Value::Text(pattern.clone()),
+                    Value::Text(pattern.clone()),
+                    Value::Text(pattern),
+                    Value::Text(wing.to_string()),
+                    Value::Integer(limit),
+                ],
+            ),
+            None => (
+                "SELECT w.name AS wing, r.name AS room, d.title AS title, c.summary AS summary, \
+                 d.content AS content \
+                 FROM memory_closets c \
+                 JOIN memory_drawers d ON d.id = c.drawer \
+                 JOIN memory_rooms r ON r.id = c.room \
+                 JOIN memory_wings w ON w.id = r.wing \
+                 WHERE c.owner = ? AND (lower(c.summary) LIKE ? OR lower(c.keywords) LIKE ? \
+                 OR lower(d.title) LIKE ? OR lower(d.content) LIKE ?) \
+                 ORDER BY c.created_at DESC LIMIT ?",
+                vec![
+                    Value::Uuid(self.user_id),
+                    Value::Text(pattern.clone()),
+                    Value::Text(pattern.clone()),
+                    Value::Text(pattern.clone()),
+                    Value::Text(pattern),
+                    Value::Integer(limit),
+                ],
+            ),
+        };
 
-        let rows = self.db.query_with_params(&sql, params).await?;
+        let rows = self.db.query_with_params(sql, params).await?;
         Ok(rows
             .rows()
             .iter()
