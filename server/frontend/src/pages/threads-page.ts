@@ -34,6 +34,7 @@ type MessageEl = HTMLElement & {
 	seq: number;
 	role: string;
 	kind: string;
+	format: string;
 	text: string;
 	thinking: string;
 	toolName: string;
@@ -73,6 +74,7 @@ class ThreadsPageHydrator {
 	private error = "";
 	private events: WebSocket | null = null;
 	private pendingAssistant = "";
+	private pendingAssistantFormat: ThreadMessage["format"] = "markdown";
 	private pendingApproval: { id: string; message: string } | null = null;
 	private pendingQuiz: PendingQuiz | null = null;
 	private refreshSeq = 0;
@@ -257,6 +259,7 @@ class ThreadsPageHydrator {
 					last.content !== event.kind.in_progress.content
 				) {
 					this.pendingAssistant = event.kind.in_progress.content;
+					this.pendingAssistantFormat = event.kind.in_progress.format;
 					this.upsertPendingAssistant();
 				}
 			}
@@ -279,6 +282,7 @@ class ThreadsPageHydrator {
 
 		if (event.kind.type === "AgentDelta") {
 			this.pendingAssistant = event.kind.content;
+			this.pendingAssistantFormat = event.kind.format;
 			this.upsertPendingAssistant();
 		}
 
@@ -355,6 +359,7 @@ class ThreadsPageHydrator {
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
 			this.pendingAssistant = "";
+			this.pendingAssistantFormat = "markdown";
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
@@ -383,6 +388,7 @@ class ThreadsPageHydrator {
 			id: "pending-agent",
 			seq: Number.MAX_SAFE_INTEGER,
 			role: "agent",
+			format: this.pendingAssistantFormat,
 			content: this.pendingAssistant,
 			thinking: thinking ?? null,
 			tool_call_name: null,
@@ -399,6 +405,7 @@ class ThreadsPageHydrator {
 
 		const refreshSeq = ++this.refreshSeq;
 		this.pendingAssistant = "";
+		this.pendingAssistantFormat = "markdown";
 		const [messages, threads, projects] = await Promise.all([
 			listMessages(this.threadId),
 			listThreads(),
@@ -459,6 +466,7 @@ class ThreadsPageHydrator {
 			id: `pending-user-${Date.now()}`,
 			seq: Number.MAX_SAFE_INTEGER,
 			role: "user",
+			format: "markdown",
 			content,
 			thinking: null,
 			tool_call_name: null,
@@ -472,6 +480,7 @@ class ThreadsPageHydrator {
 		this.closeEvents();
 		this.lastEventSeq = 0;
 		this.pendingAssistant = "";
+		this.pendingAssistantFormat = "markdown";
 		this.pendingApproval = null;
 		this.pendingQuiz = null;
 		this.attachedFiles = [];
@@ -529,6 +538,7 @@ class ThreadsPageHydrator {
 		}
 
 		const messageType = this.messageType(message);
+		element.format = message.format;
 		element.text = message.content
 			? this.messageText(message, messageType.type)
 			: message.pending ? "Thinking..." : "";
@@ -546,6 +556,7 @@ class ThreadsPageHydrator {
 		element.seq = message.seq;
 		element.role = message.role;
 		element.kind = messageType.type;
+		element.format = message.format;
 		element.toolName = esc(messageType.toolName ?? "");
 		element.thinking = message.thinking ? esc(message.thinking) : "";
 		element.text = message.content
@@ -555,7 +566,9 @@ class ThreadsPageHydrator {
 	}
 
 	private messageText(message: ThreadMessage, messageType: string): string {
-		return messageType === "agent" ? message.content : esc(message.content);
+		return messageType === "agent" && message.format === "html"
+			? message.content
+			: esc(message.content);
 	}
 
 	private createEmptyElement() {

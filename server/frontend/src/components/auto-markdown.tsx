@@ -148,6 +148,7 @@ const styles = css`
 
   iframe {
     border: 1px solid var(--border, #d0d0d0);
+    overflow: hidden;
     min-height: 320px;
     width: 100%;
   }
@@ -170,12 +171,19 @@ const styles = css`
   }
 `;
 
-export function AutoMarkdown({ text = "" }: { text?: string }): Component {
+export function AutoMarkdown({
+  text = "",
+  format = "markdown",
+}: {
+  text?: string;
+  format?: string;
+}): Component {
   const host = ref<HTMLDivElement>();
   effect(() => {
     if (host.current) {
-      host.current.innerHTML = text;
+      host.current.innerHTML = format === "html" ? text : renderMarkdown(text);
       wrapTables(host.current);
+      return connectWidgetFrames(host.current);
     }
   });
   return (
@@ -183,6 +191,181 @@ export function AutoMarkdown({ text = "" }: { text?: string }): Component {
       <style>{styles}</style>
       <div ref={host}>{text}</div>
     </>
+  );
+}
+
+function renderMarkdown(source: string): string {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const html: string[] = [];
+  let paragraph: string[] = [];
+  let list: "ul" | "ol" | null = null;
+  let code: string[] | null = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    html.push(`<p>${renderInline(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+
+  const closeList = () => {
+    if (!list) return;
+    html.push(`</${list}>`);
+    list = null;
+  };
+
+  for (const line of lines) {
+    if (code) {
+      if (line.startsWith("```")) {
+        html.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+        code = null;
+      } else {
+        code.push(line);
+      }
+      continue;
+    }
+
+    if (line.startsWith("```")) {
+      flushParagraph();
+      closeList();
+      code = [];
+      continue;
+    }
+
+    const trimmed = line.trim();
+    if (trimmed === "") {
+      flushParagraph();
+      closeList();
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph();
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const unordered = /^[-*]\s+(.+)$/.exec(trimmed);
+    if (unordered) {
+      flushParagraph();
+      if (list !== "ul") {
+        closeList();
+        list = "ul";
+        html.push("<ul>");
+      }
+      html.push(`<li>${renderInline(unordered[1])}</li>`);
+      continue;
+    }
+
+    const ordered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
+    if (ordered) {
+      flushParagraph();
+      if (list !== "ol") {
+        closeList();
+        list = "ol";
+        html.push("<ol>");
+      }
+      html.push(`<li>${renderInline(ordered[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    paragraph.push(trimmed);
+  }
+
+  if (code) {
+    html.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+  }
+  flushParagraph();
+  closeList();
+
+  return html.join("");
+}
+
+function renderInline(source: string): string {
+  const codeSpans: string[] = [];
+  let text = escapeHtml(source);
+  text = text.replace(/`([^`]+)`/g, (_match, code) => {
+    const index = codeSpans.push(`<code>${code}</code>`) - 1;
+    return `\x00CODE${index}\x00`;
+  });
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_match, label, href) => {
+    const safeHref = sanitizeHref(unescapeHtml(href));
+    if (!safeHref) return label;
+    return `<a href="${escapeAttr(safeHref)}" rel="noopener noreferrer" target="_blank">${label}</a>`;
+  });
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  text = text.replace(/_([^_]+)_/g, "<em>$1</em>");
+  return text.replace(/\x00CODE(\d+)\x00/g, (_match, index) => codeSpans[Number(index)] ?? "");
+}
+
+function sanitizeHref(href: string): string | null {
+  try {
+    const url = new URL(href, window.location.origin);
+    if (["http:", "https:", "mailto:"].includes(url.protocol)) {
+      return href;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeAttr(value: string): string {
+  return escapeHtml(value).replace(/"/g, "&quot;");
+}
+
+function unescapeHtml(value: string): string {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = value;
+  return textarea.value;
+}
+
+type WidgetHeightMessage = {
+  type: "stride-widget-height";
+  height: number;
+  href?: string;
+};
+
+function connectWidgetFrames(root: HTMLElement): () => void {
+  const frames = [...root.querySelectorAll("iframe")];
+  for (const frame of frames) {
+    frame.setAttribute("scrolling", "no");
+  }
+
+  const onMessage = (event: MessageEvent<unknown>) => {
+    if (!isWidgetHeightMessage(event.data)) {
+      return;
+    }
+    const frame = frames.find((item) => item.contentWindow === event.source);
+    if (!frame) {
+      return;
+    }
+    const height = Math.max(320, Math.min(4000, Math.ceil(event.data.height)));
+    frame.style.height = `${height}px`;
+  };
+
+  window.addEventListener("message", onMessage);
+  return () => window.removeEventListener("message", onMessage);
+}
+
+function isWidgetHeightMessage(value: unknown): value is WidgetHeightMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as WidgetHeightMessage).type === "stride-widget-height" &&
+    Number.isFinite((value as WidgetHeightMessage).height)
   );
 }
 

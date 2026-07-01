@@ -9,7 +9,9 @@ import { basename, join, resolve } from 'node:path';
 const componentsDir = 'src/components';
 const iconsDir = join(componentsDir, 'icons');
 const argonOut = join(realpathSync(tmpdir()), 'stride-argon-js');
+const vendorDir = 'dist/vendor';
 mkdirSync('dist', { recursive: true });
+mkdirSync(vendorDir, { recursive: true });
 mkdirSync(argonOut, { recursive: true });
 for (const stale of readdirSync(argonOut)) {
   unlinkSync(join(argonOut, stale));
@@ -63,6 +65,34 @@ const argonImportsPlugin = {
 // runs and every hydrated control (login button included) is dead. Downlevel to
 // a baseline that covers phones a few years old.
 const target = ['es2020'];
+const vendorBuilds = [
+  ['d3', 'd3'],
+  ['@observablehq/plot', 'plot', 'Plot'],
+  ['decimal.js', 'decimal', 'Decimal'],
+  ['dagre', 'dagre', 'dagre'],
+];
+
+function buildVendor(entryPoint, filename, globalName) {
+  return [
+    esbuild.build({
+      entryPoints: [entryPoint],
+      bundle: true,
+      format: 'esm',
+      minify: true,
+      target,
+      outfile: join(vendorDir, `${filename}.js`),
+    }),
+    esbuild.build({
+      entryPoints: [entryPoint],
+      bundle: true,
+      format: 'iife',
+      globalName,
+      minify: true,
+      target,
+      outfile: join(vendorDir, `${filename}.global.js`),
+    }),
+  ];
+}
 
 await Promise.all([
   esbuild.build({
@@ -87,6 +117,17 @@ await Promise.all([
     target,
     outfile: 'dist/api.js',
   }),
+  esbuild.build({
+    entryPoints: ['src/widget-frame.ts'],
+    bundle: true,
+    format: 'iife',
+    minify: true,
+    target,
+    outfile: 'dist/widget-frame.js',
+  }),
+  ...vendorBuilds.flatMap(([entryPoint, filename, globalName = filename]) =>
+    buildVendor(entryPoint, filename, globalName),
+  ),
   esbuild.build({
     entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/automations-page.ts', 'src/pages/settings-page.ts'],
     bundle: true,

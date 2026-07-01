@@ -751,7 +751,7 @@ impl TelegramSubscriber {
         }
 
         match &event.kind {
-            AgentEventKind::AgentDelta { content } => {
+            AgentEventKind::AgentDelta { content, .. } => {
                 let draft = {
                     let Some(active) = self.active.as_mut().filter(|a| a.run_id == run_id) else {
                         return;

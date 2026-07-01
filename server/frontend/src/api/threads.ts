@@ -36,6 +36,7 @@ export type ThreadMessage = {
 	id: string;
 	seq: number;
 	role: 'system' | 'agent' | 'user' | 'tool';
+	format: 'markdown' | 'html';
 	content: string;
 	thinking: string | null;
 	tool_call_name: string | null;
@@ -54,13 +55,13 @@ export type ThreadEvent = {
 		| {
 				type: 'Snapshot';
 				status: 'idle' | 'running';
-				in_progress: {run_id: string; content: string; thinking: string | null} | null;
+				in_progress: {run_id: string; content: string; format: 'markdown' | 'html'; thinking: string | null} | null;
 				pending_approval: {approval_id: string; message: string} | null;
 				pending_quiz: {quiz_id: string; questions: QuizQuestion[]} | null;
 		  }
 		| {type: 'RunStarted'}
 		| {type: 'UserMessageCommitted'; message_id: string; seq: number}
-		| {type: 'AgentDelta'; content: string}
+		| {type: 'AgentDelta'; content: string; format: 'markdown' | 'html'}
 		| {type: 'ThinkingDelta'; thinking: string}
 		| {type: 'AgentMessageCommitted'; message_id: string; seq: number}
 		| {type: 'ToolStarted'; name: string}

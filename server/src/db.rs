@@ -12,6 +12,12 @@ pub enum Role {
     Tool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageFormat {
+    Markdown,
+    Html,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum ObjectKind {
     Directory,
@@ -428,6 +434,14 @@ migrations! {
             foreign_key(user_id -> users.id);
         }
     }
+
+    message_content_format {
+        alter table messages {
+            add content_format: Option<MessageFormat>;
+        }
+
+        raw "UPDATE messages SET content_format = 'markdown' WHERE content_format IS NULL";
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema
@@ -474,6 +488,43 @@ impl From<Role> for Value {
 }
 
 impl IntoValue for Role {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
+impl MessageFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageFormat::Markdown => "markdown",
+            MessageFormat::Html => "html",
+        }
+    }
+}
+
+impl FromValue for MessageFormat {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "markdown" => Ok(MessageFormat::Markdown),
+            Value::Text(s) if s == "html" => Ok(MessageFormat::Html),
+            _ => Err(DecodeError("Invalid message format".to_string())),
+        }
+    }
+}
+
+impl SqlLikeType for MessageFormat {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl From<MessageFormat> for Value {
+    fn from(val: MessageFormat) -> Value {
+        Value::Text(val.as_str().to_string())
+    }
+}
+
+impl IntoValue for MessageFormat {
     fn into_value(self) -> Value {
         self.into()
     }

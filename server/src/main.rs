@@ -39,6 +39,7 @@ use stride_agent::{
 };
 use tower_http::{
     services::ServeDir,
+    set_header::SetResponseHeader,
     trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
@@ -477,7 +478,14 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/automations", get(pages::automations::automations))
         .route("/settings", get(pages::settings::settings))
         .route("/", get(root))
-        .nest_service("/static", ServeDir::new(static_dir))
+        .nest_service(
+            "/static",
+            SetResponseHeader::if_not_present(
+                ServeDir::new(static_dir),
+                axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                axum::http::HeaderValue::from_static("*"),
+            ),
+        )
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|req: &axum::http::Request<_>| {

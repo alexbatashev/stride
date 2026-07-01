@@ -2,12 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json,
-    body::Body,
     extract::{
         Multipart, Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use minisql::Value;
@@ -23,7 +22,7 @@ use crate::{
         auth::{self, AuthError},
         projects::ProjectResponse,
     },
-    db::{Role, messages, projects, threads},
+    db::{MessageFormat, Role, messages, projects, threads},
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
         ThreadStatus, thread_events_topic,
@@ -49,6 +48,7 @@ pub struct MessageResponse {
     id: String,
     seq: u64,
     role: &'static str,
+    format: &'static str,
     content: String,
     thinking: Option<String>,
     tool_call_name: Option<String>,
@@ -84,6 +84,7 @@ pub struct MessageTemplateData {
     pub id: String,
     pub seq: u64,
     pub role: &'static str,
+    pub format: &'static str,
     pub message_type: &'static str,
     pub tool_name: Option<String>,
     pub content: String,
@@ -131,6 +132,7 @@ struct EventResponse {
 struct SnapshotMessageResponse {
     run_id: String,
     content: String,
+    format: &'static str,
     thinking: Option<String>,
 }
 
@@ -168,6 +170,7 @@ enum EventKindResponse {
     },
     AgentDelta {
         content: String,
+        format: &'static str,
     },
     ThinkingDelta {
         thinking: String,
@@ -315,6 +318,7 @@ pub async fn thread_page_data(
                     id: message.id,
                     seq: message.seq,
                     role: message.role,
+                    format: message.format,
                     message_type,
                     tool_name,
                     content: message.content,
@@ -586,6 +590,7 @@ async fn thread_messages(
             id: row.id.to_string(),
             seq: row.seq,
             role: role_name(row.role),
+            format: message_format_name(row.content_format.unwrap_or(MessageFormat::Markdown)),
             content: row.content,
             thinking: row.thinking,
             tool_call_name: tool_call_name(row.tool_calls.as_deref()),
@@ -862,6 +867,13 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
+fn message_format_name(format: MessageFormat) -> &'static str {
+    match format {
+        MessageFormat::Markdown => "markdown",
+        MessageFormat::Html => "html",
+    }
+}
+
 fn message_template_type(message: &MessageResponse) -> (&'static str, Option<String>) {
     if let Some(name) = &message.tool_call_name {
         return ("agent", Some(name.clone()));
@@ -1103,17 +1115,7 @@ pub async fn download_file(
         .await
         .map_err(|_| ThreadApiError::NotFound)?;
 
-    let content_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    let filename = path.split('/').next_back().unwrap_or(&path).to_string();
-
-    Response::builder()
-        .header(header::CONTENT_TYPE, content_type)
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{filename}\""),
-        )
-        .body(Body::from(bytes))
-        .map_err(|_| ThreadApiError::Internal)
+    super::file_response(&path, bytes, mime_type).map_err(|_| ThreadApiError::Internal)
 }
 
 /// Moves the owner's staged uploads into a thread's writable area under
@@ -1249,7 +1251,10 @@ fn event_response(event: AgentEvent) -> EventResponse {
                     seq,
                 }
             }
-            AgentEventKind::AgentDelta { content } => EventKindResponse::AgentDelta { content },
+            AgentEventKind::AgentDelta { content, format } => EventKindResponse::AgentDelta {
+                content,
+                format: message_format_name(format),
+            },
             AgentEventKind::ThinkingDelta { thinking } => {
                 EventKindResponse::ThinkingDelta { thinking }
             }
@@ -1307,6 +1312,7 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
                 .map(|message| SnapshotMessageResponse {
                     run_id: message.run_id.0.to_string(),
                     content: message.content.clone(),
+                    format: message_format_name(message.format),
                     thinking: message.thinking.clone(),
                 }),
             pending_approval: snapshot
