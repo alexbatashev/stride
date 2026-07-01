@@ -49,6 +49,7 @@ use crate::{
         automations::ScheduleAutomationTool,
         memory::{ConnectMemoriesTool, ExplorePalaceTool, RecallTool, RememberTool},
         personality::UpdatePersonalityTool,
+        projects::{CreateProjectTool, ListProjectsTool, StartThreadTool},
         python::VfsExecFileSystem,
         shell::EmulatedShellBackend,
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
@@ -169,11 +170,49 @@ fn current_date() -> String {
 }
 
 pub struct InProcessAgentPool {
-    workers: Vec<WorkerHandle>,
+    pool: PoolHandle,
 }
 
-struct WorkerHandle {
-    tx: mpsc::UnboundedSender<WorkerCommand>,
+/// Routing table over every worker's command channel. Cloned into each worker so
+/// tools running inside a turn (such as `start_thread`) can enqueue a run on a
+/// freshly created thread through the same path the public API uses.
+#[derive(Clone)]
+pub(crate) struct PoolHandle {
+    senders: Arc<Vec<mpsc::UnboundedSender<WorkerCommand>>>,
+}
+
+impl PoolHandle {
+    fn worker(&self, thread_id: Uuid) -> &mpsc::UnboundedSender<WorkerCommand> {
+        let idx = (thread_id.as_u128() as usize) % self.senders.len();
+        &self.senders[idx]
+    }
+
+    /// A handle backed by a single dead channel, for tests that build a
+    /// `WorkerState` directly and never route through the pool.
+    #[cfg(test)]
+    fn for_tests() -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        PoolHandle {
+            senders: Arc::new(vec![tx]),
+        }
+    }
+
+    /// Deliver `request` to a thread's worker, starting its next run.
+    pub(crate) async fn send(
+        &self,
+        thread_id: Uuid,
+        request: AgentRequest,
+    ) -> Result<RunId, AgentPoolError> {
+        let (resp, rx) = oneshot::channel();
+        self.worker(thread_id)
+            .send(WorkerCommand::Send {
+                thread_id,
+                request,
+                resp,
+            })
+            .map_err(|_| AgentPoolError::WorkerStopped)?;
+        rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
+    }
 }
 
 enum WorkerCommand {
@@ -241,6 +280,7 @@ struct WorkerState {
     google_service: Option<GoogleService>,
     system_prompt: String,
     idle_ttl: Duration,
+    pool: PoolHandle,
     threads: HashMap<Uuid, ThreadRunner>,
 }
 
@@ -470,38 +510,36 @@ impl InProcessAgentPool {
     }
 
     fn from_init(init: WorkerInit) -> Self {
-        let workers = (0..WORKER_THREADS)
-            .map(|idx| start_worker(idx, init.clone()))
-            .collect();
+        // Build every worker's channel before spawning so the shared routing table
+        // is complete when each worker starts and can reach any sibling.
+        let mut senders = Vec::with_capacity(WORKER_THREADS);
+        let mut receivers = Vec::with_capacity(WORKER_THREADS);
+        for _ in 0..WORKER_THREADS {
+            let (tx, rx) = mpsc::unbounded_channel();
+            senders.push(tx);
+            receivers.push(rx);
+        }
+        let pool = PoolHandle {
+            senders: Arc::new(senders),
+        };
+        for (idx, rx) in receivers.into_iter().enumerate() {
+            start_worker(idx, init.clone(), rx, pool.clone());
+        }
 
-        Self { workers }
-    }
-
-    fn worker(&self, thread_id: Uuid) -> &WorkerHandle {
-        let idx = (thread_id.as_u128() as usize) % self.workers.len();
-        &self.workers[idx]
+        Self { pool }
     }
 }
 
 #[async_trait]
 impl AgentPool for InProcessAgentPool {
     async fn send(&self, thread_id: Uuid, request: AgentRequest) -> Result<RunId, AgentPoolError> {
-        let (resp, rx) = oneshot::channel();
-        self.worker(thread_id)
-            .tx
-            .send(WorkerCommand::Send {
-                thread_id,
-                request,
-                resp,
-            })
-            .map_err(|_| AgentPoolError::WorkerStopped)?;
-        rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
+        self.pool.send(thread_id, request).await
     }
 
     async fn snapshot(&self, thread_id: Uuid) -> Result<ThreadSnapshot, AgentPoolError> {
         let (resp, rx) = oneshot::channel();
-        self.worker(thread_id)
-            .tx
+        self.pool
+            .worker(thread_id)
             .send(WorkerCommand::Snapshot { thread_id, resp })
             .map_err(|_| AgentPoolError::WorkerStopped)?;
         rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
@@ -509,8 +547,8 @@ impl AgentPool for InProcessAgentPool {
 
     async fn status(&self, thread_id: Uuid) -> Result<ThreadStatus, AgentPoolError> {
         let (resp, rx) = oneshot::channel();
-        self.worker(thread_id)
-            .tx
+        self.pool
+            .worker(thread_id)
             .send(WorkerCommand::Status { thread_id, resp })
             .map_err(|_| AgentPoolError::WorkerStopped)?;
         rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
@@ -518,8 +556,8 @@ impl AgentPool for InProcessAgentPool {
 
     async fn cancel_run(&self, thread_id: Uuid) -> Result<(), AgentPoolError> {
         let (resp, rx) = oneshot::channel();
-        self.worker(thread_id)
-            .tx
+        self.pool
+            .worker(thread_id)
             .send(WorkerCommand::Cancel { thread_id, resp })
             .map_err(|_| AgentPoolError::WorkerStopped)?;
         rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
@@ -532,8 +570,8 @@ impl AgentPool for InProcessAgentPool {
         approved: bool,
     ) -> Result<(), AgentPoolError> {
         let (resp, rx) = oneshot::channel();
-        self.worker(thread_id)
-            .tx
+        self.pool
+            .worker(thread_id)
             .send(WorkerCommand::ResolveApproval {
                 thread_id,
                 approval_id,
@@ -551,8 +589,8 @@ impl AgentPool for InProcessAgentPool {
         answers: Vec<String>,
     ) -> Result<(), AgentPoolError> {
         let (resp, rx) = oneshot::channel();
-        self.worker(thread_id)
-            .tx
+        self.pool
+            .worker(thread_id)
             .send(WorkerCommand::AnswerQuiz {
                 thread_id,
                 quiz_id,
@@ -565,17 +603,20 @@ impl AgentPool for InProcessAgentPool {
 
     async fn shutdown_thread(&self, thread_id: Uuid) -> Result<(), AgentPoolError> {
         let (resp, rx) = oneshot::channel();
-        self.worker(thread_id)
-            .tx
+        self.pool
+            .worker(thread_id)
             .send(WorkerCommand::ShutdownThread { thread_id, resp })
             .map_err(|_| AgentPoolError::WorkerStopped)?;
         rx.await.map_err(|_| AgentPoolError::WorkerStopped)?
     }
 }
 
-fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
-    let (tx, rx) = mpsc::unbounded_channel();
-
+fn start_worker(
+    idx: usize,
+    init: WorkerInit,
+    rx: mpsc::UnboundedReceiver<WorkerCommand>,
+    pool: PoolHandle,
+) {
     std::thread::Builder::new()
         .name(format!("stride-agent-pool-{idx}"))
         .spawn(move || {
@@ -611,14 +652,13 @@ fn start_worker(idx: usize, init: WorkerInit) -> WorkerHandle {
                 google_service,
                 system_prompt,
                 idle_ttl,
+                pool,
                 threads: HashMap::new(),
             }));
 
             local.block_on(&runtime, run_worker(state, rx));
         })
         .expect("agent worker thread");
-
-    WorkerHandle { tx }
 }
 
 async fn run_worker(
@@ -953,6 +993,7 @@ async fn ensure_runner(
         email_service,
         google_service,
         base_system_prompt,
+        pool,
     ) = {
         let state = state.borrow();
         (
@@ -967,6 +1008,7 @@ async fn ensure_runner(
             state.email_service.clone(),
             state.google_service.clone(),
             state.system_prompt.clone(),
+            state.pool.clone(),
         )
     };
 
@@ -1070,6 +1112,24 @@ async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("schedule_automation");
+    // Project and thread management, hidden by default and reachable via search_tools.
+    agent.register_searchable_tool(CreateProjectTool {
+        db: db.clone(),
+        user_id,
+        vfs: vfs.clone(),
+    });
+    agent.allow_tool("create_project");
+    agent.register_searchable_tool(ListProjectsTool {
+        db: db.clone(),
+        user_id,
+    });
+    agent.allow_tool("list_projects");
+    agent.register_searchable_tool(StartThreadTool {
+        db: db.clone(),
+        user_id,
+        pool: pool.clone(),
+    });
+    agent.allow_tool("start_thread");
     agent.register_tool(SearchSkillsTool {
         db: db.clone(),
         user_id,
@@ -2778,6 +2838,7 @@ mod tests {
             google_service: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
+            pool: PoolHandle::for_tests(),
             threads,
         }));
 
@@ -2862,6 +2923,7 @@ mod tests {
             google_service: None,
             system_prompt: "System prompt".to_string(),
             idle_ttl: Duration::from_secs(60),
+            pool: PoolHandle::for_tests(),
             threads,
         }));
 

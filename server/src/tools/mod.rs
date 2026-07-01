@@ -3,6 +3,7 @@ pub mod automations;
 pub mod google;
 pub mod memory;
 pub mod personality;
+pub mod projects;
 pub mod python;
 pub mod shell;
 pub mod skills;
