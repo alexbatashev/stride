@@ -80,6 +80,7 @@ class ThreadsPageHydrator {
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
 	private readonly messagesEl: HTMLElement;
+	private readonly scrollEl: HTMLElement;
 	private readonly titleEl: HTMLElement;
 	private readonly promptEl: PromptEl;
 	private readonly approvalEl: ApprovalEl;
@@ -92,6 +93,7 @@ class ThreadsPageHydrator {
 		this.threadId = root.dataset.threadId ?? "";
 		this.running = root.dataset.running === "true";
 		this.messagesEl = this.mustQuery("[data-messages]");
+		this.scrollEl = this.messagesEl.closest<HTMLElement>(".content") ?? this.messagesEl;
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");
 		this.errorEl = this.mustQuery("[data-error]");
@@ -124,6 +126,7 @@ class ThreadsPageHydrator {
 				return;
 			}
 			this.renderMessages();
+			this.scrollInitial();
 		} catch (error) {
 			this.handleError(error);
 		}
@@ -474,6 +477,7 @@ class ThreadsPageHydrator {
 		};
 		this.messages.push(message);
 		this.appendMessage(message);
+		this.scrollToBottom();
 	}
 
 	private async loadThread(threadId: string) {
@@ -489,6 +493,7 @@ class ThreadsPageHydrator {
 		try {
 			this.messages = await listMessages(threadId);
 			this.renderMessages();
+			this.scrollInitial();
 			this.syncTitle();
 			this.openEvents(threadId);
 		} catch (error) {
@@ -518,39 +523,41 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		this.messagesEl.replaceChildren(
-			...this.messages.map((message) => this.createMessageElement(message)),
-		);
+		this.messagesEl.querySelector("[data-empty]")?.remove();
+		const existing = new Map<string, MessageEl>();
+		this.messagesEl.querySelectorAll<MessageEl>("app-message[data-message-id]").forEach((element) => {
+			existing.set(element.dataset.messageId ?? "", element);
+		});
+
+		for (const message of this.messages) {
+			const element = existing.get(message.id) ?? this.createMessageElement(message);
+			this.syncMessageElement(element, message);
+			this.messagesEl.append(element);
+			existing.delete(message.id);
+		}
+		for (const stale of existing.values()) {
+			stale.remove();
+		}
 	}
 
 	private appendMessage(message: ViewMessage) {
 		this.messagesEl.querySelector("[data-empty]")?.remove();
-		this.messagesEl.append(this.createMessageElement(message));
-		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+		const element = this.createMessageElement(message);
+		this.messagesEl.append(element);
 	}
 
 	private updateMessageElement(message: ViewMessage) {
 		const element = this.messagesEl.querySelector<MessageEl>(
-			`app-message[data-message-id="${message.id}"]`,
+			`app-message[data-message-id="${this.escapeSelectorValue(message.id)}"]`,
 		);
 		if (!element) {
 			return;
 		}
 
-		const messageType = this.messageType(message);
-		element.format = message.format;
-		element.text = message.content
-			? this.messageText(message, messageType.type)
-			: message.pending ? "Thinking..." : "";
-		if (message.thinking) {
-			element.thinking = esc(message.thinking);
-		}
-
-		this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+		this.syncMessageElement(element, message);
 	}
 
-	private createMessageElement(message: ViewMessage) {
-		const element = document.createElement("app-message") as MessageEl;
+	private syncMessageElement(element: MessageEl, message: ViewMessage) {
 		const messageType = this.messageType(message);
 		element.setAttribute("data-message-id", message.id);
 		element.seq = message.seq;
@@ -562,6 +569,51 @@ class ThreadsPageHydrator {
 		element.text = message.content
 			? this.messageText(message, messageType.type)
 			: message.pending ? "Thinking..." : "";
+	}
+
+	private scrollInitial() {
+		requestAnimationFrame(() => {
+			if (this.running) {
+				this.scrollToLastMessageStart();
+			} else {
+				this.scrollToLastMessageEnd();
+			}
+		});
+	}
+
+	private scrollToLastMessageStart() {
+		const last = this.lastMessageElement();
+		if (!last) {
+			return;
+		}
+		this.scrollEl.scrollTop = last.offsetTop - this.scrollEl.offsetTop;
+	}
+
+	private scrollToLastMessageEnd() {
+		const last = this.lastMessageElement();
+		if (!last) {
+			return;
+		}
+		this.scrollEl.scrollTop = last.offsetTop - this.scrollEl.offsetTop + last.offsetHeight - this.scrollEl.clientHeight;
+	}
+
+	private scrollToBottom() {
+		requestAnimationFrame(() => {
+			this.scrollEl.scrollTop = this.scrollEl.scrollHeight;
+		});
+	}
+
+	private lastMessageElement(): HTMLElement | null {
+		return this.messagesEl.querySelector<HTMLElement>("app-message[data-message-id]:last-of-type");
+	}
+
+	private escapeSelectorValue(value: string): string {
+		return typeof CSS !== "undefined" ? CSS.escape(value) : value.replace(/\"/g, '\\"');
+	}
+
+	private createMessageElement(message: ViewMessage) {
+		const element = document.createElement("app-message") as MessageEl;
+		this.syncMessageElement(element, message);
 		return element;
 	}
 
