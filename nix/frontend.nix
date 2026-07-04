@@ -10,7 +10,7 @@
   pnpm_10,
   # sha256 of the offline pnpm store. Regenerate with `lib.fakeHash` and read
   # the expected value from the build error after bumping pnpm-lock.yaml.
-  pnpmDepsHash ? "sha256-Qn0F841AkbIPj3kpDvHtGnd2XP1YO0xOdITu0rzcLTU=",
+  pnpmDepsHash ? "sha256-Hy+UrgCmCNzIOfPbUtXI3STms4PogPXWYRQhCvMX33A=",
 }:
 let
   pnpm = pnpm_10;
