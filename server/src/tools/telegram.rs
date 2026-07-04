@@ -173,15 +173,15 @@ impl Tool for SendTelegramFileTool {
             .as_deref()
             .map(str::trim)
             .filter(|c| !c.is_empty());
-        let Some(sent) = send_document(
-            &self.bot_token,
+        let Some(sent) = send_document(SendDocumentRequest {
+            bot_token: &self.bot_token,
             chat_id,
             topic_id,
-            &file_name,
-            mime.as_deref(),
-            &bytes,
+            file_name: &file_name,
+            mime_type: mime.as_deref(),
+            data: &bytes,
             caption,
-        )
+        })
         .await
         else {
             return json!({"success": false, "error": "Telegram sendDocument failed"});
@@ -248,33 +248,44 @@ fn topic_fields(topic_id: Option<i64>) -> (Option<i64>, Option<i64>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn send_document(
-    bot_token: &str,
+struct SendDocumentRequest<'a> {
+    bot_token: &'a str,
     chat_id: i64,
     topic_id: Option<i64>,
-    file_name: &str,
-    mime_type: Option<&str>,
-    data: &[u8],
-    caption: Option<&str>,
-) -> Option<TelegramSentMessage> {
-    let (message_thread_id, direct_messages_topic_id) = topic_fields(topic_id);
-    let mut fields: Vec<(&str, String)> = vec![("chat_id", chat_id.to_string())];
+    file_name: &'a str,
+    mime_type: Option<&'a str>,
+    data: &'a [u8],
+    caption: Option<&'a str>,
+}
+
+async fn send_document(request: SendDocumentRequest<'_>) -> Option<TelegramSentMessage> {
+    let (message_thread_id, direct_messages_topic_id) = topic_fields(request.topic_id);
+    let mut fields: Vec<(&str, String)> = vec![("chat_id", request.chat_id.to_string())];
     if let Some(id) = message_thread_id {
         fields.push(("message_thread_id", id.to_string()));
     }
     if let Some(id) = direct_messages_topic_id {
         fields.push(("direct_messages_topic_id", id.to_string()));
     }
-    if let Some(caption) = caption {
+    if let Some(caption) = request.caption {
         fields.push(("caption", caption.chars().take(1024).collect()));
     }
 
     let boundary = format!("stride{}", Uuid::now_v7().as_simple());
-    let mime = mime_type.unwrap_or("application/octet-stream");
-    let body = multipart_body(&boundary, &fields, "document", file_name, mime, data);
+    let mime = request.mime_type.unwrap_or("application/octet-stream");
+    let body = multipart_body(
+        &boundary,
+        &fields,
+        "document",
+        request.file_name,
+        mime,
+        request.data,
+    );
 
-    let uri = format!("https://api.telegram.org/bot{bot_token}/sendDocument");
+    let uri = format!(
+        "https://api.telegram.org/bot{}/sendDocument",
+        request.bot_token
+    );
     let req = Request::builder()
         .method("POST")
         .uri(uri)

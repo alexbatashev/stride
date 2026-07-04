@@ -26,7 +26,9 @@ use crate::db::{AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_r
 use crate::email::ImapService;
 use crate::google::GoogleService;
 use crate::notify::{self, RunResult};
-use crate::runner::inproc::{python_tool_config, scriptable_tool_registry};
+use crate::runner::inproc::{
+    ScriptableToolRegistryContext, python_tool_config, scriptable_tool_registry,
+};
 use crate::triggers;
 
 const POLL_SECS: u64 = 60;
@@ -80,36 +82,18 @@ impl ExecutorHandle {
 
 /// Shared dependencies every run needs.
 #[derive(Clone)]
-struct ExecutorCtx {
-    db: ConnectionPool,
-    model_config: Arc<AgentConfig>,
-    tools: Tools,
-    telegram_bot_token: Option<String>,
-    email_service: ImapService,
-    mcp_tools: Vec<McpTool>,
-    google_service: Option<GoogleService>,
+pub struct ExecutorConfig {
+    pub db: ConnectionPool,
+    pub model_config: Arc<AgentConfig>,
+    pub tools: Tools,
+    pub telegram_bot_token: Option<String>,
+    pub email_service: ImapService,
+    pub mcp_tools: Vec<McpTool>,
+    pub google_service: Option<GoogleService>,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn spawn(
-    db: ConnectionPool,
-    model_config: Arc<AgentConfig>,
-    tools: Tools,
-    telegram_bot_token: Option<String>,
-    email_service: ImapService,
-    mcp_tools: Vec<McpTool>,
-    google_service: Option<GoogleService>,
-) -> ExecutorHandle {
+pub fn spawn(config: ExecutorConfig) -> ExecutorHandle {
     let (tx, rx) = unbounded_channel();
-    let ctx = ExecutorCtx {
-        db,
-        model_config,
-        tools,
-        telegram_bot_token,
-        email_service,
-        mcp_tools,
-        google_service,
-    };
     std::thread::Builder::new()
         .name("stride-scheduler".to_string())
         .spawn(move || {
@@ -118,13 +102,13 @@ pub fn spawn(
                 .build()
                 .expect("scheduler runtime");
             let local = tokio::task::LocalSet::new();
-            local.block_on(&runtime, run(ctx, rx));
+            local.block_on(&runtime, run(config, rx));
         })
         .expect("scheduler thread");
     ExecutorHandle { tx }
 }
 
-async fn run(ctx: ExecutorCtx, mut rx: UnboundedReceiver<FireRequest>) {
+async fn run(ctx: ExecutorConfig, mut rx: UnboundedReceiver<FireRequest>) {
     let mut tick = tokio::time::interval(Duration::from_secs(POLL_SECS));
     loop {
         tokio::select! {
@@ -141,7 +125,7 @@ async fn run(ctx: ExecutorCtx, mut rx: UnboundedReceiver<FireRequest>) {
 }
 
 /// Evaluate polled triggers (cron, vfs change) and fire the due ones.
-async fn poll_due(ctx: &ExecutorCtx) {
+async fn poll_due(ctx: &ExecutorConfig) {
     let now = unix_now();
     let rows = match automations::select()
         .where_(automations::enabled.eq(true))
@@ -209,7 +193,7 @@ async fn poll_due(ctx: &ExecutorCtx) {
     }
 }
 
-async fn poll_email(ctx: &ExecutorCtx, automation: crate::db::automations::Row) {
+async fn poll_email(ctx: &ExecutorConfig, automation: crate::db::automations::Row) {
     let account_id = automation
         .trigger_config
         .as_deref()
@@ -270,7 +254,7 @@ async fn poll_email(ctx: &ExecutorCtx, automation: crate::db::automations::Row) 
 
 /// Poll a Gmail-triggered automation: fetch inbox messages newer than the stored
 /// watermark and fire the automation with them as the payload.
-async fn poll_gmail(ctx: &ExecutorCtx, automation: crate::db::automations::Row) {
+async fn poll_gmail(ctx: &ExecutorConfig, automation: crate::db::automations::Row) {
     let Some(service) = ctx.google_service.as_ref() else {
         return;
     };
@@ -317,7 +301,7 @@ async fn poll_gmail(ctx: &ExecutorCtx, automation: crate::db::automations::Row) 
     });
 }
 
-async fn run_automation(ctx: ExecutorCtx, request: FireRequest) {
+async fn run_automation(ctx: ExecutorConfig, request: FireRequest) {
     let rows = match automations::select()
         .where_(automations::id.eq(request.automation_id))
         .all(&ctx.db)
@@ -454,7 +438,7 @@ fn python_script(base: &str, payload: Option<&JsonValue>) -> String {
 }
 
 async fn run_python(
-    ctx: &ExecutorCtx,
+    ctx: &ExecutorConfig,
     owner: Uuid,
     script: &str,
     mcp_tools: Vec<McpTool>,
@@ -476,15 +460,15 @@ async fn run_python(
     let fs = execenv::DirectOsFileSystem::new(dir).map_err(|e| e.to_string())?;
     // Same tool surface as the interactive agent loop, so scripts that work
     // there work here too.
-    let registry = scriptable_tool_registry(
-        &ctx.tools,
-        &ctx.db,
-        owner,
-        Some(ctx.email_service.provider(owner)),
-        &mcp_tools,
-        None,
+    let registry = scriptable_tool_registry(ScriptableToolRegistryContext {
+        tools: &ctx.tools,
+        db: &ctx.db,
+        user_id: owner,
+        email_provider: Some(ctx.email_service.provider(owner)),
+        mcp_tools: &mcp_tools,
+        default_wing: None,
         google,
-    );
+    });
     let tool = execenv::PythonTool::new(config, Arc::new(fs))
         .await
         .map_err(|e| e.to_string())?
@@ -715,7 +699,7 @@ mod tests {
                     .await
                     .unwrap();
 
-                let ctx = ExecutorCtx {
+                let ctx = ExecutorConfig {
                     db: db.clone(),
                     model_config: mock_model_config(),
                     tools: python_tools(),

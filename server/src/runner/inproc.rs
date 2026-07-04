@@ -306,19 +306,68 @@ struct WorkerInit {
     idle_ttl: Duration,
 }
 
+pub(crate) struct InProcessAgentPoolBuilder {
+    init: WorkerInit,
+}
+
+impl InProcessAgentPoolBuilder {
+    pub(crate) fn tools(mut self, tools: Tools) -> Self {
+        self.init.tools = tools;
+        self
+    }
+
+    pub(crate) fn mcp_tools(mut self, mcp_tools: Vec<McpTool>) -> Self {
+        self.init.mcp_tools = mcp_tools;
+        self
+    }
+
+    pub(crate) fn vfs(mut self, vfs: Arc<Vfs>) -> Self {
+        self.init.vfs = Some(vfs);
+        self
+    }
+
+    pub(crate) fn telegram_bot_token(mut self, telegram_bot_token: Option<String>) -> Self {
+        self.init.telegram_bot_token = telegram_bot_token;
+        self
+    }
+
+    pub(crate) fn public_url(mut self, public_url: Option<String>) -> Self {
+        self.init.public_url = public_url;
+        self
+    }
+
+    pub(crate) fn github_runtime(mut self, github_runtime: Option<GitHubRuntime>) -> Self {
+        self.init.github_runtime = github_runtime;
+        self
+    }
+
+    pub(crate) fn email_service(mut self, email_service: ImapService) -> Self {
+        self.init.email_service = Some(email_service);
+        self
+    }
+
+    pub(crate) fn google_service(mut self, google_service: Option<GoogleService>) -> Self {
+        self.init.google_service = google_service;
+        self
+    }
+
+    pub(crate) fn system_prompt(mut self, system_prompt: impl Into<String>) -> Self {
+        self.init.system_prompt = system_prompt.into();
+        self
+    }
+
+    pub(crate) fn idle_ttl(mut self, idle_ttl: Duration) -> Self {
+        self.init.idle_ttl = idle_ttl;
+        self
+    }
+
+    pub(crate) fn build(self) -> InProcessAgentPool {
+        InProcessAgentPool::from_init(self.init)
+    }
+}
+
 struct WorkerState {
-    db: ConnectionPool,
-    config: Arc<AgentConfig>,
-    tools: Tools,
-    mcp_tools: Vec<McpTool>,
-    vfs: Option<Arc<Vfs>>,
-    telegram_bot_token: Option<String>,
-    public_url: Option<String>,
-    github_runtime: Option<GitHubRuntime>,
-    email_service: Option<ImapService>,
-    google_service: Option<GoogleService>,
-    system_prompt: String,
-    idle_ttl: Duration,
+    init: WorkerInit,
     pool: PoolHandle,
     threads: HashMap<Uuid, ThreadRunner>,
 }
@@ -387,186 +436,33 @@ impl StreamingMessageSanitizer for RawMarkdownSanitizer {
 }
 
 impl InProcessAgentPool {
+    pub(crate) fn builder(
+        db: ConnectionPool,
+        config: Arc<AgentConfig>,
+    ) -> InProcessAgentPoolBuilder {
+        InProcessAgentPoolBuilder {
+            init: WorkerInit {
+                db,
+                config,
+                tools: Tools::default(),
+                mcp_tools: Vec::new(),
+                vfs: None,
+                telegram_bot_token: None,
+                public_url: None,
+                github_runtime: None,
+                email_service: None,
+                google_service: None,
+                system_prompt: BASE_SYSTEM_PROMPT.to_string(),
+                idle_ttl: DEFAULT_IDLE_TTL,
+            },
+        }
+    }
+
     pub fn new(db: ConnectionPool, config: Arc<AgentConfig>) -> Self {
-        Self::with_system_prompt(db, config, BASE_SYSTEM_PROMPT.to_string())
-    }
-
-    pub fn with_tool_config(
-        db: ConnectionPool,
-        config: Arc<AgentConfig>,
-        tools: Tools,
-        mcp_tools: Vec<McpTool>,
-    ) -> Self {
-        Self::with_system_prompt_and_tools(
-            db,
-            config,
-            BASE_SYSTEM_PROMPT.to_string(),
-            tools,
-            mcp_tools,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_tool_config_and_telegram(
-        db: ConnectionPool,
-        config: Arc<AgentConfig>,
-        tools: Tools,
-        mcp_tools: Vec<McpTool>,
-        telegram_bot_token: Option<String>,
-        public_url: Option<String>,
-        github_runtime: Option<GitHubRuntime>,
-        email_service: ImapService,
-        google_service: Option<GoogleService>,
-    ) -> Self {
-        Self::with_system_prompt_and_tools(
-            db,
-            config,
-            BASE_SYSTEM_PROMPT.to_string(),
-            tools,
-            mcp_tools,
-            None,
-            telegram_bot_token,
-            public_url,
-            github_runtime,
-            Some(email_service),
-            google_service,
-        )
-    }
-
-    pub fn with_file_provider(
-        db: ConnectionPool,
-        config: Arc<AgentConfig>,
-        tools: Tools,
-        mcp_tools: Vec<McpTool>,
-        vfs: Arc<Vfs>,
-    ) -> Self {
-        Self::with_system_prompt_and_tools(
-            db,
-            config,
-            BASE_SYSTEM_PROMPT.to_string(),
-            tools,
-            mcp_tools,
-            Some(vfs),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_file_provider_and_telegram(
-        db: ConnectionPool,
-        config: Arc<AgentConfig>,
-        tools: Tools,
-        mcp_tools: Vec<McpTool>,
-        vfs: Arc<Vfs>,
-        telegram_bot_token: Option<String>,
-        public_url: Option<String>,
-        github_runtime: Option<GitHubRuntime>,
-        email_service: ImapService,
-        google_service: Option<GoogleService>,
-    ) -> Self {
-        Self::with_system_prompt_and_tools(
-            db,
-            config,
-            BASE_SYSTEM_PROMPT.to_string(),
-            tools,
-            mcp_tools,
-            Some(vfs),
-            telegram_bot_token,
-            public_url,
-            github_runtime,
-            Some(email_service),
-            google_service,
-        )
-    }
-
-    pub fn with_system_prompt(
-        db: ConnectionPool,
-        config: Arc<AgentConfig>,
-        system_prompt: String,
-    ) -> Self {
-        Self::with_idle_ttl(db, config, system_prompt, DEFAULT_IDLE_TTL)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_system_prompt_and_tools(
-        db: ConnectionPool,
-        config: Arc<AgentConfig>,
-        system_prompt: String,
-        tools: Tools,
-        mcp_tools: Vec<McpTool>,
-        vfs: Option<Arc<Vfs>>,
-        telegram_bot_token: Option<String>,
-        public_url: Option<String>,
-        github_runtime: Option<GitHubRuntime>,
-        email_service: Option<ImapService>,
-        google_service: Option<GoogleService>,
-    ) -> Self {
-        Self::from_init(WorkerInit {
-            db,
-            config,
-            tools,
-            mcp_tools,
-            vfs,
-            telegram_bot_token,
-            public_url,
-            github_runtime,
-            email_service,
-            google_service,
-            system_prompt,
-            idle_ttl: DEFAULT_IDLE_TTL,
-        })
-    }
-
-    pub fn with_idle_ttl(
-        db: ConnectionPool,
-        config: Arc<AgentConfig>,
-        system_prompt: String,
-        idle_ttl: Duration,
-    ) -> Self {
-        Self::with_idle_ttl_and_tools(
-            db,
-            config,
-            system_prompt,
-            idle_ttl,
-            Tools::default(),
-            Vec::new(),
-            None,
-        )
-    }
-
-    pub fn with_idle_ttl_and_tools(
-        db: ConnectionPool,
-        config: Arc<AgentConfig>,
-        system_prompt: String,
-        idle_ttl: Duration,
-        tools: Tools,
-        mcp_tools: Vec<McpTool>,
-        vfs: Option<Arc<Vfs>>,
-    ) -> Self {
-        Self::from_init(WorkerInit {
-            db,
-            config,
-            tools,
-            mcp_tools,
-            vfs,
-            telegram_bot_token: None,
-            public_url: None,
-            github_runtime: None,
-            email_service: None,
-            google_service: None,
-            system_prompt,
-            idle_ttl,
-        })
+        Self::builder(db, config)
+            .system_prompt(BASE_SYSTEM_PROMPT)
+            .idle_ttl(DEFAULT_IDLE_TTL)
+            .build()
     }
 
     fn from_init(init: WorkerInit) -> Self {
@@ -685,33 +581,8 @@ fn start_worker(
                 .build()
                 .expect("agent worker runtime");
             let local = LocalSet::new();
-            let WorkerInit {
-                db,
-                config,
-                tools,
-                mcp_tools,
-                vfs,
-                telegram_bot_token,
-                public_url,
-                github_runtime,
-                email_service,
-                google_service,
-                system_prompt,
-                idle_ttl,
-            } = init;
             let state = Rc::new(RefCell::new(WorkerState {
-                db,
-                config,
-                tools,
-                mcp_tools,
-                vfs,
-                telegram_bot_token,
-                public_url,
-                github_runtime,
-                email_service,
-                google_service,
-                system_prompt,
-                idle_ttl,
+                init,
                 pool,
                 threads: HashMap::new(),
             }));
@@ -802,7 +673,7 @@ async fn handle_send(
 
     let user_message_seq = next_message_seq(&state, thread_id)?;
     let user_message_id = Uuid::now_v7();
-    let db = state.borrow().db.clone();
+    let db = state.borrow().init.db.clone();
 
     let images_json = (!request.images.is_empty())
         .then(|| serde_json::to_string(&request.images))
@@ -1073,17 +944,17 @@ async fn ensure_runner(
     ) = {
         let state = state.borrow();
         (
-            state.db.clone(),
-            state.config.clone(),
-            state.tools.clone(),
-            state.mcp_tools.clone(),
-            state.vfs.clone(),
-            state.telegram_bot_token.clone(),
-            state.public_url.clone(),
-            state.github_runtime.clone(),
-            state.email_service.clone(),
-            state.google_service.clone(),
-            state.system_prompt.clone(),
+            state.init.db.clone(),
+            state.init.config.clone(),
+            state.init.tools.clone(),
+            state.init.mcp_tools.clone(),
+            state.init.vfs.clone(),
+            state.init.telegram_bot_token.clone(),
+            state.init.public_url.clone(),
+            state.init.github_runtime.clone(),
+            state.init.email_service.clone(),
+            state.init.google_service.clone(),
+            state.init.system_prompt.clone(),
             state.pool.clone(),
         )
     };
@@ -1173,17 +1044,17 @@ async fn ensure_runner(
         .as_ref()
         .is_some_and(|python| python.enabled != Some(false));
     let python_tools = python_enabled.then(|| {
-        scriptable_tool_registry(
-            &tools,
-            &db,
+        scriptable_tool_registry(ScriptableToolRegistryContext {
+            tools: &tools,
+            db: &db,
             user_id,
-            email_service
+            email_provider: email_service
                 .as_ref()
                 .map(|service| service.provider(user_id)),
-            &mcp_tools,
-            project_title.clone(),
-            google_for_tools.clone().map(|service| (service, user_id)),
-        )
+            mcp_tools: &mcp_tools,
+            default_wing: project_title.clone(),
+            google: google_for_tools.clone().map(|service| (service, user_id)),
+        })
     });
     for tool in mcp_tools {
         agent.register_searchable_tool(tool);
@@ -1467,18 +1338,20 @@ pub(crate) fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
 /// build their sandbox tool set from here, so a script behaves identically in
 /// either mode. Only read-only MCP tools are exposed; state-changing ones need
 /// interactive approval that a script cannot provide, so they are left out.
-pub(crate) fn scriptable_tool_registry(
-    tools: &Tools,
-    db: &ConnectionPool,
-    user_id: Uuid,
-    email_provider: Option<Arc<dyn stride_agent::tools::email::EmailProvider>>,
-    mcp_tools: &[McpTool],
-    default_wing: Option<String>,
-    google: Option<(GoogleService, Uuid)>,
-) -> ToolRegistry {
-    let mut registry = expert_tool_registry(tools);
+pub(crate) struct ScriptableToolRegistryContext<'a> {
+    pub tools: &'a Tools,
+    pub db: &'a ConnectionPool,
+    pub user_id: Uuid,
+    pub email_provider: Option<Arc<dyn stride_agent::tools::email::EmailProvider>>,
+    pub mcp_tools: &'a [McpTool],
+    pub default_wing: Option<String>,
+    pub google: Option<(GoogleService, Uuid)>,
+}
 
-    if let Some(provider) = email_provider {
+pub(crate) fn scriptable_tool_registry(ctx: ScriptableToolRegistryContext<'_>) -> ToolRegistry {
+    let mut registry = expert_tool_registry(ctx.tools);
+
+    if let Some(provider) = ctx.email_provider {
         registry.register(ListEmailsTool {
             provider: provider.clone(),
         });
@@ -1487,64 +1360,64 @@ pub(crate) fn scriptable_tool_registry(
         registry.allow_tool("create_email_draft");
     }
 
-    if let Some((service, user)) = google {
+    if let Some((service, user)) = ctx.google {
         crate::tools::google::register_scriptable(&mut registry, service, user);
     }
 
     registry.register(RememberTool {
-        db: db.clone(),
-        user_id,
-        default_wing: default_wing.clone(),
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
+        default_wing: ctx.default_wing.clone(),
     });
     registry.allow_tool("remember");
     registry.register(RecallTool {
-        db: db.clone(),
-        user_id,
-        default_wing,
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
+        default_wing: ctx.default_wing,
     });
     registry.allow_tool("recall");
     registry.register(ExplorePalaceTool {
-        db: db.clone(),
-        user_id,
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
     });
     registry.allow_tool("explore_palace");
     registry.register(ConnectMemoriesTool {
-        db: db.clone(),
-        user_id,
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
     });
     registry.allow_tool("connect_memories");
 
     registry.register(SearchSkillsTool {
-        db: db.clone(),
-        user_id,
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
         excluded_static_skills: Vec::new(),
     });
     registry.allow_tool("search_skills");
     registry.register(LoadSkillTool {
-        db: db.clone(),
-        user_id,
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
         excluded_static_skills: Vec::new(),
     });
     registry.allow_tool("load_skill");
     registry.register(CreateSkillTool {
-        db: db.clone(),
-        user_id,
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
     });
     registry.allow_tool("create_skill");
 
     registry.register(UpdatePersonalityTool {
-        db: db.clone(),
-        user_id,
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
     });
     registry.allow_tool("update_personality");
 
     registry.register(ScheduleAutomationTool {
-        db: db.clone(),
-        user_id,
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
     });
     registry.allow_tool("schedule_automation");
 
-    for tool in mcp_tools {
+    for tool in ctx.mcp_tools {
         if tool.requires_confirmation() {
             continue;
         }
@@ -1874,7 +1747,7 @@ async fn handle_agent_chunk(
     }
 
     if has_message_delta && let Some(id) = assistant.id {
-        let db = state.borrow().db.clone();
+        let db = state.borrow().init.db.clone();
         update_message(
             &db,
             id,
@@ -1902,7 +1775,7 @@ async fn handle_agent_chunk(
         if let (Some(message_id), Some(seq)) = (assistant.id, assistant.seq) {
             assistant.content = assistant.output_sanitizer.finish();
             let tool_calls = serialize_tool_calls(&assistant.tool_calls)?;
-            let db = state.borrow().db.clone();
+            let db = state.borrow().init.db.clone();
             update_message(
                 &db,
                 message_id,
@@ -2028,7 +1901,7 @@ async fn ensure_assistant_message(
 
     let id = Uuid::now_v7();
     let seq = next_message_seq(state, thread_id)?;
-    let db = state.borrow().db.clone();
+    let db = state.borrow().init.db.clone();
 
     messages::insert()
         .id(id)
@@ -2061,7 +1934,7 @@ fn output_sanitizer(
 ) -> Box<dyn StreamingMessageSanitizer> {
     match format {
         MessageFormat::Html => Box::new(HtmlFormattingSanitizer::new(
-            state.borrow().public_url.clone(),
+            state.borrow().init.public_url.clone(),
         )),
         MessageFormat::Markdown => Box::<RawMarkdownSanitizer>::default(),
     }
@@ -2086,7 +1959,7 @@ async fn persist_tool_message(
 ) -> Result<(), AgentPoolError> {
     let id = Uuid::now_v7();
     let seq = next_message_seq(state, thread_id)?;
-    let db = state.borrow().db.clone();
+    let db = state.borrow().init.db.clone();
 
     messages::insert()
         .id(id)
@@ -2197,7 +2070,7 @@ async fn emit(
 fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
     let now = Instant::now();
     let mut state = state.borrow_mut();
-    let idle_ttl = state.idle_ttl;
+    let idle_ttl = state.init.idle_ttl;
 
     let mut evicted = Vec::new();
     state.threads.retain(|thread_id, runner| {
@@ -2462,6 +2335,39 @@ mod tests {
         pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe()
     }
 
+    fn test_worker_init(db: ConnectionPool) -> WorkerInit {
+        WorkerInit {
+            db,
+            config: Arc::new(AgentConfig {
+                model_registry: ModelRegistry::new(),
+                max_iterations: 4,
+            }),
+            tools: Tools::default(),
+            mcp_tools: Vec::new(),
+            vfs: None,
+            telegram_bot_token: None,
+            public_url: None,
+            github_runtime: None,
+            email_service: None,
+            google_service: None,
+            system_prompt: "System prompt".to_string(),
+            idle_ttl: Duration::from_secs(60),
+        }
+    }
+
+    fn test_pool(db: ConnectionPool, models: ModelRegistry) -> InProcessAgentPool {
+        InProcessAgentPool::builder(
+            db,
+            Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+            }),
+        )
+        .system_prompt("System prompt")
+        .idle_ttl(Duration::from_secs(60))
+        .build()
+    }
+
     #[test]
     fn telegram_prompt_uses_absolute_links_and_file_tool() {
         let id = Uuid::now_v7();
@@ -2640,15 +2546,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         let mut subscription = subscribe_events(thread_id);
         let run_id = pool
@@ -2745,15 +2643,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         let mut subscription = subscribe_events(thread_id);
         pool.send(
@@ -2863,15 +2753,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         let mut subscription = subscribe_events(thread_id);
         pool.send(
@@ -2952,21 +2834,7 @@ mod tests {
         let mut threads = HashMap::new();
         threads.insert(thread_id, runner);
         let state = Rc::new(RefCell::new(WorkerState {
-            db: db.clone(),
-            config: Arc::new(AgentConfig {
-                model_registry: ModelRegistry::new(),
-                max_iterations: 4,
-            }),
-            tools: Tools::default(),
-            mcp_tools: Vec::new(),
-            vfs: None,
-            telegram_bot_token: None,
-            public_url: None,
-            github_runtime: None,
-            email_service: None,
-            google_service: None,
-            system_prompt: "System prompt".to_string(),
-            idle_ttl: Duration::from_secs(60),
+            init: test_worker_init(db.clone()),
             pool: PoolHandle::for_tests(),
             threads,
         }));
@@ -3038,21 +2906,7 @@ mod tests {
         let mut threads = HashMap::new();
         threads.insert(thread_id, runner);
         let state = Rc::new(RefCell::new(WorkerState {
-            db: db.clone(),
-            config: Arc::new(AgentConfig {
-                model_registry: ModelRegistry::new(),
-                max_iterations: 4,
-            }),
-            tools: Tools::default(),
-            mcp_tools: Vec::new(),
-            vfs: None,
-            telegram_bot_token: None,
-            public_url: None,
-            github_runtime: None,
-            email_service: None,
-            google_service: None,
-            system_prompt: "System prompt".to_string(),
-            idle_ttl: Duration::from_secs(60),
+            init: test_worker_init(db.clone()),
             pool: PoolHandle::for_tests(),
             threads,
         }));
@@ -3118,15 +2972,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         pool.send(
             thread_id,
@@ -3203,15 +3049,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         pool.send(
             thread_id,
@@ -3384,15 +3222,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         // Run to completion.
         pool.send(
@@ -3467,15 +3297,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         let mut sub = subscribe_events(thread_id);
         pool.send(
@@ -3548,15 +3370,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         // Fire three sends back-to-back; the second and third must queue, not be rejected.
         for content in ["msg0", "msg1", "msg2"] {
@@ -3645,15 +3459,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         let mut sub = subscribe_events(thread_id);
         pool.send(
@@ -3735,15 +3541,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db,
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db, models);
 
         // A deliberately slow consumer of the thread's events. Publishing is decoupled from
         // consumers, so this must not slow down worker commands.
@@ -3810,15 +3608,7 @@ mod tests {
             },
         );
 
-        let pool = InProcessAgentPool::with_idle_ttl(
-            db.clone(),
-            Arc::new(AgentConfig {
-                model_registry: models,
-                max_iterations: 4,
-            }),
-            "System prompt".to_string(),
-            Duration::from_secs(60),
-        );
+        let pool = test_pool(db.clone(), models);
 
         let mut sub = subscribe_events(thread_id);
         pool.send(

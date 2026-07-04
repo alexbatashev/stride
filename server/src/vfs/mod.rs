@@ -446,17 +446,6 @@ impl Vfs {
         Ok(())
     }
 
-    /// Renames a node (file or directory) at `path` to `new_name`.
-    pub async fn rename(
-        &self,
-        workspace_id: Uuid,
-        path: &str,
-        new_name: &str,
-    ) -> anyhow::Result<()> {
-        self.rename_scoped(Scope::Workspace(workspace_id), path, new_name)
-            .await
-    }
-
     /// Renames a node in the user's global space.
     pub async fn rename_global(
         &self,
@@ -631,12 +620,14 @@ impl Vfs {
     }
 
     /// Reads UTF-8 content of a file at `path` relative to workspace root.
+    #[cfg(test)]
     pub async fn read(&self, workspace_id: Uuid, path: &str) -> anyhow::Result<String> {
         let (bytes, _) = self.read_bytes(workspace_id, path).await?;
         String::from_utf8(bytes).context("file is not valid UTF-8")
     }
 
     /// Reads UTF-8 content of a file in the user's global space.
+    #[cfg(test)]
     pub async fn read_global(&self, owner: Uuid, path: &str) -> anyhow::Result<String> {
         let (bytes, _) = self.read_bytes_scoped(Scope::Global(owner), path).await?;
         String::from_utf8(bytes).context("file is not valid UTF-8")
@@ -713,6 +704,7 @@ impl Vfs {
 
     /// Writes UTF-8 content to `path` relative to workspace root.
     /// Creates intermediate directories and file nodes as needed.
+    #[cfg(test)]
     pub async fn write(
         &self,
         workspace_id: Uuid,
@@ -725,6 +717,7 @@ impl Vfs {
     }
 
     /// Writes UTF-8 content to `path` in the user's global space.
+    #[cfg(test)]
     pub async fn write_global(&self, owner: Uuid, path: &str, content: &str) -> anyhow::Result<()> {
         self.write_bytes_scoped(Scope::Global(owner), path, content.as_bytes(), None, owner)
             .await

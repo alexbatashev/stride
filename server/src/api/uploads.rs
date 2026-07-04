@@ -80,8 +80,6 @@ pub async fn upload(
             .bytes()
             .await
             .map_err(|_| UploadsApiError::BadRequest)?;
-        let size = bytes.len();
-
         let staged = vfs
             .stage_upload(owner, &name, mime_type.as_deref(), &bytes)
             .await
@@ -89,8 +87,8 @@ pub async fn upload(
 
         uploaded.push(StagedUploadResponse {
             id: staged.id.to_string(),
-            name,
-            size,
+            name: staged.name,
+            size: staged.size as usize,
         });
     }
 
