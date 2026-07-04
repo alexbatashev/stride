@@ -162,47 +162,30 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e: anyhow::Error| e)?
         .map(Arc::new);
 
-    let executor = scheduler::spawn(
-        db.clone(),
-        model_config.clone(),
-        tools.clone(),
-        telegram_bot_token.clone(),
-        email_service.clone(),
-        mcp_tools.clone(),
-        google_service.clone(),
-    );
+    let executor = scheduler::spawn(scheduler::ExecutorConfig {
+        db: db.clone(),
+        model_config: model_config.clone(),
+        tools: tools.clone(),
+        telegram_bot_token: telegram_bot_token.clone(),
+        email_service: email_service.clone(),
+        mcp_tools: mcp_tools.clone(),
+        google_service: google_service.clone(),
+    });
 
     let public_url = config.public_url();
-    let runner: Arc<dyn runner::AgentPool> = if let Some(ref vfs) = vfs_provider {
-        Arc::new(
-            runner::inproc::InProcessAgentPool::with_file_provider_and_telegram(
-                db.clone(),
-                model_config.clone(),
-                tools,
-                mcp_tools,
-                vfs.clone(),
-                telegram_bot_token.clone(),
-                public_url,
-                github_runtime.clone(),
-                email_service.clone(),
-                google_service.clone(),
-            ),
-        )
-    } else {
-        Arc::new(
-            runner::inproc::InProcessAgentPool::with_tool_config_and_telegram(
-                db.clone(),
-                model_config.clone(),
-                tools,
-                mcp_tools,
-                telegram_bot_token.clone(),
-                public_url,
-                github_runtime.clone(),
-                email_service,
-                google_service.clone(),
-            ),
-        )
-    };
+    let mut runner_builder =
+        runner::inproc::InProcessAgentPool::builder(db.clone(), model_config.clone())
+            .tools(tools)
+            .mcp_tools(mcp_tools)
+            .telegram_bot_token(telegram_bot_token.clone())
+            .public_url(public_url)
+            .github_runtime(github_runtime.clone())
+            .email_service(email_service)
+            .google_service(google_service.clone());
+    if let Some(ref vfs) = vfs_provider {
+        runner_builder = runner_builder.vfs(vfs.clone());
+    }
+    let runner: Arc<dyn runner::AgentPool> = Arc::new(runner_builder.build());
 
     let state = Arc::new(ServerState {
         config,
