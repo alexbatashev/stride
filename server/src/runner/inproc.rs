@@ -459,7 +459,10 @@ impl InProcessAgentPool {
     }
 
     pub fn new(db: ConnectionPool, config: Arc<AgentConfig>) -> Self {
-        Self::builder(db, config).build()
+        Self::builder(db, config)
+            .system_prompt(BASE_SYSTEM_PROMPT)
+            .idle_ttl(DEFAULT_IDLE_TTL)
+            .build()
     }
 
     fn from_init(init: WorkerInit) -> Self {
@@ -2067,7 +2070,7 @@ async fn emit(
 fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
     let now = Instant::now();
     let mut state = state.borrow_mut();
-    let idle_ttl = state.idle_ttl;
+    let idle_ttl = state.init.idle_ttl;
 
     let mut evicted = Vec::new();
     state.threads.retain(|thread_id, runner| {
