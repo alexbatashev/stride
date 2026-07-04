@@ -7,7 +7,7 @@ use async_stream::stream;
 use futures::channel::oneshot;
 use futures::{Stream, StreamExt};
 use llm::{
-    API, CompletionRequest, ImageSource, Message, ReasoningEffort, StreamResponseChunk,
+    API, CompletionRequest, ImageSource, Message, OpenAI, ReasoningEffort, StreamResponseChunk,
     ToolCallChunk, ToolCallFunction,
 };
 use serde_json::Value;
@@ -70,6 +70,9 @@ pub enum AgentResponseChunk {
     },
 }
 
+pub type AgentResponseStream =
+    Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>>;
+
 #[derive(Debug)]
 pub struct AgentConfig {
     pub model_registry: ModelRegistry,
@@ -91,6 +94,22 @@ pub struct ModelRegEntry {
     /// Whether the model accepts image inputs. Gates image attachment and the
     /// `attach_image` tool on the server side.
     pub vision: bool,
+}
+
+impl ModelRegEntry {
+    pub fn openai_compatible(
+        endpoint: impl AsRef<str>,
+        token: impl Into<String>,
+        model_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            api: API::OpenAI(OpenAI::new(endpoint.as_ref())),
+            token: token.into(),
+            model_name: model_name.into(),
+            reasoning_effort: None,
+            vision: true,
+        }
+    }
 }
 
 struct BaseAgentInner {
@@ -131,6 +150,12 @@ impl ModelRegistry {
 
     pub fn get(&self, name: &str) -> Option<&ModelRegEntry> {
         self.models.get(name)
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &ModelRegEntry)> {
+        self.models
+            .iter()
+            .map(|(name, entry)| (name.as_str(), entry))
     }
 
     /// The model designated for text embeddings, if one is registered under the
@@ -237,7 +262,7 @@ impl BaseAgent {
         &self,
         request: String,
         images: Vec<ImageSource>,
-    ) -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>> {
+    ) -> AgentResponseStream {
         let (config, model, max_iterations) = {
             let lock = self.0.borrow();
             let model_name = &lock.model;

@@ -4,7 +4,9 @@ import SwiftUI
 /// hardware Return key); turns into a stop control while a run is in flight.
 struct Composer: View {
     @Binding var text: String
+    @Binding var location: ThreadLocation
     let running: Bool
+    let canChangeLocation: Bool
     let canSend: Bool
     let onSend: () -> Void
     let onStop: () -> Void
@@ -13,13 +15,32 @@ struct Composer: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            Menu {
+                ForEach(ThreadLocation.allCases, id: \.self) { option in
+                    Button {
+                        location = option
+                    } label: {
+                        Label(option.label, systemImage: option == .local ? "macwindow" : "icloud")
+                    }
+                }
+            } label: {
+                Label(location.label, systemImage: location == .local ? "macwindow" : "icloud")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 30, height: 30)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .disabled(!canChangeLocation || running)
+            .foregroundStyle(canChangeLocation && !running ? .primary : .secondary)
+            .padding(.leading, 6)
+            .padding(.bottom, 5)
+
             TextField("Message S.T.R.I.D.E.", text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...6)
                 .focused($focused)
                 .onSubmit(submit)
                 .padding(.vertical, 9)
-                .padding(.leading, 10)
 
             if running {
                 GlassIconButton(systemName: "stop.fill", prominent: true, tint: .red, action: onStop)

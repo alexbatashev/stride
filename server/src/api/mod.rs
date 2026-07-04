@@ -13,6 +13,7 @@ pub mod google;
 pub mod images;
 pub mod mcp;
 pub mod memories;
+pub mod openai;
 pub mod projects;
 pub mod skills;
 pub mod telegram;

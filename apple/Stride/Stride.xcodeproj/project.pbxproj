@@ -146,6 +146,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = FA9593702FE7ECAB00C23AFA /* Build configuration list for PBXNativeTarget "Stride" */;
 			buildPhases = (
+				ABOPFFI0000000000000001 /* Copy Operator FFI */,
 				FA95934B2FE7ECAA00C23AFA /* Sources */,
 				FA95934C2FE7ECAA00C23AFA /* Frameworks */,
 				FA95934D2FE7ECAA00C23AFA /* Resources */,
@@ -302,6 +303,31 @@
 			);
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		ABOPFFI0000000000000001 /* Copy Operator FFI */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Scripts/copy-operator-ffi.sh",
+				"$(SRCROOT)/../../target/release/libstride_operator.dylib",
+			);
+			name = "Copy Operator FFI";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libstride_operator.dylib",
+				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/libstride_operator.dylib.cstemp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nif [[ \"${SDK_NAME:-macosx}\" != macosx* ]]; then\n  exit 0\nfi\nLIB=\"$SRCROOT/../../target/release/libstride_operator.dylib\"\nif [[ ! -f \"$LIB\" ]]; then\n  echo \"error: Missing $LIB. Run apple/Stride/Scripts/build-operator-ffi.sh before building Stride.\" >&2\n  exit 1\nfi\nDEST_DIR=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nDEST=\"$DEST_DIR/$(basename \"$LIB\")\"\nmkdir -p \"$DEST_DIR\"\ncp \"$LIB\" \"$DEST\"\nif [[ \"${CODE_SIGNING_ALLOWED:-YES}\" == \"NO\" ]]; then\n  exit 0\nfi\nSIGN_IDENTITY=\"${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}\"\nif [[ -z \"$SIGN_IDENTITY\" ]]; then\n  SIGN_IDENTITY=\"-\"\nfi\n/usr/bin/codesign --force --sign \"$SIGN_IDENTITY\" --timestamp=none \"$DEST\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		FA95934B2FE7ECAA00C23AFA /* Sources */ = {
@@ -475,7 +501,15 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]" = stride_operator.swift;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = stride_operator.swift;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=xros*]" = stride_operator.swift;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=xrsimulator*]" = stride_operator.swift;
 				GENERATE_INFOPLIST_FILE = YES;
+				"HEADER_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Stride/Stride/Generated/Operator",
+				);
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -489,8 +523,21 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				"LIBRARY_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../../target/release",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
+				"OTHER_LDFLAGS[sdk=macosx*]" = (
+					"$(inherited)",
+					"-lstride_operator",
+				);
+				"OTHER_SWIFT_FLAGS[sdk=macosx*]" = (
+					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/Stride/Stride/Generated/Operator/stride_operatorFFI.modulemap",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = me.batashev.Stride;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -500,6 +547,10 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = NO;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				"SWIFT_INCLUDE_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Stride/Stride/Generated/Operator",
+				);
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -521,7 +572,15 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]" = stride_operator.swift;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = stride_operator.swift;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=xros*]" = stride_operator.swift;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=xrsimulator*]" = stride_operator.swift;
 				GENERATE_INFOPLIST_FILE = YES;
+				"HEADER_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Stride/Stride/Generated/Operator",
+				);
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -535,8 +594,21 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				"LIBRARY_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/../../target/release",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
+				"OTHER_LDFLAGS[sdk=macosx*]" = (
+					"$(inherited)",
+					"-lstride_operator",
+				);
+				"OTHER_SWIFT_FLAGS[sdk=macosx*]" = (
+					"$(inherited)",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/Stride/Stride/Generated/Operator/stride_operatorFFI.modulemap",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = me.batashev.Stride;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -546,6 +618,10 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = NO;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				"SWIFT_INCLUDE_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Stride/Stride/Generated/Operator",
+				);
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";

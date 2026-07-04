@@ -24,6 +24,7 @@ struct ChatFeature {
         let draftID = UUID()
         var threadID: String?
         var projectID: String?
+        var location: ThreadLocation = .local
         var title: String = "New thread"
         var messages: IdentifiedArrayOf<ChatMessage> = []
         var streaming: Streaming?
@@ -71,6 +72,7 @@ struct ChatFeature {
         case historyResponse(Result<[Message], StrideError>)
         case sendTapped
         case threadCreated(Result<SendResult, StrideError>)
+        case sendCompleted(SendResult)
         case sendFailed(StrideError)
         case cancelTapped
         case approvalResponse(Bool)
@@ -107,10 +109,11 @@ struct ChatFeature {
 
             case .connect:
                 guard let threadID = state.threadID else { return .none }
+                let location = state.location
                 return .run { send in
                     while !Task.isCancelled {
                         do {
-                            for try await event in stride.events(threadID) {
+                            for try await event in stride.events(location, threadID) {
                                 await send(.event(event))
                             }
                         } catch {}
@@ -122,8 +125,9 @@ struct ChatFeature {
 
             case .reloadHistory:
                 guard let threadID = state.threadID else { return .none }
+                let location = state.location
                 return .run { send in
-                    await send(.historyResponse(loadMessages(threadID)))
+                    await send(.historyResponse(loadMessages(location, threadID)))
                 }
                 .cancellable(id: CancelID.history, cancelInFlight: true)
 
@@ -149,9 +153,11 @@ struct ChatFeature {
                 appendPendingUser(&state, content: content)
 
                 if let threadID = state.threadID {
+                    let location = state.location
                     return .run { send in
                         do {
-                            _ = try await stride.sendMessage(threadID, content, [])
+                            let result = try await stride.sendMessage(location, threadID, content, [])
+                            await send(.sendCompleted(result))
                         } catch let error as StrideError {
                             await send(.sendFailed(error))
                         } catch {
@@ -160,9 +166,10 @@ struct ChatFeature {
                     }
                 } else {
                     let projectID = state.projectID
+                    let location = state.location
                     return .run { send in
                         do {
-                            let result = try await stride.createThread(content, projectID, [])
+                            let result = try await stride.createThread(location, content, projectID, [])
                             await send(.threadCreated(.success(result)))
                         } catch let error as StrideError {
                             await send(.threadCreated(.failure(error)))
@@ -182,6 +189,9 @@ struct ChatFeature {
                     .send(.reloadHistory)
                 )
 
+            case .sendCompleted:
+                return .none
+
             case .threadCreated(.failure):
                 return failSend(&state)
 
@@ -190,14 +200,16 @@ struct ChatFeature {
 
             case .cancelTapped:
                 guard let threadID = state.threadID, state.running else { return .none }
-                return .run { _ in try? await stride.cancelRun(threadID) }
+                let location = state.location
+                return .run { _ in try? await stride.cancelRun(location, threadID) }
 
             case let .approvalResponse(approved):
                 guard let threadID = state.threadID, let approval = state.pendingApproval else { return .none }
                 state.pendingApproval = nil
+                let location = state.location
                 return .run { send in
                     do {
-                        try await stride.resolveApproval(threadID, approval.id, approved)
+                        try await stride.resolveApproval(location, threadID, approval.id, approved)
                     } catch {
                         await send(.approvalFailed(approval))
                     }
@@ -220,9 +232,10 @@ struct ChatFeature {
                 let answers = quiz.answers
                 let quizID = quiz.id
                 let completedQuiz = quiz
+                let location = state.location
                 return .run { send in
                     do {
-                        try await stride.answerQuiz(threadID, quizID, answers)
+                        try await stride.answerQuiz(location, threadID, quizID, answers)
                     } catch {
                         await send(.quizFailed(completedQuiz))
                     }
@@ -393,9 +406,9 @@ struct ChatFeature {
         quiz.questions.isEmpty ? nil : .init(id: quiz.quizID, questions: quiz.questions)
     }
 
-    private func loadMessages(_ threadID: String) async -> Result<[Message], StrideError> {
+    private func loadMessages(_ location: ThreadLocation, _ threadID: String) async -> Result<[Message], StrideError> {
         do {
-            return .success(try await stride.listMessages(threadID))
+            return .success(try await stride.listMessages(location, threadID))
         } catch let error as StrideError {
             return .failure(error)
         } catch {

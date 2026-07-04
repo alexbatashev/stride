@@ -119,7 +119,9 @@ struct ChatView: View {
             } else {
                 Composer(
                     text: $store.composer,
+                    location: $store.location,
                     running: store.running,
+                    canChangeLocation: store.isNewThread,
                     canSend: store.canSend,
                     onSend: { store.send(.sendTapped) },
                     onStop: { store.send(.cancelTapped) }
