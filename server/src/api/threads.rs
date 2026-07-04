@@ -242,6 +242,204 @@ pub async fn list_threads(
     Ok(Json(thread_summaries(&state, owner).await?))
 }
 
+#[derive(Deserialize)]
+pub struct RenameThreadRequest {
+    title: String,
+}
+
+#[derive(Serialize)]
+pub struct ArchivedThreadResponse {
+    id: String,
+    title: String,
+    project_id: Option<String>,
+    archived_at: i64,
+    last_activity_at: i64,
+}
+
+/// Renames a thread. Mirrors `projects::rename` — trims the title, rejects an
+/// empty one, and asserts ownership.
+pub async fn rename_thread(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+    Json(request): Json<RenameThreadRequest>,
+) -> Result<Json<ThreadResponse>, ThreadApiError> {
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    require_thread_owner_for_user(&state, owner, thread_id).await?;
+
+    let title = request.title.trim().to_string();
+    if title.is_empty() {
+        return Err(ThreadApiError::BadRequest);
+    }
+
+    threads::update()
+        .title(title.as_str())
+        .where_(threads::id.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    let project_id = threads::select_cols((threads::project_id,))
+        .where_(threads::id.eq(thread_id))
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?
+        .into_iter()
+        .next()
+        .and_then(|(pid,)| pid)
+        .map(|id| id.to_string());
+
+    Ok(Json(ThreadResponse {
+        id: thread_id.to_string(),
+        title,
+        project_id,
+    }))
+}
+
+/// Archives a thread: it disappears from the sidebar but keeps all messages and
+/// files. Recorded with the archival timestamp that drives auto-removal.
+pub async fn archive_thread(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+) -> Result<StatusCode, ThreadApiError> {
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    require_thread_owner_for_user(&state, owner, thread_id).await?;
+
+    threads::update()
+        .archived_at(Some(now_ms()))
+        .where_(threads::id.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Restores an archived thread and resets its last-activity to now, so the
+/// auto-archive clock starts fresh from the unarchival date.
+pub async fn unarchive_thread(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+) -> Result<StatusCode, ThreadApiError> {
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    require_thread_owner_for_user(&state, owner, thread_id).await?;
+
+    threads::update()
+        .archived_at(Option::<i64>::None)
+        .last_activity_at(Some(now_ms()))
+        .where_(threads::id.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Permanently deletes a thread: messages, Telegram links, the standalone
+/// workspace (files + version history + blobs), then the thread row itself.
+pub async fn delete_thread(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+) -> Result<StatusCode, ThreadApiError> {
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    require_thread_owner_for_user(&state, owner, thread_id).await?;
+
+    hard_delete_thread(&state, thread_id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shared teardown used by the delete endpoint and the retention sweeper.
+/// Cancels any in-flight run first so the agent cannot resurrect rows mid-delete.
+pub(crate) async fn hard_delete_thread(
+    state: &ServerState,
+    thread_id: Uuid,
+) -> Result<(), ThreadApiError> {
+    let _ = state.runner.cancel_run(thread_id).await;
+
+    messages::delete()
+        .where_(messages::parent_thread.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    // Telegram bridge rows carry unique foreign keys onto the thread; drop them
+    // before the thread row. Best-effort: absent tables/rows are not an error.
+    let _ = state
+        .db
+        .query_with_params(
+            "DELETE FROM telegram_message_links WHERE thread_id = ?",
+            vec![Value::Uuid(thread_id)],
+        )
+        .await;
+    let _ = state
+        .db
+        .query_with_params(
+            "DELETE FROM telegram_threads WHERE thread_id = ?",
+            vec![Value::Uuid(thread_id)],
+        )
+        .await;
+
+    if let Some(vfs) = &state.vfs
+        && let Err(error) = vfs.delete_thread_workspace(thread_id).await
+    {
+        tracing::warn!(%thread_id, %error, "failed to delete thread workspace");
+    }
+
+    threads::delete()
+        .where_(threads::id.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    Ok(())
+}
+
+/// Lists the owner's archived threads, newest archival first, with the
+/// timestamps the archive page renders.
+pub async fn list_archived_threads(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ArchivedThreadResponse>>, ThreadApiError> {
+    let owner = auth::authenticated_user(&state, &headers).await?;
+
+    let result = state
+        .db
+        .query_with_params(
+            "SELECT id, title, project_id, archived_at, last_activity_at FROM threads \
+             WHERE owner = ? AND archived_at IS NOT NULL ORDER BY archived_at DESC",
+            vec![Value::Uuid(owner)],
+        )
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    let mut threads = Vec::new();
+    for row in result.rows() {
+        let id = uuid_value(row.get("id"))?;
+        let project_id = match row.get("project_id") {
+            Some(Value::Uuid(id)) => Some(id.to_string()),
+            Some(Value::Blob(bytes)) if bytes.len() == 16 => {
+                Uuid::from_slice(bytes).ok().map(|id| id.to_string())
+            }
+            _ => None,
+        };
+        threads.push(ArchivedThreadResponse {
+            title: row.get_text("title").unwrap_or("Untitled").to_string(),
+            project_id,
+            archived_at: row.get_int("archived_at").unwrap_or_else(|| uuid_v7_ms(id)),
+            last_activity_at: row
+                .get_int("last_activity_at")
+                .unwrap_or_else(|| uuid_v7_ms(id)),
+            id: id.to_string(),
+        });
+    }
+
+    Ok(Json(threads))
+}
+
 pub async fn thread_page_data(
     state: &ServerState,
     headers: &HeaderMap,
@@ -337,7 +535,7 @@ async fn thread_summaries(
     let result = state
         .db
         .query_with_params(
-            "SELECT id, title, project_id FROM threads WHERE owner = ? ORDER BY id DESC",
+            "SELECT id, title, project_id FROM threads WHERE owner = ? AND archived_at IS NULL ORDER BY id DESC",
             vec![Value::Uuid(owner)],
         )
         .await
@@ -394,7 +592,8 @@ pub async fn create_thread(
     let mut insert = threads::insert()
         .id(thread_id)
         .owner(owner)
-        .title(DEFAULT_THREAD_TITLE);
+        .title(DEFAULT_THREAD_TITLE)
+        .last_activity_at(Some(now_ms()));
     if let Some(pid) = project_id {
         insert = insert.project_id(pid);
     }
@@ -892,6 +1091,24 @@ fn tool_call_name(tool_calls: Option<&str>) -> Option<String> {
         .first()
         .and_then(|call| call.function.as_ref())
         .and_then(|function| function.name.clone())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// The millisecond timestamp packed into a UUIDv7's leading 48 bits. Used as a
+/// last-activity/created fallback for threads that predate the timestamp columns.
+pub(crate) fn uuid_v7_ms(id: Uuid) -> i64 {
+    let bytes = id.as_bytes();
+    let mut ts: u64 = 0;
+    for byte in &bytes[0..6] {
+        ts = (ts << 8) | u64::from(*byte);
+    }
+    ts as i64
 }
 
 fn uuid_value(value: Option<&Value>) -> Result<Uuid, ThreadApiError> {
@@ -1403,6 +1620,18 @@ mod tests {
         let value = Value::Blob(id.as_bytes().to_vec());
 
         assert_eq!(uuid_value(Some(&value)).unwrap(), id);
+    }
+
+    #[test]
+    fn uuid_v7_ms_recovers_generation_time() {
+        let before = now_ms();
+        let id = Uuid::now_v7();
+        let after = now_ms();
+        let ts = uuid_v7_ms(id);
+        assert!(
+            ts >= before - 5 && ts <= after + 5,
+            "ts={ts} before={before} after={after}"
+        );
     }
 
     #[test]

@@ -442,6 +442,31 @@ migrations! {
 
         raw "UPDATE messages SET content_format = 'markdown' WHERE content_format IS NULL";
     }
+
+    thread_lifecycle {
+        // `last_activity_at` is the ms-since-epoch of the thread's most recent
+        // message; `archived_at` is the ms-since-epoch a thread was archived
+        // (NULL while active). Legacy rows keep NULL for both and fall back to
+        // the thread id's embedded v7 timestamp where a value is needed.
+        alter table threads {
+            add last_activity_at: Option<i64>;
+            add archived_at: Option<i64>;
+        }
+    }
+
+    thread_retention {
+        // Per-user auto-archive / auto-remove policy. A NULL day count means the
+        // corresponding sweep is disabled for that user. When no row exists the
+        // defaults (archive after 14 days, remove 90 days after archival) apply.
+        table thread_retention_settings {
+            owner: Uuid [PrimaryKey],
+            archive_after_days: Option<i64>,
+            remove_after_days: Option<i64>,
+            updated_at: i64,
+
+            foreign_key(owner -> users.id);
+        }
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

@@ -19,6 +19,8 @@ html {
     --foreground: #09090b;
     --card: #ffffff;
     --card-foreground: #18181b;
+    --popover: #ffffff;
+    --popover-foreground: #18181b;
     --primary: #18181b;
     --primary-foreground: #fafafa;
     --primary-hover: #27272a;
@@ -82,6 +84,8 @@ html {
         --foreground: #d4d4d4;
         --card: #212121;
         --card-foreground: #d4d4d4;
+        --popover: #212121;
+        --popover-foreground: #d4d4d4;
         --primary: #f4f4f5;
         --primary-foreground: #18181b;
         --primary-hover: #e4e4e7;

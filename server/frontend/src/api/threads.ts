@@ -32,6 +32,14 @@ export type ThreadSummary = {
 	project_id: string | null;
 };
 
+export type ArchivedThread = {
+	id: string;
+	title: string;
+	project_id: string | null;
+	archived_at: number;
+	last_activity_at: number;
+};
+
 export type ThreadMessage = {
 	id: string;
 	seq: number;
@@ -89,6 +97,26 @@ export async function createThread(content: string, projectId?: string, stagedUp
 		method: 'POST',
 		body: JSON.stringify({content, project_id: projectId ?? null, staged_uploads: stagedUploads ?? []})
 	});
+}
+
+export async function listArchivedThreads(): Promise<ArchivedThread[]> {
+	return request('/api/threads/archived');
+}
+
+export async function renameThread(threadId: string, title: string): Promise<void> {
+	await request(`/api/threads/${threadId}`, {method: 'PATCH', body: JSON.stringify({title})});
+}
+
+export async function archiveThread(threadId: string): Promise<void> {
+	await request(`/api/threads/${threadId}/archive`, {method: 'POST'});
+}
+
+export async function unarchiveThread(threadId: string): Promise<void> {
+	await request(`/api/threads/${threadId}/unarchive`, {method: 'POST'});
+}
+
+export async function deleteThread(threadId: string): Promise<void> {
+	await request(`/api/threads/${threadId}`, {method: 'DELETE'});
 }
 
 export async function listMessages(threadId: string): Promise<ThreadMessage[]> {

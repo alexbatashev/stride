@@ -16,6 +16,7 @@ pub mod memories;
 pub mod projects;
 pub mod skills;
 pub mod telegram;
+pub mod thread_settings;
 pub mod threads;
 pub mod transcribe;
 pub mod uploads;

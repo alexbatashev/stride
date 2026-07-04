@@ -260,6 +260,25 @@ export async function deleteWritableDir(id: string): Promise<void> {
 	await request(`/api/settings/writable-dirs/${id}`, { method: "DELETE" });
 }
 
+export type ThreadRetentionSettings = {
+	archive_after_days: number | null;
+	remove_after_days: number | null;
+};
+
+export async function getThreadRetention(): Promise<ThreadRetentionSettings> {
+	return request("/api/settings/thread-retention");
+}
+
+export async function updateThreadRetention(
+	data: ThreadRetentionSettings,
+): Promise<ThreadRetentionSettings> {
+	return request("/api/settings/thread-retention", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
 export async function listMemories(): Promise<MemorySettings> {
 	return request("/api/settings/memories");
 }

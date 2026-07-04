@@ -22,6 +22,7 @@ argon_module!(app_text_input);
 argon_module!(auth_form);
 argon_module!(auto_markdown);
 
+argon_module!(archive);
 argon_module!(arrow_up);
 argon_module!(bot_message_square);
 argon_module!(chevron_down);

@@ -1,5 +1,18 @@
 import { logout } from "../api/auth.js";
 import { createProject, deleteProject, renameProject } from "../api/projects.js";
+import { openThreadMenu, type ThreadMutation, type ThreadRef } from "./thread-actions.js";
+
+// After a sidebar-triggered mutation, reload so the list re-renders. If the
+// affected thread is the one currently open, an archive/delete makes its page
+// invalid, so navigate to the new-thread view instead.
+function reloadAfterThreadMutation(mutation: ThreadMutation, thread: ThreadRef): void {
+	const currentId = document.querySelector<HTMLElement>("#threads-page")?.dataset.threadId;
+	if (currentId && currentId === thread.id && (mutation === "delete" || mutation === "archive")) {
+		window.location.href = "/threads";
+		return;
+	}
+	window.location.reload();
+}
 
 // Sidebar navigation is plain <a href> links, so every page gets it for free.
 // Only the actions that need JS (auth + project mutations) are wired here, once,
@@ -34,5 +47,11 @@ export function bindSidebar(sidebar: HTMLElement): void {
 		const { id } = (event as CustomEvent<{ id: string }>).detail;
 		if (!window.confirm("Delete this project? Threads will be kept but unlinked.")) return;
 		void deleteProject(id).then(() => window.location.reload());
+	});
+
+	sidebar.addEventListener("thread-menu", (event) => {
+		const { id, title, anchor } = (event as CustomEvent<{ id: string; title: string; anchor: HTMLElement }>).detail;
+		if (!id || !anchor) return;
+		openThreadMenu(anchor, { id, title, archived: false }, reloadAfterThreadMutation);
 	});
 }
