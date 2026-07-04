@@ -449,6 +449,9 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
     Router::new()
         .merge(auth_routes)
         .route("/api/logout", post(api::auth::logout))
+        .route("/v1/models", get(api::openai::list_models))
+        .route("/v1/models/{*model}", get(api::openai::get_model))
+        .route("/v1/chat/completions", post(api::openai::chat_completion))
         .route("/api/settings/telegram", get(api::telegram::settings))
         .route("/api/settings/github", get(api::github::settings))
         .route(

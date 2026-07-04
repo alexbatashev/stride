@@ -7,7 +7,7 @@ struct HomeFeature {
     struct State: Equatable {
         var projects: IdentifiedArrayOf<Project> = []
         var threads: IdentifiedArrayOf<ThreadSummary> = []
-        var selection: SidebarSelection = .all
+        var selection: SidebarSelection = .local
         var selectedThreadID: String?
         var chat: ChatFeature.State?
         var files = FilesFeature.State(scope: .global)
@@ -19,6 +19,7 @@ struct HomeFeature {
         var preferredCompactColumn: NavigationSplitViewColumn = .content
 
         enum SidebarSelection: Equatable, Hashable {
+            case local
             case all
             case project(String)
             case files
@@ -36,10 +37,12 @@ struct HomeFeature {
         var visibleThreads: [ThreadSummary] {
             let base: [ThreadSummary]
             switch selection {
+            case .local:
+                base = threads.filter { $0.location == .local }
             case .all:
-                base = Array(threads)
+                base = threads.filter { $0.location == .cloud }
             case let .project(id):
-                base = threads.filter { $0.projectID == id }
+                base = threads.filter { $0.projectID == id && $0.location == .cloud }
             case .files, .automations:
                 base = []
             }
@@ -84,11 +87,12 @@ struct HomeFeature {
 
             case .refresh:
                 return .run { send in
-                    async let threads = stride.listThreads()
+                    async let localThreads = stride.listThreads(.local)
+                    async let cloudThreads = stride.listThreads(.cloud)
                     async let projects = stride.listProjects()
                     do {
-                        let (loadedThreads, loadedProjects) = try await (threads, projects)
-                        await send(.dataResponse(threads: loadedThreads, projects: loadedProjects))
+                        let (loadedLocalThreads, loadedCloudThreads, loadedProjects) = try await (localThreads, cloudThreads, projects)
+                        await send(.dataResponse(threads: loadedLocalThreads + loadedCloudThreads, projects: loadedProjects))
                     } catch let error as StrideError {
                         await send(.loadFailed(error))
                     } catch {
@@ -132,6 +136,7 @@ struct HomeFeature {
                 state.chat = ChatFeature.State(
                     threadID: id,
                     projectID: summary.projectID,
+                    location: summary.location,
                     title: summary.title
                 )
                 return .none
@@ -142,6 +147,7 @@ struct HomeFeature {
                 state.chat = ChatFeature.State(
                     threadID: nil,
                     projectID: state.scopeProjectID,
+                    location: state.selection == .local ? .local : .cloud,
                     title: "New thread"
                 )
                 return .none

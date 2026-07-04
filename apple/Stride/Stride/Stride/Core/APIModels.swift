@@ -6,11 +6,24 @@ struct Project: Identifiable, Equatable, Decodable {
     let title: String
 }
 
+enum ThreadLocation: String, CaseIterable, Equatable, Hashable, Sendable {
+    case local
+    case cloud
+
+    var label: String {
+        switch self {
+        case .local: return "Local"
+        case .cloud: return "Cloud"
+        }
+    }
+}
+
 /// One row in the thread list. Mirrors `GET /api/threads`.
 struct ThreadSummary: Identifiable, Equatable, Decodable {
     let id: String
     var title: String
     var projectID: String?
+    var location: ThreadLocation = .cloud
 
     enum CodingKeys: String, CodingKey {
         case id, title

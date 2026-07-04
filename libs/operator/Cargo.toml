@@ -1,0 +1,22 @@
+[package]
+name = "stride-operator"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+ffi = ["dep:futures", "dep:tokio", "dep:uniffi"]
+uniffi-cli = ["ffi", "uniffi/cli"]
+
+[[bin]]
+name = "stride-operator-uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["uniffi-cli"]
+
+[dependencies]
+futures = { version = "0.3.32", optional = true }
+stride-agent = { path = "../agent" }
+tokio = { version = "1.52.3", features = ["rt"], optional = true }
+uniffi = { version = "0.32.0", optional = true }

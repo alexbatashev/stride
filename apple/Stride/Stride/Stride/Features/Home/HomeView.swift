@@ -53,8 +53,11 @@ private struct SidebarView: View {
     var body: some View {
         List(selection: scopeBinding) {
             Section {
-                Label("All Conversations", systemImage: "tray.full")
-                    .badge(store.threads.count)
+                Label("Local", systemImage: "macwindow")
+                    .badge(store.threads.filter { $0.location == .local }.count)
+                    .tag(HomeFeature.State.SidebarSelection.local)
+                Label("Cloud", systemImage: "icloud")
+                    .badge(store.threads.filter { $0.location == .cloud }.count)
                     .tag(HomeFeature.State.SidebarSelection.all)
             }
 
@@ -173,8 +176,10 @@ private struct ThreadListView: View {
 
     private var scopeTitle: String {
         switch store.selection {
+        case .local:
+            return "Local"
         case .all:
-            return "All Conversations"
+            return "Cloud"
         case let .project(id):
             return store.projects[id: id]?.title ?? "Project"
         case .files:
@@ -185,6 +190,9 @@ private struct ThreadListView: View {
     }
 
     private func subtitle(for thread: ThreadSummary) -> String {
+        if thread.location == .local {
+            return "On this Mac"
+        }
         guard let projectID = thread.projectID, let project = store.projects[id: projectID] else {
             return "S.T.R.I.D.E."
         }

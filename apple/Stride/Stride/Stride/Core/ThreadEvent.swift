@@ -71,6 +71,13 @@ struct ThreadEvent: Equatable, Decodable {
         case kind
     }
 
+    init(seq: Int, threadID: String, runID: String?, kind: Kind) {
+        self.seq = seq
+        self.threadID = threadID
+        self.runID = runID
+        self.kind = kind
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         seq = try container.decode(Int.self, forKey: .seq)

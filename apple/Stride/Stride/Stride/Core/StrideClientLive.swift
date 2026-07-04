@@ -5,6 +5,7 @@ extension StrideClient {
     /// bearer token from `session` for every call.
     static func live(session: Session) -> StrideClient {
         let api = HTTPAPI(session: session)
+        let local = LocalOperatorClient.shared
 
         return StrideClient(
             login: { baseURL, username, password in
@@ -20,43 +21,75 @@ extension StrideClient {
             listProjects: {
                 try await api.get("/api/projects", as: [Project].self)
             },
-            listThreads: {
-                try await api.get("/api/threads", as: [ThreadSummary].self)
+            listThreads: { location in
+                switch location {
+                case .local:
+                    return await local.listThreads()
+                case .cloud:
+                    return try await api.get("/api/threads", as: [ThreadSummary].self)
+                }
             },
-            listMessages: { threadID in
-                try await api.get("/api/threads/\(threadID)/messages", as: [Message].self)
+            listMessages: { location, threadID in
+                switch location {
+                case .local:
+                    return await local.listMessages(threadID: threadID)
+                case .cloud:
+                    return try await api.get("/api/threads/\(threadID)/messages", as: [Message].self)
+                }
             },
-            createThread: { content, projectID, filePaths in
-                try await api.post(
-                    "/api/threads",
-                    body: CreateThreadBody(content: content, projectID: projectID, filePaths: filePaths),
-                    as: SendResult.self
-                )
+            createThread: { location, content, projectID, filePaths in
+                switch location {
+                case .local:
+                    return try await local.createThread(content: content, session: session)
+                case .cloud:
+                    return try await api.post(
+                        "/api/threads",
+                        body: CreateThreadBody(content: content, projectID: projectID, filePaths: filePaths),
+                        as: SendResult.self
+                    )
+                }
             },
-            sendMessage: { threadID, content, filePaths in
-                try await api.post(
-                    "/api/threads/\(threadID)/messages",
-                    body: SendMessageBody(content: content, filePaths: filePaths),
-                    as: SendResult.self
-                )
+            sendMessage: { location, threadID, content, filePaths in
+                switch location {
+                case .local:
+                    return try await local.sendMessage(threadID: threadID, content: content, session: session)
+                case .cloud:
+                    return try await api.post(
+                        "/api/threads/\(threadID)/messages",
+                        body: SendMessageBody(content: content, filePaths: filePaths),
+                        as: SendResult.self
+                    )
+                }
             },
-            cancelRun: { threadID in
+            cancelRun: { location, threadID in
+                guard location == .cloud else { return }
                 try await api.post("/api/threads/\(threadID)/cancel")
             },
-            resolveApproval: { threadID, approvalID, approved in
-                try await api.post(
-                    "/api/threads/\(threadID)/approvals/\(approvalID)",
-                    body: ApprovalBody(approved: approved)
-                )
+            resolveApproval: { location, threadID, approvalID, approved in
+                switch location {
+                case .local:
+                    await local.resolveApproval(threadID: threadID, approvalID: approvalID, approved: approved)
+                case .cloud:
+                    try await api.post(
+                        "/api/threads/\(threadID)/approvals/\(approvalID)",
+                        body: ApprovalBody(approved: approved)
+                    )
+                }
             },
-            answerQuiz: { threadID, quizID, answers in
+            answerQuiz: { location, threadID, quizID, answers in
+                guard location == .cloud else { return }
                 try await api.post(
                     "/api/threads/\(threadID)/quizzes/\(quizID)",
                     body: QuizAnswerBody(answers: answers)
                 )
             },
-            events: { threadID in
-                api.eventStream(threadID: threadID)
+            events: { location, threadID in
+                switch location {
+                case .local:
+                    return local.events(threadID: threadID)
+                case .cloud:
+                    return api.eventStream(threadID: threadID)
+                }
             },
             listFiles: { scope, path in
                 try await api.get(api.filesPath(scope, query: path), as: FileListing.self)

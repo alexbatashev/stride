@@ -7,8 +7,19 @@ struct StrideApp: App {
         AppFeature()
     }
 
+    @SceneBuilder
     var body: some Scene {
-        WindowGroup {
+        mainWindow
+
+        #if os(macOS)
+        MenuBarExtra("Stride Operator", systemImage: "sparkles") {
+            OperatorMenu(store: store)
+        }
+        #endif
+    }
+
+    private var mainWindow: some Scene {
+        WindowGroup("Stride", id: "main") {
             RootView(store: store)
                 .tint(.accentColor)
         }
@@ -17,3 +28,29 @@ struct StrideApp: App {
         #endif
     }
 }
+
+#if os(macOS)
+private struct OperatorMenu: View {
+    let store: StoreOf<AppFeature>
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Open Stride") {
+            openWindow(id: "main")
+        }
+
+        Button("New Local Thread") {
+            openWindow(id: "main")
+            store.send(.home(.sidebarSelected(.local)))
+            store.send(.home(.newThreadTapped))
+        }
+        .disabled(store.home == nil)
+
+        Divider()
+
+        Button("Quit") {
+            NSApplication.shared.terminate(nil)
+        }
+    }
+}
+#endif

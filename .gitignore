@@ -1,7 +1,9 @@
 /target
 node_modules/
+.pnpm-store/
 server/frontend/dist
 server/frontend/showcase-dist
+apple/Stride/Generated/
 xcuserdata/
 build/
 *.hmap

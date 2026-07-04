@@ -18,16 +18,16 @@ struct StrideClient {
     var signOut: @Sendable () async -> Void
 
     var listProjects: @Sendable () async throws -> [Project]
-    var listThreads: @Sendable () async throws -> [ThreadSummary]
-    var listMessages: @Sendable (_ threadID: String) async throws -> [Message]
+    var listThreads: @Sendable (_ location: ThreadLocation) async throws -> [ThreadSummary]
+    var listMessages: @Sendable (_ location: ThreadLocation, _ threadID: String) async throws -> [Message]
 
-    var createThread: @Sendable (_ content: String, _ projectID: String?, _ filePaths: [String]) async throws -> SendResult
-    var sendMessage: @Sendable (_ threadID: String, _ content: String, _ filePaths: [String]) async throws -> SendResult
-    var cancelRun: @Sendable (_ threadID: String) async throws -> Void
-    var resolveApproval: @Sendable (_ threadID: String, _ approvalID: String, _ approved: Bool) async throws -> Void
-    var answerQuiz: @Sendable (_ threadID: String, _ quizID: String, _ answers: [String]) async throws -> Void
+    var createThread: @Sendable (_ location: ThreadLocation, _ content: String, _ projectID: String?, _ filePaths: [String]) async throws -> SendResult
+    var sendMessage: @Sendable (_ location: ThreadLocation, _ threadID: String, _ content: String, _ filePaths: [String]) async throws -> SendResult
+    var cancelRun: @Sendable (_ location: ThreadLocation, _ threadID: String) async throws -> Void
+    var resolveApproval: @Sendable (_ location: ThreadLocation, _ threadID: String, _ approvalID: String, _ approved: Bool) async throws -> Void
+    var answerQuiz: @Sendable (_ location: ThreadLocation, _ threadID: String, _ quizID: String, _ answers: [String]) async throws -> Void
 
-    var events: @Sendable (_ threadID: String) -> AsyncThrowingStream<ThreadEvent, Error>
+    var events: @Sendable (_ location: ThreadLocation, _ threadID: String) -> AsyncThrowingStream<ThreadEvent, Error>
 
     var listFiles: @Sendable (_ scope: FileScope, _ path: String) async throws -> FileListing
     var createDirectory: @Sendable (_ scope: FileScope, _ path: String) async throws -> Void
@@ -57,14 +57,14 @@ extension StrideClient: DependencyKey {
         register: { _, _, _ in },
         signOut: {},
         listProjects: { [] },
-        listThreads: { [] },
-        listMessages: { _ in [] },
-        createThread: { _, _, _ in SendResult(threadID: "preview", runID: "run") },
-        sendMessage: { _, _, _ in SendResult(threadID: "preview", runID: "run") },
-        cancelRun: { _ in },
-        resolveApproval: { _, _, _ in },
-        answerQuiz: { _, _, _ in },
-        events: { _ in AsyncThrowingStream { $0.finish() } },
+        listThreads: { _ in [] },
+        listMessages: { _, _ in [] },
+        createThread: { _, _, _, _ in SendResult(threadID: "preview", runID: "run") },
+        sendMessage: { _, _, _, _ in SendResult(threadID: "preview", runID: "run") },
+        cancelRun: { _, _ in },
+        resolveApproval: { _, _, _, _ in },
+        answerQuiz: { _, _, _, _ in },
+        events: { _, _ in AsyncThrowingStream { $0.finish() } },
         listFiles: { _, _ in FileListing(path: "", entries: []) },
         createDirectory: { _, _ in },
         renameFile: { _, _ in },
