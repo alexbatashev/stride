@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod archived;
 pub mod auth;
 pub mod automations;
 pub mod files;
@@ -103,6 +104,7 @@ fn render_sidebar(
     files_active: bool,
     automations_active: bool,
     settings_active: bool,
+    archived_active: bool,
 ) -> String {
     let projects = data.projects.iter().map(|project| SidebarProject {
         id: project.id.clone(),
@@ -127,6 +129,7 @@ fn render_sidebar(
         files_active,
         automations_active,
         settings_active,
+        archived_active,
     );
     format!("<nav>{sidebar}</nav>")
 }
@@ -192,6 +195,11 @@ const THREADS_STYLE: &str = r#"<style>
         min-width: 72px;
     }
 
+    #threads-page .thread-menu-button {
+        display: none;
+        margin-left: 4px;
+    }
+
     #threads-page .empty {
         align-content: center;
         display: grid;
@@ -240,7 +248,7 @@ const THREADS_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_threads_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, false, false);
+    let sidebar = render_sidebar(data, false, false, false, false);
     let toggle = AppSidebarToggle::new("").render();
     let files_button = with_attrs(
         &AppButton::new().render(),
@@ -248,6 +256,11 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
     );
     // The slot content goes in the host's light DOM, after the shadow template.
     let files_button = files_button.replacen("</app-button>", "Files</app-button>", 1);
+    let menu_button = with_attrs(
+        &AppButton::new().render(),
+        r#"variant="ghost" size="icon-sm" class="thread-menu-button" title="Thread actions" aria-label="Thread actions" data-action="thread-menu""#,
+    );
+    let menu_button = menu_button.replacen("</app-button>", "⋯</app-button>", 1);
     let messages = render_messages(data);
     let placeholder = if data.thread_id.is_empty() {
         "Ask S.T.R.I.D.E. anything"
@@ -277,6 +290,7 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
         {toggle}
         <span class="toolbar-spacer"></span>
         {files_button}
+        {menu_button}
         <span data-current-title hidden>{current_title}</span>
     </header>
     <section class="content">
@@ -327,7 +341,7 @@ const FILES_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_files_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, true, false, false);
+    let sidebar = render_sidebar(data, true, false, false, false);
     let toggle = AppSidebarToggle::new("").render();
     let body = format!(
         r#"{FILES_STYLE}
@@ -373,7 +387,7 @@ const AUTOMATIONS_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_automations_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, true, false);
+    let sidebar = render_sidebar(data, false, true, false, false);
     let toggle = AppSidebarToggle::new("").render();
     let body = format!(
         r#"{AUTOMATIONS_STYLE}
@@ -392,8 +406,53 @@ pub fn render_automations_page(data: &ThreadPageData) -> String {
     )
 }
 
+pub fn render_archived_page(data: &ThreadPageData) -> String {
+    let sidebar = render_sidebar(data, false, false, false, true);
+    let toggle = AppSidebarToggle::new("").render();
+    let body = format!(
+        r#"<style>
+    #archived-page > main {{
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+    }}
+
+    #archived-page app-archived-threads {{
+        flex: 1;
+        min-height: 0;
+    }}
+
+    #archived-page .mobile-bar {{
+        display: none;
+    }}
+
+    @media (max-width: 767px) {{
+        #archived-page .mobile-bar {{
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            padding: 8px 12px;
+        }}
+    }}
+</style>
+{sidebar}
+<main>
+    <div class="mobile-bar">{toggle}</div>
+    <app-archived-threads></app-archived-threads>
+</main>
+{NAVIGATE_SCRIPT}"#,
+    );
+
+    render_page(
+        "Archived - S.T.R.I.D.E.",
+        archived::PAGE_SCRIPT,
+        r#"id="archived-page""#,
+        &body,
+    )
+}
+
 pub fn render_settings_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, false, true);
+    let sidebar = render_sidebar(data, false, false, true, false);
     let toggle = AppSidebarToggle::new("").render();
 
     let body = format!(
@@ -553,6 +612,16 @@ mod tests {
         assert!(html.contains("<app-automations></app-automations>"));
         assert!(html.contains(r#"href="/automations" aria-current="page""#));
         assert!(html.contains("/static/pages/automations-page.js"));
+    }
+
+    #[test]
+    fn archived_page_renders_list_shell() {
+        let html = super::render_archived_page(&sample_data());
+
+        assert!(html.contains(r#"<body id="archived-page">"#));
+        assert!(html.contains("<app-archived-threads></app-archived-threads>"));
+        assert!(html.contains(r#"href="/archived" aria-current="page""#));
+        assert!(html.contains("/static/pages/archived-page.js"));
     }
 
     #[test]

@@ -561,6 +561,75 @@ impl Vfs {
         Ok(())
     }
 
+    /// Deletes a standalone thread's workspace and every node, version, and
+    /// stored blob it holds. Project threads share the project's global folder
+    /// and own no standalone workspace, so this is a no-op for them.
+    pub async fn delete_thread_workspace(&self, thread_id: Uuid) -> anyhow::Result<()> {
+        let Some(workspace_id) = self.find_workspace_for_thread(thread_id).await? else {
+            return Ok(());
+        };
+
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT id FROM vfs_nodes WHERE parent_workspace = ?",
+                vec![Value::Uuid(workspace_id)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let mut node_ids: Vec<Uuid> = rows
+            .rows()
+            .iter()
+            .filter_map(|row| uuid_from_row(row, "id"))
+            .collect();
+
+        for node_id in &node_ids {
+            let objects = self
+                .db
+                .query_with_params(
+                    "SELECT id, location FROM vfs_objects WHERE node = ?",
+                    vec![Value::Uuid(*node_id)],
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            for row in objects.rows() {
+                let Some(object_id) = uuid_from_row(row, "id") else {
+                    continue;
+                };
+                let location = row.get_text("location").map(|s| s.to_string());
+                vfs_objects::delete()
+                    .where_(vfs_objects::id.eq(object_id))
+                    .execute(&self.db)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                if let Some(loc) = location {
+                    let _ = self.storage.delete(&loc).await;
+                }
+            }
+        }
+
+        // Children reference parents through `parent_node`; v7 ids are monotonic,
+        // so deleting from highest id down removes children before their parents.
+        node_ids.sort();
+        for node_id in node_ids.into_iter().rev() {
+            vfs_nodes::delete()
+                .where_(vfs_nodes::id.eq(node_id))
+                .execute(&self.db)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
+
+        self.db
+            .query_with_params(
+                "DELETE FROM vfs_workspaces WHERE id = ?",
+                vec![Value::Uuid(workspace_id)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        Ok(())
+    }
+
     /// Reads UTF-8 content of a file at `path` relative to workspace root.
     pub async fn read(&self, workspace_id: Uuid, path: &str) -> anyhow::Result<String> {
         let (bytes, _) = self.read_bytes(workspace_id, path).await?;
@@ -1214,6 +1283,54 @@ mod tests {
 
         assert!(vfs.read(ws, "a/b/c.txt").await.is_err());
         assert_eq!(vfs.read(ws, "keep.txt").await.unwrap(), "keep");
+    }
+
+    #[tokio::test]
+    async fn delete_thread_workspace_removes_everything() {
+        let (vfs, owner) = setup_vfs().await;
+        let thread_id = Uuid::now_v7();
+        let ws = vfs
+            .get_or_create_workspace(thread_id, None, owner)
+            .await
+            .unwrap();
+        vfs.write(ws, "a/b.txt", "hi", owner).await.unwrap();
+        vfs.write(ws, "c.txt", "yo", owner).await.unwrap();
+
+        vfs.delete_thread_workspace(thread_id).await.unwrap();
+
+        assert!(
+            vfs.find_workspace_for_thread(thread_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let nodes = vfs
+            .db
+            .query_with_params(
+                "SELECT COUNT(*) AS n FROM vfs_nodes WHERE parent_workspace = ?",
+                vec![Value::Uuid(ws)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(nodes.rows()[0].get_int("n"), Some(0));
+
+        let objects = vfs
+            .db
+            .query_with_params(
+                "SELECT COUNT(*) AS n FROM vfs_objects o JOIN vfs_nodes n ON n.id = o.node WHERE n.parent_workspace = ?",
+                vec![Value::Uuid(ws)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(objects.rows()[0].get_int("n"), Some(0));
+    }
+
+    #[tokio::test]
+    async fn delete_thread_workspace_is_noop_without_workspace() {
+        let (vfs, _owner) = setup_vfs().await;
+        // A project thread owns no standalone workspace; deletion must not error.
+        vfs.delete_thread_workspace(Uuid::now_v7()).await.unwrap();
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ import {
 	stageUploads,
 } from "../api/threads.js";
 import { bindSidebar } from "./sidebar.js";
+import { openThreadMenu, type ThreadMutation } from "./thread-actions.js";
 
 type ViewMessage = ThreadMessage & { pending?: boolean };
 type PendingQuiz = {
@@ -88,6 +89,7 @@ class ThreadsPageHydrator {
 	private readonly errorEl: HTMLElement;
 	private readonly sidebarEl: SidebarEl;
 	private readonly fileManagerEl: FileManagerEl;
+	private menuButtonEl: HTMLElement | null = null;
 
 	constructor(private readonly root: HTMLElement) {
 		this.threadId = root.dataset.threadId ?? "";
@@ -168,6 +170,9 @@ class ThreadsPageHydrator {
 		this.root
 			.querySelectorAll<HTMLElement>('[data-action="files"]')
 			.forEach((button) => button.addEventListener("click", () => this.toggleFiles()));
+		this.menuButtonEl = this.root.querySelector<HTMLElement>('[data-action="thread-menu"]');
+		this.menuButtonEl?.addEventListener("click", () => this.openThreadActions());
+		this.syncMenuButton();
 		this.fileManagerEl.addEventListener("files-close", () => {
 			this.fileManagerEl.open = false;
 		});
@@ -381,6 +386,10 @@ class ThreadsPageHydrator {
 
 		if (last?.role === "agent" && !last.tool_call_name) {
 			last.pending = true;
+			// Keep the format in sync: a message first created during the thinking
+			// phase defaults to markdown, but content deltas may be html. Without
+			// this, html streams render as escaped markdown until the final commit.
+			last.format = this.pendingAssistantFormat;
 			last.content = this.pendingAssistant;
 			last.thinking = thinking ? `${last.thinking ?? ""}${thinking}` : last.thinking;
 			this.updateMessageElement(last);
@@ -672,6 +681,7 @@ class ThreadsPageHydrator {
 		this.quizEl.options = (question?.options ?? []).map(esc);
 		this.errorEl.textContent = this.error;
 		this.fileManagerEl.threadId = this.threadId;
+		this.syncMenuButton();
 	}
 
 	private composerPlaceholder(): string {
@@ -685,6 +695,31 @@ class ThreadsPageHydrator {
 	private toggleFiles() {
 		this.fileManagerEl.threadId = this.threadId;
 		this.fileManagerEl.open = !this.fileManagerEl.open;
+	}
+
+	private syncMenuButton() {
+		if (this.menuButtonEl) {
+			this.menuButtonEl.style.display = this.threadId ? "inline-block" : "none";
+		}
+	}
+
+	private openThreadActions() {
+		if (!this.threadId || !this.menuButtonEl) return;
+		const title =
+			this.threads.find((thread) => thread.id === this.threadId)?.title ??
+			this.titleEl.textContent ??
+			"";
+		openThreadMenu(
+			this.menuButtonEl,
+			{ id: this.threadId, title, archived: false },
+			(mutation: ThreadMutation) => {
+				if (mutation === "delete" || mutation === "archive") {
+					window.location.href = "/threads";
+					return;
+				}
+				window.location.reload();
+			},
+		);
 	}
 
 	private async onStop() {

@@ -35,7 +35,7 @@ use uuid::Uuid;
 
 use crate::{
     config::{Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
-    db::{MessageFormat, Role, messages},
+    db::{MessageFormat, Role, messages, threads},
     email::ImapService,
     github::GitHubRuntime,
     google::GoogleService,
@@ -823,6 +823,21 @@ async fn handle_send(
         .execute(&db)
         .await
         .map_err(db_error)?;
+
+    // Every inbound message (web, Telegram, tools) funnels through here, so this
+    // is the single place a thread's last activity is stamped for retention.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    if let Err(error) = threads::update()
+        .last_activity_at(Some(now_ms))
+        .where_(threads::id.eq(thread_id))
+        .execute(&db)
+        .await
+    {
+        tracing::warn!(%thread_id, %error, "failed to stamp thread activity");
+    }
 
     emit(
         &state,

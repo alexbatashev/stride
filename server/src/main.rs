@@ -53,6 +53,9 @@ const UPLOAD_BODY_LIMIT: usize = 25 * 1024 * 1024;
 const STAGED_UPLOAD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How often the staging area is swept for stale uploads.
 const STAGED_UPLOAD_SWEEP: Duration = Duration::from_secs(60 * 60);
+/// How often idle/archived threads are evaluated for auto-archive/auto-remove.
+const THREAD_RETENTION_SWEEP: Duration = Duration::from_secs(6 * 60 * 60);
+const MS_PER_DAY: i64 = 24 * 60 * 60 * 1000;
 const DEFAULT_DEV_JWT_SECRET: &str = "change-this-development-secret";
 const MIN_JWT_SECRET_LEN: usize = 32;
 
@@ -224,6 +227,10 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(sweep_staged_uploads(state.clone()));
     }
 
+    // Auto-archive idle threads and auto-remove long-archived ones per each
+    // user's retention policy.
+    tokio::spawn(sweep_thread_retention(state.clone()));
+
     // Register the webhook with callback_query updates enabled so inline button taps are delivered.
     if let Some(token) = telegram_bot_token {
         let telegram = state
@@ -280,6 +287,126 @@ async fn sweep_staged_uploads(state: Arc<ServerState>) {
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "failed to sweep staged uploads"),
         }
+    }
+}
+
+async fn sweep_thread_retention(state: Arc<ServerState>) {
+    let mut interval = tokio::time::interval(THREAD_RETENTION_SWEEP);
+    loop {
+        interval.tick().await;
+        if let Err(error) = run_thread_retention(&state).await {
+            tracing::warn!(%error, "thread retention sweep failed");
+        }
+    }
+}
+
+async fn run_thread_retention(state: &ServerState) -> anyhow::Result<()> {
+    use std::collections::{HashMap, HashSet};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    // (thread id, owner, effective last-activity ms) for every active thread.
+    let active: Vec<(uuid::Uuid, uuid::Uuid, i64)> = state
+        .db
+        .query_with_params(
+            "SELECT id, owner, last_activity_at FROM threads WHERE archived_at IS NULL",
+            vec![],
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?
+        .rows()
+        .iter()
+        .filter_map(|row| {
+            let id = row_uuid(row, "id")?;
+            let owner = row_uuid(row, "owner")?;
+            let last = row
+                .get_int("last_activity_at")
+                .unwrap_or_else(|| api::threads::uuid_v7_ms(id));
+            Some((id, owner, last))
+        })
+        .collect();
+
+    // (thread id, owner, archived-at ms) for every archived thread.
+    let archived: Vec<(uuid::Uuid, uuid::Uuid, i64)> = state
+        .db
+        .query_with_params(
+            "SELECT id, owner, archived_at FROM threads WHERE archived_at IS NOT NULL",
+            vec![],
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?
+        .rows()
+        .iter()
+        .filter_map(|row| {
+            let id = row_uuid(row, "id")?;
+            let owner = row_uuid(row, "owner")?;
+            let archived_at = row.get_int("archived_at").unwrap_or(now);
+            Some((id, owner, archived_at))
+        })
+        .collect();
+
+    let owners: HashSet<uuid::Uuid> = active
+        .iter()
+        .chain(archived.iter())
+        .map(|(_, owner, _)| *owner)
+        .collect();
+    let mut policies = HashMap::new();
+    for owner in owners {
+        if let Ok(policy) = api::thread_settings::load(&state.db, owner).await {
+            policies.insert(owner, policy);
+        }
+    }
+
+    for (id, owner, last) in active {
+        let Some(policy) = policies.get(&owner) else {
+            continue;
+        };
+        let Some(days) = policy.archive_after_days else {
+            continue;
+        };
+        if now - last >= days * MS_PER_DAY {
+            if let Err(error) = db::threads::update()
+                .archived_at(Some(now))
+                .where_(db::threads::id.eq(id))
+                .execute(&state.db)
+                .await
+            {
+                tracing::warn!(%id, %error, "auto-archive failed");
+            } else {
+                tracing::info!(%id, "auto-archived idle thread");
+            }
+        }
+    }
+
+    for (id, owner, archived_at) in archived {
+        let Some(policy) = policies.get(&owner) else {
+            continue;
+        };
+        let Some(days) = policy.remove_after_days else {
+            continue;
+        };
+        if now - archived_at >= days * MS_PER_DAY {
+            match api::threads::hard_delete_thread(state, id).await {
+                Ok(()) => tracing::info!(%id, "auto-removed archived thread"),
+                Err(error) => tracing::warn!(%id, ?error, "auto-remove failed"),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn row_uuid(row: &minisql::Row, col: &str) -> Option<uuid::Uuid> {
+    match row.get(col) {
+        Some(minisql::Value::Uuid(id)) => Some(*id),
+        Some(minisql::Value::Blob(bytes)) if bytes.len() == 16 => {
+            uuid::Uuid::from_slice(bytes).ok()
+        }
+        Some(minisql::Value::Text(s)) => uuid::Uuid::parse_str(s).ok(),
+        _ => None,
     }
 }
 
@@ -389,6 +516,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         )
         .route("/api/settings/memories", get(api::memories::list))
         .route("/api/settings/memories/{id}", delete(api::memories::delete))
+        .route(
+            "/api/settings/thread-retention",
+            get(api::thread_settings::get).put(api::thread_settings::update),
+        )
         .route("/api/settings/telegram/login", post(api::telegram::login))
         .route(
             "/api/settings/telegram/disconnect",
@@ -406,6 +537,22 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route(
             "/api/threads",
             get(api::threads::list_threads).post(api::threads::create_thread),
+        )
+        .route(
+            "/api/threads/archived",
+            get(api::threads::list_archived_threads),
+        )
+        .route(
+            "/api/threads/{id}",
+            patch(api::threads::rename_thread).delete(api::threads::delete_thread),
+        )
+        .route(
+            "/api/threads/{id}/archive",
+            post(api::threads::archive_thread),
+        )
+        .route(
+            "/api/threads/{id}/unarchive",
+            post(api::threads::unarchive_thread),
         )
         .route(
             "/api/threads/{id}/messages",
@@ -476,6 +623,7 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/threads/{id}", get(pages::agent::thread))
         .route("/files", get(pages::files::files))
         .route("/automations", get(pages::automations::automations))
+        .route("/archived", get(pages::archived::archived))
         .route("/settings", get(pages::settings::settings))
         .route("/", get(root))
         .nest_service(

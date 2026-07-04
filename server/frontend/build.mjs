@@ -129,7 +129,7 @@ await Promise.all([
     buildVendor(entryPoint, filename, globalName),
   ),
   esbuild.build({
-    entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/automations-page.ts', 'src/pages/settings-page.ts'],
+    entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/automations-page.ts', 'src/pages/settings-page.ts', 'src/pages/archived-page.ts'],
     bundle: true,
     format: 'esm',
     minify: true,

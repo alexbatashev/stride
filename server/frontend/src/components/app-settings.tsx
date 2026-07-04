@@ -16,6 +16,7 @@ import {
   getGitHubSettings,
   getGoogleSettings,
   getTelegramSettings,
+  getThreadRetention,
   listEmailAccounts,
   listMemories,
   listMcpServers,
@@ -25,6 +26,7 @@ import {
   startGitHubAuthorize,
   startGoogleAuthorize,
   updateSkill,
+  updateThreadRetention,
   type EmailAccount,
   type Memory,
   type MemoryRoom,
@@ -73,6 +75,13 @@ type SettingsHost = HTMLElement & {
   memoryError: string;
   memoryQuery: string;
   selectedMemoryId: string;
+  retentionArchiveEnabled: boolean;
+  retentionArchiveDays: number;
+  retentionRemoveEnabled: boolean;
+  retentionRemoveDays: number;
+  retentionLoaded: boolean;
+  retentionError: string;
+  retentionSaved: boolean;
 };
 
 function escapeHtml(value: string): string {
@@ -348,6 +357,40 @@ async function refreshMemories(host: SettingsHost): Promise<void> {
   }
 }
 
+async function refreshRetention(host: SettingsHost): Promise<void> {
+  try {
+    const settings = await getThreadRetention();
+    host.retentionArchiveEnabled = settings.archive_after_days != null;
+    host.retentionArchiveDays = settings.archive_after_days ?? 14;
+    host.retentionRemoveEnabled = settings.remove_after_days != null;
+    host.retentionRemoveDays = settings.remove_after_days ?? 90;
+    host.retentionLoaded = true;
+    host.retentionError = "";
+  } catch {
+    host.retentionError = "Failed to load thread settings.";
+  }
+}
+
+async function submitRetention(host: SettingsHost): Promise<void> {
+  host.retentionError = "";
+  host.retentionSaved = false;
+  const archiveDays = Math.min(3650, Math.max(1, Math.round(host.retentionArchiveDays) || 14));
+  const removeDays = Math.min(3650, Math.max(1, Math.round(host.retentionRemoveDays) || 90));
+  try {
+    const saved = await updateThreadRetention({
+      archive_after_days: host.retentionArchiveEnabled ? archiveDays : null,
+      remove_after_days: host.retentionRemoveEnabled ? removeDays : null,
+    });
+    host.retentionArchiveEnabled = saved.archive_after_days != null;
+    host.retentionArchiveDays = saved.archive_after_days ?? host.retentionArchiveDays;
+    host.retentionRemoveEnabled = saved.remove_after_days != null;
+    host.retentionRemoveDays = saved.remove_after_days ?? host.retentionRemoveDays;
+    host.retentionSaved = true;
+  } catch (error) {
+    host.retentionError = error instanceof Error ? error.message : "Failed to save thread settings.";
+  }
+}
+
 async function submitWritableDir(host: SettingsHost, form: HTMLFormElement): Promise<void> {
   const data = new FormData(form);
   host.writableDirError = "";
@@ -527,7 +570,8 @@ const styles = css`
   .layout[data-active="mcp"] .tab[data-section="mcp"],
   .layout[data-active="files"] .tab[data-section="files"],
   .layout[data-active="memories"] .tab[data-section="memories"],
-  .layout[data-active="skills"] .tab[data-section="skills"] {
+  .layout[data-active="skills"] .tab[data-section="skills"],
+  .layout[data-active="threads"] .tab[data-section="threads"] {
     background: var(--accent);
     color: var(--foreground);
     font-weight: 600;
@@ -551,7 +595,8 @@ const styles = css`
   .layout[data-active="mcp"] .panel[data-panel="mcp"],
   .layout[data-active="files"] .panel[data-panel="files"],
   .layout[data-active="memories"] .panel[data-panel="memories"],
-  .layout[data-active="skills"] .panel[data-panel="skills"] {
+  .layout[data-active="skills"] .panel[data-panel="skills"],
+  .layout[data-active="threads"] .panel[data-panel="threads"] {
     display: flex;
   }
 
@@ -935,6 +980,55 @@ const styles = css`
     width: auto;
   }
 
+  .retention-row {
+    align-items: center;
+    display: flex;
+    gap: 16px;
+    justify-content: space-between;
+  }
+
+  .retention-info {
+    min-width: 0;
+  }
+
+  .retention-info .name {
+    color: var(--foreground);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .retention-info .desc {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.45;
+    margin-top: 3px;
+  }
+
+  .retention-days {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 14px;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .retention-days input {
+    height: 34px;
+    text-align: right;
+    width: 76px;
+  }
+
+  .retention-days.off {
+    opacity: 0.5;
+  }
+
+  .saved {
+    color: var(--muted-foreground);
+    font-size: 13px;
+  }
+
   .error {
     color: var(--destructive);
     font-size: 13px;
@@ -1008,6 +1102,13 @@ export function AppSettings({
   memoryError = "",
   memoryQuery = "",
   selectedMemoryId = "",
+  retentionArchiveEnabled = true,
+  retentionArchiveDays = 14,
+  retentionRemoveEnabled = true,
+  retentionRemoveDays = 90,
+  retentionLoaded = false,
+  retentionError = "",
+  retentionSaved = false,
 }: {
   activeSection?: string;
   tgConfigured?: boolean;
@@ -1045,6 +1146,13 @@ export function AppSettings({
   memoryError?: string;
   memoryQuery?: string;
   selectedMemoryId?: string;
+  retentionArchiveEnabled?: boolean;
+  retentionArchiveDays?: number;
+  retentionRemoveEnabled?: boolean;
+  retentionRemoveDays?: number;
+  retentionLoaded?: boolean;
+  retentionError?: string;
+  retentionSaved?: boolean;
 }): Component {
   onMount(() => {
     (window as unknown as Record<string, unknown>).onTelegramAuth = (user: TelegramAuthData) => {
@@ -1058,6 +1166,7 @@ export function AppSettings({
     void refreshSkills(this);
     void refreshWritableDirs(this);
     void refreshMemories(this);
+    void refreshRetention(this);
   });
 
   // Telegram's widget script finds its own <script> tag in the document and
@@ -1188,6 +1297,9 @@ export function AppSettings({
             case "refresh-memories":
               void refreshMemories(this);
               return;
+            case "save-retention":
+              void submitRetention(this);
+              return;
             case "select-memory":
               this.selectedMemoryId = action.dataset.id ?? "";
               return;
@@ -1259,6 +1371,23 @@ export function AppSettings({
           if (input.name === "memory-query") {
             this.memoryQuery = input.value;
           }
+          if (input.name === "archive-days") {
+            this.retentionArchiveDays = Number(input.value);
+            this.retentionSaved = false;
+          }
+          if (input.name === "remove-days") {
+            this.retentionRemoveDays = Number(input.value);
+            this.retentionSaved = false;
+          }
+        }}
+        onChange={(event: Event) => {
+          const wrap = (event.target as HTMLElement).closest<HTMLElement>("[data-switch]");
+          if (!wrap) return;
+          const checked = (event as CustomEvent<{ checked: boolean }>).detail?.checked;
+          if (typeof checked !== "boolean") return;
+          if (wrap.dataset.switch === "archive") this.retentionArchiveEnabled = checked;
+          if (wrap.dataset.switch === "remove") this.retentionRemoveEnabled = checked;
+          this.retentionSaved = false;
         }}
         onSubmit={(event: Event) => {
           event.preventDefault();
@@ -1286,6 +1415,7 @@ export function AppSettings({
               <button type="button" class="tab" data-section="files">Writable folders</button>
               <button type="button" class="tab" data-section="memories">Memories</button>
               <button type="button" class="tab" data-section="skills">Skills</button>
+              <button type="button" class="tab" data-section="threads">Threads</button>
             </nav>
 
             <div class="panels">
@@ -1627,6 +1757,51 @@ export function AppSettings({
                       </form>
                     </app-card>
                   )}
+              </section>
+
+              <section class="panel" data-panel="threads">
+                <app-card
+                  title="Auto-archive"
+                  description="Archive threads automatically once they have been inactive for a while. Archived threads leave the sidebar but keep all messages and files, and can be restored anytime."
+                >
+                  <div class="retention-row">
+                    <div class="retention-info">
+                      <div class="name">Archive inactive threads</div>
+                      <div class="desc">Turn this off to keep every thread in the sidebar until you archive it yourself.</div>
+                    </div>
+                    <span data-switch="archive"><app-switch checked={retentionArchiveEnabled}></app-switch></span>
+                  </div>
+                  <div class={retentionArchiveEnabled ? "retention-days" : "retention-days off"}>
+                    <span>Archive after</span>
+                    <input name="archive-days" type="number" min="1" max="3650" value={String(retentionArchiveDays)} autocomplete="off" />
+                    <span>days of inactivity</span>
+                  </div>
+                </app-card>
+
+                <app-card
+                  title="Auto-remove"
+                  description="Permanently delete an archived thread — including its workspace files and version history — once it has stayed archived long enough. This cannot be undone."
+                >
+                  <div class="retention-row">
+                    <div class="retention-info">
+                      <div class="name">Delete old archived threads</div>
+                      <div class="desc">Turn this off to keep archived threads until you delete them yourself.</div>
+                    </div>
+                    <span data-switch="remove"><app-switch checked={retentionRemoveEnabled}></app-switch></span>
+                  </div>
+                  <div class={retentionRemoveEnabled ? "retention-days" : "retention-days off"}>
+                    <span>Delete after</span>
+                    <input name="remove-days" type="number" min="1" max="3650" value={String(retentionRemoveDays)} autocomplete="off" />
+                    <span>days since archival</span>
+                  </div>
+                </app-card>
+
+                <div class="status-row actions">
+                  <app-button data-action="save-retention">Save changes</app-button>
+                  {retentionSaved ? <span class="saved">Saved.</span> : ""}
+                  {retentionLoaded ? "" : <span class="saved">Loading…</span>}
+                </div>
+                <p class="error">{retentionError}</p>
               </section>
             </div>
           </div>

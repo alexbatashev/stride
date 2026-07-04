@@ -5,6 +5,7 @@
  */
 import { Component, css, onMount, state } from "@frontiers-labs/argon";
 import { AppButton } from "./app-button.js";
+import { IconArchive } from "./icons/archive.js";
 import { IconBotMessageSquare } from "./icons/bot-message-square.js";
 import { IconChevronDown } from "./icons/chevron-down.js";
 import { IconChevronRight } from "./icons/chevron-right.js";
@@ -398,6 +399,43 @@ const styles = css`
     white-space: nowrap;
   }
 
+  .group ul li {
+    position: relative;
+  }
+
+  .thread-menu {
+    align-items: center;
+    background: var(--sidebar-bg, var(--secondary));
+    border-radius: 4px;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    display: none;
+    font-size: 16px;
+    height: 22px;
+    justify-content: center;
+    line-height: 1;
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    user-select: none;
+    width: 22px;
+  }
+
+  .group ul li:hover .thread-menu,
+  .thread-menu[aria-expanded="true"] {
+    display: inline-flex;
+  }
+
+  .thread-menu:hover {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+
+  .group ul li:hover a {
+    padding-right: 28px;
+  }
+
   @media (max-width: 767px) {
     .root {
       display: none;
@@ -443,6 +481,16 @@ const styles = css`
     .group ul {
       padding-left: 8px;
     }
+
+    .thread-menu {
+      display: inline-flex;
+      height: 28px;
+      width: 28px;
+    }
+
+    .group ul li a {
+      padding-right: 32px;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -460,6 +508,7 @@ export function AppSidebar({
   filesActive = false,
   automationsActive = false,
   settingsActive = false,
+  archivedActive = false,
 }: {
   projects?: SidebarProject[];
   threads?: SidebarThread[];
@@ -467,6 +516,7 @@ export function AppSidebar({
   filesActive?: boolean;
   automationsActive?: boolean;
   settingsActive?: boolean;
+  archivedActive?: boolean;
 }): Component {
   let status = state("open");
 
@@ -524,7 +574,13 @@ export function AppSidebar({
             if (action) {
               event.preventDefault();
               const name = action.dataset.action!;
-              const detail = { id: action.dataset.projectId ?? "", title: action.dataset.projectTitle ?? "" };
+              // Thread actions carry the thread id/title and the trigger element
+              // (so a menu can anchor to it); project actions keep their fields.
+              const detail = {
+                id: action.dataset.threadId ?? action.dataset.projectId ?? "",
+                title: action.dataset.threadTitle ?? action.dataset.projectTitle ?? "",
+                anchor: action,
+              };
               this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true, detail }));
               return;
             }
@@ -550,6 +606,12 @@ export function AppSidebar({
             <a href="/automations" aria-current={automationsActive ? "page" : "false"}>
               <span class="icon"><IconWorkflow /></span>
               <span class="label">Automations</span>
+            </a>
+          </span>
+          <span class="nav-item">
+            <a href="/archived" aria-current={archivedActive ? "page" : "false"}>
+              <span class="icon"><IconArchive /></span>
+              <span class="label">Archived</span>
             </a>
           </span>
           <span class="nav-item">
@@ -600,6 +662,15 @@ export function AppSidebar({
                       >
                         <span class="thread-label">{thread.title}</span>
                       </a>
+                      <span
+                        class="thread-menu"
+                        role="button"
+                        title="Thread actions"
+                        aria-label="Thread actions"
+                        data-action="thread-menu"
+                        data-thread-id={thread.id}
+                        data-thread-title={thread.title}
+                      >⋯</span>
                     </li>
                   )).join("")}
                 </ul>
@@ -623,6 +694,15 @@ export function AppSidebar({
                       >
                         <span class="thread-label">{thread.title}</span>
                       </a>
+                      <span
+                        class="thread-menu"
+                        role="button"
+                        title="Thread actions"
+                        aria-label="Thread actions"
+                        data-action="thread-menu"
+                        data-thread-id={thread.id}
+                        data-thread-title={thread.title}
+                      >⋯</span>
                     </li>
                   )).join("")}
                 </ul>
