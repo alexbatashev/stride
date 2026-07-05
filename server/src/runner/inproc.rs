@@ -50,6 +50,7 @@ use crate::{
         attach_image::AttachImageTool,
         automations::ScheduleAutomationTool,
         memory::{ConnectMemoriesTool, ExplorePalaceTool, RecallTool, RememberTool},
+        ocr::OcrTool,
         personality::UpdatePersonalityTool,
         projects::{CreateProjectTool, ListProjectsTool, StartThreadTool},
         python::VfsExecFileSystem,
@@ -1229,6 +1230,14 @@ async fn ensure_runner(
             });
             agent.allow_tool("attach_image");
         }
+        agent.register_tool(OcrTool {
+            fs: fs.clone(),
+            python: python.as_ref().map(|tool| tool.service()),
+            writable_root: writable_root
+                .clone()
+                .unwrap_or_else(|| format!("/{}", crate::vfs::WORKSPACE_MOUNT)),
+        });
+        agent.allow_tool("ocr");
         if let Some(bot_token) = telegram_bot_token
             .as_ref()
             .filter(|_| telegram_chat.is_some())
