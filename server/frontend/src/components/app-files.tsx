@@ -268,9 +268,61 @@ function openMenu(host: VersionHost, event: MouseEvent, target: FileMenuTarget):
   host.menuOpen = true;
 }
 
+function closeMenu(host: VersionHost): void {
+  host.menuOpen = false;
+  host.menuTarget = null;
+  host.actionItems = [];
+}
+
+function dialogIdFromEvent(event: Event): string {
+  for (const node of event.composedPath()) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.dataset.dialog) return node.dataset.dialog;
+    const attr = node.getAttribute("data-dialog");
+    if (attr) return attr;
+  }
+  return "";
+}
+
+function bindMenuDismiss(host: VersionHost, root: ShadowRoot): () => void {
+  let dismissClick: ((event: Event) => void) | null = null;
+  let dismissKey: ((event: KeyboardEvent) => void) | null = null;
+
+  const clearDismiss = () => {
+    if (dismissClick) document.removeEventListener("click", dismissClick, true);
+    if (dismissKey) document.removeEventListener("keydown", dismissKey, true);
+    dismissClick = null;
+    dismissKey = null;
+  };
+
+  clearDismiss();
+  if (!host.menuOpen) return clearDismiss;
+
+  const menu = root.querySelector("app-dropdown-menu");
+  requestAnimationFrame(() => {
+    dismissClick = (event: Event) => {
+      if (!host.menuOpen) return;
+      const path = event.composedPath();
+      if (menu && path.includes(menu)) return;
+      const openedFromRowMenu = path.some(
+        (node) => node instanceof HTMLElement && node.dataset.rowAction === "menu",
+      );
+      if (openedFromRowMenu) return;
+      closeMenu(host);
+    };
+    dismissKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu(host);
+    };
+    document.addEventListener("click", dismissClick, true);
+    document.addEventListener("keydown", dismissKey, true);
+  });
+
+  return clearDismiss;
+}
+
 async function handleMenuSelect(host: VersionHost, actions: FileActions, action: string): Promise<void> {
   const target = host.menuTarget;
-  host.menuOpen = false;
+  closeMenu(host);
   if (!target) return;
   const version = target.kind === "version" ? target.version : undefined;
   try {
@@ -892,11 +944,11 @@ export function AppFileBrowser({
       void handleMenuSelect(this as VersionHost, fileActions(this as VersionHost), (event as CustomEvent<{ action: string }>).detail.action);
     };
     const onDialogClose = (event: Event) => {
-      const target = event.target as HTMLElement;
-      if (target.dataset.dialog === "versions") {
+      const id = dialogIdFromEvent(event);
+      if (id === "versions") {
         this.versionsOpen = false;
-        this.menuOpen = false;
-      } else if (target.dataset.dialog === "preview") {
+        closeMenu(this as VersionHost);
+      } else if (id === "preview") {
         closePreview(this as VersionHost);
       }
     };
@@ -911,6 +963,12 @@ export function AppFileBrowser({
       root.removeEventListener("close", onDialogClose);
       closePreview(this as VersionHost);
     };
+  });
+
+  effect(() => {
+    const root = this.shadowRoot;
+    if (!root) return;
+    return bindMenuDismiss(this as VersionHost, root);
   });
 
   effect(() => {
@@ -1036,7 +1094,7 @@ export function AppFileBrowser({
         position={`left:${menuLeft}px;top:${menuTop}px`}
       />
       <AppDialog
-        data-dialog="versions"
+        dialogId="versions"
         open={versionsOpen}
         title={activeFile ? fileName(activeFile.path) : "File versions"}
         description="Restore, download, or preview a saved version."
@@ -1093,7 +1151,7 @@ export function AppFileBrowser({
           )}
         </div>
       </AppDialog>
-      <AppDialog data-dialog="preview" open={previewOpen} title={previewTitle} size="wide">
+      <AppDialog dialogId="preview" open={previewOpen} title={previewTitle} size="wide">
         <iframe class="preview-frame" src={previewUrl} title={previewTitle}></iframe>
       </AppDialog>
     </>
@@ -1368,11 +1426,11 @@ export function AppFileManager({
       void handleMenuSelect(this as VersionHost, fileActions(this as VersionHost), (event as CustomEvent<{ action: string }>).detail.action);
     };
     const onDialogClose = (event: Event) => {
-      const target = event.target as HTMLElement;
-      if (target.dataset.dialog === "versions") {
+      const id = dialogIdFromEvent(event);
+      if (id === "versions") {
         this.versionsOpen = false;
-        this.menuOpen = false;
-      } else if (target.dataset.dialog === "preview") {
+        closeMenu(this as VersionHost);
+      } else if (id === "preview") {
         closePreview(this as VersionHost);
       }
     };
@@ -1387,6 +1445,12 @@ export function AppFileManager({
       root.removeEventListener("close", onDialogClose);
       closePreview(this as VersionHost);
     };
+  });
+
+  effect(() => {
+    const root = this.shadowRoot;
+    if (!root) return;
+    return bindMenuDismiss(this as VersionHost, root);
   });
 
   // The "open" attribute drives :host([open]) visibility, and a thread
@@ -1535,7 +1599,7 @@ export function AppFileManager({
         position={`left:${menuLeft}px;top:${menuTop}px`}
       />
       <AppDialog
-        data-dialog="versions"
+        dialogId="versions"
         open={versionsOpen}
         title={activeFile ? fileName(activeFile.path) : "File versions"}
         description="Restore, download, or preview a saved version."
@@ -1592,7 +1656,7 @@ export function AppFileManager({
           )}
         </div>
       </AppDialog>
-      <AppDialog data-dialog="preview" open={previewOpen} title={previewTitle} size="wide">
+      <AppDialog dialogId="preview" open={previewOpen} title={previewTitle} size="wide">
         <iframe class="preview-frame" src={previewUrl} title={previewTitle}></iframe>
       </AppDialog>
     </>

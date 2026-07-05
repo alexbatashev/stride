@@ -4,10 +4,24 @@
  */
 import { Component, css, effect } from "@frontiers-labs/argon";
 
+export type MenuItem = { label: string; action: string; variant?: string };
+
+function itemLabel(item: string | MenuItem): string {
+  return typeof item === "string" ? item : item.label;
+}
+
+function itemAction(item: string | MenuItem): string {
+  return typeof item === "string" ? item.toLowerCase() : item.action;
+}
+
+function itemVariant(item: string | MenuItem): string {
+  return typeof item === "string" ? "" : item.variant ?? "";
+}
+
 const styles = css`
   :host {
     position: fixed;
-    z-index: 60;
+    z-index: 90;
   }
 
   .menu {
@@ -72,18 +86,36 @@ export function AppDropdownMenu({
   position?: string;
 }): Component {
   effect(() => {
-    this.setAttribute("style", position);
+    if (position) this.setAttribute("style", position);
   });
+
+  effect(() => {
+    const menu = this.shadowRoot?.querySelector<HTMLDivElement>(".menu");
+    if (!menu) return;
+    menu.replaceChildren();
+    for (const item of items as Array<string | MenuItem>) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.role = "menuitem";
+      button.className = `item ${itemVariant(item)}`.trim();
+      button.dataset.menuItem = "";
+      button.dataset.action = itemAction(item);
+      button.textContent = itemLabel(item);
+      menu.appendChild(button);
+    }
+    menu.style.display = open ? "" : "none";
+  });
+
   return (
     <>
       <style>{styles}</style>
       <div
         class="menu"
         role="menu"
-        style={open ? "" : "display:none"}
+        style="display:none"
         onClick={(event: Event) => {
-          const item = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
-          const action = item?.textContent?.trim().toLowerCase();
+          const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-menu-item]");
+          const action = button?.dataset.action;
           if (!action) return;
           this.dispatchEvent(
             new CustomEvent("select", {
@@ -93,15 +125,7 @@ export function AppDropdownMenu({
             }),
           );
         }}
-      >
-        {items
-          .map((item) => (
-            <button type="button" role="menuitem" class="item">
-              {item}
-            </button>
-          ))
-          .join("")}
-      </div>
+      />
     </>
   );
 }

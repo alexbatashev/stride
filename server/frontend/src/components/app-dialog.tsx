@@ -21,7 +21,7 @@ const styles = css`
     justify-content: center;
     padding: 16px;
     position: fixed;
-    z-index: 50;
+    z-index: 200;
   }
 
   .dialog {
@@ -38,6 +38,7 @@ const styles = css`
     max-width: 480px;
     overflow: auto;
     padding: 24px;
+    position: relative;
     width: 100%;
   }
 
@@ -73,7 +74,7 @@ const styles = css`
 
   .close {
     align-items: center;
-    background: transparent;
+    background: var(--background, #ffffff);
     border: 0;
     border-radius: 6px;
     color: var(--muted-foreground, #71717a);
@@ -86,6 +87,7 @@ const styles = css`
     right: 16px;
     top: 16px;
     width: 24px;
+    z-index: 2;
   }
 
   .close:hover {
@@ -115,13 +117,13 @@ export function AppDialog({
   title = "",
   description = "",
   size = "",
-  "data-dialog": dialogId = "",
+  dialogId = "",
 }: {
   open?: boolean;
   title?: string;
   description?: string;
   size?: string;
-  "data-dialog"?: string;
+  dialogId?: string;
 }): Component {
   onMount(() => {
     const onKey = (event: KeyboardEvent) => {

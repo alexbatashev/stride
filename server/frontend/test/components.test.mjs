@@ -328,6 +328,32 @@ test('app-file-manager file menu renders supported actions', async () => {
   const menu = el.shadowRoot.querySelector('app-dropdown-menu');
   assert.match(menu.shadowRoot.innerHTML, /Download/);
   assert.match(menu.shadowRoot.innerHTML, /Preview/);
+  assert.doesNotMatch(menu.shadowRoot.innerHTML, /\[object Object\]/);
+});
+
+test('app-file-manager closes version dialog from close button', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    path: 'mortgage.pdf',
+    versions: [{ version: 1, size: 100, created_at: 1760000000000, mime_type: 'application/pdf' }],
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  try {
+    const el = mount('app-file-manager', { threadId: 't1', open: false });
+    el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
+    await tick();
+    el.shadowRoot.querySelector('app-data-table').shadowRoot.querySelector('button[data-row-action="open"]').click();
+    await tick();
+    await tick();
+    assert.equal(el.versionsOpen, true);
+    const versionsDialog = [...el.shadowRoot.querySelectorAll("app-dialog")].find(
+      (dialog) => dialog.dataset.dialog === "versions",
+    );
+    versionsDialog.shadowRoot.querySelector(".close").click();
+    await tick();
+    assert.equal(el.versionsOpen, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('app-settings switches sections and lists integrations', () => {
@@ -624,6 +650,20 @@ test('app-dialog is controlled: visibility from prop, close dispatches only', ()
   assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*flex/);
   el.open = false;
   assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*none/);
+});
+
+test('app-dropdown-menu renders object items with labels', async () => {
+  const el = mount('app-dropdown-menu', {
+    open: true,
+    items: [
+      { label: 'Rename', action: 'rename' },
+      { label: 'Delete', action: 'delete', variant: 'destructive' },
+    ],
+  });
+  await tick();
+  assert.match(el.shadowRoot.innerHTML, /Rename/);
+  assert.match(el.shadowRoot.innerHTML, /Delete/);
+  assert.doesNotMatch(el.shadowRoot.innerHTML, /\[object Object\]/);
 });
 
 test('app-alert-dialog is controlled: reports confirm and cancel', () => {
