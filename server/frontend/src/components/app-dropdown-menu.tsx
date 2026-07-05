@@ -2,14 +2,26 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, effect } from "@frontiers-labs/argon";
 
-type MenuItem = { label: string; action: string; variant?: string };
+export type MenuItem = { label: string; action: string; variant?: string };
+
+function itemLabel(item: string | MenuItem): string {
+  return typeof item === "string" ? item : item.label;
+}
+
+function itemAction(item: string | MenuItem): string {
+  return typeof item === "string" ? item.toLowerCase() : item.action;
+}
+
+function itemVariant(item: string | MenuItem): string {
+  return typeof item === "string" ? "" : item.variant ?? "";
+}
 
 const styles = css`
   :host {
     position: fixed;
-    z-index: 60;
+    z-index: 90;
   }
 
   .menu {
@@ -67,42 +79,55 @@ const styles = css`
 export function AppDropdownMenu({
   open = false,
   items = [],
+  position = "",
 }: {
   open?: boolean;
-  items?: MenuItem[];
+  items?: string[];
+  position?: string;
 }): Component {
+  effect(() => {
+    if (position) this.setAttribute("style", position);
+    this.style.pointerEvents = open ? "" : "none";
+    this.style.visibility = open ? "" : "hidden";
+  });
+
+  effect(() => {
+    const menu = this.shadowRoot?.querySelector<HTMLDivElement>(".menu");
+    if (!menu) return;
+    menu.replaceChildren();
+    for (const item of items as Array<string | MenuItem>) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.role = "menuitem";
+      button.className = `item ${itemVariant(item)}`.trim();
+      button.dataset.menuItem = "";
+      button.dataset.action = itemAction(item);
+      button.textContent = itemLabel(item);
+      menu.appendChild(button);
+    }
+    menu.style.display = open ? "" : "none";
+  });
+
   return (
     <>
       <style>{styles}</style>
       <div
         class="menu"
         role="menu"
-        style={open ? "" : "display:none"}
+        style="display:none"
         onClick={(event: Event) => {
-          const item = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
-          if (!item?.dataset.action) return;
+          const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-menu-item]");
+          const action = button?.dataset.action;
+          if (!action) return;
           this.dispatchEvent(
             new CustomEvent("select", {
               bubbles: true,
               composed: true,
-              detail: { action: item.dataset.action },
+              detail: { action },
             }),
           );
         }}
-      >
-        {items
-          .map((item) => (
-            <button
-              type="button"
-              role="menuitem"
-              class={`item ${item.variant ?? ""}`}
-              data-action={item.action}
-            >
-              {item.label}
-            </button>
-          ))
-          .join("")}
-      </div>
+      />
     </>
   );
 }

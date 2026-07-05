@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, onMount } from "@frontiers-labs/argon";
+import { Component, css, effect, onMount } from "@frontiers-labs/argon";
 import { IconX } from "./icons/x.js";
 
 function requestClose(host: HTMLElement): void {
@@ -21,7 +21,7 @@ const styles = css`
     justify-content: center;
     padding: 16px;
     position: fixed;
-    z-index: 50;
+    z-index: 200;
   }
 
   .dialog {
@@ -38,7 +38,12 @@ const styles = css`
     max-width: 480px;
     overflow: auto;
     padding: 24px;
+    position: relative;
     width: 100%;
+  }
+
+  :host([size="wide"]) .dialog {
+    max-width: min(980px, calc(100dvw - 32px));
   }
 
   .header {
@@ -69,7 +74,7 @@ const styles = css`
 
   .close {
     align-items: center;
-    background: transparent;
+    background: var(--background, #ffffff);
     border: 0;
     border-radius: 6px;
     color: var(--muted-foreground, #71717a);
@@ -82,6 +87,7 @@ const styles = css`
     right: 16px;
     top: 16px;
     width: 24px;
+    z-index: 2;
   }
 
   .close:hover {
@@ -90,6 +96,14 @@ const styles = css`
   }
 
   .close .icon {
+    align-items: center;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+
+  .close .icon > * {
     height: 16px;
     width: 16px;
   }
@@ -110,10 +124,14 @@ export function AppDialog({
   open = false,
   title = "",
   description = "",
+  size = "",
+  dialogId = "",
 }: {
   open?: boolean;
   title?: string;
   description?: string;
+  size?: string;
+  dialogId?: string;
 }): Component {
   onMount(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -121,6 +139,18 @@ export function AppDialog({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
+  });
+  effect(() => {
+    if (size) {
+      this.setAttribute("size", size);
+    } else {
+      this.removeAttribute("size");
+    }
+    if (dialogId) {
+      this.dataset.dialog = dialogId;
+    } else {
+      delete this.dataset.dialog;
+    }
   });
   return (
     <>

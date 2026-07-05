@@ -27,6 +27,14 @@ function lastEvent(el, name) {
   return seen;
 }
 
+function tick() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
 test('all custom elements register', () => {
   for (const tag of [
     'app-button', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
@@ -276,7 +284,118 @@ test('app-data-table renders rows and reports selection', () => {
 
   const action = lastEvent(el, 'row-action');
   el.shadowRoot.querySelector('button[data-row-id="dir/sub"]').click();
-  assert.deepEqual(action.detail, { action: 'open', rowId: 'dir/sub' });
+  assert.equal(action.detail.action, 'open');
+  assert.equal(action.detail.rowId, 'dir/sub');
+  assert.equal(typeof action.detail.left, 'number');
+  assert.equal(typeof action.detail.top, 'number');
+});
+
+test('app-file-manager opens version history from file click', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /\/api\/threads\/t1\/file-versions\?path=mortgage\.pdf/);
+    return new Response(JSON.stringify({
+      path: 'mortgage.pdf',
+      versions: [{ version: 2, size: 9100, created_at: 1760000000000, mime_type: 'application/pdf' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const el = mount('app-file-manager', {
+      threadId: 't1',
+      open: false,
+    });
+    el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
+    await tick();
+    const table = el.shadowRoot.querySelector('app-data-table');
+    table.shadowRoot.querySelector('button[data-row-action="open"]').click();
+    await tick();
+    await tick();
+
+    assert.match(el.shadowRoot.innerHTML, /Version 2/);
+    assert.match(el.shadowRoot.innerHTML, /Restore/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('app-file-manager file menu renders supported actions', async () => {
+  const el = mount('app-file-manager', {
+    threadId: 't1',
+    open: false,
+  });
+  el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
+  await tick();
+  const table = el.shadowRoot.querySelector('app-data-table');
+  table.shadowRoot.querySelector('button[data-row-action="menu"]').click();
+  await tick();
+
+  const menu = el.shadowRoot.querySelector('app-dropdown-menu');
+  assert.match(menu.shadowRoot.innerHTML, /Download/);
+  assert.match(menu.shadowRoot.innerHTML, /Preview/);
+  assert.doesNotMatch(menu.shadowRoot.innerHTML, /\[object Object\]/);
+});
+
+test('app-file-manager file menu closes on outside click and toggles from menu button', async () => {
+  const el = mount('app-file-manager', {
+    threadId: 't1',
+    open: false,
+  });
+  el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
+  await tick();
+  const menuButton = el.shadowRoot
+    .querySelector('app-data-table')
+    .shadowRoot.querySelector('button[data-row-action="menu"]');
+
+  menuButton.click();
+  await tick();
+  await nextFrame();
+  assert.equal(el.menuOpen, true);
+
+  document.body.click();
+  await tick();
+  assert.equal(el.menuOpen, false);
+
+  menuButton.click();
+  await tick();
+  assert.equal(el.menuOpen, true);
+
+  menuButton.click();
+  await tick();
+  assert.equal(el.menuOpen, false);
+});
+
+test('app-dialog close icon fits its button', async () => {
+  const el = mount('app-dialog', { open: true, title: 'Title', dialogId: 'test' });
+  await tick();
+  const icon = el.shadowRoot.querySelector('.close .icon > *');
+  assert.ok(icon);
+  assert.equal(getComputedStyle(icon).width, '16px');
+  assert.equal(getComputedStyle(icon).height, '16px');
+});
+
+test('app-file-manager closes version dialog from close button', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    path: 'mortgage.pdf',
+    versions: [{ version: 1, size: 100, created_at: 1760000000000, mime_type: 'application/pdf' }],
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  try {
+    const el = mount('app-file-manager', { threadId: 't1', open: false });
+    el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
+    await tick();
+    el.shadowRoot.querySelector('app-data-table').shadowRoot.querySelector('button[data-row-action="open"]').click();
+    await tick();
+    await tick();
+    assert.equal(el.versionsOpen, true);
+    const versionsDialog = [...el.shadowRoot.querySelectorAll("app-dialog")].find(
+      (dialog) => dialog.dataset.dialog === "versions",
+    );
+    versionsDialog.shadowRoot.querySelector(".close").click();
+    await tick();
+    assert.equal(el.versionsOpen, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('app-settings switches sections and lists integrations', () => {
@@ -573,6 +692,20 @@ test('app-dialog is controlled: visibility from prop, close dispatches only', ()
   assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*flex/);
   el.open = false;
   assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*none/);
+});
+
+test('app-dropdown-menu renders object items with labels', async () => {
+  const el = mount('app-dropdown-menu', {
+    open: true,
+    items: [
+      { label: 'Rename', action: 'rename' },
+      { label: 'Delete', action: 'delete', variant: 'destructive' },
+    ],
+  });
+  await tick();
+  assert.match(el.shadowRoot.innerHTML, /Rename/);
+  assert.match(el.shadowRoot.innerHTML, /Delete/);
+  assert.doesNotMatch(el.shadowRoot.innerHTML, /\[object Object\]/);
 });
 
 test('app-alert-dialog is controlled: reports confirm and cancel', () => {

@@ -14,6 +14,18 @@ export type FileList = {
 	entries: FileEntry[];
 };
 
+export type FileVersion = {
+	version: number;
+	size: number;
+	created_at: number;
+	mime_type: string | null;
+};
+
+export type FileVersions = {
+	path: string;
+	versions: FileVersion[];
+};
+
 export type UploadedFile = {
 	name: string;
 	path: string;
@@ -22,6 +34,17 @@ export type UploadedFile = {
 
 export async function listFiles(path = ''): Promise<FileList> {
 	return request(`/api/files?path=${encodeURIComponent(path)}`);
+}
+
+export async function listFileVersions(path: string): Promise<FileVersions> {
+	return request(`/api/files/versions?path=${encodeURIComponent(path)}`);
+}
+
+export async function restoreFileVersion(path: string, version: number): Promise<void> {
+	await request('/api/files/versions', {
+		method: 'POST',
+		body: JSON.stringify({path, version})
+	});
 }
 
 export async function createDirectory(path: string): Promise<void> {
@@ -43,11 +66,16 @@ export async function deleteEntry(path: string): Promise<void> {
 }
 
 export async function downloadFile(path: string): Promise<Blob> {
+	return downloadFileVersion(path);
+}
+
+export async function downloadFileVersion(path: string, version?: number): Promise<Blob> {
 	const token = readToken();
 	const headers = new Headers();
 	if (token) headers.set('Authorization', `Bearer ${token}`);
 
-	const response = await fetch(`/api/files/${encodePath(path)}`, {headers});
+	const query = version == null ? '' : `?version=${encodeURIComponent(String(version))}`;
+	const response = await fetch(`/api/files/${encodePath(path)}${query}`, {headers});
 	if (!response.ok) throw new Error(`${response.status}`);
 	return response.blob();
 }

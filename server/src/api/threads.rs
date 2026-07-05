@@ -1202,8 +1202,24 @@ pub struct FilesQuery {
 }
 
 #[derive(Deserialize)]
+pub struct DownloadQuery {
+    version: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct VersionsQuery {
+    path: String,
+}
+
+#[derive(Deserialize)]
 pub struct CreateDirectoryRequest {
     path: String,
+}
+
+#[derive(Deserialize)]
+pub struct RestoreVersionRequest {
+    path: String,
+    version: i64,
 }
 
 #[derive(Serialize)]
@@ -1220,6 +1236,20 @@ pub struct WorkspaceEntry {
 pub struct WorkspaceListResponse {
     path: String,
     entries: Vec<WorkspaceEntry>,
+}
+
+#[derive(Serialize)]
+pub struct FileVersionResponse {
+    version: i64,
+    size: i64,
+    created_at: i64,
+    mime_type: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct FileVersionsResponse {
+    path: String,
+    versions: Vec<FileVersionResponse>,
 }
 
 pub async fn list_files(
@@ -1257,6 +1287,63 @@ pub async fn list_files(
         .collect();
 
     Ok(Json(WorkspaceListResponse { path, entries }))
+}
+
+pub async fn list_file_versions(
+    State(state): State<Arc<ServerState>>,
+    Path(thread_id): Path<Uuid>,
+    Query(query): Query<VersionsQuery>,
+    headers: HeaderMap,
+) -> Result<Json<FileVersionsResponse>, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::NotFound);
+    };
+
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let area = thread_writable_area(&state, thread_id, owner).await?;
+    let path = clean_workspace_path(Some(&query.path));
+    if path.is_empty() {
+        return Err(ThreadApiError::BadRequest);
+    }
+
+    let versions = vfs
+        .area_list_versions(&area, owner, &path)
+        .await
+        .map_err(|_| ThreadApiError::NotFound)?
+        .into_iter()
+        .map(|version| FileVersionResponse {
+            version: version.version,
+            size: version.size,
+            created_at: version.created_at,
+            mime_type: version.mime_type,
+        })
+        .collect();
+
+    Ok(Json(FileVersionsResponse { path, versions }))
+}
+
+pub async fn restore_file_version(
+    State(state): State<Arc<ServerState>>,
+    Path(thread_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<RestoreVersionRequest>,
+) -> Result<StatusCode, ThreadApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(ThreadApiError::NotFound);
+    };
+
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let area = thread_writable_area(&state, thread_id, owner).await?;
+    let path = clean_workspace_path(Some(&request.path));
+    if path.is_empty() || request.version < 0 {
+        return Err(ThreadApiError::BadRequest);
+    }
+
+    vfs.area_restore_version(&area, owner, &path, request.version)
+        .await
+        .map_err(|_| ThreadApiError::NotFound)?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn create_directory(
@@ -1367,6 +1454,7 @@ pub async fn delete_file(
 pub async fn download_file(
     State(state): State<Arc<ServerState>>,
     Path((thread_id, path)): Path<(Uuid, String)>,
+    Query(query): Query<DownloadQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ThreadApiError> {
     let Some(ref vfs) = state.vfs else {
@@ -1377,10 +1465,18 @@ pub async fn download_file(
     let area = thread_writable_area(&state, thread_id, owner).await?;
     let path = clean_workspace_path(Some(&path));
 
-    let (bytes, mime_type) = vfs
-        .area_read_bytes(&area, owner, &path)
-        .await
-        .map_err(|_| ThreadApiError::NotFound)?;
+    let (bytes, mime_type) = if let Some(version) = query.version {
+        if version < 0 {
+            return Err(ThreadApiError::BadRequest);
+        }
+        vfs.area_read_version(&area, owner, &path, version)
+            .await
+            .map_err(|_| ThreadApiError::NotFound)?
+    } else {
+        vfs.area_read_bytes(&area, owner, &path)
+            .await
+            .map_err(|_| ThreadApiError::NotFound)?
+    };
 
     super::file_response(&path, bytes, mime_type).map_err(|_| ThreadApiError::Internal)
 }

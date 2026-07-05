@@ -48,6 +48,16 @@ pub struct FilesQuery {
 }
 
 #[derive(Deserialize)]
+pub struct DownloadQuery {
+    version: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct VersionsQuery {
+    path: String,
+}
+
+#[derive(Deserialize)]
 pub struct CreateDirectoryRequest {
     path: String,
 }
@@ -56,6 +66,12 @@ pub struct CreateDirectoryRequest {
 pub struct RenameRequest {
     path: String,
     name: String,
+}
+
+#[derive(Deserialize)]
+pub struct RestoreVersionRequest {
+    path: String,
+    version: i64,
 }
 
 #[derive(Serialize)]
@@ -72,6 +88,20 @@ pub struct FileEntry {
 pub struct FileListResponse {
     path: String,
     entries: Vec<FileEntry>,
+}
+
+#[derive(Serialize)]
+pub struct FileVersionResponse {
+    version: i64,
+    size: i64,
+    created_at: i64,
+    mime_type: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct FileVersionsResponse {
+    path: String,
+    versions: Vec<FileVersionResponse>,
 }
 
 #[derive(Serialize)]
@@ -116,6 +146,56 @@ pub async fn list_files(
         .collect();
 
     Ok(Json(FileListResponse { path, entries }))
+}
+
+pub async fn list_versions(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<VersionsQuery>,
+    headers: HeaderMap,
+) -> Result<Json<FileVersionsResponse>, FilesApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(FilesApiError::NotFound);
+    };
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let path = clean_path(Some(&query.path));
+    if path.is_empty() {
+        return Err(FilesApiError::BadRequest);
+    }
+
+    let versions = vfs
+        .list_versions_global(owner, &path)
+        .await
+        .map_err(|_| FilesApiError::NotFound)?
+        .into_iter()
+        .map(|version| FileVersionResponse {
+            version: version.version,
+            size: version.size,
+            created_at: version.created_at,
+            mime_type: version.mime_type,
+        })
+        .collect();
+
+    Ok(Json(FileVersionsResponse { path, versions }))
+}
+
+pub async fn restore_version(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(request): Json<RestoreVersionRequest>,
+) -> Result<StatusCode, FilesApiError> {
+    let Some(ref vfs) = state.vfs else {
+        return Err(FilesApiError::NotFound);
+    };
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    let path = clean_path(Some(&request.path));
+    if path.is_empty() || request.version < 0 {
+        return Err(FilesApiError::BadRequest);
+    }
+
+    vfs.restore_version_global(owner, &path, request.version)
+        .await
+        .map_err(|_| FilesApiError::NotFound)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn create_directory(
@@ -227,6 +307,7 @@ pub async fn delete_file(
 pub async fn download_file(
     State(state): State<Arc<ServerState>>,
     Path(path): Path<String>,
+    Query(query): Query<DownloadQuery>,
     headers: HeaderMap,
 ) -> Result<Response, FilesApiError> {
     let Some(ref vfs) = state.vfs else {
@@ -235,10 +316,18 @@ pub async fn download_file(
     let owner = auth::authenticated_user(&state, &headers).await?;
     let path = clean_path(Some(&path));
 
-    let (bytes, mime_type) = vfs
-        .read_bytes_global(owner, &path)
-        .await
-        .map_err(|_| FilesApiError::NotFound)?;
+    let (bytes, mime_type) = if let Some(version) = query.version {
+        if version < 0 {
+            return Err(FilesApiError::BadRequest);
+        }
+        vfs.read_version_global(owner, &path, version)
+            .await
+            .map_err(|_| FilesApiError::NotFound)?
+    } else {
+        vfs.read_bytes_global(owner, &path)
+            .await
+            .map_err(|_| FilesApiError::NotFound)?
+    };
 
     super::file_response(&path, bytes, mime_type).map_err(|_| FilesApiError::Internal)
 }

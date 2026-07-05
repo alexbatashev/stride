@@ -2,19 +2,26 @@ import { Component, css, effect, onMount } from "@frontiers-labs/argon";
 import {
   createDirectory,
   deleteEntry,
-  downloadFile,
+  downloadFileVersion,
   listFiles,
+  listFileVersions,
   renameEntry,
+  restoreFileVersion,
   uploadFiles,
 } from "../api/files.js";
 import {
   createWorkspaceDirectory,
   deleteWorkspaceEntry,
-  downloadWorkspaceFile,
+  downloadWorkspaceFileVersion,
+  listWorkspaceFileVersions,
   listWorkspaceFiles,
+  restoreWorkspaceFileVersion,
   uploadFiles as uploadWorkspaceFiles,
 } from "../api/threads.js";
+import { AppDialog } from "./app-dialog.js";
+import { AppDropdownMenu } from "./app-dropdown-menu.js";
 import { IconChevronLeft } from "./icons/chevron-left.js";
+import { IconEllipsisVertical } from "./icons/ellipsis-vertical.js";
 import { IconFile } from "./icons/file.js";
 import { IconFolder } from "./icons/folder.js";
 import { IconPlus } from "./icons/plus.js";
@@ -28,6 +35,66 @@ interface FileItem {
   kind: string;
   sizeLabel: string;
   updatedLabel: string;
+  mimeType: string;
+}
+
+interface FileVersionItem {
+  version: number;
+  sizeLabel: string;
+  createdLabel: string;
+  mimeType: string;
+  latest: boolean;
+}
+
+type FileMenuTarget =
+  | { kind: "file"; path: string }
+  | { kind: "version"; path: string; version: number };
+
+type FileActions = {
+  download(path: string, version?: number): Promise<Blob>;
+  listVersions(path: string): Promise<{
+    versions: { version: number; size: number; created_at: number; mime_type: string | null }[];
+  }>;
+  restoreVersion(path: string, version: number): Promise<void>;
+  reload(): Promise<void>;
+};
+
+type VersionHost = FilesHost & {
+  activeFile: FileItem | null;
+  versions: FileVersionItem[];
+  versionsOpen: boolean;
+  versionsLoading: boolean;
+  previewOpen: boolean;
+  previewUrl: string;
+  previewTitle: string;
+  menuOpen: boolean;
+  menuTop: number;
+  menuLeft: number;
+  menuTarget: FileMenuTarget | null;
+  actionItems: string[];
+  _loadedThread?: string;
+  _loadedKey?: string;
+};
+
+function fileActions(host: VersionHost): FileActions {
+  if ("threadId" in host) {
+    return {
+      download: (targetPath, version) => downloadWorkspaceFileVersion(host.threadId, targetPath, version),
+      listVersions: (targetPath) => listWorkspaceFileVersions(host.threadId, targetPath),
+      restoreVersion: (targetPath, version) => restoreWorkspaceFileVersion(host.threadId, targetPath, version),
+      reload: () => {
+        host._loadedKey = "";
+        return managerLoad(host as ManagerHost);
+      },
+    };
+  }
+
+  return {
+    download: (targetPath, version) => downloadFileVersion(targetPath, version),
+    listVersions: (targetPath) => listFileVersions(targetPath),
+    restoreVersion: (targetPath, version) => restoreFileVersion(targetPath, version),
+    reload: () => browserLoad(host),
+  };
 }
 
 // Text bindings insert markup verbatim, so the displayed name is escaped here.
@@ -40,13 +107,21 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function toFileItem(entry: { name: string; path: string; kind: string; size: number | null; updated_at: number }): FileItem {
+function toFileItem(entry: {
+  name: string;
+  path: string;
+  kind: string;
+  size: number | null;
+  updated_at: number;
+  mime_type?: string | null;
+}): FileItem {
   return {
     name: escapeHtml(entry.name),
     path: entry.path,
     kind: entry.kind,
     sizeLabel: entry.kind === "directory" ? "" : formatSize(entry.size),
     updatedLabel: formatDate(entry.updated_at),
+    mimeType: entry.mime_type ?? "",
   };
 }
 
@@ -71,6 +146,226 @@ function formatDate(ms: number): string {
     day: "numeric",
     year: "numeric",
   }).format(new Date(ms));
+}
+
+function formatDateTime(ms: number): string {
+  if (!ms) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(ms));
+}
+
+function fileName(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? "download";
+}
+
+function isPreviewable(mimeType: string, path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    mimeType === "application/pdf" ||
+    mimeType?.startsWith("image/") === true ||
+    lower.endsWith(".pdf") ||
+    /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/.test(lower)
+  );
+}
+
+function fileByPath(host: VersionHost, path: string): FileItem | undefined {
+  return (host.entries as FileItem[]).find((entry) => entry.path === path);
+}
+
+function versionByNumber(host: VersionHost, version: number): FileVersionItem | undefined {
+  return (host.versions as FileVersionItem[]).find((item) => item.version === version);
+}
+
+function buildMenuItems(host: VersionHost, target: FileMenuTarget): string[] {
+  const mimeType =
+    target.kind === "file" ? fileByPath(host, target.path)?.mimeType ?? "" : versionByNumber(host, target.version)?.mimeType ?? "";
+  const items = ["Download"];
+  if (isPreviewable(mimeType, target.path)) {
+    items.push("Preview");
+  }
+  return items;
+}
+
+function toVersionItem(
+  version: { version: number; size: number; created_at: number; mime_type: string | null },
+  latest: boolean,
+): FileVersionItem {
+  return {
+    version: version.version,
+    sizeLabel: formatSize(version.size),
+    createdLabel: formatDateTime(version.created_at),
+    mimeType: version.mime_type ?? "",
+    latest,
+  };
+}
+
+async function downloadBlob(actions: FileActions, path: string, version?: number): Promise<void> {
+  const blob = await actions.download(path, version);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName(path);
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function previewBlob(host: VersionHost, actions: FileActions, path: string, version?: number): Promise<void> {
+  const blob = await actions.download(path, version);
+  if (host.previewUrl) URL.revokeObjectURL(host.previewUrl);
+  host.previewUrl = URL.createObjectURL(blob);
+  host.previewTitle = version == null ? fileName(path) : `${fileName(path)} · version ${version}`;
+  host.previewOpen = true;
+}
+
+async function openVersionDialog(host: VersionHost, actions: FileActions, file: FileItem): Promise<void> {
+  host.activeFile = file;
+  host.versionsOpen = true;
+  host.versionsLoading = true;
+  host.versions = [];
+  host.error = "";
+  try {
+    const response = await actions.listVersions(file.path);
+    host.versions = response.versions.map((version, index) => toVersionItem(version, index === 0));
+  } catch {
+    host.error = "Failed to load versions.";
+  } finally {
+    host.versionsLoading = false;
+  }
+}
+
+async function restoreVersionAndReload(host: VersionHost, actions: FileActions, version: number): Promise<void> {
+  const file = host.activeFile;
+  if (!file) return;
+  if (!window.confirm(`Restore version ${version} of ${fileName(file.path)}?`)) return;
+  host.error = "";
+  try {
+    await actions.restoreVersion(file.path, version);
+    await actions.reload();
+    await openVersionDialog(host, actions, file);
+  } catch {
+    host.error = "Restore failed.";
+  }
+}
+
+function closePreview(host: VersionHost): void {
+  host.previewOpen = false;
+  if (host.previewUrl) URL.revokeObjectURL(host.previewUrl);
+  host.previewUrl = "";
+  host.previewTitle = "";
+}
+
+function sameMenuTarget(current: FileMenuTarget | null, next: FileMenuTarget): boolean {
+  if (!current || current.kind !== next.kind || current.path !== next.path) return false;
+  return current.kind === "file" || current.version === next.version;
+}
+
+function openFileRowMenu(
+  host: VersionHost,
+  entry: FileItem,
+  left: number,
+  top: number,
+): void {
+  const target: FileMenuTarget = { kind: "file", path: entry.path };
+  if (host.menuOpen && sameMenuTarget(host.menuTarget, target)) {
+    closeMenu(host);
+    return;
+  }
+  host.menuTarget = target;
+  host.actionItems = buildMenuItems(host, target);
+  host.menuLeft = Math.max(8, left - 176);
+  host.menuTop = top + 4;
+  host.menuOpen = true;
+}
+
+function openMenu(host: VersionHost, event: MouseEvent, target: FileMenuTarget): void {
+  if (host.menuOpen && sameMenuTarget(host.menuTarget, target)) {
+    closeMenu(host);
+    return;
+  }
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  host.menuTarget = target;
+  host.actionItems = buildMenuItems(host, target);
+  host.menuLeft = Math.max(8, rect.right - 176);
+  host.menuTop = rect.bottom + 4;
+  host.menuOpen = true;
+}
+
+function closeMenu(host: VersionHost): void {
+  host.menuOpen = false;
+  host.menuTarget = null;
+  host.actionItems = [];
+}
+
+function dialogIdFromEvent(event: Event): string {
+  for (const node of event.composedPath()) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.dataset.dialog) return node.dataset.dialog;
+    const attr = node.getAttribute("data-dialog");
+    if (attr) return attr;
+  }
+  return "";
+}
+
+function bindMenuDismiss(host: VersionHost, root: ShadowRoot): () => void {
+  let dismissClick: ((event: Event) => void) | null = null;
+  let dismissKey: ((event: KeyboardEvent) => void) | null = null;
+
+  const clearDismiss = () => {
+    if (dismissClick) document.removeEventListener("click", dismissClick, true);
+    if (dismissKey) document.removeEventListener("keydown", dismissKey, true);
+    dismissClick = null;
+    dismissKey = null;
+  };
+
+  const menu = root.querySelector("app-dropdown-menu");
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!host.menuOpen) return;
+      dismissClick = (event: Event) => {
+        if (!host.menuOpen) return;
+        const path = event.composedPath();
+        if (menu && path.includes(menu)) return;
+        if (
+          path.some(
+            (node) =>
+              node instanceof HTMLElement &&
+              (node.dataset.rowAction === "menu" || node.dataset.versionAction === "menu"),
+          )
+        ) {
+          return;
+        }
+        closeMenu(host);
+      };
+      dismissKey = (event: KeyboardEvent) => {
+        if (event.key === "Escape") closeMenu(host);
+      };
+      document.addEventListener("click", dismissClick, true);
+      document.addEventListener("keydown", dismissKey, true);
+    });
+  });
+
+  return clearDismiss;
+}
+
+async function handleMenuSelect(host: VersionHost, actions: FileActions, action: string): Promise<void> {
+  const target = host.menuTarget;
+  closeMenu(host);
+  if (!target) return;
+  const version = target.kind === "version" ? target.version : undefined;
+  try {
+    if (action === "download") {
+      await downloadBlob(actions, target.path, version);
+    } else if (action === "preview") {
+      await previewBlob(host, actions, target.path, version);
+    }
+  } catch {
+    host.error = action === "preview" ? "Preview failed." : "Download failed.";
+  }
 }
 
 // ── Data table ────────────────────────────────────────────────────────────────
@@ -138,6 +433,13 @@ const tableStyles = css`
     width: var(--table-updated-width, 120px);
   }
 
+  th.col-actions,
+  td.col-actions {
+    padding-right: 12px;
+    text-align: right;
+    width: 42px;
+  }
+
   tr:hover td {
     background: var(--accent);
   }
@@ -192,6 +494,32 @@ const tableStyles = css`
   }
 
   .cell-icon > * {
+    height: 16px;
+    width: 16px;
+  }
+
+  .row-menu {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    display: inline-flex;
+    height: 28px;
+    justify-content: center;
+    padding: 0;
+    width: 28px;
+  }
+
+  .row-menu:hover,
+  .row-menu:focus-visible {
+    background: var(--accent);
+    color: var(--accent-foreground);
+    outline: none;
+  }
+
+  .row-menu > * {
     height: 16px;
     width: 16px;
   }
@@ -263,7 +591,12 @@ export function AppDataTable({
             new CustomEvent("row-action", {
               bubbles: true,
               composed: true,
-              detail: { action: action.dataset.rowAction ?? "", rowId: action.dataset.rowId ?? "" },
+              detail: {
+                action: action.dataset.rowAction ?? "",
+                rowId: action.dataset.rowId ?? "",
+                left: action.getBoundingClientRect().right,
+                top: action.getBoundingClientRect().bottom,
+              },
             }),
           );
         }}
@@ -283,6 +616,7 @@ export function AppDataTable({
                   <th>Name</th>
                   <th class="col-size">Size</th>
                   <th class="col-updated">Updated</th>
+                  <th class="col-actions" aria-label="Actions"></th>
                 </tr>
               </thead>
               <tbody>
@@ -301,6 +635,21 @@ export function AppDataTable({
                     </td>
                     <td class="col-size">{row.sizeLabel}</td>
                     <td class="col-updated">{row.updatedLabel}</td>
+                    <td class="col-actions">
+                      {row.kind === "file" ? (
+                        <button
+                          class="row-menu"
+                          type="button"
+                          aria-label={`Actions for ${row.name}`}
+                          data-row-action="menu"
+                          data-row-id={row.path}
+                        >
+                          <IconEllipsisVertical />
+                        </button>
+                      ) : (
+                        ""
+                      )}
+                    </td>
                   </tr>
                 )).join("")}
               </tbody>
@@ -461,18 +810,141 @@ const browserStyles = css`
   }
 `;
 
+const fileManagementStyles = css`
+  app-dialog[data-dialog="versions"]::part(dialog) {
+    max-width: 680px;
+  }
+
+  .versions {
+    display: grid;
+    gap: 10px;
+  }
+
+  .version-row {
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    padding: 10px 12px;
+  }
+
+  .version-main {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .version-title {
+    align-items: center;
+    color: var(--foreground);
+    display: flex;
+    font-size: 13px;
+    font-weight: 600;
+    gap: 8px;
+  }
+
+  .version-meta {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .badge {
+    background: var(--accent);
+    border-radius: 999px;
+    color: var(--accent-foreground);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+  }
+
+  .text-button,
+  .version-menu {
+    align-items: center;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--foreground);
+    cursor: pointer;
+    display: inline-flex;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    height: 30px;
+    justify-content: center;
+    padding: 0 10px;
+  }
+
+  .version-menu {
+    padding: 0;
+    width: 30px;
+  }
+
+  .text-button:hover,
+  .version-menu:hover {
+    background: var(--accent);
+  }
+
+  .version-menu > * {
+    height: 16px;
+    width: 16px;
+  }
+
+  .dialog-empty {
+    color: var(--muted-foreground);
+    font-size: 13px;
+    padding: 8px 0;
+  }
+
+  .preview-frame {
+    background: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    height: min(72dvh, 720px);
+    width: min(78dvw, 980px);
+  }
+`;
+
 export function AppFileBrowser({
   path = "",
   entries = [],
   selected = [],
   loading = false,
   error = "",
+  activeFile = null,
+  versions = [],
+  versionsOpen = false,
+  versionsLoading = false,
+  previewOpen = false,
+  previewUrl = "",
+  previewTitle = "",
+  menuOpen = false,
+  menuTop = 0,
+  menuLeft = 0,
+  menuTarget = null,
+  actionItems = [],
 }: {
   path?: string;
   entries?: FileItem[];
   selected?: string[];
   loading?: boolean;
   error?: string;
+  activeFile?: FileItem | null;
+  versions?: FileVersionItem[];
+  versionsOpen?: boolean;
+  versionsLoading?: boolean;
+  previewOpen?: boolean;
+  previewUrl?: string;
+  previewTitle?: string;
+  menuOpen?: boolean;
+  menuTop?: number;
+  menuLeft?: number;
+  menuTarget?: FileMenuTarget | null;
+  actionItems?: string[];
 }): Component {
   onMount(() => {
     void browserLoad(this);
@@ -481,34 +953,50 @@ export function AppFileBrowser({
       this.selected = (event as CustomEvent<{ selectedIds: string[] }>).detail.selectedIds;
     };
     const onRowAction = (event: Event) => {
-      const detail = (event as CustomEvent<{ action: string; rowId: string }>).detail;
-      if (detail.action !== "open") return;
+      const detail = (event as CustomEvent<{ action: string; rowId: string; left: number; top: number }>).detail;
       const entry = (this.entries as FileItem[]).find((item) => item.path === detail.rowId);
       if (!entry) return;
+      if (detail.action === "menu") {
+        openFileRowMenu(this as VersionHost, entry, detail.left, detail.top);
+        return;
+      }
+      if (detail.action !== "open") return;
       if (entry.kind === "directory") {
         this.path = entry.path;
         void browserLoad(this);
         return;
       }
-      void downloadFile(entry.path)
-        .then((blob) => {
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = entry.path.split("/").pop() ?? "download";
-          link.click();
-          URL.revokeObjectURL(url);
-        })
-        .catch(() => {
-          this.error = "Download failed.";
-        });
+      void openVersionDialog(this as VersionHost, fileActions(this as VersionHost), entry);
+    };
+    const onMenuSelect = (event: Event) => {
+      void handleMenuSelect(this as VersionHost, fileActions(this as VersionHost), (event as CustomEvent<{ action: string }>).detail.action);
+    };
+    const onDialogClose = (event: Event) => {
+      const id = dialogIdFromEvent(event);
+      if (id === "versions") {
+        this.versionsOpen = false;
+        closeMenu(this as VersionHost);
+      } else if (id === "preview") {
+        closePreview(this as VersionHost);
+      }
     };
     root.addEventListener("selection-change", onSelection);
     root.addEventListener("row-action", onRowAction);
+    root.addEventListener("select", onMenuSelect);
+    root.addEventListener("close", onDialogClose);
     return () => {
       root.removeEventListener("selection-change", onSelection);
       root.removeEventListener("row-action", onRowAction);
+      root.removeEventListener("select", onMenuSelect);
+      root.removeEventListener("close", onDialogClose);
+      closePreview(this as VersionHost);
     };
+  });
+
+  effect(() => {
+    const root = this.shadowRoot;
+    if (!root || !menuOpen) return;
+    return bindMenuDismiss(this as VersionHost, root);
   });
 
   effect(() => {
@@ -521,6 +1009,7 @@ export function AppFileBrowser({
   return (
     <>
       <style>{browserStyles}</style>
+      <style>{fileManagementStyles}</style>
       <header>
         <h1>Files</h1>
       </header>
@@ -627,6 +1116,72 @@ export function AppFileBrowser({
         loadingText="Loading files..."
         emptyText="No files here yet. Upload to get started."
       />
+      <AppDropdownMenu
+        open={menuOpen}
+        items={actionItems}
+        position={`left:${menuLeft}px;top:${menuTop}px`}
+      />
+      <AppDialog
+        dialogId="versions"
+        open={versionsOpen}
+        title={activeFile ? fileName(activeFile.path) : "File versions"}
+        description="Restore, download, or preview a saved version."
+      >
+        <div
+          class="versions"
+          onClick={(event: MouseEvent) => {
+            const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-version-action]");
+            if (!button) return;
+            const row = button.closest(".version-row");
+            const index = row ? Array.from(row.parentElement?.children ?? []).indexOf(row) : -1;
+            const version = (this.versions as FileVersionItem[])[index]?.version;
+            if (version == null) return;
+            if (button.dataset.versionAction === "restore") {
+              void restoreVersionAndReload(this as VersionHost, fileActions(this as VersionHost), version);
+            } else if (button.dataset.versionAction === "menu" && activeFile) {
+              openMenu(this as VersionHost, event, { kind: "version", path: activeFile.path, version });
+            }
+          }}
+        >
+          {versionsLoading ? (
+            <div class="dialog-empty">Loading versions...</div>
+          ) : versions.length === 0 ? (
+            <div class="dialog-empty">No versions found.</div>
+          ) : (
+            versions.map((version) => (
+              <div class="version-row">
+                <div class="version-main">
+                  <div class="version-title">
+                    <span>Version {version.version}</span>
+                    {version.latest ? <span class="badge">Current</span> : ""}
+                  </div>
+                  <div class="version-meta">
+                    {version.createdLabel} · {version.sizeLabel}
+                  </div>
+                </div>
+                <button
+                  class="text-button"
+                  type="button"
+                  data-version-action="restore"
+                >
+                  Restore
+                </button>
+                <button
+                  class="version-menu"
+                  type="button"
+                  aria-label="Version actions"
+                  data-version-action="menu"
+                >
+                  <IconEllipsisVertical />
+                </button>
+              </div>
+            )).join("")
+          )}
+        </div>
+      </AppDialog>
+      <AppDialog dialogId="preview" open={previewOpen} title={previewTitle} size="wide">
+        <iframe class="preview-frame" src={previewUrl} title={previewTitle}></iframe>
+      </AppDialog>
     </>
   );
 }
@@ -836,6 +1391,18 @@ export function AppFileManager({
   selected = [],
   loading = false,
   error = "",
+  activeFile = null,
+  versions = [],
+  versionsOpen = false,
+  versionsLoading = false,
+  previewOpen = false,
+  previewUrl = "",
+  previewTitle = "",
+  menuOpen = false,
+  menuTop = 0,
+  menuLeft = 0,
+  menuTarget = null,
+  actionItems = [],
 }: {
   threadId?: string;
   open?: boolean;
@@ -844,6 +1411,18 @@ export function AppFileManager({
   selected?: string[];
   loading?: boolean;
   error?: string;
+  activeFile?: FileItem | null;
+  versions?: FileVersionItem[];
+  versionsOpen?: boolean;
+  versionsLoading?: boolean;
+  previewOpen?: boolean;
+  previewUrl?: string;
+  previewTitle?: string;
+  menuOpen?: boolean;
+  menuTop?: number;
+  menuLeft?: number;
+  menuTarget?: FileMenuTarget | null;
+  actionItems?: string[];
 }): Component {
   onMount(() => {
     const root = this.shadowRoot!;
@@ -851,35 +1430,51 @@ export function AppFileManager({
       this.selected = (event as CustomEvent<{ selectedIds: string[] }>).detail.selectedIds;
     };
     const onRowAction = (event: Event) => {
-      const detail = (event as CustomEvent<{ action: string; rowId: string }>).detail;
-      if (detail.action !== "open") return;
+      const detail = (event as CustomEvent<{ action: string; rowId: string; left: number; top: number }>).detail;
       const entry = (this.entries as FileItem[]).find((item) => item.path === detail.rowId);
       if (!entry) return;
+      if (detail.action === "menu") {
+        openFileRowMenu(this as VersionHost, entry, detail.left, detail.top);
+        return;
+      }
+      if (detail.action !== "open") return;
       if (entry.kind === "directory") {
         this.path = entry.path;
         this._loadedKey = "";
         void managerLoad(this);
         return;
       }
-      void downloadWorkspaceFile(this.threadId, entry.path)
-        .then((blob) => {
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = entry.path.split("/").pop() ?? "download";
-          link.click();
-          URL.revokeObjectURL(url);
-        })
-        .catch(() => {
-          this.error = "Download failed.";
-        });
+      void openVersionDialog(this as VersionHost, fileActions(this as VersionHost), entry);
+    };
+    const onMenuSelect = (event: Event) => {
+      void handleMenuSelect(this as VersionHost, fileActions(this as VersionHost), (event as CustomEvent<{ action: string }>).detail.action);
+    };
+    const onDialogClose = (event: Event) => {
+      const id = dialogIdFromEvent(event);
+      if (id === "versions") {
+        this.versionsOpen = false;
+        closeMenu(this as VersionHost);
+      } else if (id === "preview") {
+        closePreview(this as VersionHost);
+      }
     };
     root.addEventListener("selection-change", onSelection);
     root.addEventListener("row-action", onRowAction);
+    root.addEventListener("select", onMenuSelect);
+    root.addEventListener("close", onDialogClose);
     return () => {
       root.removeEventListener("selection-change", onSelection);
       root.removeEventListener("row-action", onRowAction);
+      root.removeEventListener("select", onMenuSelect);
+      root.removeEventListener("close", onDialogClose);
+      closePreview(this as VersionHost);
     };
+  });
+
+  effect(() => {
+    const root = this.shadowRoot;
+    if (!root || !menuOpen) return;
+    return bindMenuDismiss(this as VersionHost, root);
   });
 
   // The "open" attribute drives :host([open]) visibility, and a thread
@@ -911,6 +1506,7 @@ export function AppFileManager({
   return (
     <>
       <style>{managerStyles}</style>
+      <style>{fileManagementStyles}</style>
       <section class="panel" aria-label="Workspace files">
         <header>
           <h2>Files</h2>
@@ -1021,6 +1617,72 @@ export function AppFileManager({
           emptyText={threadId !== "" ? "No files here." : "Start a thread before managing files."}
         />
       </section>
+      <AppDropdownMenu
+        open={menuOpen}
+        items={actionItems}
+        position={`left:${menuLeft}px;top:${menuTop}px`}
+      />
+      <AppDialog
+        dialogId="versions"
+        open={versionsOpen}
+        title={activeFile ? fileName(activeFile.path) : "File versions"}
+        description="Restore, download, or preview a saved version."
+      >
+        <div
+          class="versions"
+          onClick={(event: MouseEvent) => {
+            const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-version-action]");
+            if (!button) return;
+            const row = button.closest(".version-row");
+            const index = row ? Array.from(row.parentElement?.children ?? []).indexOf(row) : -1;
+            const version = (this.versions as FileVersionItem[])[index]?.version;
+            if (version == null) return;
+            if (button.dataset.versionAction === "restore") {
+              void restoreVersionAndReload(this as VersionHost, fileActions(this as VersionHost), version);
+            } else if (button.dataset.versionAction === "menu" && activeFile) {
+              openMenu(this as VersionHost, event, { kind: "version", path: activeFile.path, version });
+            }
+          }}
+        >
+          {versionsLoading ? (
+            <div class="dialog-empty">Loading versions...</div>
+          ) : versions.length === 0 ? (
+            <div class="dialog-empty">No versions found.</div>
+          ) : (
+            versions.map((version) => (
+              <div class="version-row">
+                <div class="version-main">
+                  <div class="version-title">
+                    <span>Version {version.version}</span>
+                    {version.latest ? <span class="badge">Current</span> : ""}
+                  </div>
+                  <div class="version-meta">
+                    {version.createdLabel} · {version.sizeLabel}
+                  </div>
+                </div>
+                <button
+                  class="text-button"
+                  type="button"
+                  data-version-action="restore"
+                >
+                  Restore
+                </button>
+                <button
+                  class="version-menu"
+                  type="button"
+                  aria-label="Version actions"
+                  data-version-action="menu"
+                >
+                  <IconEllipsisVertical />
+                </button>
+              </div>
+            )).join("")
+          )}
+        </div>
+      </AppDialog>
+      <AppDialog dialogId="preview" open={previewOpen} title={previewTitle} size="wide">
+        <iframe class="preview-frame" src={previewUrl} title={previewTitle}></iframe>
+      </AppDialog>
     </>
   );
 }

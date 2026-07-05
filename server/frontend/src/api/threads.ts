@@ -26,6 +26,18 @@ export type WorkspaceList = {
 	entries: WorkspaceEntry[];
 };
 
+export type FileVersion = {
+	version: number;
+	size: number;
+	created_at: number;
+	mime_type: string | null;
+};
+
+export type FileVersions = {
+	path: string;
+	versions: FileVersion[];
+};
+
 export type ThreadSummary = {
 	id: string;
 	title: string;
@@ -167,6 +179,17 @@ export async function listWorkspaceFiles(threadId: string, path = ''): Promise<W
 	return request(`/api/threads/${threadId}/files?path=${encodeURIComponent(path)}`);
 }
 
+export async function listWorkspaceFileVersions(threadId: string, path: string): Promise<FileVersions> {
+	return request(`/api/threads/${threadId}/file-versions?path=${encodeURIComponent(path)}`);
+}
+
+export async function restoreWorkspaceFileVersion(threadId: string, path: string, version: number): Promise<void> {
+	await request(`/api/threads/${threadId}/file-versions`, {
+		method: 'POST',
+		body: JSON.stringify({path, version})
+	});
+}
+
 export async function createWorkspaceDirectory(threadId: string, path: string): Promise<void> {
 	await request(`/api/threads/${threadId}/directories`, {
 		method: 'POST',
@@ -179,11 +202,16 @@ export async function deleteWorkspaceEntry(threadId: string, path: string): Prom
 }
 
 export async function downloadWorkspaceFile(threadId: string, path: string): Promise<Blob> {
+	return downloadWorkspaceFileVersion(threadId, path);
+}
+
+export async function downloadWorkspaceFileVersion(threadId: string, path: string, version?: number): Promise<Blob> {
 	const token = readToken();
 	const headers = new Headers();
 	if (token) headers.set('Authorization', `Bearer ${token}`);
 
-	const response = await fetch(`/api/threads/${threadId}/files/${encodePath(path)}`, {headers});
+	const query = version == null ? '' : `?version=${encodeURIComponent(String(version))}`;
+	const response = await fetch(`/api/threads/${threadId}/files/${encodePath(path)}${query}`, {headers});
 	if (!response.ok) throw new Error(`${response.status}`);
 	return response.blob();
 }
