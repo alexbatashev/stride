@@ -38,7 +38,10 @@ use uuid::Uuid;
 use crate::{
     config::{self, Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
     crypto::SecretCipher,
-    db::{MessageFormat, MessageSource, Role, messages, threads, tool_call_records},
+    db::{
+        AgentRunStatus, MessageFormat, MessageSource, Role, ToolCallStatus, messages, now_ms, runs,
+        threads, tool_call_records, uuid_v7_ms,
+    },
     email::ImapService,
     github::GitHubRuntime,
     google::GoogleService,
@@ -377,6 +380,7 @@ struct WorkerState {
     init: WorkerInit,
     pool: PoolHandle,
     threads: HashMap<Uuid, ThreadRunner>,
+    spawn_registry: SpawnRegistry,
 }
 
 struct ThreadRunner {
@@ -385,7 +389,7 @@ struct ThreadRunner {
     pending_approvals: HashMap<Uuid, PendingApprovalState>,
     pending_quizzes: HashMap<Uuid, PendingQuizState>,
     /// Requests received while a run is in progress, started in order once the thread goes idle.
-    queued: VecDeque<(RunId, String, Vec<llm::ImageSource>, Option<String>)>,
+    queued: VecDeque<QueuedRequest>,
     last_event_seq: u64,
     next_message_seq: u64,
     status: ThreadStatus,
@@ -393,6 +397,14 @@ struct ThreadRunner {
     tool_progress: HashMap<String, PartialToolProgress>,
     message_format: MessageFormat,
     last_used: Instant,
+}
+
+struct QueuedRequest {
+    run_id: RunId,
+    user_message_id: Uuid,
+    content: String,
+    images: Vec<llm::ImageSource>,
+    model: Option<String>,
 }
 
 struct PendingApprovalState {
@@ -417,14 +429,37 @@ struct AssistantMessageState {
     output_sanitizer: Box<dyn StreamingMessageSanitizer>,
 }
 
+/// A backgrounded tool task's abort handle plus the thread that owns it, so a
+/// thread cancellation can reach every outstanding call spawned on this worker.
+struct SpawnedTask {
+    thread_id: Uuid,
+    handle: tokio::task::AbortHandle,
+}
+
+/// Registry of outstanding backgrounded tool tasks, shared (single-threaded, on
+/// one `LocalSet`) between every thread's [`LocalSpawner`] and the worker loop.
+/// Keyed by tool call id.
+type SpawnRegistry = Rc<RefCell<HashMap<String, SpawnedTask>>>;
+
 /// Bridges the agent crate's executor hook to the worker's `LocalSet`. Each
 /// turn runs on a `spawn_local`-capable current-thread runtime, so backgrounded
-/// tool calls can be spawned there.
-struct LocalSpawner;
+/// tool calls can be spawned there. Records each task's abort handle in the
+/// worker's [`SpawnRegistry`] so a run cancellation can abort it.
+struct LocalSpawner {
+    thread_id: Uuid,
+    registry: SpawnRegistry,
+}
 
 impl TaskSpawner for LocalSpawner {
-    fn spawn(&self, _id: &str, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
-        tokio::task::spawn_local(future);
+    fn spawn(&self, id: &str, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
+        let handle = tokio::task::spawn_local(future);
+        self.registry.borrow_mut().insert(
+            id.to_string(),
+            SpawnedTask {
+                thread_id: self.thread_id,
+                handle: handle.abort_handle(),
+            },
+        );
     }
 }
 
@@ -621,6 +656,7 @@ fn start_worker(
                 init,
                 pool,
                 threads: HashMap::new(),
+                spawn_registry: Rc::new(RefCell::new(HashMap::new())),
             }));
 
             local.block_on(&runtime, run_worker(state, rx));
@@ -728,6 +764,7 @@ async fn handle_send(
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Option::<&str>::None)
         .source(Some(request.source.message_source()))
+        .run_id(Some(run_id.0))
         .execute(&db)
         .await
         .map_err(db_error)?;
@@ -774,6 +811,7 @@ async fn handle_send(
             &state,
             thread_id,
             run_id,
+            user_message_id,
             request.content,
             request.images,
             request.model,
@@ -781,9 +819,13 @@ async fn handle_send(
         .await;
     } else {
         with_runner(&state, thread_id, |runner| {
-            runner
-                .queued
-                .push_back((run_id, request.content, request.images, request.model));
+            runner.queued.push_back(QueuedRequest {
+                run_id,
+                user_message_id,
+                content: request.content,
+                images: request.images,
+                model: request.model,
+            });
         });
     }
 
@@ -796,6 +838,7 @@ async fn start_run(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
     run_id: RunId,
+    user_message_id: Uuid,
     content: String,
     images: Vec<llm::ImageSource>,
     model: Option<String>,
@@ -812,6 +855,22 @@ async fn start_run(
         runner.last_used = Instant::now();
         cancel_rx
     };
+
+    let db = state.borrow().init.db.clone();
+    if let Err(error) = runs::insert()
+        .id(run_id.0)
+        .thread_id(thread_id)
+        .status(AgentRunStatus::Running)
+        .user_message_id(Some(user_message_id))
+        .final_message_id(Option::<Uuid>::None)
+        .error(Option::<&str>::None)
+        .started_at_ms(uuid_v7_ms(run_id.0))
+        .finished_at_ms(Option::<i64>::None)
+        .execute(&db)
+        .await
+    {
+        tracing::warn!(%thread_id, run_id = %run_id.0, %error, "failed to persist run row");
+    }
 
     emit(state, thread_id, Some(run_id), AgentEventKind::RunStarted).await;
     tokio::task::spawn_local(run_agent_turn(
@@ -838,8 +897,17 @@ async fn drain_queue(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) {
         runner.queued.pop_front()
     };
 
-    if let Some((run_id, content, images, model)) = next {
-        start_run(state, thread_id, run_id, content, images, model).await;
+    if let Some(request) = next {
+        start_run(
+            state,
+            thread_id,
+            request.run_id,
+            request.user_message_id,
+            request.content,
+            request.images,
+            request.model,
+        )
+        .await;
     }
 }
 
@@ -1013,6 +1081,7 @@ async fn ensure_runner(
     };
 
     ensure_thread_exists(&db, thread_id).await?;
+    repair_interrupted_runs(&db, thread_id).await?;
     let user_id = thread_owner(&db, thread_id).await?;
     let merged_registry = model_registry::build_user_registry(
         &server_config,
@@ -1107,7 +1176,11 @@ async fn ensure_runner(
         system_prompt,
         thread,
     );
-    agent.set_spawner(Rc::new(LocalSpawner));
+    let spawn_registry = state.borrow().spawn_registry.clone();
+    agent.set_spawner(Rc::new(LocalSpawner {
+        thread_id,
+        registry: spawn_registry,
+    }));
     agent.set_searchable_tools_preview_limit(server_config.searchable_tools_preview_limit());
     configure_agent_tools(
         &agent,
@@ -1619,6 +1692,8 @@ async fn run_agent_turn(
     };
     let mut tool_streams: HashMap<String, ToolStreamState> = HashMap::new();
     let mut tool_assistant_messages: HashMap<String, Uuid> = HashMap::new();
+    let mut next_call_seq: i64 = 0;
+    let mut final_message_id: Option<Uuid> = None;
 
     loop {
         tokio::select! {
@@ -1640,6 +1715,7 @@ async fn run_agent_turn(
                                 run_id,
                                 &mut assistant,
                                 &mut tool_assistant_messages,
+                                &mut final_message_id,
                                 chunk,
                             )
                             .await
@@ -1650,14 +1726,19 @@ async fn run_agent_turn(
                             return;
                         }
                     }
-                    Ok(AgentResponseChunk::ToolStarted { tool_call_id, name, .. }) => {
+                    Ok(AgentResponseChunk::ToolStarted { tool_call_id, name, background, .. }) => {
+                        let call_seq = next_call_seq;
+                        next_call_seq += 1;
                         if let Err(error) =
                             record_tool_started(
                                 &state,
                                 thread_id,
+                                run_id,
                                 &tool_call_id,
                                 tool_assistant_messages.get(&tool_call_id).copied(),
                                 &name,
+                                call_seq,
+                                background,
                             )
                             .await
                         {
@@ -1713,29 +1794,39 @@ async fn run_agent_turn(
                         wake_message,
                     }) => {
                         let format = format.as_str();
+                        let status = if tool_result_is_error(&result) {
+                            ToolCallStatus::Failed
+                        } else {
+                            ToolCallStatus::Finished
+                        };
                         let persisted = if let Some(wake_message) = wake_message {
                             persist_tool_wakeup_message(
                                 &state,
                                 thread_id,
+                                run_id,
                                 &tool_call_id,
                                 &name,
                                 &wake_message,
                                 display.as_deref(),
                                 format,
+                                status,
                             )
                             .await
                         } else {
                             persist_tool_message(
                                 &state,
                                 thread_id,
+                                run_id,
                                 &mut tool_streams,
                                 &tool_call_id,
                                 &name,
                                 &result,
                                 format,
+                                status,
                             )
                             .await
                         };
+                        state.borrow().spawn_registry.borrow_mut().remove(&tool_call_id);
                         if let Err(error) = persisted
                         {
                             fail_run(&state, thread_id, run_id, error.to_string()).await;
@@ -1842,9 +1933,37 @@ async fn run_agent_turn(
         runner.in_progress = None;
         runner.last_used = Instant::now();
     });
+    finish_run_row(&state, run_id, final_message_id).await;
     emit(&state, thread_id, Some(run_id), AgentEventKind::RunFinished).await;
     restore_agent(&state, thread_id, agent);
     drain_queue(&state, thread_id).await;
+}
+
+async fn finish_run_row(
+    state: &Rc<RefCell<WorkerState>>,
+    run_id: RunId,
+    final_message_id: Option<Uuid>,
+) {
+    let db = state.borrow().init.db.clone();
+    if let Err(error) = runs::update()
+        .status(AgentRunStatus::Finished)
+        .final_message_id(final_message_id)
+        .finished_at_ms(Some(now_ms()))
+        .where_(runs::id.eq(run_id.0))
+        .execute(&db)
+        .await
+    {
+        tracing::warn!(run_id = %run_id.0, %error, "failed to finalize run row");
+    }
+}
+
+/// Detects the error convention the core uses: a JSON result object with a
+/// top-level `error` key marks a failed tool call.
+fn tool_result_is_error(result: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(result)
+        .ok()
+        .and_then(|value| value.get("error").cloned())
+        .is_some_and(|error| !error.is_null())
 }
 
 async fn handle_agent_chunk(
@@ -1853,6 +1972,7 @@ async fn handle_agent_chunk(
     run_id: RunId,
     assistant: &mut AssistantMessageState,
     tool_assistant_messages: &mut HashMap<String, Uuid>,
+    final_message_id: &mut Option<Uuid>,
     chunk: llm::StreamResponseChunk,
 ) -> Result<(), AgentPoolError> {
     let mut has_message_delta = false;
@@ -1870,7 +1990,7 @@ async fn handle_agent_chunk(
                 .as_ref()
                 .filter(|thinking| !thinking.is_empty())
             {
-                ensure_assistant_message(state, thread_id, assistant).await?;
+                ensure_assistant_message(state, thread_id, run_id, assistant).await?;
                 has_message_delta = true;
                 assistant
                     .thinking
@@ -1892,7 +2012,7 @@ async fn handle_agent_chunk(
                 .as_ref()
                 .filter(|chunks| has_tool_call_data(chunks))
             {
-                ensure_assistant_message(state, thread_id, assistant).await?;
+                ensure_assistant_message(state, thread_id, run_id, assistant).await?;
                 has_message_delta = true;
                 append_tool_call_chunks(&mut assistant.tool_calls, chunks);
             }
@@ -1914,7 +2034,7 @@ async fn handle_agent_chunk(
                 .as_ref()
                 .filter(|thinking| !thinking.is_empty())
             {
-                ensure_assistant_message(state, thread_id, assistant).await?;
+                ensure_assistant_message(state, thread_id, run_id, assistant).await?;
                 has_message_delta = true;
                 assistant
                     .thinking
@@ -1936,7 +2056,7 @@ async fn handle_agent_chunk(
                 .as_ref()
                 .filter(|chunks| has_tool_call_data(chunks))
             {
-                ensure_assistant_message(state, thread_id, assistant).await?;
+                ensure_assistant_message(state, thread_id, run_id, assistant).await?;
                 has_message_delta = true;
                 append_tool_call_chunks(&mut assistant.tool_calls, chunks);
             }
@@ -1990,6 +2110,8 @@ async fn handle_agent_chunk(
             )
             .await?;
 
+            *final_message_id = Some(message_id);
+
             emit(
                 state,
                 thread_id,
@@ -2017,7 +2139,7 @@ async fn append_assistant_content(
     assistant: &mut AssistantMessageState,
     content: &str,
 ) -> Result<(), AgentPoolError> {
-    ensure_assistant_message(state, thread_id, assistant).await?;
+    ensure_assistant_message(state, thread_id, run_id, assistant).await?;
     assistant.output_sanitizer.push_str(content);
     assistant.content = assistant.output_sanitizer.snapshot();
     emit(
@@ -2098,6 +2220,7 @@ fn serialize_tool_calls(
 async fn ensure_assistant_message(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
+    run_id: RunId,
     assistant: &mut AssistantMessageState,
 ) -> Result<(), AgentPoolError> {
     if assistant.id.is_some() {
@@ -2119,6 +2242,7 @@ async fn ensure_assistant_message(
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Option::<&str>::None)
+        .run_id(Some(run_id.0))
         .execute(&db)
         .await
         .map_err(db_error)?;
@@ -2156,23 +2280,32 @@ fn thread_message_format(
         .map(|runner| runner.message_format)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn record_tool_started(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
+    run_id: RunId,
     tool_call_id: &str,
     assistant_message_id: Option<Uuid>,
     name: &str,
+    call_seq: i64,
+    background: bool,
 ) -> Result<(), AgentPoolError> {
     let db = state.borrow().init.db.clone();
     tool_call_records::insert()
         .tool_call_id(tool_call_id)
         .parent_thread(thread_id)
+        .run_id(Some(run_id.0))
         .assistant_message_id(assistant_message_id)
         .tool_message_id(Option::<Uuid>::None)
         .name(name)
-        .status("running")
+        .status(ToolCallStatus::Running)
         .output_format("json")
         .display_path(Option::<&str>::None)
+        .call_seq(call_seq)
+        .background(background)
+        .started_at_ms(now_ms())
+        .finished_at_ms(Option::<i64>::None)
         .execute(&db)
         .await
         .map_err(db_error)?;
@@ -2242,14 +2375,17 @@ fn record_tool_progress(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_tool_message(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
+    run_id: RunId,
     tool_streams: &mut HashMap<String, ToolStreamState>,
     tool_call_id: &str,
     name: &str,
     content: &str,
     format: &str,
+    status: ToolCallStatus,
 ) -> Result<(), AgentPoolError> {
     tool_streams.remove(tool_call_id);
     with_runner(state, thread_id, |runner| {
@@ -2270,6 +2406,7 @@ async fn persist_tool_message(
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Some(tool_call_id))
+        .run_id(Some(run_id.0))
         .execute(&db)
         .await
         .map_err(db_error)?;
@@ -2278,9 +2415,10 @@ async fn persist_tool_message(
     tool_call_records::update()
         .tool_message_id(Some(id))
         .name(name)
-        .status("finished")
+        .status(status)
         .output_format(format)
         .display_path(display_path.as_deref())
+        .finished_at_ms(Some(now_ms()))
         .where_(tool_call_records::tool_call_id.eq(tool_call_id))
         .execute(&db)
         .await
@@ -2288,14 +2426,17 @@ async fn persist_tool_message(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_tool_wakeup_message(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
+    run_id: RunId,
     tool_call_id: &str,
     name: &str,
     content: &str,
     _display: Option<&str>,
     format: &str,
+    status: ToolCallStatus,
 ) -> Result<(), AgentPoolError> {
     with_runner(state, thread_id, |runner| {
         runner.tool_progress.remove(tool_call_id);
@@ -2314,16 +2455,18 @@ async fn persist_tool_wakeup_message(
         .images(Option::<&str>::None)
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
-        .tool_call_id(Option::<&str>::None)
+        .tool_call_id(Some(tool_call_id))
         .source(Some(MessageSource::ToolWakeup))
+        .run_id(Some(run_id.0))
         .execute(&db)
         .await
         .map_err(db_error)?;
 
     tool_call_records::update()
         .name(name)
-        .status("finished")
+        .status(status)
         .output_format(format)
+        .finished_at_ms(Some(now_ms()))
         .where_(tool_call_records::tool_call_id.eq(tool_call_id))
         .execute(&db)
         .await
@@ -2383,6 +2526,19 @@ async fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: Run
         runner.in_progress = None;
         runner.last_used = Instant::now();
     });
+
+    let db = state.borrow().init.db.clone();
+    if let Err(update_error) = runs::update()
+        .status(AgentRunStatus::Failed)
+        .error(Some(error.as_str()))
+        .finished_at_ms(Some(now_ms()))
+        .where_(runs::id.eq(run_id.0))
+        .execute(&db)
+        .await
+    {
+        tracing::warn!(run_id = %run_id.0, %update_error, "failed to mark run failed");
+    }
+
     emit(
         state,
         thread_id,
@@ -2401,7 +2557,50 @@ async fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_
         runner.in_progress = None;
         runner.last_used = Instant::now();
     });
+
+    abort_thread_tasks(state, thread_id);
+
+    let db = state.borrow().init.db.clone();
+    let now = now_ms();
+    if let Err(error) = tool_call_records::update()
+        .status(ToolCallStatus::Cancelled)
+        .finished_at_ms(Some(now))
+        .where_(
+            tool_call_records::parent_thread
+                .eq(thread_id)
+                .and(tool_call_records::status.eq(ToolCallStatus::Running)),
+        )
+        .execute(&db)
+        .await
+    {
+        tracing::warn!(%thread_id, %error, "failed to cancel tool call records");
+    }
+    if let Err(error) = runs::update()
+        .status(AgentRunStatus::Cancelled)
+        .finished_at_ms(Some(now))
+        .where_(runs::id.eq(run_id.0))
+        .execute(&db)
+        .await
+    {
+        tracing::warn!(run_id = %run_id.0, %error, "failed to mark run cancelled");
+    }
+
     emit(state, thread_id, Some(run_id), AgentEventKind::RunCancelled).await;
+}
+
+/// Aborts every backgrounded tool task belonging to `thread_id` and clears them
+/// from the worker's spawn registry.
+fn abort_thread_tasks(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) {
+    let registry = state.borrow().spawn_registry.clone();
+    let mut registry = registry.borrow_mut();
+    registry.retain(|_, task| {
+        if task.thread_id == thread_id {
+            task.handle.abort();
+            false
+        } else {
+            true
+        }
+    });
 }
 
 /// Stamps the event with the thread's next sequence number and publishes it to the thread's global
@@ -2592,6 +2791,39 @@ async fn ensure_thread_exists(db: &ConnectionPool, thread_id: Uuid) -> Result<()
     } else {
         Ok(())
     }
+}
+
+/// A fresh runner for a thread means the previous one is gone. Any run still
+/// marked `running` (and its running tool calls) died with that runner, so mark
+/// them interrupted before serving the thread again.
+async fn repair_interrupted_runs(
+    db: &ConnectionPool,
+    thread_id: Uuid,
+) -> Result<(), AgentPoolError> {
+    let now = now_ms();
+    tool_call_records::update()
+        .status(ToolCallStatus::Interrupted)
+        .finished_at_ms(Some(now))
+        .where_(
+            tool_call_records::parent_thread
+                .eq(thread_id)
+                .and(tool_call_records::status.eq(ToolCallStatus::Running)),
+        )
+        .execute(db)
+        .await
+        .map_err(db_error)?;
+    runs::update()
+        .status(AgentRunStatus::Interrupted)
+        .finished_at_ms(Some(now))
+        .where_(
+            runs::thread_id
+                .eq(thread_id)
+                .and(runs::status.eq(AgentRunStatus::Running)),
+        )
+        .execute(db)
+        .await
+        .map_err(db_error)?;
+    Ok(())
 }
 
 async fn load_thread(
@@ -3101,7 +3333,9 @@ mod tests {
         assert_eq!(records[0].assistant_message_id, Some(rows[1].id));
         assert_eq!(records[0].tool_message_id, Some(rows[2].id));
         assert_eq!(records[0].name, "missing_tool");
-        assert_eq!(records[0].status, "finished");
+        // An unknown tool returns a `{"error": ...}` JSON result, which the
+        // runner records as a failed call.
+        assert_eq!(records[0].status, ToolCallStatus::Failed);
         assert_eq!(records[0].output_format, "json");
 
         let (thread, _) = load_thread(&db, thread_id).await.unwrap();
@@ -3236,6 +3470,7 @@ mod tests {
             init: test_worker_init(db.clone()),
             pool: PoolHandle::for_tests(),
             threads,
+            spawn_registry: Rc::new(RefCell::new(HashMap::new())),
         }));
 
         let snapshot = handle_snapshot(state.clone(), thread_id).await.unwrap();
@@ -3309,6 +3544,7 @@ mod tests {
             init: test_worker_init(db.clone()),
             pool: PoolHandle::for_tests(),
             threads,
+            spawn_registry: Rc::new(RefCell::new(HashMap::new())),
         }));
 
         let snapshot = handle_snapshot(state.clone(), thread_id).await.unwrap();
@@ -4060,5 +4296,326 @@ mod tests {
         assert!(saw_started, "subscriber must receive RunStarted");
         assert!(saw_delta, "subscriber must receive AgentDelta");
         assert!(saw_finished, "subscriber must receive RunFinished");
+    }
+
+    use crate::db::runs;
+
+    async fn seed_user_thread(db: &ConnectionPool) -> Uuid {
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(db)
+            .await
+            .unwrap();
+        thread_id
+    }
+
+    fn single_pong_registry() -> ModelRegistry {
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![vec![text_chunk("pong")]])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                reasoning_effort: None,
+                vision: false,
+            },
+        );
+        models
+    }
+
+    async fn wait_idle(pool: &InProcessAgentPool, thread_id: Uuid) {
+        while pool.status(thread_id).await.unwrap() != ThreadStatus::Idle {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn run_row_finishes_with_final_message_and_messages_carry_run_id() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+        let thread_id = seed_user_thread(&db).await;
+
+        let pool = test_pool(db.clone(), single_pong_registry());
+        let run_id = pool
+            .send(
+                thread_id,
+                AgentRequest {
+                    content: "ping".to_string(),
+                    images: Vec::new(),
+                    model: None,
+                    source: RequestSource::Human,
+                },
+            )
+            .await
+            .unwrap();
+        wait_idle(&pool, thread_id).await;
+
+        let run_rows = runs::select()
+            .where_(runs::id.eq(run_id.0))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(run_rows.len(), 1);
+        let run = &run_rows[0];
+        assert_eq!(run.status, AgentRunStatus::Finished);
+        assert!(run.finished_at_ms.is_some());
+        assert!(run.started_at_ms > 0);
+        assert!(run.user_message_id.is_some());
+
+        let messages = messages::select()
+            .where_(messages::parent_thread.eq(thread_id))
+            .order_by_asc(messages::seq)
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 2);
+        for message in &messages {
+            assert_eq!(message.run_id, Some(run_id.0));
+        }
+        let agent_message = messages.iter().find(|m| m.role == Role::Agent).unwrap();
+        assert_eq!(run.final_message_id, Some(agent_message.id));
+        assert_eq!(run.user_message_id, Some(messages[0].id));
+    }
+
+    #[tokio::test]
+    async fn interrupted_repair_marks_running_run_and_tools() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+        let thread_id = seed_user_thread(&db).await;
+
+        let run_id = Uuid::now_v7();
+        runs::insert()
+            .id(run_id)
+            .thread_id(thread_id)
+            .status(AgentRunStatus::Running)
+            .user_message_id(Option::<Uuid>::None)
+            .final_message_id(Option::<Uuid>::None)
+            .error(Option::<&str>::None)
+            .started_at_ms(uuid_v7_ms(run_id))
+            .finished_at_ms(Option::<i64>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+        tool_call_records::insert()
+            .tool_call_id("call-x")
+            .parent_thread(thread_id)
+            .run_id(Some(run_id))
+            .assistant_message_id(Option::<Uuid>::None)
+            .tool_message_id(Option::<Uuid>::None)
+            .name("slow_tool")
+            .status(ToolCallStatus::Running)
+            .output_format("json")
+            .display_path(Option::<&str>::None)
+            .call_seq(0)
+            .background(true)
+            .started_at_ms(now_ms())
+            .finished_at_ms(Option::<i64>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        repair_interrupted_runs(&db, thread_id).await.unwrap();
+
+        let run = runs::select()
+            .where_(runs::id.eq(run_id))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(run[0].status, AgentRunStatus::Interrupted);
+        assert!(run[0].finished_at_ms.is_some());
+
+        let call = tool_call_records::select()
+            .where_(tool_call_records::tool_call_id.eq("call-x"))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(call[0].status, ToolCallStatus::Interrupted);
+        assert!(call[0].finished_at_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancel_marks_run_and_tools_cancelled() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+        let thread_id = seed_user_thread(&db).await;
+
+        let run_id = RunId(Uuid::now_v7());
+        runs::insert()
+            .id(run_id.0)
+            .thread_id(thread_id)
+            .status(AgentRunStatus::Running)
+            .user_message_id(Option::<Uuid>::None)
+            .final_message_id(Option::<Uuid>::None)
+            .error(Option::<&str>::None)
+            .started_at_ms(uuid_v7_ms(run_id.0))
+            .finished_at_ms(Option::<i64>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+        tool_call_records::insert()
+            .tool_call_id("call-c")
+            .parent_thread(thread_id)
+            .run_id(Some(run_id.0))
+            .assistant_message_id(Option::<Uuid>::None)
+            .tool_message_id(Option::<Uuid>::None)
+            .name("slow_tool")
+            .status(ToolCallStatus::Running)
+            .output_format("json")
+            .display_path(Option::<&str>::None)
+            .call_seq(0)
+            .background(true)
+            .started_at_ms(now_ms())
+            .finished_at_ms(Option::<i64>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let runner = ThreadRunner {
+            agent: None,
+            cancel_tx: None,
+            pending_approvals: HashMap::new(),
+            pending_quizzes: HashMap::new(),
+            queued: VecDeque::new(),
+            last_event_seq: 0,
+            next_message_seq: 0,
+            status: ThreadStatus::Running { run_id },
+            in_progress: None,
+            tool_progress: HashMap::new(),
+            message_format: MessageFormat::Html,
+            last_used: Instant::now(),
+        };
+        let mut threads = HashMap::new();
+        threads.insert(thread_id, runner);
+        let state = Rc::new(RefCell::new(WorkerState {
+            init: test_worker_init(db.clone()),
+            pool: PoolHandle::for_tests(),
+            threads,
+            spawn_registry: Rc::new(RefCell::new(HashMap::new())),
+        }));
+
+        cancel_run_task(&state, thread_id, run_id).await;
+
+        let run = runs::select()
+            .where_(runs::id.eq(run_id.0))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(run[0].status, AgentRunStatus::Cancelled);
+        assert!(run[0].finished_at_ms.is_some());
+
+        let call = tool_call_records::select()
+            .where_(tool_call_records::tool_call_id.eq("call-c"))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(call[0].status, ToolCallStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn wakeup_message_carries_tool_call_id() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+        let thread_id = seed_user_thread(&db).await;
+
+        let run_id = RunId(Uuid::now_v7());
+        runs::insert()
+            .id(run_id.0)
+            .thread_id(thread_id)
+            .status(AgentRunStatus::Running)
+            .user_message_id(Option::<Uuid>::None)
+            .final_message_id(Option::<Uuid>::None)
+            .error(Option::<&str>::None)
+            .started_at_ms(uuid_v7_ms(run_id.0))
+            .finished_at_ms(Option::<i64>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+        tool_call_records::insert()
+            .tool_call_id("call-w")
+            .parent_thread(thread_id)
+            .run_id(Some(run_id.0))
+            .assistant_message_id(Option::<Uuid>::None)
+            .tool_message_id(Option::<Uuid>::None)
+            .name("async_tool")
+            .status(ToolCallStatus::Running)
+            .output_format("json")
+            .display_path(Option::<&str>::None)
+            .call_seq(0)
+            .background(true)
+            .started_at_ms(now_ms())
+            .finished_at_ms(Option::<i64>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let runner = ThreadRunner {
+            agent: None,
+            cancel_tx: None,
+            pending_approvals: HashMap::new(),
+            pending_quizzes: HashMap::new(),
+            queued: VecDeque::new(),
+            last_event_seq: 0,
+            next_message_seq: 0,
+            status: ThreadStatus::Running { run_id },
+            in_progress: None,
+            tool_progress: HashMap::new(),
+            message_format: MessageFormat::Html,
+            last_used: Instant::now(),
+        };
+        let mut threads = HashMap::new();
+        threads.insert(thread_id, runner);
+        let state = Rc::new(RefCell::new(WorkerState {
+            init: test_worker_init(db.clone()),
+            pool: PoolHandle::for_tests(),
+            threads,
+            spawn_registry: Rc::new(RefCell::new(HashMap::new())),
+        }));
+
+        persist_tool_wakeup_message(
+            &state,
+            thread_id,
+            run_id,
+            "call-w",
+            "async_tool",
+            "Async task finished",
+            None,
+            "markdown",
+            ToolCallStatus::Finished,
+        )
+        .await
+        .unwrap();
+
+        let messages = messages::select()
+            .where_(messages::parent_thread.eq(thread_id))
+            .order_by_asc(messages::seq)
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].source, Some(MessageSource::ToolWakeup));
+        assert_eq!(messages[0].tool_call_id.as_deref(), Some("call-w"));
+        assert_eq!(messages[0].run_id, Some(run_id.0));
+
+        let call = tool_call_records::select()
+            .where_(tool_call_records::tool_call_id.eq("call-w"))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(call[0].status, ToolCallStatus::Finished);
+        assert!(call[0].finished_at_ms.is_some());
     }
 }

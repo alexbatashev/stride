@@ -25,6 +25,26 @@ pub enum MessageSource {
     ToolWakeup,
 }
 
+/// Lifecycle state of an agent run. Distinct from [`RunStatus`], which tracks
+/// automation runs and predates this type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentRunStatus {
+    Running,
+    Finished,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolCallStatus {
+    Running,
+    Finished,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum ObjectKind {
     Directory,
@@ -523,28 +543,66 @@ migrations! {
         }
     }
 
-    message_source_and_tool_records {
+    runs_and_tool_calls {
         alter table messages {
             add source: Option<MessageSource>;
+            add run_id: Option<Uuid>;
         }
 
         raw "UPDATE messages SET source = 'human' WHERE role = 'user' AND source IS NULL";
 
+        table runs {
+            id: Uuid [PrimaryKey],
+            thread_id: Uuid,
+            status: AgentRunStatus,
+            user_message_id: Option<Uuid>,
+            final_message_id: Option<Uuid>,
+            error: Option<String>,
+            started_at_ms: i64,
+            finished_at_ms: Option<i64>,
+
+            foreign_key(thread_id -> threads.id);
+        }
+
         table tool_call_records {
             tool_call_id: String [PrimaryKey],
             parent_thread: Uuid,
+            run_id: Option<Uuid>,
             assistant_message_id: Option<Uuid>,
             tool_message_id: Option<Uuid>,
             name: String,
-            status: String,
+            status: ToolCallStatus,
             output_format: String,
             display_path: Option<String>,
+            call_seq: i64,
+            background: bool,
+            started_at_ms: i64,
+            finished_at_ms: Option<i64>,
 
             foreign_key(parent_thread -> threads.id);
+            foreign_key(run_id -> runs.id);
             foreign_key(assistant_message_id -> messages.id);
             foreign_key(tool_message_id -> messages.id);
         }
     }
+}
+
+/// The millisecond timestamp packed into a UUIDv7's leading 48 bits.
+pub fn uuid_v7_ms(id: Uuid) -> i64 {
+    let bytes = id.as_bytes();
+    let mut ts: u64 = 0;
+    for byte in &bytes[0..6] {
+        ts = (ts << 8) | u64::from(*byte);
+    }
+    ts as i64
+}
+
+/// Milliseconds since the Unix epoch, for run and tool-call timestamps.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema
@@ -672,6 +730,92 @@ impl IntoValue for MessageSource {
     }
 }
 
+impl AgentRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentRunStatus::Running => "running",
+            AgentRunStatus::Finished => "finished",
+            AgentRunStatus::Failed => "failed",
+            AgentRunStatus::Cancelled => "cancelled",
+            AgentRunStatus::Interrupted => "interrupted",
+        }
+    }
+}
+
+impl FromValue for AgentRunStatus {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "running" => Ok(AgentRunStatus::Running),
+            Value::Text(s) if s == "finished" => Ok(AgentRunStatus::Finished),
+            Value::Text(s) if s == "failed" => Ok(AgentRunStatus::Failed),
+            Value::Text(s) if s == "cancelled" => Ok(AgentRunStatus::Cancelled),
+            Value::Text(s) if s == "interrupted" => Ok(AgentRunStatus::Interrupted),
+            _ => Err(DecodeError("Invalid agent run status".to_string())),
+        }
+    }
+}
+
+impl SqlLikeType for AgentRunStatus {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl From<AgentRunStatus> for Value {
+    fn from(val: AgentRunStatus) -> Value {
+        Value::Text(val.as_str().to_string())
+    }
+}
+
+impl IntoValue for AgentRunStatus {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
+impl ToolCallStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolCallStatus::Running => "running",
+            ToolCallStatus::Finished => "finished",
+            ToolCallStatus::Failed => "failed",
+            ToolCallStatus::Cancelled => "cancelled",
+            ToolCallStatus::Interrupted => "interrupted",
+        }
+    }
+}
+
+impl FromValue for ToolCallStatus {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "running" => Ok(ToolCallStatus::Running),
+            Value::Text(s) if s == "finished" => Ok(ToolCallStatus::Finished),
+            Value::Text(s) if s == "failed" => Ok(ToolCallStatus::Failed),
+            Value::Text(s) if s == "cancelled" => Ok(ToolCallStatus::Cancelled),
+            Value::Text(s) if s == "interrupted" => Ok(ToolCallStatus::Interrupted),
+            _ => Err(DecodeError("Invalid tool call status".to_string())),
+        }
+    }
+}
+
+impl SqlLikeType for ToolCallStatus {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl From<ToolCallStatus> for Value {
+    fn from(val: ToolCallStatus) -> Value {
+        Value::Text(val.as_str().to_string())
+    }
+}
+
+impl IntoValue for ToolCallStatus {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
 impl SqlLikeType for ObjectKind {
     fn as_sql_type() -> minisql::SqlType {
         minisql::SqlType::Text
@@ -764,5 +908,51 @@ impl From<RunStatus> for Value {
 impl IntoValue for RunStatus {
     fn into_value(self) -> Value {
         self.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minisql::ConnectionPool;
+
+    /// A 41bff3a-era database has every block applied except the never-deployed
+    /// `runs_and_tool_calls` tail. Applying the full set on top of that baseline
+    /// must migrate cleanly (fresh alters and new tables only).
+    #[tokio::test]
+    async fn appends_runs_block_onto_predeploy_baseline() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+
+        let mut baseline = get_migrations();
+        baseline.pop();
+        db.initialize_database(baseline).await.unwrap();
+
+        db.initialize_database(get_migrations()).await.unwrap();
+
+        db.query("INSERT INTO users (id, username, password_hash) VALUES (x'00', 'u', 'h')")
+            .await
+            .unwrap();
+        db.query("INSERT INTO threads (id, owner, title) VALUES (x'01', x'00', 't')")
+            .await
+            .unwrap();
+        db.query(
+            "INSERT INTO runs (id, thread_id, status, started_at_ms) \
+             VALUES (x'02', x'01', 'running', 1)",
+        )
+        .await
+        .unwrap();
+        db.query(
+            "INSERT INTO tool_call_records \
+             (tool_call_id, parent_thread, name, status, output_format, call_seq, background, started_at_ms) \
+             VALUES ('c', x'01', 'n', 'running', 'json', 0, 0, 1)",
+        )
+        .await
+        .unwrap();
+        db.query(
+            "INSERT INTO messages (id, parent_thread, seq, role, content, run_id) \
+             VALUES (x'03', x'01', 0, 'user', 'hi', x'02')",
+        )
+        .await
+        .unwrap();
     }
 }

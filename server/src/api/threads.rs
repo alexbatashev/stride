@@ -1242,23 +1242,7 @@ fn tool_call_name(tool_calls: Option<&str>) -> Option<String> {
         .and_then(|function| function.name.clone())
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
-/// The millisecond timestamp packed into a UUIDv7's leading 48 bits. Used as a
-/// last-activity/created fallback for threads that predate the timestamp columns.
-pub(crate) fn uuid_v7_ms(id: Uuid) -> i64 {
-    let bytes = id.as_bytes();
-    let mut ts: u64 = 0;
-    for byte in &bytes[0..6] {
-        ts = (ts << 8) | u64::from(*byte);
-    }
-    ts as i64
-}
+pub(crate) use crate::db::{now_ms, uuid_v7_ms};
 
 fn uuid_value(value: Option<&Value>) -> Result<Uuid, ThreadApiError> {
     match value {
