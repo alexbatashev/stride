@@ -71,9 +71,31 @@ type VersionHost = FilesHost & {
   menuTop: number;
   menuLeft: number;
   menuTarget: FileMenuTarget | null;
+  actionItems: string[];
   _loadedThread?: string;
   _loadedKey?: string;
 };
+
+function fileActions(host: VersionHost): FileActions {
+  if ("threadId" in host) {
+    return {
+      download: (targetPath, version) => downloadWorkspaceFileVersion(host.threadId, targetPath, version),
+      listVersions: (targetPath) => listWorkspaceFileVersions(host.threadId, targetPath),
+      restoreVersion: (targetPath, version) => restoreWorkspaceFileVersion(host.threadId, targetPath, version),
+      reload: () => {
+        host._loadedKey = "";
+        return managerLoad(host as ManagerHost);
+      },
+    };
+  }
+
+  return {
+    download: (targetPath, version) => downloadFileVersion(targetPath, version),
+    listVersions: (targetPath) => listFileVersions(targetPath),
+    restoreVersion: (targetPath, version) => restoreFileVersion(targetPath, version),
+    reload: () => browserLoad(host),
+  };
+}
 
 // Text bindings insert markup verbatim, so the displayed name is escaped here.
 function escapeHtml(value: string): string {
@@ -159,9 +181,7 @@ function versionByNumber(host: VersionHost, version: number): FileVersionItem | 
   return (host.versions as FileVersionItem[]).find((item) => item.version === version);
 }
 
-function menuItems(host: VersionHost): string[] {
-  const target = host.menuTarget;
-  if (!target) return [];
+function buildMenuItems(host: VersionHost, target: FileMenuTarget): string[] {
   const mimeType =
     target.kind === "file" ? fileByPath(host, target.path)?.mimeType ?? "" : versionByNumber(host, target.version)?.mimeType ?? "";
   const items = ["Download"];
@@ -242,6 +262,7 @@ function closePreview(host: VersionHost): void {
 function openMenu(host: VersionHost, event: MouseEvent, target: FileMenuTarget): void {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
   host.menuTarget = target;
+  host.actionItems = buildMenuItems(host, target);
   host.menuLeft = Math.max(8, rect.right - 176);
   host.menuTop = rect.bottom + 4;
   host.menuOpen = true;
@@ -821,6 +842,7 @@ export function AppFileBrowser({
   menuTop = 0,
   menuLeft = 0,
   menuTarget = null,
+  actionItems = [],
 }: {
   path?: string;
   entries?: FileItem[];
@@ -838,14 +860,8 @@ export function AppFileBrowser({
   menuTop?: number;
   menuLeft?: number;
   menuTarget?: FileMenuTarget | null;
+  actionItems?: string[];
 }): Component {
-  const actions: FileActions = {
-    download: (targetPath, version) => downloadFileVersion(targetPath, version),
-    listVersions: (targetPath) => listFileVersions(targetPath),
-    restoreVersion: (targetPath, version) => restoreFileVersion(targetPath, version),
-    reload: () => browserLoad(this),
-  };
-
   onMount(() => {
     void browserLoad(this);
     const root = this.shadowRoot!;
@@ -858,6 +874,7 @@ export function AppFileBrowser({
       if (!entry) return;
       if (detail.action === "menu") {
         this.menuTarget = { kind: "file", path: entry.path };
+        this.actionItems = buildMenuItems(this as VersionHost, this.menuTarget);
         this.menuLeft = Math.max(8, detail.left - 176);
         this.menuTop = detail.top + 4;
         this.menuOpen = true;
@@ -869,10 +886,10 @@ export function AppFileBrowser({
         void browserLoad(this);
         return;
       }
-      void openVersionDialog(this as VersionHost, actions, entry);
+      void openVersionDialog(this as VersionHost, fileActions(this as VersionHost), entry);
     };
     const onMenuSelect = (event: Event) => {
-      void handleMenuSelect(this as VersionHost, actions, (event as CustomEvent<{ action: string }>).detail.action);
+      void handleMenuSelect(this as VersionHost, fileActions(this as VersionHost), (event as CustomEvent<{ action: string }>).detail.action);
     };
     const onDialogClose = (event: Event) => {
       const target = event.target as HTMLElement;
@@ -1015,7 +1032,7 @@ export function AppFileBrowser({
       />
       <AppDropdownMenu
         open={menuOpen}
-        items={menuItems(this as VersionHost)}
+        items={actionItems}
         position={`left:${menuLeft}px;top:${menuTop}px`}
       />
       <AppDialog
@@ -1034,7 +1051,7 @@ export function AppFileBrowser({
             const version = (this.versions as FileVersionItem[])[index]?.version;
             if (version == null) return;
             if (button.dataset.versionAction === "restore") {
-              void restoreVersionAndReload(this as VersionHost, actions, version);
+              void restoreVersionAndReload(this as VersionHost, fileActions(this as VersionHost), version);
             } else if (button.dataset.versionAction === "menu" && activeFile) {
               openMenu(this as VersionHost, event, { kind: "version", path: activeFile.path, version });
             }
@@ -1299,6 +1316,7 @@ export function AppFileManager({
   menuTop = 0,
   menuLeft = 0,
   menuTarget = null,
+  actionItems = [],
 }: {
   threadId?: string;
   open?: boolean;
@@ -1318,17 +1336,8 @@ export function AppFileManager({
   menuTop?: number;
   menuLeft?: number;
   menuTarget?: FileMenuTarget | null;
+  actionItems?: string[];
 }): Component {
-  const actions: FileActions = {
-    download: (targetPath, version) => downloadWorkspaceFileVersion(this.threadId, targetPath, version),
-    listVersions: (targetPath) => listWorkspaceFileVersions(this.threadId, targetPath),
-    restoreVersion: (targetPath, version) => restoreWorkspaceFileVersion(this.threadId, targetPath, version),
-    reload: () => {
-      this._loadedKey = "";
-      return managerLoad(this);
-    },
-  };
-
   onMount(() => {
     const root = this.shadowRoot!;
     const onSelection = (event: Event) => {
@@ -1340,6 +1349,7 @@ export function AppFileManager({
       if (!entry) return;
       if (detail.action === "menu") {
         this.menuTarget = { kind: "file", path: entry.path };
+        this.actionItems = buildMenuItems(this as VersionHost, this.menuTarget);
         this.menuLeft = Math.max(8, detail.left - 176);
         this.menuTop = detail.top + 4;
         this.menuOpen = true;
@@ -1352,10 +1362,10 @@ export function AppFileManager({
         void managerLoad(this);
         return;
       }
-      void openVersionDialog(this as VersionHost, actions, entry);
+      void openVersionDialog(this as VersionHost, fileActions(this as VersionHost), entry);
     };
     const onMenuSelect = (event: Event) => {
-      void handleMenuSelect(this as VersionHost, actions, (event as CustomEvent<{ action: string }>).detail.action);
+      void handleMenuSelect(this as VersionHost, fileActions(this as VersionHost), (event as CustomEvent<{ action: string }>).detail.action);
     };
     const onDialogClose = (event: Event) => {
       const target = event.target as HTMLElement;
@@ -1521,7 +1531,7 @@ export function AppFileManager({
       </section>
       <AppDropdownMenu
         open={menuOpen}
-        items={menuItems(this as VersionHost)}
+        items={actionItems}
         position={`left:${menuLeft}px;top:${menuTop}px`}
       />
       <AppDialog
@@ -1540,7 +1550,7 @@ export function AppFileManager({
             const version = (this.versions as FileVersionItem[])[index]?.version;
             if (version == null) return;
             if (button.dataset.versionAction === "restore") {
-              void restoreVersionAndReload(this as VersionHost, actions, version);
+              void restoreVersionAndReload(this as VersionHost, fileActions(this as VersionHost), version);
             } else if (button.dataset.versionAction === "menu" && activeFile) {
               openMenu(this as VersionHost, event, { kind: "version", path: activeFile.path, version });
             }

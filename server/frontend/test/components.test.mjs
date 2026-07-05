@@ -27,6 +27,10 @@ function lastEvent(el, name) {
   return seen;
 }
 
+function tick() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 test('all custom elements register', () => {
   for (const tag of [
     'app-button', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
@@ -280,6 +284,50 @@ test('app-data-table renders rows and reports selection', () => {
   assert.equal(action.detail.rowId, 'dir/sub');
   assert.equal(typeof action.detail.left, 'number');
   assert.equal(typeof action.detail.top, 'number');
+});
+
+test('app-file-manager opens version history from file click', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /\/api\/threads\/t1\/file-versions\?path=mortgage\.pdf/);
+    return new Response(JSON.stringify({
+      path: 'mortgage.pdf',
+      versions: [{ version: 2, size: 9100, created_at: 1760000000000, mime_type: 'application/pdf' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const el = mount('app-file-manager', {
+      threadId: 't1',
+      open: false,
+    });
+    el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
+    await tick();
+    const table = el.shadowRoot.querySelector('app-data-table');
+    table.shadowRoot.querySelector('button[data-row-action="open"]').click();
+    await tick();
+    await tick();
+
+    assert.match(el.shadowRoot.innerHTML, /Version 2/);
+    assert.match(el.shadowRoot.innerHTML, /Restore/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('app-file-manager file menu renders supported actions', async () => {
+  const el = mount('app-file-manager', {
+    threadId: 't1',
+    open: false,
+  });
+  el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
+  await tick();
+  const table = el.shadowRoot.querySelector('app-data-table');
+  table.shadowRoot.querySelector('button[data-row-action="menu"]').click();
+  await tick();
+
+  const menu = el.shadowRoot.querySelector('app-dropdown-menu');
+  assert.match(menu.shadowRoot.innerHTML, /Download/);
+  assert.match(menu.shadowRoot.innerHTML, /Preview/);
 });
 
 test('app-settings switches sections and lists integrations', () => {
