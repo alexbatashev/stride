@@ -646,11 +646,13 @@ mod tests {
         assert!(cfg.providers.contains_key("openai"));
         assert!(cfg.models.contains_key("gpt_4_1"));
         let default_model = cfg.models.get("default").unwrap();
-        assert_eq!(
-            default_model.display_name.as_deref(),
-            Some("GPT-4.1")
+        assert_eq!(default_model.display_name.as_deref(), Some("GPT-4.1"));
+        assert!(
+            default_model
+                .description
+                .as_ref()
+                .is_some_and(|text| !text.is_empty())
         );
-        assert!(default_model.description.as_ref().is_some_and(|text| !text.is_empty()));
         assert!(cfg.server.unwrap().ldap.is_some());
         assert!(cfg.tools.unwrap().web_search.is_some());
         assert!(cfg.mcp.contains_key("deepwiki"));

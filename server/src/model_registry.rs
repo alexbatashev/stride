@@ -770,10 +770,7 @@ mod tests {
 
     #[test]
     fn model_display_name_falls_back_to_registry_key() {
-        assert_eq!(
-            model_display_name("gpt_4_1", Some("GPT-4.1")),
-            "GPT-4.1"
-        );
+        assert_eq!(model_display_name("gpt_4_1", Some("GPT-4.1")), "GPT-4.1");
         assert_eq!(model_display_name("gpt_4_1", None), "gpt_4_1");
         assert_eq!(model_display_name("gpt_4_1", Some("  ")), "gpt_4_1");
     }
