@@ -78,10 +78,6 @@ pub async fn update(
     Ok(Json(settings))
 }
 
-async fn save(
-    state: &ServerState,
-    owner: Uuid,
-    settings: &AgentSettings,
-) -> anyhow::Result<()> {
+async fn save(state: &ServerState, owner: Uuid, settings: &AgentSettings) -> anyhow::Result<()> {
     model_registry::save_agent_settings(&state.db, owner, settings).await
 }

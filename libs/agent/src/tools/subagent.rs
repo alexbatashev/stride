@@ -31,11 +31,7 @@ struct SubAgentParams {
 }
 
 impl SubAgentTool {
-    pub fn new(
-        tool_registry: ToolRegistry,
-        allowed_models: Vec<String>,
-        guidelines: &str,
-    ) -> Self {
+    pub fn new(tool_registry: ToolRegistry, allowed_models: Vec<String>, guidelines: &str) -> Self {
         Self {
             desc: build_description(allowed_models.as_slice(), guidelines),
             tool_registry,
@@ -52,11 +48,7 @@ impl SubAgentTool {
         self
     }
 
-    fn with_model(
-        model: &str,
-        system_prompt: &str,
-        tool_registry: ToolRegistry,
-    ) -> Self {
+    fn with_model(model: &str, system_prompt: &str, tool_registry: ToolRegistry) -> Self {
         Self {
             desc: String::new(),
             tool_registry,

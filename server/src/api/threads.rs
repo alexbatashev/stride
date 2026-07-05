@@ -619,14 +619,9 @@ pub async fn create_thread(
     .await?;
     let content = normalize_content(content)?;
 
-    let run_id = send_to_runner_with_images(
-        &state,
-        thread_id,
-        content.clone(),
-        images,
-        request.model,
-    )
-    .await?;
+    let run_id =
+        send_to_runner_with_images(&state, thread_id, content.clone(), images, request.model)
+            .await?;
 
     spawn_title_generation(state.clone(), thread_id, content, None);
 
@@ -842,14 +837,8 @@ pub async fn send_message(
     )
     .await?;
     let content = normalize_content(content)?;
-    let run_id = send_to_runner_with_images(
-        &state,
-        thread_id,
-        content,
-        images,
-        request.model,
-    )
-    .await?;
+    let run_id =
+        send_to_runner_with_images(&state, thread_id, content, images, request.model).await?;
 
     Ok(Json(SendMessageResponse {
         thread_id: thread_id.to_string(),
@@ -1015,11 +1004,7 @@ fn vision_enabled(state: &ServerState, model: Option<&str>) -> bool {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(DEFAULT_MODEL);
-    state
-        .model_config
-        .model_registry
-        .get_or_default(key)
-        .vision
+    state.model_config.model_registry.get_or_default(key).vision
 }
 
 async fn model_has_vision(
@@ -1039,7 +1024,11 @@ async fn model_has_vision(
         .all(&state.db)
         .await
         .map_err(|_| ThreadApiError::Internal)?;
-    Ok(rows.into_iter().next().map(|(vision,)| vision).unwrap_or(false))
+    Ok(rows
+        .into_iter()
+        .next()
+        .map(|(vision,)| vision)
+        .unwrap_or(false))
 }
 
 /// Splits attachments into images (sent to a vision model) and other files

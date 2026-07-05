@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use llm::{Anthropic, Ollama, OpenAI, ReasoningEffort};
 use minisql::ConnectionPool;
-use stride_agent::{ModelRegEntry, ModelRegistry, DEFAULT_MODEL, EMBEDDING_MODEL, TRANSCRIPTION_MODEL};
+use stride_agent::{
+    DEFAULT_MODEL, EMBEDDING_MODEL, ModelRegEntry, ModelRegistry, TRANSCRIPTION_MODEL,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -69,19 +71,12 @@ pub struct UserModelSummary {
     pub created_at: i64,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct AgentSettings {
+    #[serde(default)]
     pub subagent_allowed_models: Vec<String>,
+    #[serde(default)]
     pub subagent_guidelines: String,
-}
-
-impl Default for AgentSettings {
-    fn default() -> Self {
-        Self {
-            subagent_allowed_models: Vec::new(),
-            subagent_guidelines: String::new(),
-        }
-    }
 }
 
 pub fn is_chat_model(key: &str) -> bool {
@@ -99,9 +94,7 @@ pub fn config_chat_models(config: &Config) -> Vec<ModelSummary> {
             source: "config",
             provider: model.provider.clone(),
             vision: model.vision.unwrap_or(false),
-            reasoning_effort: model
-                .reasoning_effort()
-                .map(reasoning_effort_name),
+            reasoning_effort: model.reasoning_effort().map(reasoning_effort_name),
         })
         .collect()
 }
@@ -164,7 +157,9 @@ pub async fn build_user_registry(
     let provider_map: HashMap<Uuid, _> = providers
         .into_iter()
         .filter_map(|provider| {
-            let token = cipher.decrypt(provider.id, &provider.token_ciphertext).ok()?;
+            let token = cipher
+                .decrypt(provider.id, &provider.token_ciphertext)
+                .ok()?;
             Some((provider.id, (provider, token)))
         })
         .collect();
@@ -184,7 +179,14 @@ pub async fn build_user_registry(
         };
         registry.add_model(
             &model.name,
-            entry_from_provider(kind, &provider.url, token, &model.slug, &model.reasoning_effort, model.vision),
+            entry_from_provider(
+                kind,
+                &provider.url,
+                token,
+                &model.slug,
+                &model.reasoning_effort,
+                model.vision,
+            ),
         );
     }
 
@@ -330,7 +332,11 @@ pub async fn create_provider(
 
 pub async fn delete_provider(db: &ConnectionPool, owner: Uuid, id: Uuid) -> anyhow::Result<()> {
     let existing = user_providers::select_cols((user_providers::id,))
-        .where_(user_providers::id.eq(id).and(user_providers::owner.eq(owner)))
+        .where_(
+            user_providers::id
+                .eq(id)
+                .and(user_providers::owner.eq(owner)),
+        )
         .all(db)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -339,13 +345,21 @@ pub async fn delete_provider(db: &ConnectionPool, owner: Uuid, id: Uuid) -> anyh
     }
 
     user_models::delete()
-        .where_(user_models::provider_id.eq(id).and(user_models::owner.eq(owner)))
+        .where_(
+            user_models::provider_id
+                .eq(id)
+                .and(user_models::owner.eq(owner)),
+        )
         .execute(db)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     user_providers::delete()
-        .where_(user_providers::id.eq(id).and(user_providers::owner.eq(owner)))
+        .where_(
+            user_providers::id
+                .eq(id)
+                .and(user_providers::owner.eq(owner)),
+        )
         .execute(db)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -466,10 +480,6 @@ pub fn resolve_chat_model(
     Ok(key.to_string())
 }
 
-pub fn model_has_vision(registry: &ModelRegistry, key: &str) -> bool {
-    registry.get(key).is_some_and(|entry| entry.vision)
-}
-
 fn entry_from_provider(
     kind: Kind,
     url: &str,
@@ -488,9 +498,7 @@ fn entry_from_provider(
         api,
         token: token.to_string(),
         model_name: slug.to_string(),
-        reasoning_effort: reasoning_effort
-            .as_deref()
-            .and_then(parse_reasoning_effort),
+        reasoning_effort: reasoning_effort.as_deref().and_then(parse_reasoning_effort),
         vision,
     }
 }
@@ -584,7 +592,11 @@ async fn ensure_unique_provider_name(
     name: &str,
 ) -> anyhow::Result<()> {
     let rows = user_providers::select_cols((user_providers::id,))
-        .where_(user_providers::owner.eq(owner).and(user_providers::name.eq(name)))
+        .where_(
+            user_providers::owner
+                .eq(owner)
+                .and(user_providers::name.eq(name)),
+        )
         .all(db)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -594,7 +606,11 @@ async fn ensure_unique_provider_name(
     Ok(())
 }
 
-async fn ensure_unique_model_name(db: &ConnectionPool, owner: Uuid, name: &str) -> anyhow::Result<()> {
+async fn ensure_unique_model_name(
+    db: &ConnectionPool,
+    owner: Uuid,
+    name: &str,
+) -> anyhow::Result<()> {
     let rows = user_models::select_cols((user_models::id,))
         .where_(user_models::owner.eq(owner).and(user_models::name.eq(name)))
         .all(db)
@@ -606,9 +622,17 @@ async fn ensure_unique_model_name(db: &ConnectionPool, owner: Uuid, name: &str) 
     Ok(())
 }
 
-async fn ensure_owned_provider(db: &ConnectionPool, owner: Uuid, provider_id: Uuid) -> anyhow::Result<()> {
+async fn ensure_owned_provider(
+    db: &ConnectionPool,
+    owner: Uuid,
+    provider_id: Uuid,
+) -> anyhow::Result<()> {
     let rows = user_providers::select_cols((user_providers::id,))
-        .where_(user_providers::owner.eq(owner).and(user_providers::id.eq(provider_id)))
+        .where_(
+            user_providers::owner
+                .eq(owner)
+                .and(user_providers::id.eq(provider_id)),
+        )
         .all(db)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;

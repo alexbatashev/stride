@@ -87,7 +87,11 @@ pub async fn delete(
 
 fn map_error(error: anyhow::Error) -> ProvidersApiError {
     let message = error.to_string();
-    if message.contains("already exists") || message.contains("required") || message.contains("unsupported") || message.contains("must") {
+    if message.contains("already exists")
+        || message.contains("required")
+        || message.contains("unsupported")
+        || message.contains("must")
+    {
         ProvidersApiError::BadRequest(message)
     } else if message.contains("not found") {
         ProvidersApiError::NotFound

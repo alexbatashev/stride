@@ -16,10 +16,10 @@ use stride_agent::{
     sanitizer::{HtmlFormattingSanitizer, StreamingMessageSanitizer},
     tools::{
         email::{CreateEmailDraftTool, ListEmailsTool},
-        subagent::{SUBAGENT_NAME, SubAgentTool},
         firecrawl::FirecrawlTool,
         quiz::QuizTool,
         shell::ShellTool,
+        subagent::{SUBAGENT_NAME, SubAgentTool},
         web_search::{
             WebSearchTool, arxiv::ArxivProvider, brave::BraveProvider, pubmed::PubmedProvider,
             searxng::SearxngProvider, uspto::UsptoProvider,
@@ -757,12 +757,9 @@ async fn handle_send(
         .await;
     } else {
         with_runner(&state, thread_id, |runner| {
-            runner.queued.push_back((
-                run_id,
-                request.content,
-                request.images,
-                request.model,
-            ));
+            runner
+                .queued
+                .push_back((run_id, request.content, request.images, request.model));
         });
     }
 
@@ -1560,15 +1557,16 @@ async fn run_agent_turn(
         return;
     };
 
-    let resolved_model = match model_registry::resolve_chat_model(&agent.model_registry(), model.as_deref()) {
-        Ok(key) => key,
-        Err(error) => {
-            fail_run(&state, thread_id, run_id, error).await;
-            restore_agent(&state, thread_id, agent);
-            drain_queue(&state, thread_id).await;
-            return;
-        }
-    };
+    let resolved_model =
+        match model_registry::resolve_chat_model(&agent.model_registry(), model.as_deref()) {
+            Ok(key) => key,
+            Err(error) => {
+                fail_run(&state, thread_id, run_id, error).await;
+                restore_agent(&state, thread_id, agent);
+                drain_queue(&state, thread_id).await;
+                return;
+            }
+        };
     agent.set_model(resolved_model);
 
     let mut stream = agent.make_turn(content, images).await;

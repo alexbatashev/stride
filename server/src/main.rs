@@ -174,20 +174,19 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let public_url = config.public_url();
-    let mut runner_builder =
-        runner::inproc::InProcessAgentPool::builder(
-            db.clone(),
-            model_config.clone(),
-            config.clone(),
-            cipher.clone(),
-        )
-            .tools(tools)
-            .mcp_tools(mcp_tools)
-            .telegram_bot_token(telegram_bot_token.clone())
-            .public_url(public_url)
-            .github_runtime(github_runtime.clone())
-            .email_service(email_service)
-            .google_service(google_service.clone());
+    let mut runner_builder = runner::inproc::InProcessAgentPool::builder(
+        db.clone(),
+        model_config.clone(),
+        config.clone(),
+        cipher.clone(),
+    )
+    .tools(tools)
+    .mcp_tools(mcp_tools)
+    .telegram_bot_token(telegram_bot_token.clone())
+    .public_url(public_url)
+    .github_runtime(github_runtime.clone())
+    .email_service(email_service)
+    .google_service(google_service.clone());
     if let Some(ref vfs) = vfs_provider {
         runner_builder = runner_builder.vfs(vfs.clone());
     }
@@ -517,7 +516,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             "/api/settings/providers",
             get(api::providers::list).post(api::providers::create),
         )
-        .route("/api/settings/providers/{id}", delete(api::providers::delete))
+        .route(
+            "/api/settings/providers/{id}",
+            delete(api::providers::delete),
+        )
         .route(
             "/api/settings/user-models",
             get(api::user_models::list).post(api::user_models::create),
