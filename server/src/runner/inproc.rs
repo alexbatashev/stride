@@ -38,15 +38,15 @@ use uuid::Uuid;
 use crate::{
     config::{self, Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
     crypto::SecretCipher,
-    db::{MessageFormat, Role, messages, threads},
+    db::{MessageFormat, MessageSource, Role, messages, threads, tool_call_records},
     email::ImapService,
     github::GitHubRuntime,
     google::GoogleService,
     model_registry,
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
-        PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId, RunnerLifecycle,
-        ThreadSnapshot, ThreadStatus, thread_events_topic,
+        PartialToolProgress, PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId,
+        RunnerLifecycle, ThreadSnapshot, ThreadStatus, thread_events_topic,
     },
     tools::{
         attach_image::AttachImageTool,
@@ -390,6 +390,7 @@ struct ThreadRunner {
     next_message_seq: u64,
     status: ThreadStatus,
     in_progress: Option<PartialAgentMessage>,
+    tool_progress: HashMap<String, PartialToolProgress>,
     message_format: MessageFormat,
     last_used: Instant,
 }
@@ -418,7 +419,7 @@ struct AssistantMessageState {
 
 /// Bridges the agent crate's executor hook to the worker's `LocalSet`. Each
 /// turn runs on a `spawn_local`-capable current-thread runtime, so backgrounded
-/// (async) tool calls can be spawned there.
+/// tool calls can be spawned there.
 struct LocalSpawner;
 
 impl TaskSpawner for LocalSpawner {
@@ -428,9 +429,10 @@ impl TaskSpawner for LocalSpawner {
 }
 
 /// Per-run bookkeeping for a tool whose output streams in incrementally. Tracks
-/// the persisted row and the human-facing text accumulated so far.
+/// the live text accumulated so far.
 struct ToolStreamState {
-    message_id: Uuid,
+    name: String,
+    format: String,
     display: String,
 }
 
@@ -725,6 +727,7 @@ async fn handle_send(
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Option::<&str>::None)
+        .source(Some(request.source.message_source()))
         .execute(&db)
         .await
         .map_err(db_error)?;
@@ -805,6 +808,7 @@ async fn start_run(
         let (cancel_tx, cancel_rx) = watch::channel(false);
         runner.cancel_tx = Some(cancel_tx);
         runner.status = ThreadStatus::Running { run_id };
+        runner.tool_progress.clear();
         runner.last_used = Instant::now();
         cancel_rx
     };
@@ -857,6 +861,7 @@ async fn handle_snapshot(
         last_event_seq: runner.last_event_seq,
         status: runner.status.clone(),
         in_progress: runner.in_progress.clone(),
+        tool_progress: runner.tool_progress.values().cloned().collect(),
         pending_approval: runner
             .pending_approvals
             .iter()
@@ -1307,6 +1312,7 @@ async fn ensure_runner(
             next_message_seq,
             status: ThreadStatus::Idle,
             in_progress: None,
+            tool_progress: HashMap::new(),
             message_format,
             last_used: Instant::now(),
         },
@@ -1612,6 +1618,7 @@ async fn run_agent_turn(
         output_sanitizer: output_sanitizer(format, &state),
     };
     let mut tool_streams: HashMap<String, ToolStreamState> = HashMap::new();
+    let mut tool_assistant_messages: HashMap<String, Uuid> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -1627,7 +1634,15 @@ async fn run_agent_turn(
                 match item {
                     Ok(AgentResponseChunk::Chunk(chunk)) => {
                         if let Err(error) =
-                            handle_agent_chunk(&state, thread_id, run_id, &mut assistant, chunk).await
+                            handle_agent_chunk(
+                                &state,
+                                thread_id,
+                                run_id,
+                                &mut assistant,
+                                &mut tool_assistant_messages,
+                                chunk,
+                            )
+                            .await
                         {
                             fail_run(&state, thread_id, run_id, error.to_string()).await;
                             restore_agent(&state, thread_id, agent);
@@ -1636,6 +1651,21 @@ async fn run_agent_turn(
                         }
                     }
                     Ok(AgentResponseChunk::ToolStarted { tool_call_id, name, .. }) => {
+                        if let Err(error) =
+                            record_tool_started(
+                                &state,
+                                thread_id,
+                                &tool_call_id,
+                                tool_assistant_messages.get(&tool_call_id).copied(),
+                                &name,
+                            )
+                            .await
+                        {
+                            fail_run(&state, thread_id, run_id, error.to_string()).await;
+                            restore_agent(&state, thread_id, agent);
+                            drain_queue(&state, thread_id).await;
+                            return;
+                        }
                         emit(
                             &state,
                             thread_id,
@@ -1651,21 +1681,15 @@ async fn run_agent_turn(
                         format,
                     }) => {
                         let format = format.as_str();
-                        if let Err(error) = persist_tool_progress(
+                        record_tool_progress(
                             &state,
                             thread_id,
                             &mut tool_streams,
                             &tool_call_id,
+                            &name,
                             &delta,
                             format,
-                        )
-                        .await
-                        {
-                            fail_run(&state, thread_id, run_id, error.to_string()).await;
-                            restore_agent(&state, thread_id, agent);
-                            drain_queue(&state, thread_id).await;
-                            return;
-                        }
+                        );
 
                         emit(
                             &state,
@@ -1689,19 +1713,30 @@ async fn run_agent_turn(
                         wake_message,
                     }) => {
                         let format = format.as_str();
-                        if let Err(error) = finalize_tool_message(
-                            &state,
-                            thread_id,
-                            &mut tool_streams,
-                            ToolFinish {
-                                tool_call_id: &tool_call_id,
-                                result: &result,
-                                display: display.as_deref(),
+                        let persisted = if let Some(wake_message) = wake_message {
+                            persist_tool_wakeup_message(
+                                &state,
+                                thread_id,
+                                &tool_call_id,
+                                &name,
+                                &wake_message,
+                                display.as_deref(),
                                 format,
-                                wake_message: wake_message.as_deref(),
-                            },
-                        )
-                        .await
+                            )
+                            .await
+                        } else {
+                            persist_tool_message(
+                                &state,
+                                thread_id,
+                                &mut tool_streams,
+                                &tool_call_id,
+                                &name,
+                                &result,
+                                format,
+                            )
+                            .await
+                        };
+                        if let Err(error) = persisted
                         {
                             fail_run(&state, thread_id, run_id, error.to_string()).await;
                             restore_agent(&state, thread_id, agent);
@@ -1817,6 +1852,7 @@ async fn handle_agent_chunk(
     thread_id: Uuid,
     run_id: RunId,
     assistant: &mut AssistantMessageState,
+    tool_assistant_messages: &mut HashMap<String, Uuid>,
     chunk: llm::StreamResponseChunk,
 ) -> Result<(), AgentPoolError> {
     let mut has_message_delta = false;
@@ -1943,6 +1979,14 @@ async fn handle_agent_chunk(
                 &assistant.content,
                 assistant.thinking.as_deref(),
                 tool_calls.as_deref(),
+            )
+            .await?;
+            record_assistant_tool_calls(
+                state,
+                thread_id,
+                message_id,
+                tool_calls.as_deref(),
+                tool_assistant_messages,
             )
             .await?;
 
@@ -2112,149 +2156,154 @@ fn thread_message_format(
         .map(|runner| runner.message_format)
 }
 
-/// Returns the row backing a streaming tool's output, creating an empty one on
-/// first use so later progress updates and the final result share it.
-async fn ensure_tool_row(
+async fn record_tool_started(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    tool_call_id: &str,
+    assistant_message_id: Option<Uuid>,
+    name: &str,
+) -> Result<(), AgentPoolError> {
+    let db = state.borrow().init.db.clone();
+    tool_call_records::insert()
+        .tool_call_id(tool_call_id)
+        .parent_thread(thread_id)
+        .assistant_message_id(assistant_message_id)
+        .tool_message_id(Option::<Uuid>::None)
+        .name(name)
+        .status("running")
+        .output_format("json")
+        .display_path(Option::<&str>::None)
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
+
+async fn record_assistant_tool_calls(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    assistant_message_id: Uuid,
+    tool_calls: Option<&str>,
+    tool_assistant_messages: &mut HashMap<String, Uuid>,
+) -> Result<(), AgentPoolError> {
+    let Some(tool_calls) = tool_calls else {
+        return Ok(());
+    };
+    let calls = serde_json::from_str::<Vec<llm::ToolCallChunk>>(tool_calls)
+        .map_err(|error| AgentPoolError::Internal(anyhow::anyhow!(error)))?;
+    let db = state.borrow().init.db.clone();
+
+    for tool_call_id in calls.into_iter().filter_map(|call| call.id) {
+        tool_assistant_messages.insert(tool_call_id.clone(), assistant_message_id);
+        tool_call_records::update()
+            .assistant_message_id(Some(assistant_message_id))
+            .where_(
+                tool_call_records::parent_thread
+                    .eq(thread_id)
+                    .and(tool_call_records::tool_call_id.eq(tool_call_id.as_str())),
+            )
+            .execute(&db)
+            .await
+            .map_err(db_error)?;
+    }
+
+    Ok(())
+}
+
+fn record_tool_progress(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
     tool_streams: &mut HashMap<String, ToolStreamState>,
     tool_call_id: &str,
+    name: &str,
+    delta: &str,
     format: &str,
-) -> Result<Uuid, AgentPoolError> {
-    if let Some(existing) = tool_streams.get(tool_call_id) {
-        return Ok(existing.message_id);
-    }
+) {
+    let entry = tool_streams
+        .entry(tool_call_id.to_string())
+        .or_insert_with(|| ToolStreamState {
+            name: name.to_string(),
+            format: format.to_string(),
+            display: String::new(),
+        });
+    entry.display.push_str(delta);
+    entry.format = format.to_string();
+
+    with_runner(state, thread_id, |runner| {
+        runner.tool_progress.insert(
+            tool_call_id.to_string(),
+            PartialToolProgress {
+                tool_call_id: tool_call_id.to_string(),
+                name: entry.name.clone(),
+                content: entry.display.clone(),
+                format: entry.format.clone(),
+            },
+        );
+    });
+}
+
+async fn persist_tool_message(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    tool_streams: &mut HashMap<String, ToolStreamState>,
+    tool_call_id: &str,
+    name: &str,
+    content: &str,
+    format: &str,
+) -> Result<(), AgentPoolError> {
+    tool_streams.remove(tool_call_id);
+    with_runner(state, thread_id, |runner| {
+        runner.tool_progress.remove(tool_call_id);
+    });
+
     let id = Uuid::now_v7();
     let seq = next_message_seq(state, thread_id)?;
     let db = state.borrow().init.db.clone();
-
     messages::insert()
         .id(id)
         .parent_thread(thread_id)
         .seq(seq)
         .role(Role::Tool)
-        .content("")
+        .content(content)
         .content_format(MessageFormat::Markdown)
         .images(Option::<&str>::None)
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Some(tool_call_id))
-        .tool_format(Some(format))
         .execute(&db)
         .await
         .map_err(db_error)?;
 
-    tool_streams.insert(
-        tool_call_id.to_string(),
-        ToolStreamState {
-            message_id: id,
-            display: String::new(),
-        },
-    );
-    Ok(id)
+    let display_path = tool_display_path(content, format);
+    tool_call_records::update()
+        .tool_message_id(Some(id))
+        .name(name)
+        .status("finished")
+        .output_format(format)
+        .display_path(display_path.as_deref())
+        .where_(tool_call_records::tool_call_id.eq(tool_call_id))
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+    Ok(())
 }
 
-/// Appends a streamed delta to a tool's row and updates its human-facing text.
-async fn persist_tool_progress(
+async fn persist_tool_wakeup_message(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
-    tool_streams: &mut HashMap<String, ToolStreamState>,
     tool_call_id: &str,
-    delta: &str,
+    name: &str,
+    content: &str,
+    _display: Option<&str>,
     format: &str,
 ) -> Result<(), AgentPoolError> {
-    let id = ensure_tool_row(state, thread_id, tool_streams, tool_call_id, format).await?;
-    let display = {
-        let stream = tool_streams
-            .get_mut(tool_call_id)
-            .expect("row just ensured");
-        stream.display.push_str(delta);
-        stream.display.clone()
-    };
-    let db = state.borrow().init.db.clone();
-    messages::update()
-        .tool_display(Some(display.as_str()))
-        .tool_format(Some(format))
-        .where_(messages::id.eq(id))
-        .execute(&db)
-        .await
-        .map_err(db_error)?;
-    Ok(())
-}
+    with_runner(state, thread_id, |runner| {
+        runner.tool_progress.remove(tool_call_id);
+    });
 
-/// A tool result to commit, as delivered by the agent stream.
-struct ToolFinish<'a> {
-    tool_call_id: &'a str,
-    result: &'a str,
-    display: Option<&'a str>,
-    format: &'a str,
-    /// Present for a backgrounded completion: the exact user message the agent
-    /// injected into the thread, to be persisted identically.
-    wake_message: Option<&'a str>,
-}
-
-/// Commits a tool's final output. A synchronous finish stores the model-facing
-/// result in `content` and the display text in `tool_display`. A backgrounded
-/// completion (`wake_message`) instead persists the injected user message so a
-/// reloaded thread matches the live one, then finalizes the streamed row.
-async fn finalize_tool_message(
-    state: &Rc<RefCell<WorkerState>>,
-    thread_id: Uuid,
-    tool_streams: &mut HashMap<String, ToolStreamState>,
-    finish: ToolFinish<'_>,
-) -> Result<(), AgentPoolError> {
-    if let Some(wake) = finish.wake_message {
-        persist_user_message(state, thread_id, wake).await?;
-        if let Some(stream) = tool_streams.remove(finish.tool_call_id) {
-            let final_display = finish.display.map(str::to_string).unwrap_or(stream.display);
-            let db = state.borrow().init.db.clone();
-            messages::update()
-                .tool_display(Some(final_display.as_str()))
-                .tool_format(Some(finish.format))
-                .where_(messages::id.eq(stream.message_id))
-                .execute(&db)
-                .await
-                .map_err(db_error)?;
-        }
-        return Ok(());
-    }
-
-    let id = ensure_tool_row(
-        state,
-        thread_id,
-        tool_streams,
-        finish.tool_call_id,
-        finish.format,
-    )
-    .await?;
-    let accumulated = tool_streams
-        .get(finish.tool_call_id)
-        .map(|stream| stream.display.clone())
-        .unwrap_or_default();
-    let final_display = finish.display.map(str::to_string).unwrap_or(accumulated);
-    let db = state.borrow().init.db.clone();
-    messages::update()
-        .content(finish.result)
-        .tool_display(Some(final_display.as_str()))
-        .tool_format(Some(finish.format))
-        .where_(messages::id.eq(id))
-        .execute(&db)
-        .await
-        .map_err(db_error)?;
-    Ok(())
-}
-
-/// Persists a user message. Used to record a backgrounded tool's result exactly
-/// as the agent loop injected it into the thread.
-async fn persist_user_message(
-    state: &Rc<RefCell<WorkerState>>,
-    thread_id: Uuid,
-    content: &str,
-) -> Result<(), AgentPoolError> {
     let id = Uuid::now_v7();
     let seq = next_message_seq(state, thread_id)?;
     let db = state.borrow().init.db.clone();
-
     messages::insert()
         .id(id)
         .parent_thread(thread_id)
@@ -2266,11 +2315,32 @@ async fn persist_user_message(
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Option::<&str>::None)
+        .source(Some(MessageSource::ToolWakeup))
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+
+    tool_call_records::update()
+        .name(name)
+        .status("finished")
+        .output_format(format)
+        .where_(tool_call_records::tool_call_id.eq(tool_call_id))
         .execute(&db)
         .await
         .map_err(db_error)?;
 
     Ok(())
+}
+
+fn tool_display_path(content: &str, format: &str) -> Option<String> {
+    if format != "markdown" {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    value
+        .get("content")
+        .and_then(|content| content.as_str())
+        .map(|_| "content".to_string())
 }
 
 fn next_message_seq(
@@ -2625,6 +2695,7 @@ mod tests {
 
     use super::*;
     use crate::db::{self, threads, users};
+    use crate::runner::RequestSource;
 
     /// Subscribe to a thread's event topic the way real consumers do.
     fn subscribe_events(thread_id: Uuid) -> pubsub::Subscriber<AgentEvent> {
@@ -2868,6 +2939,7 @@ mod tests {
                     content: "ping".to_string(),
                     images: Vec::new(),
                     model: None,
+                    source: RequestSource::Human,
                 },
             )
             .await
@@ -2965,6 +3037,7 @@ mod tests {
                 content: "run tool".to_string(),
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -2998,29 +3071,38 @@ mod tests {
         assert!(saw_tool_finished);
         assert!(saw_finished);
 
-        let rows = db
-            .query_with_params(
-                "SELECT role, content, tool_calls, tool_call_id FROM messages WHERE parent_thread = ? ORDER BY seq ASC",
-                vec![Value::Uuid(thread_id)],
-            )
+        let rows = messages::select()
+            .where_(messages::parent_thread.eq(thread_id))
+            .order_by_asc(messages::seq)
+            .all(&db)
             .await
             .unwrap();
-        let rows = rows.rows();
 
         assert_eq!(rows.len(), 4);
-        assert_eq!(rows[1].get_text("role"), Some("agent"));
-        assert_eq!(rows[1].get_text("content"), Some(""));
-        assert!(rows[1].get_text("tool_calls").is_some());
-        assert_eq!(rows[2].get_text("role"), Some("tool"));
-        assert_eq!(rows[2].get_text("tool_call_id"), Some("call-1"));
-        assert!(
-            rows[2]
-                .get_text("content")
-                .unwrap()
-                .contains("unknown tool")
-        );
-        assert_eq!(rows[3].get_text("role"), Some("agent"));
-        assert_eq!(rows[3].get_text("content"), Some("done"));
+        assert_eq!(rows[0].source, Some(MessageSource::Human));
+        assert_eq!(rows[1].role, Role::Agent);
+        assert_eq!(rows[1].content, "");
+        assert!(rows[1].tool_calls.is_some());
+        assert_eq!(rows[1].source, None);
+        assert_eq!(rows[2].role, Role::Tool);
+        assert_eq!(rows[2].tool_call_id.as_deref(), Some("call-1"));
+        assert!(rows[2].content.contains("unknown tool"));
+        assert_eq!(rows[2].source, None);
+        assert_eq!(rows[3].role, Role::Agent);
+        assert_eq!(rows[3].content, "done");
+
+        let records = tool_call_records::select()
+            .where_(tool_call_records::parent_thread.eq(thread_id))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tool_call_id, "call-1");
+        assert_eq!(records[0].assistant_message_id, Some(rows[1].id));
+        assert_eq!(records[0].tool_message_id, Some(rows[2].id));
+        assert_eq!(records[0].name, "missing_tool");
+        assert_eq!(records[0].status, "finished");
+        assert_eq!(records[0].output_format, "json");
 
         let (thread, _) = load_thread(&db, thread_id).await.unwrap();
         assert_eq!(thread[1].tool_calls.as_ref().unwrap().len(), 1);
@@ -3076,6 +3158,7 @@ mod tests {
                 content: "ping".to_string(),
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -3134,6 +3217,7 @@ mod tests {
             next_message_seq: 0,
             status: ThreadStatus::Running { run_id },
             in_progress: None,
+            tool_progress: HashMap::new(),
             message_format: MessageFormat::Html,
             last_used: Instant::now(),
         };
@@ -3206,6 +3290,7 @@ mod tests {
             next_message_seq: 0,
             status: ThreadStatus::Running { run_id },
             in_progress: None,
+            tool_progress: HashMap::new(),
             message_format: MessageFormat::Html,
             last_used: Instant::now(),
         };
@@ -3295,6 +3380,7 @@ mod tests {
                 content: "ping".to_string(),
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -3373,6 +3459,7 @@ mod tests {
                 content: "ping".to_string(),
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -3548,6 +3635,7 @@ mod tests {
                 content: "ping".to_string(),
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -3624,6 +3712,7 @@ mod tests {
                 content: "ping".to_string(),
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -3699,6 +3788,7 @@ mod tests {
                     content: content.to_string(),
                     images: Vec::new(),
                     model: None,
+                    source: RequestSource::Human,
                 },
             )
             .await
@@ -3788,6 +3878,7 @@ mod tests {
                 content: "ask".to_string(),
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -3881,6 +3972,7 @@ mod tests {
                     content: "ping".to_string(),
                     images: Vec::new(),
                     model: None,
+                    source: RequestSource::Human,
                 },
             ),
         )
@@ -3939,6 +4031,7 @@ mod tests {
                 content: "ping".to_string(),
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await

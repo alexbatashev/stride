@@ -32,8 +32,8 @@ use crate::{
         threads,
     },
     runner::{
-        AgentEvent, AgentEventKind, AgentRequest, RUNNER_LIFECYCLE_TOPIC, RunnerLifecycle,
-        thread_events_topic,
+        AgentEvent, AgentEventKind, AgentRequest, RUNNER_LIFECYCLE_TOPIC, RequestSource,
+        RunnerLifecycle, thread_events_topic,
     },
     tools::telegram::{TELEGRAM_MESSAGE_LIMIT, TELEGRAM_RICH_MESSAGE_LIMIT, split_message},
     vfs::{WORKSPACE_MOUNT, WritableArea},
@@ -328,6 +328,7 @@ async fn handle_topic_message(
                 content,
                 images: Vec::new(),
                 model: None,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -3066,6 +3067,7 @@ mod tests {
                 last_event_seq: 0,
                 status: ThreadStatus::Idle,
                 in_progress: None,
+                tool_progress: Vec::new(),
                 pending_approval: None,
                 pending_quiz: None,
             })

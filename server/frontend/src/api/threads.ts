@@ -46,12 +46,12 @@ export type ThreadMessage = {
 	id: string;
 	seq: number;
 	role: 'system' | 'agent' | 'user' | 'tool';
+	source: 'human' | 'monitor' | 'tool_wakeup' | 'system';
 	format: 'markdown' | 'html';
 	content: string;
 	thinking: string | null;
 	tool_call_name: string | null;
 	tool_call_id: string | null;
-	tool_display: string | null;
 	tool_format: ToolOutputFormat | null;
 };
 
@@ -68,7 +68,8 @@ export type ThreadEvent = {
 		| {
 				type: 'Snapshot';
 				status: 'idle' | 'running';
-				in_progress: {run_id: string; content: string; format: 'markdown' | 'html'; thinking: string | null} | null;
+					in_progress: {run_id: string; content: string; format: 'markdown' | 'html'; thinking: string | null} | null;
+					tool_progress: {tool_call_id: string; name: string; content: string; format: ToolOutputFormat}[];
 				pending_approval: {approval_id: string; message: string} | null;
 				pending_quiz: {quiz_id: string; questions: QuizQuestion[]} | null;
 		  }

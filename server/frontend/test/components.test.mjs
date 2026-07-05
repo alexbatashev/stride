@@ -189,6 +189,17 @@ test('app-message tool output folds into a spoiler', () => {
   assert.match(spoiler.shadowRoot.innerHTML, /output/);
 });
 
+test('app-spoiler keeps open state across content updates', () => {
+  const el = mount('app-spoiler', { title: 'Shell', content: 'first' });
+  el.shadowRoot.querySelector('button').click();
+  assert.equal(el.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'true');
+  assert.match(el.shadowRoot.innerHTML, /first/);
+
+  el.content = 'first second';
+  assert.equal(el.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'true');
+  assert.match(el.shadowRoot.innerHTML, /first second/);
+});
+
 test('app-prompt-input submits on Enter and clears', () => {
   const el = mount('app-prompt-input');
   const submitted = lastEvent(el, 'prompt-submit');

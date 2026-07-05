@@ -33,13 +33,26 @@ type SidebarEl = HTMLElement & {
 
 type MessageEl = HTMLElement & {
 	messageId: string;
+	itemId: string;
 	seq: number;
 	role: string;
+	source: string;
 	kind: string;
 	format: string;
 	text: string;
 	thinking: string;
 	toolName: string;
+};
+
+type SpoilerEl = HTMLElement & {
+	title: string;
+	content: string;
+	format: string;
+};
+
+type AutoMarkdownEl = HTMLElement & {
+	text: string;
+	format: string;
 };
 
 type PromptEl = HTMLElement & {
@@ -79,7 +92,9 @@ class ThreadsPageHydrator {
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
+	private pendingAssistantRunId: string | null = null;
 	private pendingAssistant = "";
+	private pendingThinking = "";
 	private pendingAssistantFormat: ThreadMessage["format"] = "markdown";
 	private pendingApproval: { id: string; message: string } | null = null;
 	private pendingQuiz: PendingQuiz | null = null;
@@ -270,21 +285,26 @@ class ThreadsPageHydrator {
 					)
 				: null;
 			this.syncComposer();
-			if (event.kind.in_progress?.content) {
-				const last = this.messages[this.messages.length - 1];
-				if (
-					last?.role !== "agent" ||
-					last.content !== event.kind.in_progress.content
-				) {
-					this.pendingAssistant = event.kind.in_progress.content;
-					this.pendingAssistantFormat = event.kind.in_progress.format;
-					this.upsertPendingAssistant();
-				}
+			if (event.kind.in_progress) {
+				this.pendingAssistantRunId = event.kind.in_progress.run_id;
+				this.pendingAssistant = event.kind.in_progress.content;
+				this.pendingThinking = event.kind.in_progress.thinking ?? "";
+				this.pendingAssistantFormat = event.kind.in_progress.format;
+				this.upsertPendingAssistant();
+			} else if (event.kind.status === "idle") {
+				this.clearPendingAssistant();
+			}
+			for (const progress of event.kind.tool_progress) {
+				this.upsertToolProgress(progress.tool_call_id, progress.name, progress.content, progress.format);
 			}
 		}
 
 		if (event.kind.type === "RunStarted") {
 			this.running = true;
+			this.pendingAssistantRunId = event.run_id;
+			this.pendingAssistant = "";
+			this.pendingThinking = "";
+			this.pendingAssistantFormat = "markdown";
 			this.syncComposer();
 		}
 
@@ -305,7 +325,8 @@ class ThreadsPageHydrator {
 		}
 
 		if (event.kind.type === "ThinkingDelta") {
-			this.upsertPendingAssistant(event.kind.thinking);
+			this.pendingThinking += event.kind.thinking;
+			this.upsertPendingAssistant();
 		}
 
 		if (event.kind.type === "WaitingForApproval") {
@@ -341,7 +362,15 @@ class ThreadsPageHydrator {
 		}
 
 		if (event.kind.type === "AgentMessageCommitted") {
-			void this.refreshAfterRun();
+			const pending = this.findPendingAssistant() ??
+				this.messages.find((message) => message.pending && message.role === "agent");
+			if (pending) {
+				const previousItemId = this.messageItemId(pending);
+				pending.id = event.kind.message_id;
+				pending.seq = event.kind.seq;
+				pending.pending = false;
+				this.updateMessageElement(pending, previousItemId);
+			}
 		}
 
 		if (event.kind.type === "ToolStarted") {
@@ -350,14 +379,13 @@ class ThreadsPageHydrator {
 		}
 
 		if (event.kind.type === "ToolProgress") {
-			this.appendToolProgress(event.kind.tool_call_id, event.kind.delta, event.kind.format);
+			this.appendToolProgress(event.kind.tool_call_id, event.kind.name, event.kind.delta, event.kind.format);
 		}
 
 		if (event.kind.type === "ToolFinished") {
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
 			this.syncComposer();
-			void this.refreshAfterRun();
 		}
 
 		if (event.kind.type === "RunFinished") {
@@ -380,8 +408,7 @@ class ThreadsPageHydrator {
 			this.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
-			this.pendingAssistant = "";
-			this.pendingAssistantFormat = "markdown";
+			this.clearPendingAssistant();
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
@@ -395,31 +422,36 @@ class ThreadsPageHydrator {
 		return { id, questions, index: 0, answers: [] };
 	}
 
-	private upsertPendingAssistant(thinking?: string) {
-		const last = this.messages[this.messages.length - 1];
+	private clearPendingAssistant() {
+		this.pendingAssistantRunId = null;
+		this.pendingAssistant = "";
+		this.pendingThinking = "";
+		this.pendingAssistantFormat = "markdown";
+	}
 
+	private upsertPendingAssistant() {
+		const existing = this.findPendingAssistant();
+		if (existing) {
+			this.syncPendingAssistant(existing);
+			return;
+		}
+
+		const last = this.messages[this.messages.length - 1];
 		if (last?.role === "agent" && !last.tool_call_name) {
-			last.pending = true;
-			// Keep the format in sync: a message first created during the thinking
-			// phase defaults to markdown, but content deltas may be html. Without
-			// this, html streams render as escaped markdown until the final commit.
-			last.format = this.pendingAssistantFormat;
-			last.content = this.pendingAssistant;
-			last.thinking = thinking ? `${last.thinking ?? ""}${thinking}` : last.thinking;
-			this.updateMessageElement(last);
+			this.syncPendingAssistant(last);
 			return;
 		}
 
 		const message: ViewMessage = {
-			id: "pending-agent",
+			id: `pending-agent-${this.pendingAssistantKey()}`,
 			seq: Number.MAX_SAFE_INTEGER,
 			role: "agent",
+			source: "system",
 			format: this.pendingAssistantFormat,
 			content: this.pendingAssistant,
-			thinking: thinking ?? null,
+			thinking: this.pendingThinking || null,
 			tool_call_name: null,
 			tool_call_id: null,
-			tool_display: null,
 			tool_format: null,
 			pending: true,
 		};
@@ -427,35 +459,64 @@ class ThreadsPageHydrator {
 		this.appendMessage(message);
 	}
 
-	private appendToolProgress(toolCallId: string, delta: string, format: ThreadMessage["tool_format"]) {
-		// Match a tool result already loaded from the DB (its incremental row) so
-		// streaming updates it in place; otherwise stream into a pending row that
-		// the next refresh replaces with the persisted one.
+	private findPendingAssistant(): ViewMessage | undefined {
+		const itemId = this.pendingAssistantItemId();
+		return this.messages.find(
+			(message) =>
+				message.pending &&
+				message.role === "agent" &&
+				!message.tool_call_name &&
+				this.messageItemId(message) === itemId,
+		);
+	}
+
+	private syncPendingAssistant(message: ViewMessage) {
+		message.pending = true;
+		message.format = this.pendingAssistantFormat;
+		message.content = this.pendingAssistant;
+		message.thinking = this.pendingThinking || null;
+		this.updateMessageElement(message);
+	}
+
+	private appendToolProgress(toolCallId: string, name: string, delta: string, format: ThreadMessage["tool_format"]) {
 		const existing = this.messages.find(
 			(message) => message.role === "tool" && message.tool_call_id === toolCallId,
 		);
 		if (existing) {
-			existing.tool_display = (existing.tool_display ?? "") + delta;
+			existing.content = (existing.content ?? "") + delta;
 			existing.tool_format = format;
 			this.updateMessageElement(existing);
 			return;
+		}
+		this.upsertToolProgress(toolCallId, name, delta, format);
+	}
+
+	private upsertToolProgress(toolCallId: string, name: string, content: string, format: ThreadMessage["tool_format"]) {
+		const existing = this.messages.find(
+			(message) => message.role === "tool" && message.tool_call_id === toolCallId,
+		);
+		if (existing) {
+			existing.content = content;
+			existing.tool_format = format;
+			return existing;
 		}
 
 		const message: ViewMessage = {
 			id: `pending-tool-${toolCallId}`,
 			seq: Number.MAX_SAFE_INTEGER - 1,
 			role: "tool",
+			source: "system",
 			format: "markdown",
-			content: "",
+			content,
 			thinking: null,
 			tool_call_name: null,
 			tool_call_id: toolCallId,
-			tool_display: delta,
 			tool_format: format,
 			pending: true,
 		};
 		this.messages.push(message);
 		this.appendMessage(message);
+		return message;
 	}
 
 	private async refreshAfterRun() {
@@ -464,8 +525,7 @@ class ThreadsPageHydrator {
 		}
 
 		const refreshSeq = ++this.refreshSeq;
-		this.pendingAssistant = "";
-		this.pendingAssistantFormat = "markdown";
+		this.clearPendingAssistant();
 		const [messages, threads, projects] = await Promise.all([
 			listMessages(this.threadId),
 			listThreads(),
@@ -551,12 +611,12 @@ class ThreadsPageHydrator {
 			id: `pending-user-${Date.now()}`,
 			seq: Number.MAX_SAFE_INTEGER,
 			role: "user",
+			source: "human",
 			format: "markdown",
 			content,
 			thinking: null,
 			tool_call_name: null,
 			tool_call_id: null,
-			tool_display: null,
 			tool_format: null,
 			pending: true,
 		};
@@ -568,8 +628,7 @@ class ThreadsPageHydrator {
 	private async loadThread(threadId: string) {
 		this.closeEvents();
 		this.lastEventSeq = 0;
-		this.pendingAssistant = "";
-		this.pendingAssistantFormat = "markdown";
+		this.clearPendingAssistant();
 		this.pendingApproval = null;
 		this.pendingQuiz = null;
 		this.attachedFiles = [];
@@ -611,14 +670,15 @@ class ThreadsPageHydrator {
 		this.messagesEl.querySelector("[data-empty]")?.remove();
 		const existing = new Map<string, MessageEl>();
 		this.messagesEl.querySelectorAll<MessageEl>("app-message[data-message-id]").forEach((element) => {
-			existing.set(element.dataset.messageId ?? "", element);
+			existing.set(element.dataset.itemId ?? element.dataset.messageId ?? "", element);
 		});
 
 		for (const message of this.messages) {
-			const element = existing.get(message.id) ?? this.createMessageElement(message);
+			const itemId = this.messageItemId(message);
+			const element = existing.get(itemId) ?? this.createMessageElement(message);
 			this.syncMessageElement(element, message);
 			this.messagesEl.append(element);
-			existing.delete(message.id);
+			existing.delete(itemId);
 		}
 		for (const stale of existing.values()) {
 			stale.remove();
@@ -631,9 +691,17 @@ class ThreadsPageHydrator {
 		this.messagesEl.append(element);
 	}
 
-	private updateMessageElement(message: ViewMessage) {
-		const element = this.messagesEl.querySelector<MessageEl>(
+	private updateMessageElement(message: ViewMessage, previousItemId?: string) {
+		const itemId = this.messageItemId(message);
+		const selectors = [
 			`app-message[data-message-id="${this.escapeSelectorValue(message.id)}"]`,
+			`app-message[data-item-id="${this.escapeSelectorValue(itemId)}"]`,
+		];
+		if (previousItemId) {
+			selectors.push(`app-message[data-item-id="${this.escapeSelectorValue(previousItemId)}"]`);
+		}
+		const element = this.messagesEl.querySelector<MessageEl>(
+			selectors.join(", "),
 		);
 		if (!element) {
 			return;
@@ -644,9 +712,25 @@ class ThreadsPageHydrator {
 
 	private syncMessageElement(element: MessageEl, message: ViewMessage) {
 		const messageType = this.messageType(message);
+		const itemId = this.messageItemId(message);
 		element.setAttribute("data-message-id", message.id);
+		element.setAttribute("data-item-id", itemId);
+		element.itemId = itemId;
 		element.seq = message.seq;
 		element.role = message.role;
+		element.source = message.source;
+
+		if (element.kind === "tool_output" && messageType.type === "tool_output") {
+			this.syncToolSpoiler(element, message, messageType.toolName ?? "Tool output");
+			return;
+		}
+
+		if (element.kind === "agent" && messageType.type === "agent") {
+			if (this.syncAgentBlock(element, message, messageType.toolName ?? "")) {
+				return;
+			}
+		}
+
 		element.kind = messageType.type;
 		element.toolName = esc(messageType.toolName ?? "");
 		element.thinking = message.thinking ? esc(message.thinking) : "";
@@ -654,9 +738,8 @@ class ThreadsPageHydrator {
 		if (messageType.type === "tool_output") {
 			// Tool results render their human-facing display in the tool's declared
 			// output format; markdown flows through the spoiler's markdown widget.
-			const display = message.tool_display ?? message.content;
 			element.format = message.tool_format === "markdown" ? "markdown" : "plaintext";
-			element.text = display ? esc(display) : message.pending ? "Running..." : "";
+			element.text = message.content ? esc(message.content) : message.pending ? "Running..." : "";
 			return;
 		}
 
@@ -664,6 +747,55 @@ class ThreadsPageHydrator {
 		element.text = message.content
 			? this.messageText(message, messageType.type)
 			: message.pending ? "Thinking..." : "";
+	}
+
+	private syncAgentBlock(element: MessageEl, message: ViewMessage, toolName: string): boolean {
+		const markdown = element.shadowRoot?.querySelector<AutoMarkdownEl>("auto-markdown");
+		const hasThinking = (message.thinking ?? "") !== "";
+		let didFallback = false;
+
+		const spoiler = element.shadowRoot?.querySelector<SpoilerEl>("app-spoiler");
+		if (hasThinking) {
+			if (spoiler) {
+				spoiler.content = esc(message.thinking ?? "");
+			} else {
+				didFallback = true;
+			}
+		} else if (spoiler) {
+			didFallback = true;
+		}
+
+		if (markdown) {
+			markdown.format = message.format;
+			markdown.text = message.content ? this.messageText(message, "agent") : message.pending ? "Thinking..." : "";
+		} else {
+			didFallback = true;
+		}
+
+		if (didFallback) {
+			element.toolName = esc(toolName);
+			element.format = message.format;
+			element.thinking = message.thinking ? esc(message.thinking) : "";
+			element.text = message.content ? this.messageText(message, "agent") : message.pending ? "Thinking..." : "";
+			return false;
+		}
+
+		return true;
+	}
+
+	private syncToolSpoiler(element: MessageEl, message: ViewMessage, toolName: string) {
+		element.toolName = esc(toolName);
+		const spoiler = element.shadowRoot?.querySelector<SpoilerEl>("app-spoiler");
+		if (!spoiler) {
+			element.kind = "tool_output";
+			element.format = message.tool_format === "markdown" ? "markdown" : "plaintext";
+			element.text = message.content ? esc(message.content) : message.pending ? "Running..." : "";
+			return;
+		}
+
+		spoiler.title = esc(toolName);
+		spoiler.format = message.tool_format === "markdown" ? "markdown" : "plaintext";
+		spoiler.content = message.content ? esc(message.content) : message.pending ? "Running..." : "";
 	}
 
 	private scrollInitial() {
@@ -712,6 +844,28 @@ class ThreadsPageHydrator {
 		return element;
 	}
 
+	private messageItemId(message: ViewMessage): string {
+		if (message.tool_call_id) {
+			return `tool:${message.tool_call_id}`;
+		}
+		if (message.pending && message.role === "agent" && !message.tool_call_name) {
+			const prefix = "pending-agent-";
+			if (message.id.startsWith(prefix)) {
+				return `agent:${message.id.slice(prefix.length) || "pending"}`;
+			}
+			return this.pendingAssistantItemId();
+		}
+		return message.id;
+	}
+
+	private pendingAssistantItemId(): string {
+		return `agent:${this.pendingAssistantKey()}`;
+	}
+
+	private pendingAssistantKey(): string {
+		return this.pendingAssistantRunId ?? "pending";
+	}
+
 	private messageText(message: ThreadMessage, messageType: string): string {
 		return messageType === "agent" && message.format === "html"
 			? message.content
@@ -736,6 +890,9 @@ class ThreadsPageHydrator {
 	private messageType(message: ThreadMessage): { type: string; toolName?: string } {
 		if (message.tool_call_name) {
 			return { type: "agent", toolName: message.tool_call_name };
+		}
+		if (message.role === "user" && message.source !== "human") {
+			return { type: "agent_note" };
 		}
 		if (message.role === "tool") {
 			return { type: "tool_output", toolName: "Tool output" };

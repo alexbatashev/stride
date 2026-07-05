@@ -12,6 +12,12 @@ const styles = css`
     display: block;
   }
 
+  .agent-note {
+    color: var(--muted-foreground, #737373);
+    font-size: 0.95rem;
+    white-space: pre-wrap;
+  }
+
   .user {
     border-radius: 24px;
     background: var(--secondary, #fefefe);
@@ -52,6 +58,7 @@ export function AppMessage({
   messageId = "",
   seq = 0,
   role = "user",
+  source = "human",
   kind = "user",
   format = "markdown",
   text = "",
@@ -61,6 +68,7 @@ export function AppMessage({
   messageId?: string;
   seq?: number;
   role?: string;
+  source?: string;
   kind?: string;
   format?: string;
   text?: string;
@@ -73,10 +81,12 @@ export function AppMessage({
       {kind === "tool_output" ? (
         <AppSpoiler title={toolName !== "" ? toolName : "Tool output"} content={text} format={format} />
       ) : (
-        <div class={kind === "user" ? "bubble user" : "bubble"}>
+        <div class={kind === "user" && source === "human" ? "bubble user" : "bubble"}>
           {thinking !== "" && <AppSpoiler title="Thinking" content={thinking} />}
           {kind === "agent" ? (
             <AutoMarkdown text={text} format={format} />
+          ) : kind === "agent_note" ? (
+            <div class="agent-note">{text}</div>
           ) : (
             <div class="plain">{text}</div>
           )}

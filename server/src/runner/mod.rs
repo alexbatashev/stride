@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use stride_agent::QuizQuestion;
 use uuid::Uuid;
 
-use crate::db::MessageFormat;
+use crate::db::{MessageFormat, MessageSource};
 
 pub mod inproc;
 
@@ -59,6 +59,25 @@ pub struct AgentRequest {
     pub content: String,
     pub images: Vec<llm::ImageSource>,
     pub model: Option<String>,
+    pub source: RequestSource,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RequestSource {
+    #[default]
+    Human,
+    Monitor,
+    ToolWakeup,
+}
+
+impl RequestSource {
+    pub fn message_source(self) -> MessageSource {
+        match self {
+            RequestSource::Human => MessageSource::Human,
+            RequestSource::Monitor => MessageSource::Monitor,
+            RequestSource::ToolWakeup => MessageSource::ToolWakeup,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -70,6 +89,7 @@ pub struct ThreadSnapshot {
     pub last_event_seq: EventSeq,
     pub status: ThreadStatus,
     pub in_progress: Option<PartialAgentMessage>,
+    pub tool_progress: Vec<PartialToolProgress>,
     pub pending_approval: Option<PendingApproval>,
     pub pending_quiz: Option<PendingQuiz>,
 }
@@ -86,6 +106,14 @@ pub struct PartialAgentMessage {
     pub content: String,
     pub thinking: Option<String>,
     pub format: MessageFormat,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PartialToolProgress {
+    pub tool_call_id: String,
+    pub name: String,
+    pub content: String,
+    pub format: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

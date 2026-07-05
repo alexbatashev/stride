@@ -4,7 +4,7 @@ use minisql::{DecodeError, FromValue, IntoValue, SqlLikeType, Value, migrations}
 
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     System,
     Agent,
@@ -16,6 +16,13 @@ pub enum Role {
 pub enum MessageFormat {
     Markdown,
     Html,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageSource {
+    Human,
+    Monitor,
+    ToolWakeup,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -516,13 +523,26 @@ migrations! {
         }
     }
 
-    tool_message_display {
-        // Tool messages keep the model-facing result in `content`; these carry
-        // the human-facing rendering and its format for the UI. NULL for
-        // non-tool messages and legacy tool rows (which fall back to `content`).
+    message_source_and_tool_records {
         alter table messages {
-            add tool_display: Option<String>;
-            add tool_format: Option<String>;
+            add source: Option<MessageSource>;
+        }
+
+        raw "UPDATE messages SET source = 'human' WHERE role = 'user' AND source IS NULL";
+
+        table tool_call_records {
+            tool_call_id: String [PrimaryKey],
+            parent_thread: Uuid,
+            assistant_message_id: Option<Uuid>,
+            tool_message_id: Option<Uuid>,
+            name: String,
+            status: String,
+            output_format: String,
+            display_path: Option<String>,
+
+            foreign_key(parent_thread -> threads.id);
+            foreign_key(assistant_message_id -> messages.id);
+            foreign_key(tool_message_id -> messages.id);
         }
     }
 }
@@ -608,6 +628,45 @@ impl From<MessageFormat> for Value {
 }
 
 impl IntoValue for MessageFormat {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
+impl MessageSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageSource::Human => "human",
+            MessageSource::Monitor => "monitor",
+            MessageSource::ToolWakeup => "tool_wakeup",
+        }
+    }
+}
+
+impl FromValue for MessageSource {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "human" => Ok(MessageSource::Human),
+            Value::Text(s) if s == "monitor" => Ok(MessageSource::Monitor),
+            Value::Text(s) if s == "tool_wakeup" => Ok(MessageSource::ToolWakeup),
+            _ => Err(DecodeError("Invalid message source".to_string())),
+        }
+    }
+}
+
+impl SqlLikeType for MessageSource {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl From<MessageSource> for Value {
+    fn from(val: MessageSource) -> Value {
+        Value::Text(val.as_str().to_string())
+    }
+}
+
+impl IntoValue for MessageSource {
     fn into_value(self) -> Value {
         self.into()
     }

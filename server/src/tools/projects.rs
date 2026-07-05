@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crate::api::threads::DEFAULT_THREAD_TITLE;
 use crate::db::{projects, threads};
-use crate::runner::AgentRequest;
 use crate::runner::inproc::PoolHandle;
+use crate::runner::{AgentRequest, RequestSource};
 use crate::vfs::Vfs;
 
 /// Longest thread title we derive from an opening message.
@@ -223,6 +223,7 @@ impl Tool for StartThreadTool {
                     content: message,
                     images: Vec::new(),
                     model: None,
+                    source: RequestSource::Human,
                 },
             )
             .await

@@ -63,8 +63,7 @@ impl SubAgentTool {
     }
 
     /// Runs the subagent turn, forwarding assistant text deltas to `sink` when
-    /// one is provided so the parent can stream the answer live. Returns the
-    /// final answer with a `__display` copy for markdown rendering.
+    /// one is provided so the parent can stream the answer live.
     async fn run(
         &self,
         config: Arc<AgentConfig>,
@@ -130,7 +129,7 @@ impl SubAgentTool {
             }
         }
 
-        json!({ "success": true, "content": content, "__display": content })
+        json!({ "success": true, "content": content })
     }
 }
 
@@ -375,7 +374,7 @@ mod tests {
 
             assert_eq!(
                 result,
-                json!({ "success": true, "content": "final answer", "__display": "final answer" })
+                json!({ "success": true, "content": "final answer" })
             );
             let messages = &mock.stream_requests()[0].messages;
             assert_eq!(messages[0].role, llm::Role::System);
@@ -405,10 +404,7 @@ mod tests {
                 )
                 .await;
 
-            assert_eq!(
-                result,
-                json!({ "success": true, "content": "done", "__display": "done" })
-            );
+            assert_eq!(result, json!({ "success": true, "content": "done" }));
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         });
     }

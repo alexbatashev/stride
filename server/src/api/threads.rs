@@ -22,10 +22,13 @@ use crate::{
         auth::{self, AuthError},
         projects::ProjectResponse,
     },
-    db::{MessageFormat, Role, messages, projects, threads, user_models},
+    db::{
+        MessageFormat, MessageSource, Role, messages, projects, threads, tool_call_records,
+        user_models,
+    },
     runner::{
-        AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
-        ThreadStatus, thread_events_topic,
+        AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RequestSource, RunId,
+        ThreadSnapshot, ThreadStatus, thread_events_topic,
     },
 };
 
@@ -48,16 +51,12 @@ pub struct MessageResponse {
     id: String,
     seq: u64,
     role: &'static str,
+    source: &'static str,
     format: &'static str,
     content: String,
     thinking: Option<String>,
     tool_call_name: Option<String>,
-    /// Id linking a tool result back to the assistant tool call it answers.
-    /// Lets the client match streaming progress to the right message.
     tool_call_id: Option<String>,
-    /// Human-facing rendering of a tool result (falls back to `content`).
-    tool_display: Option<String>,
-    /// Output format of a tool result (`json` | `markdown` | `plaintext`).
     tool_format: Option<String>,
 }
 
@@ -91,6 +90,7 @@ pub struct MessageTemplateData {
     pub id: String,
     pub seq: u64,
     pub role: &'static str,
+    pub source: &'static str,
     pub format: &'static str,
     pub message_type: &'static str,
     pub tool_name: Option<String>,
@@ -145,6 +145,14 @@ struct SnapshotMessageResponse {
 }
 
 #[derive(Serialize)]
+struct SnapshotToolProgressResponse {
+    tool_call_id: String,
+    name: String,
+    content: String,
+    format: String,
+}
+
+#[derive(Serialize)]
 struct ApprovalResponse {
     approval_id: String,
     message: String,
@@ -168,6 +176,7 @@ enum EventKindResponse {
     Snapshot {
         status: &'static str,
         in_progress: Option<SnapshotMessageResponse>,
+        tool_progress: Vec<SnapshotToolProgressResponse>,
         pending_approval: Option<ApprovalResponse>,
         pending_quiz: Option<QuizResponse>,
     },
@@ -529,24 +538,20 @@ pub async fn thread_page_data(
             .map(|message| {
                 let (message_type, tool_name) = message_template_type(&message);
                 let has_thinking = message.thinking.is_some();
-                // A tool message renders its human-facing display in the given
-                // output format; everything else uses its own content/format.
-                let (content, format) = if message.role == "tool" {
-                    (
-                        message.tool_display.clone().unwrap_or(message.content),
-                        tool_output_format(message.tool_format.as_deref()),
-                    )
+                let format = if message.role == "tool" {
+                    tool_output_format(message.tool_format.as_deref())
                 } else {
-                    (message.content, message.format)
+                    message.format
                 };
                 MessageTemplateData {
                     id: message.id,
                     seq: message.seq,
                     role: message.role,
+                    source: message.source,
                     format,
                     message_type,
                     tool_name,
-                    content,
+                    content: message.content,
                     thinking: message.thinking,
                     has_thinking,
                 }
@@ -812,6 +817,21 @@ async fn thread_messages(
     state: &ServerState,
     thread_id: Uuid,
 ) -> Result<Vec<MessageResponse>, ThreadApiError> {
+    let records = tool_call_records::select()
+        .where_(tool_call_records::parent_thread.eq(thread_id))
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+    let tool_formats = records
+        .into_iter()
+        .map(|record| {
+            (
+                record.tool_call_id,
+                (record.output_format, record.display_path),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
     let rows = messages::select()
         .where_(messages::parent_thread.eq(thread_id))
         .order_by_asc(messages::seq)
@@ -821,17 +841,35 @@ async fn thread_messages(
 
     Ok(rows
         .into_iter()
-        .map(|row| MessageResponse {
-            id: row.id.to_string(),
-            seq: row.seq,
-            role: role_name(row.role),
-            format: message_format_name(row.content_format.unwrap_or(MessageFormat::Markdown)),
-            content: row.content,
-            thinking: row.thinking,
-            tool_call_name: tool_call_name(row.tool_calls.as_deref()),
-            tool_call_id: row.tool_call_id,
-            tool_display: row.tool_display,
-            tool_format: row.tool_format,
+        .map(|row| {
+            let source = message_source_name(row.source, row.role);
+            let tool_format = row
+                .tool_call_id
+                .as_ref()
+                .and_then(|tool_call_id| tool_formats.get(tool_call_id))
+                .map(|(format, _)| format.clone());
+            let content = row
+                .tool_call_id
+                .as_ref()
+                .and_then(|tool_call_id| tool_formats.get(tool_call_id))
+                .and_then(|(_, display_path)| {
+                    display_path
+                        .as_deref()
+                        .and_then(|path| tool_display_content(&row.content, path))
+                })
+                .unwrap_or(row.content);
+            MessageResponse {
+                id: row.id.to_string(),
+                seq: row.seq,
+                role: role_name(row.role),
+                source,
+                format: message_format_name(row.content_format.unwrap_or(MessageFormat::Markdown)),
+                content,
+                thinking: row.thinking,
+                tool_call_name: tool_call_name(row.tool_calls.as_deref()),
+                tool_call_id: row.tool_call_id,
+                tool_format,
+            }
         })
         .filter(|message| {
             message.role != "agent"
@@ -1022,6 +1060,7 @@ async fn send_to_runner_with_images(
                 content,
                 images,
                 model,
+                source: RequestSource::Human,
             },
         )
         .await
@@ -1145,11 +1184,32 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
+fn message_source_name(source: Option<MessageSource>, role: Role) -> &'static str {
+    match source {
+        Some(MessageSource::Human) => "human",
+        Some(MessageSource::Monitor) => "monitor",
+        Some(MessageSource::ToolWakeup) => "tool_wakeup",
+        None if matches!(role, Role::User) => "human",
+        None => "system",
+    }
+}
+
 fn message_format_name(format: MessageFormat) -> &'static str {
     match format {
         MessageFormat::Markdown => "markdown",
         MessageFormat::Html => "html",
     }
+}
+
+fn tool_display_content(content: &str, path: &str) -> Option<String> {
+    if path != "content" {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    value
+        .get("content")
+        .and_then(|content| content.as_str())
+        .map(str::to_string)
 }
 
 /// Maps a tool result's declared output format to a renderer format. Markdown
@@ -1642,6 +1702,16 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
                     format: message_format_name(message.format),
                     thinking: message.thinking.clone(),
                 }),
+            tool_progress: snapshot
+                .tool_progress
+                .iter()
+                .map(|tool| SnapshotToolProgressResponse {
+                    tool_call_id: tool.tool_call_id.clone(),
+                    name: tool.name.clone(),
+                    content: tool.content.clone(),
+                    format: tool.format.clone(),
+                })
+                .collect(),
             pending_approval: snapshot
                 .pending_approval
                 .as_ref()
