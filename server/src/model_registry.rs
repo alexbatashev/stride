@@ -79,6 +79,25 @@ pub struct AgentSettings {
     pub subagent_guidelines: String,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AgentSettingsResponse {
+    #[serde(flatten)]
+    pub settings: AgentSettings,
+    pub using_server_defaults: bool,
+    pub server_default_guidelines: String,
+}
+
+pub fn default_subagent_guidelines(config: &Config) -> String {
+    config
+        .server
+        .as_ref()
+        .and_then(|server| server.agent.as_ref())
+        .and_then(|agent| agent.default_subagent_guidelines.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
 pub fn is_chat_model(key: &str) -> bool {
     !INTERNAL_MODEL_KEYS.contains(&key)
 }
@@ -206,6 +225,7 @@ pub async fn load_agent_settings(
 
     let available = list_available_models(config, db, owner).await?;
     let available_keys: HashSet<_> = available.iter().map(|model| model.key.clone()).collect();
+    let default_guidelines = default_subagent_guidelines(config);
 
     Ok(match rows.into_iter().next() {
         Some(row) => {
@@ -228,9 +248,32 @@ pub async fn load_agent_settings(
         }
         None => AgentSettings {
             subagent_allowed_models: available.iter().map(|model| model.key.clone()).collect(),
-            subagent_guidelines: String::new(),
+            subagent_guidelines: default_guidelines,
         },
     })
+}
+
+pub async fn load_agent_settings_response(
+    config: &Config,
+    db: &ConnectionPool,
+    owner: Uuid,
+) -> anyhow::Result<AgentSettingsResponse> {
+    let using_server_defaults = !has_custom_agent_settings(db, owner).await?;
+    let settings = load_agent_settings(config, db, owner).await?;
+    Ok(AgentSettingsResponse {
+        settings,
+        using_server_defaults,
+        server_default_guidelines: default_subagent_guidelines(config),
+    })
+}
+
+async fn has_custom_agent_settings(db: &ConnectionPool, owner: Uuid) -> anyhow::Result<bool> {
+    let rows = agent_settings::select_cols((agent_settings::owner,))
+        .where_(agent_settings::owner.eq(owner))
+        .all(db)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    Ok(!rows.is_empty())
 }
 
 pub async fn save_agent_settings(
@@ -652,11 +695,43 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, Server, ServerAgent};
 
     #[test]
     fn filters_internal_models_from_chat_list() {
         assert!(!is_chat_model(EMBEDDING_MODEL));
         assert!(!is_chat_model(TRANSCRIPTION_MODEL));
         assert!(is_chat_model("gpt_4_1"));
+    }
+
+    #[test]
+    fn default_subagent_guidelines_read_from_config() {
+        let mut config = Config {
+            providers: HashMap::new(),
+            models: HashMap::new(),
+            server: Some(Server {
+                db_url: None,
+                db_path: None,
+                listen_addr: None,
+                allow_registration: None,
+                ldap: None,
+                files: None,
+                telegram: None,
+                github: None,
+                google: None,
+                public_url: None,
+                agent: Some(ServerAgent {
+                    default_subagent_guidelines: Some("Use fast models for lookups.".to_string()),
+                }),
+            }),
+            tools: None,
+            mcp: HashMap::new(),
+        };
+        assert_eq!(
+            default_subagent_guidelines(&config),
+            "Use fast models for lookups."
+        );
+        config.server = None;
+        assert_eq!(default_subagent_guidelines(&config), "");
     }
 }

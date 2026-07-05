@@ -1230,6 +1230,8 @@ const styles = css`
 const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   subagent_allowed_models: [],
   subagent_guidelines: "",
+  using_server_defaults: true,
+  server_default_guidelines: "",
 };
 
 export function AppSettings({
@@ -2010,7 +2012,7 @@ export function AppSettings({
               </section>
 
               <section class="panel" data-panel="models">
-                <app-card title="Server models" description="Models predefined in the server config are available to every user. Ask your administrator to add more in config.toml.">
+                <app-card title="Server models" description="Add chat models in config.toml under [models.&lt;key&gt;]. Each key becomes a registry name users pick in the composer (for example default, claude_sonnet_4). Reserved keys embeddings, transcription, title_generator, expert, and explorer are internal and not shown here.">
                   {configModelViews.length > 0
                     ? (
                       <div class="model-list">
@@ -2026,6 +2028,7 @@ export function AppSettings({
                       </div>
                     )
                     : <p class="muted">{modelsLoaded ? "No server models are configured." : "Loading models…"}</p>}
+                  <p class="muted">Example: duplicate the [models.default] block in config.toml.example, change the section name to a new key, and set slug plus provider. Restart the server to apply.</p>
                 </app-card>
 
                 <app-card title="Providers" description="Add your own LLM provider credentials. Models you define below will use these providers.">
@@ -2094,7 +2097,7 @@ export function AppSettings({
                   </form>
                 </app-card>
 
-                <app-card title="Subagent settings" description="Control which models the main agent can use when spawning subagents, and add guidance on when to pick each one.">
+                <app-card title="Subagent settings" description="Control which models the main agent can use when spawning subagents, and add guidance on when to pick each one. Users without saved settings inherit the server default routing guide from config.">
                   <p class="muted">Allowed subagent models</p>
                   <div class="checkbox-list">
                     {subagentModelViews.map((model) => (
@@ -2110,6 +2113,9 @@ export function AppSettings({
                       placeholder="Describe when to use faster vs stronger models, cost constraints, or task-specific preferences."
                     >{escapeHtml(agentSettings.subagent_guidelines)}</textarea>
                   </label>
+                  {agentSettings.using_server_defaults
+                    ? <p class="muted">Showing the server default from config. Save to keep your own copy; your settings will not change when admins update config.</p>
+                    : <p class="muted">Using your saved settings.</p>}
                   <div class="actions">
                     <app-button data-action="save-agent-settings">Save agent settings</app-button>
                     {agentSettingsSaved ? <span class="saved">Saved.</span> : ""}

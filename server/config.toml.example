@@ -20,6 +20,27 @@ token = "sk-ant-..."
 kind = "Ollama"
 url = "http://localhost:11434/v1"
 
+# Predefined models in this section are available to every user in the web UI
+# and OpenAI-compatible API. Users can also add personal providers and models
+# in Settings.
+#
+# Add a chat model by creating a new [models.<registry_key>] section. The
+# registry key is what users select in the composer and what subagents receive
+# as the `model` argument. Use letters, numbers, and underscores. Examples
+# below register gpt_4_1, default, claude_sonnet_4, and llama.
+#
+# Reserved registry keys (do not use for chat): embeddings, transcription,
+# title_generator, expert, explorer.
+#
+# Point one entry at [models.default] to control the composer default. When
+# that section is missing, the first chat model in this file is aliased as
+# `default`.
+[models.default]
+slug = "gpt-4.1"
+provider = "openai"
+reasoning_effort = "high"
+vision = true
+
 [models.gpt_4_1]
 slug = "gpt-4.1"
 provider = "openai"
@@ -27,16 +48,6 @@ provider = "openai"
 reasoning_effort = "high"
 # Set when the model accepts image inputs. Enables attached images and the
 # attach_image tool. Defaults to false.
-vision = true
-
-# Predefined models in this section are available to every user in the web UI
-# and OpenAI-compatible API. Users can also add personal providers and models
-# in Settings. The first model is aliased as `default` when no `[models.default]`
-# entry exists.
-[models.default]
-slug = "gpt-4.1"
-provider = "openai"
-reasoning_effort = "high"
 vision = true
 
 [models.claude_sonnet_4]
@@ -80,6 +91,16 @@ allow_registration = false
 # served to vision models via capability URLs under this host instead of being
 # embedded inline as base64.
 public_url = "https://stride.example.com"
+
+# Default agent behavior for users who have not saved their own settings in
+# the web UI. Updating this rolls out new subagent routing guidance to those
+# users without overwriting anyone who clicked Save in Settings → Models.
+[server.agent]
+default_subagent_guidelines = """
+Use fast/cheap models for quick lookups, formatting, and narrow edits.
+Use stronger models for multi-step reasoning, refactors, and ambiguous tasks.
+Prefer vision-capable models when images are involved.
+"""
 
 # Set STRIDE_EMAIL_ENCRYPTION_KEY to a stable, high-entropy secret before users add IMAP accounts.
 # It encrypts stored IMAP passwords and must remain stable across restarts and JWT key rotation.

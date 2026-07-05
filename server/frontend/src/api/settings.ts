@@ -333,6 +333,8 @@ export type NewUserModel = {
 export type AgentSettings = {
 	subagent_allowed_models: string[];
 	subagent_guidelines: string;
+	using_server_defaults: boolean;
+	server_default_guidelines: string;
 };
 
 export async function listModels(): Promise<ModelSummary[]> {

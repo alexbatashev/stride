@@ -288,6 +288,23 @@ function syncSendButton(root: ShadowRoot): void {
   if (send && textarea) send.disabled = textarea.disabled || !textarea.value.trim();
 }
 
+function syncModelSelect(
+  select: HTMLSelectElement,
+  models: { value: string; label: string }[],
+  selectedModel: string,
+  blocked: boolean,
+): void {
+  select.disabled = blocked;
+  select.innerHTML = models
+    .map((model) => `<option value="${model.value}">${model.label}</option>`)
+    .join("");
+  if (selectedModel && models.some((model) => model.value === selectedModel)) {
+    select.value = selectedModel;
+  } else if (models.length > 0) {
+    select.value = models[0]!.value;
+  }
+}
+
 // MediaRecorder state lives outside the component body because the SSR pass
 // cannot evaluate `null`/MediaRecorder initializers; keying by host keeps it
 // alive across re-renders.
@@ -361,7 +378,7 @@ export function AppPromptInput({
   });
 
   effect(() => {
-    this.toggleAttribute("data-selected-model", Boolean(selectedModel));
+    const blocked = disabled || running || transcribing;
     if (selectedModel) {
       this.setAttribute("data-selected-model", selectedModel);
     } else {
@@ -371,20 +388,13 @@ export function AppPromptInput({
     if (mic) mic.disabled = transcribing;
     const modelSelect = this.shadowRoot?.querySelector<HTMLSelectElement>("select.model-picker");
     if (modelSelect) {
-      modelSelect.toggleAttribute("disabled", disabled || running || transcribing);
-      if (selectedModel) {
-        modelSelect.value = selectedModel;
-      }
+      syncModelSelect(modelSelect, models, selectedModel, blocked);
     }
     const textarea = input.current;
     if (!textarea) return;
-    textarea.toggleAttribute("disabled", disabled || running || transcribing);
+    textarea.disabled = blocked;
     syncSendButton(this.shadowRoot!);
   });
-
-  const modelOptionsHtml = models
-    .map((model) => `<option value="${model.value}">${model.label}</option>`)
-    .join("");
 
   return (
     <>
@@ -439,11 +449,7 @@ export function AppPromptInput({
               <IconSettingsHorizontal />
             </button>
             <div class="model-select">
-              <select
-                class="model-picker"
-                disabled={disabled || running || transcribing}
-                innerHTML={modelOptionsHtml}
-              ></select>
+              <select class="model-picker"></select>
             </div>
             <button
               ref={micButton}

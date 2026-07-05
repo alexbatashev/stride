@@ -465,6 +465,7 @@ class ThreadsPageHydrator {
 			this.syncComposer();
 		} catch {
 			this.modelOptions = [];
+			this.syncComposer();
 		}
 	}
 

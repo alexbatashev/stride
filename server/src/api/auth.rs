@@ -454,6 +454,7 @@ mod tests {
                     github: None,
                     google: None,
                     public_url: None,
+                    agent: None,
                 }),
                 ..empty_config()
             },
@@ -508,6 +509,7 @@ mod tests {
                 github: None,
                 google: None,
                 public_url: None,
+                agent: None,
             }),
             tools: None,
             mcp: HashMap::new(),

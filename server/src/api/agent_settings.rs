@@ -40,9 +40,9 @@ impl From<AuthError> for AgentSettingsApiError {
 pub async fn get(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
-) -> Result<Json<AgentSettings>, AgentSettingsApiError> {
+) -> Result<Json<model_registry::AgentSettingsResponse>, AgentSettingsApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
-    model_registry::load_agent_settings(&state.config, &state.db, owner)
+    model_registry::load_agent_settings_response(&state.config, &state.db, owner)
         .await
         .map(Json)
         .map_err(|_| AgentSettingsApiError::Internal)
@@ -52,7 +52,7 @@ pub async fn update(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     Json(request): Json<AgentSettings>,
-) -> Result<Json<AgentSettings>, AgentSettingsApiError> {
+) -> Result<Json<model_registry::AgentSettingsResponse>, AgentSettingsApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
     let available = model_registry::list_available_models(&state.config, &state.db, owner)
         .await
@@ -75,7 +75,10 @@ pub async fn update(
         .await
         .map_err(|_| AgentSettingsApiError::Internal)?;
 
-    Ok(Json(settings))
+    model_registry::load_agent_settings_response(&state.config, &state.db, owner)
+        .await
+        .map(Json)
+        .map_err(|_| AgentSettingsApiError::Internal)
 }
 
 async fn save(state: &ServerState, owner: Uuid, settings: &AgentSettings) -> anyhow::Result<()> {

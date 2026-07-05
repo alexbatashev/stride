@@ -89,6 +89,15 @@ pub struct Server {
     /// Used to build capability URLs for image attachments served to vision
     /// models. When unset, images are sent inline as base64 instead.
     pub public_url: Option<String>,
+    pub agent: Option<ServerAgent>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ServerAgent {
+    /// Default subagent routing guide applied to users who have not saved their
+    /// own agent settings. Admins can update this in config to roll out new
+    /// guidance without overwriting per-user overrides stored in the database.
+    pub default_subagent_guidelines: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -416,6 +425,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn server_agent_settings_load_from_config() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [server.agent]
+            default_subagent_guidelines = "Prefer fast models for search."
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cfg.server
+                .as_ref()
+                .and_then(|server| server.agent.as_ref())
+                .and_then(|agent| agent.default_subagent_guidelines.as_deref()),
+            Some("Prefer fast models for search.")
+        );
+    }
+
+    #[test]
     fn server_parameters_use_config_values() {
         let cfg = Config {
             providers: HashMap::new(),
@@ -431,6 +462,7 @@ mod tests {
                 github: None,
                 google: None,
                 public_url: None,
+                agent: None,
             }),
             tools: None,
             mcp: HashMap::new(),

@@ -2930,6 +2930,7 @@ mod tests {
             github: None,
             google: None,
             public_url: None,
+            agent: None,
         };
         ServerState {
             config: Config {
