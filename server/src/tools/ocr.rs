@@ -30,6 +30,22 @@ language; do not translate, summarize, or add commentary. Do not wrap the whole 
 fence. For a region that is a photo or illustration with no text, omit it or note it briefly in \
 italics.";
 
+/// Structured page prompt used for scanned PDFs: the model returns Markdown plus
+/// the bounding boxes of figures/diagrams so the tool can crop them out of the
+/// page raster and embed them in the reconstruction.
+const PAGE_SYSTEM_PROMPT: &str = "You are an OCR engine. Return ONLY a single JSON object, no \
+prose and no code fence, with this shape: {\"markdown\": string, \"figures\": [{\"caption\": \
+string, \"box\": [x0, y0, x1, y1]}]}. In \"markdown\", transcribe the page verbatim into clean \
+GitHub-flavored Markdown: headings with #, lists, and tables using Markdown table syntax, in the \
+original reading order and language; do not translate, summarize, or add commentary. For every \
+figure, diagram, chart, or illustration (anything that is not plain text or a table), do NOT \
+transcribe its contents: instead place a placeholder \"[[FIGURE:k]]\" on its own line where it \
+belongs (k = 1 for the first figure on the page, 2 for the second, and so on), and add an entry \
+to \"figures\" whose \"box\" is the figure's bounding box in a 0-1000 coordinate space relative to \
+the image (x0,y0 = top-left, x1,y1 = bottom-right) and whose \"caption\" is the figure's caption \
+text if present (else a short description). If the page has no figures, use an empty \"figures\" \
+list.";
+
 /// Extracts text from documents. Digital PDFs with a real text layer are read
 /// directly (no model call); scanned PDFs and images are transcribed with a
 /// vision model. The result is written to the workspace as Markdown.
@@ -56,10 +72,14 @@ struct OcrParams {
 #[derive(Deserialize)]
 #[serde(tag = "kind")]
 enum PdfResult {
+    /// Born-digital PDF: layout-aware Markdown assembled from the text layer
+    /// (headings, paragraphs, tables) by the preprocessing script.
     #[serde(rename = "text")]
-    Text { pages: usize, text: Vec<String> },
-    #[serde(rename = "images")]
-    Images {
+    Text { pages: usize, markdown: String },
+    /// Scanned PDF: one full-page raster per page, transcribed with the vision
+    /// model.
+    #[serde(rename = "page_images")]
+    PageImages {
         pages: usize,
         images: Vec<PageImage>,
         empty_pages: Vec<usize>,
@@ -72,6 +92,41 @@ enum PdfResult {
 struct PageImage {
     page: usize,
     mime: String,
+    data: String,
+}
+
+/// One page transcription: Markdown (with `[[FIGURE:k]]` placeholders) plus the
+/// figure regions the vision model located on the page.
+struct PageTranscript {
+    markdown: String,
+    figures: Vec<VisionFigure>,
+}
+
+#[derive(Deserialize, Default)]
+struct VisionResponse {
+    #[serde(default)]
+    markdown: String,
+    #[serde(default)]
+    figures: Vec<VisionFigure>,
+}
+
+#[derive(Deserialize)]
+struct VisionFigure {
+    #[serde(default)]
+    caption: String,
+    /// `[x0, y0, x1, y1]` in a 0-1000 space relative to the page image.
+    #[serde(rename = "box")]
+    r#box: [f64; 4],
+}
+
+#[derive(Deserialize)]
+struct CropResult {
+    crops: Vec<Crop>,
+}
+
+#[derive(Deserialize)]
+struct Crop {
+    n: usize,
     data: String,
 }
 
@@ -172,12 +227,11 @@ impl OcrTool {
             PdfResult::Error { message } => {
                 json!({ "error": format!("could not read PDF: {message}") })
             }
-            PdfResult::Text { pages, text } => {
-                let markdown = clean_text_pages(&text);
+            PdfResult::Text { pages, markdown } => {
                 self.finalize(params, &markdown, "text-layer", pages, &[])
                     .await
             }
-            PdfResult::Images {
+            PdfResult::PageImages {
                 pages,
                 images,
                 empty_pages,
@@ -186,10 +240,21 @@ impl OcrTool {
                     Ok(model) => model,
                     Err(e) => return json!({ "error": e }),
                 };
-                match self.transcribe_pages(&model, images, pages).await {
-                    Ok(markdown) => {
-                        self.finalize(params, &markdown, "vision-model", pages, &empty_pages)
-                            .await
+                let output_path = self.resolve_output_path(params);
+                match self
+                    .transcribe_pages_inner(&model, &params.path, &output_path, images, pages)
+                    .await
+                {
+                    Ok((markdown, assets)) => {
+                        self.finalize_with_assets(
+                            params,
+                            &markdown,
+                            "vision-model",
+                            pages,
+                            &empty_pages,
+                            &assets,
+                        )
+                        .await
                     }
                     Err(e) => json!({ "error": e }),
                 }
@@ -197,14 +262,22 @@ impl OcrTool {
         }
     }
 
-    /// Transcribes page images grouped by page, preserving order.
-    async fn transcribe_pages(
+    /// Transcribes page rasters to Markdown and crops each figure the model
+    /// reports out of its page. Returns the combined Markdown (with
+    /// `![caption](assets/figN.png)` references) and the figure assets to write.
+    async fn transcribe_pages_inner(
         &self,
         model: &ModelRegEntry,
+        pdf_path: &str,
+        output_path: &str,
         images: Vec<PageImage>,
         total: usize,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+        let assets_rel = assets_dir_name(output_path);
+
         let mut sections: Vec<String> = Vec::new();
+        let mut crop_requests: Vec<JsonValue> = Vec::new();
+        let mut fig_counter = 0usize;
         let mut index = 0;
         while index < images.len() {
             let page = images[index].page;
@@ -215,12 +288,72 @@ impl OcrTool {
                 index += 1;
             }
             let hint = format!("page {} of {}", page + 1, total);
-            let text = transcribe(model, sources, &hint).await?;
-            if !text.trim().is_empty() {
-                sections.push(text.trim().to_string());
+            let transcript = transcribe_page(model, sources, &hint).await?;
+            let mut md = transcript.markdown.trim().to_string();
+            for (local, fig) in transcript.figures.iter().enumerate() {
+                fig_counter += 1;
+                let asset = format!("{assets_rel}/fig{fig_counter}.png");
+                crop_requests.push(json!({ "n": fig_counter, "page": page, "box": fig.r#box }));
+                let image_md = format!("![{}]({asset})", fig.caption.replace(['[', ']'], ""));
+                let placeholder = format!("[[FIGURE:{}]]", local + 1);
+                if md.contains(&placeholder) {
+                    md = md.replace(&placeholder, &image_md);
+                } else {
+                    md.push_str("\n\n");
+                    md.push_str(&image_md);
+                }
+            }
+            if !md.is_empty() {
+                sections.push(md);
             }
         }
-        Ok(sections.join("\n\n"))
+
+        let markdown = sections.join("\n\n");
+        let assets = if crop_requests.is_empty() {
+            Vec::new()
+        } else {
+            self.crop_figures(pdf_path, &crop_requests, &assets_rel)
+                .await
+        };
+        Ok((markdown, assets))
+    }
+
+    /// Runs the crop script in the Python sandbox and returns `(relative-path,
+    /// png-bytes)` for each figure it managed to cut out. Failures drop the
+    /// figure's image (the caption text still remains in the Markdown).
+    async fn crop_figures(
+        &self,
+        pdf_path: &str,
+        requests: &[JsonValue],
+        assets_rel: &str,
+    ) -> Vec<(String, Vec<u8>)> {
+        let Some(service) = self.python.as_ref() else {
+            return Vec::new();
+        };
+        let script = crop_script(pdf_path, requests);
+        let output = match service.execute_python(&script).await {
+            Ok(output) => output,
+            Err(_) => return Vec::new(),
+        };
+        let parsed: CropResult = match serde_json::from_str(output.stdout.trim()) {
+            Ok(parsed) => parsed,
+            Err(_) => return Vec::new(),
+        };
+        parsed
+            .crops
+            .into_iter()
+            .filter_map(|crop| {
+                let bytes = STANDARD.decode(crop.data.as_bytes()).ok()?;
+                Some((format!("{assets_rel}/fig{}.png", crop.n), bytes))
+            })
+            .collect()
+    }
+
+    fn resolve_output_path(&self, params: &OcrParams) -> String {
+        params
+            .output_path
+            .clone()
+            .unwrap_or_else(|| default_output_path(&self.writable_root, &params.path))
     }
 
     async fn finalize(
@@ -231,13 +364,36 @@ impl OcrTool {
         pages: usize,
         empty_pages: &[usize],
     ) -> JsonValue {
-        let output_path = params
-            .output_path
-            .clone()
-            .unwrap_or_else(|| default_output_path(&self.writable_root, &params.path));
+        self.finalize_with_assets(params, markdown, source, pages, empty_pages, &[])
+            .await
+    }
 
-        if let Some(parent) = parent_dir(&output_path) {
-            let _ = self.fs.create_dir(&parent).await;
+    /// Writes the Markdown and any figure assets (paths relative to the Markdown
+    /// file) to the file system, then returns the tool result.
+    async fn finalize_with_assets(
+        &self,
+        params: &OcrParams,
+        markdown: &str,
+        source: &str,
+        pages: usize,
+        empty_pages: &[usize],
+        assets: &[(String, Vec<u8>)],
+    ) -> JsonValue {
+        let output_path = self.resolve_output_path(params);
+        let base_dir = parent_dir(&output_path);
+
+        if let Some(parent) = &base_dir {
+            let _ = self.fs.create_dir(parent).await;
+        }
+        for (rel, bytes) in assets {
+            let abs = match &base_dir {
+                Some(dir) => format!("{}/{rel}", dir.trim_end_matches('/')),
+                None => rel.clone(),
+            };
+            if let Some(parent) = parent_dir(&abs) {
+                let _ = self.fs.create_dir(&parent).await;
+            }
+            let _ = self.fs.write_bytes(&abs, bytes, Some("image/png")).await;
         }
         if let Err(e) = self
             .fs
@@ -255,6 +411,9 @@ impl OcrTool {
             "chars": markdown.chars().count(),
             "preview": preview(markdown),
         });
+        if !assets.is_empty() {
+            result["figures"] = json!(assets.len());
+        }
         if pages > MAX_PAGES {
             result["truncated"] = json!(format!("only the first {MAX_PAGES} pages were processed"));
         }
@@ -283,20 +442,21 @@ fn vision_model(config: &AgentConfig) -> Result<ModelRegEntry, String> {
     Ok(model)
 }
 
-async fn transcribe(
+async fn vision_completion(
     model: &ModelRegEntry,
+    system: &str,
+    user: String,
     images: Vec<ImageSource>,
-    hint: &str,
 ) -> Result<String, String> {
     let messages = vec![
         Message {
             role: Role::System,
-            content: SYSTEM_PROMPT.to_string(),
+            content: system.to_string(),
             ..Default::default()
         },
         Message {
             role: Role::User,
-            content: format!("Transcribe {hint} into Markdown."),
+            content: user,
             images: Some(images),
             ..Default::default()
         },
@@ -310,7 +470,7 @@ async fn transcribe(
         .get_completion(&model.token, request)
         .await
         .map_err(|e| e.to_string())?;
-    let text = completion
+    Ok(completion
         .choices
         .first()
         .and_then(|choice| {
@@ -320,8 +480,60 @@ async fn transcribe(
                 .map(|message| message.content.clone())
                 .or_else(|| choice.text.clone())
         })
-        .unwrap_or_default();
-    Ok(text)
+        .unwrap_or_default())
+}
+
+async fn transcribe(
+    model: &ModelRegEntry,
+    images: Vec<ImageSource>,
+    hint: &str,
+) -> Result<String, String> {
+    vision_completion(
+        model,
+        SYSTEM_PROMPT,
+        format!("Transcribe {hint} into Markdown."),
+        images,
+    )
+    .await
+}
+
+/// Transcribes a scanned page, returning Markdown plus located figure boxes.
+/// Falls back to treating the whole reply as Markdown if the model does not
+/// return the requested JSON.
+async fn transcribe_page(
+    model: &ModelRegEntry,
+    images: Vec<ImageSource>,
+    hint: &str,
+) -> Result<PageTranscript, String> {
+    let raw = vision_completion(
+        model,
+        PAGE_SYSTEM_PROMPT,
+        format!("Transcribe {hint}. Return only the JSON object."),
+        images,
+    )
+    .await?;
+    match extract_json(&raw).and_then(|j| serde_json::from_str::<VisionResponse>(j).ok()) {
+        Some(response) => Ok(PageTranscript {
+            markdown: response.markdown,
+            figures: response.figures,
+        }),
+        None => Ok(PageTranscript {
+            markdown: raw,
+            figures: Vec::new(),
+        }),
+    }
+}
+
+/// Extracts the outermost JSON object from a model reply, tolerating a stray
+/// code fence or surrounding prose.
+fn extract_json(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end > start {
+        Some(&text[start..=end])
+    } else {
+        None
+    }
 }
 
 fn classify(path: &str, mime: Option<&str>) -> Input {
@@ -342,23 +554,6 @@ fn classify(path: &str, mime: Option<&str>) -> Input {
         Some("pdf") => Input::Pdf,
         _ => Input::Unsupported,
     }
-}
-
-/// Collapses runs of blank lines and trims each page, then joins pages.
-fn clean_text_pages(pages: &[String]) -> String {
-    let cleaned: Vec<String> = pages
-        .iter()
-        .map(|page| {
-            page.lines()
-                .map(str::trim_end)
-                .collect::<Vec<_>>()
-                .join("\n")
-                .trim()
-                .to_string()
-        })
-        .filter(|page| !page.is_empty())
-        .collect();
-    cleaned.join("\n\n")
 }
 
 fn default_output_path(writable_root: &str, input: &str) -> String {
@@ -400,9 +595,9 @@ fn first_line(text: &str) -> String {
     }
 }
 
-/// Preprocessing script template. It first tries the text layer (the free,
-/// exact fast path) and only falls back to extracting page images when the PDF
-/// has no usable text. `PATH` and `MAX_PAGES` are substituted per call.
+/// Preprocessing script template. Born-digital PDFs are assembled into
+/// layout-aware Markdown from the text layer; scanned PDFs return page rasters
+/// for the vision model. `PATH` and `MAX_PAGES` are substituted per call.
 const PDF_SCRIPT: &str = include_str!("ocr/pdf_extract.py");
 
 fn pdf_script(path: &str) -> String {
@@ -410,6 +605,30 @@ fn pdf_script(path: &str) -> String {
     PDF_SCRIPT
         .replace("\"__OCR_PATH__\"", &path_literal)
         .replace("__OCR_MAX_PAGES__", &MAX_PAGES.to_string())
+}
+
+/// Directory name (relative to the Markdown file) that holds cropped figures,
+/// derived from the output file stem: `king.md` -> `king_assets`.
+fn assets_dir_name(output_path: &str) -> String {
+    let stem = output_path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.').map(|(base, _)| base).or(Some(name)))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("document");
+    format!("{stem}_assets")
+}
+
+/// Figure-cropping script template. `PATH` and the JSON crop-request list are
+/// substituted per call.
+const CROP_SCRIPT: &str = include_str!("ocr/crop_figures.py");
+
+fn crop_script(path: &str, requests: &[JsonValue]) -> String {
+    let path_literal = serde_json::to_string(path).unwrap_or_else(|_| "\"\"".to_string());
+    let requests_literal = serde_json::to_string(requests).unwrap_or_else(|_| "[]".to_string());
+    CROP_SCRIPT
+        .replace("\"__OCR_PATH__\"", &path_literal)
+        .replace("__CROP_REQUESTS__", &requests_literal)
 }
 
 #[cfg(test)]
@@ -437,16 +656,6 @@ mod tests {
             default_output_path("/Projects/Acme/", "/x/scan.tiff"),
             "/Projects/Acme/ocr/scan.md"
         );
-    }
-
-    #[test]
-    fn clean_text_pages_drops_blank_pages_and_trailing_space() {
-        let out = clean_text_pages(&[
-            "  Title  \n\n  body  ".to_string(),
-            "   ".to_string(),
-            "second".to_string(),
-        ]);
-        assert_eq!(out, "Title\n\n  body\n\nsecond");
     }
 
     #[test]

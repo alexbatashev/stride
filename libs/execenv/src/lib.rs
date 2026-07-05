@@ -69,6 +69,14 @@ const PACKAGING_URL: &str = "https://files.pythonhosted.org/packages/df/b2/87e62
 // (babel) and email handling (email-validator + dnspython). All py3-none-any,
 // so they need no compilation and load lazily from site-packages.
 const PYPDF_URL: &str = "https://files.pythonhosted.org/packages/94/56/2967e621598987905fb8cdfadd8f8de6b5c68c9351f0523c4df8409f28f1/pypdf-6.13.3-py3-none-any.whl";
+// pdfplumber + pdfminer.six give layout-aware extraction (words/lines/rects with
+// bounding boxes, table detection, reading order) on top of pypdf's byte access.
+// Both are pure-Python; pdfminer.six reuses charset-normalizer, pdfplumber reuses
+// pillow. pdfminer.six eagerly imports `cryptography` (absent on WASI) only for
+// encrypted PDFs; the OCR extractor injects a lazy stub before importing it, so
+// unencrypted documents work and encrypted ones fail with a clear message.
+const PDFPLUMBER_URL: &str = "https://files.pythonhosted.org/packages/a2/9a/07d658e1e7fad860f1c541ab941348125dbdab773be3a0afaf32361866c7/pdfplumber-0.11.10-py3-none-any.whl";
+const PDFMINER_SIX_URL: &str = "https://files.pythonhosted.org/packages/20/8b/28c4eaec9d6b036a52cb44720408f26b1a143ca9bce76cc19e8f5de00ab4/pdfminer_six-20260107-py3-none-any.whl";
 const OPENPYXL_URL: &str = "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl";
 const ET_XMLFILE_URL: &str = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl";
 const MARKDOWNIFY_URL: &str = "https://files.pythonhosted.org/packages/43/ce/f1e3e9d959db134cedf06825fae8d5b294bd368aacdd0831a3975b7c4d55/markdownify-1.2.2-py3-none-any.whl";
@@ -259,6 +267,19 @@ const WASI_PACKAGES: &[WasiPackage] = &[
         kind: ArchiveKind::Wheel,
         preinit_import: None,
     },
+    // pdfminer.six must precede pdfplumber (its dependency); both are pure-Python.
+    WasiPackage {
+        name: "pdfminer.six",
+        url: PDFMINER_SIX_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
+    WasiPackage {
+        name: "pdfplumber",
+        url: PDFPLUMBER_URL,
+        kind: ArchiveKind::Wheel,
+        preinit_import: None,
+    },
     WasiPackage {
         name: "openpyxl",
         url: OPENPYXL_URL,
@@ -437,6 +458,7 @@ fn import_alias(name: &str) -> Option<&'static str> {
         "beautifulsoup4" => Some("bs4"),
         "pillow" => Some("PIL"),
         "python-dateutil" => Some("dateutil"),
+        "pdfminer.six" => Some("pdfminer"),
         "python-docx" => Some("docx"),
         "python-pptx" => Some("pptx"),
         "fpdf2" => Some("fpdf"),
