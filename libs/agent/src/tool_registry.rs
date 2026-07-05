@@ -4,8 +4,41 @@ use std::{
 };
 
 use crate::Tool;
-use llm::Tool as LlmTool;
+use llm::{FunctionParameters, FunctionProperty, Tool as LlmTool};
 use serde_json::Value;
+
+/// Reserved argument name the model sets to run an async-capable tool in the
+/// background. Stripped before the tool sees its arguments.
+pub const ASYNC_ARG: &str = "async";
+
+const ASYNC_ARG_DESCRIPTION: &str = "Set to true to run this tool in the background and keep working \
+     in the meantime; its result is delivered to you when it finishes. Set it \
+     only when you do not need the result immediately.";
+
+/// Returns the tool's LLM definition, injecting an `async` boolean parameter
+/// when the tool supports background execution so the model can request it.
+fn definition_with_async(tool: &Arc<dyn Tool>) -> LlmTool {
+    let mut definition = tool.definition();
+    if !tool.supports_async() {
+        return definition;
+    }
+    let parameters = definition
+        .function
+        .parameters
+        .get_or_insert_with(|| FunctionParameters {
+            param_type: "object".to_string(),
+            ..Default::default()
+        });
+    parameters.properties.insert(
+        ASYNC_ARG.to_string(),
+        FunctionProperty {
+            r#type: "boolean".to_string(),
+            description: ASYNC_ARG_DESCRIPTION.to_string(),
+            extra: Default::default(),
+        },
+    );
+    definition
+}
 
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
@@ -51,7 +84,7 @@ impl ToolRegistry {
 
     /// Get all tool definitions for the LLM
     pub fn definitions(&self) -> Vec<LlmTool> {
-        self.tools.values().map(|t| t.definition()).collect()
+        self.tools.values().map(definition_with_async).collect()
     }
 
     /// Tools (primary and searchable) that can be invoked without interactive

@@ -349,6 +349,10 @@ class ThreadsPageHydrator {
 			this.syncComposer();
 		}
 
+		if (event.kind.type === "ToolProgress") {
+			this.appendToolProgress(event.kind.tool_call_id, event.kind.delta, event.kind.format);
+		}
+
 		if (event.kind.type === "ToolFinished") {
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
@@ -414,6 +418,40 @@ class ThreadsPageHydrator {
 			content: this.pendingAssistant,
 			thinking: thinking ?? null,
 			tool_call_name: null,
+			tool_call_id: null,
+			tool_display: null,
+			tool_format: null,
+			pending: true,
+		};
+		this.messages.push(message);
+		this.appendMessage(message);
+	}
+
+	private appendToolProgress(toolCallId: string, delta: string, format: ThreadMessage["tool_format"]) {
+		// Match a tool result already loaded from the DB (its incremental row) so
+		// streaming updates it in place; otherwise stream into a pending row that
+		// the next refresh replaces with the persisted one.
+		const existing = this.messages.find(
+			(message) => message.role === "tool" && message.tool_call_id === toolCallId,
+		);
+		if (existing) {
+			existing.tool_display = (existing.tool_display ?? "") + delta;
+			existing.tool_format = format;
+			this.updateMessageElement(existing);
+			return;
+		}
+
+		const message: ViewMessage = {
+			id: `pending-tool-${toolCallId}`,
+			seq: Number.MAX_SAFE_INTEGER - 1,
+			role: "tool",
+			format: "markdown",
+			content: "",
+			thinking: null,
+			tool_call_name: null,
+			tool_call_id: toolCallId,
+			tool_display: delta,
+			tool_format: format,
 			pending: true,
 		};
 		this.messages.push(message);
@@ -517,6 +555,9 @@ class ThreadsPageHydrator {
 			content,
 			thinking: null,
 			tool_call_name: null,
+			tool_call_id: null,
+			tool_display: null,
+			tool_format: null,
 			pending: true,
 		};
 		this.messages.push(message);
@@ -607,9 +648,19 @@ class ThreadsPageHydrator {
 		element.seq = message.seq;
 		element.role = message.role;
 		element.kind = messageType.type;
-		element.format = message.format;
 		element.toolName = esc(messageType.toolName ?? "");
 		element.thinking = message.thinking ? esc(message.thinking) : "";
+
+		if (messageType.type === "tool_output") {
+			// Tool results render their human-facing display in the tool's declared
+			// output format; markdown flows through the spoiler's markdown widget.
+			const display = message.tool_display ?? message.content;
+			element.format = message.tool_format === "markdown" ? "markdown" : "plaintext";
+			element.text = display ? esc(display) : message.pending ? "Running..." : "";
+			return;
+		}
+
+		element.format = message.format;
 		element.text = message.content
 			? this.messageText(message, messageType.type)
 			: message.pending ? "Thinking..." : "";

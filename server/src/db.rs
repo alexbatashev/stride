@@ -515,6 +515,16 @@ migrations! {
             add description: Option<String>;
         }
     }
+
+    tool_message_display {
+        // Tool messages keep the model-facing result in `content`; these carry
+        // the human-facing rendering and its format for the UI. NULL for
+        // non-tool messages and legacy tool rows (which fall back to `content`).
+        alter table messages {
+            add tool_display: Option<String>;
+            add tool_format: Option<String>;
+        }
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -5,13 +7,46 @@ use llm::Tool as LlmTool;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::AgentConfig;
+use crate::{AgentConfig, ToolProgressSink};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct QuizQuestion {
     pub question: String,
     /// Suggested answer options; empty means free-form answer expected.
     pub options: Vec<String>,
+}
+
+/// Format of a tool's successful, human-facing output. Drives how the result is
+/// rendered to the user: markdown flows through the automarkdown widget, plain
+/// text is shown verbatim, and json (the default) is treated as opaque data.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolOutputFormat {
+    #[default]
+    Json,
+    Markdown,
+    PlainText,
+}
+
+impl ToolOutputFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolOutputFormat::Json => "json",
+            ToolOutputFormat::Markdown => "markdown",
+            ToolOutputFormat::PlainText => "plaintext",
+        }
+    }
+}
+
+/// Host-provided executor hook. The agent crate never names a concrete runtime;
+/// the host wraps its own spawn primitive so async tools can run in the
+/// background without pulling tokio into `libs/agent`. The future is `!Send`
+/// because the whole agent is single-threaded (`Rc`/`RefCell`,
+/// `async_trait(?Send)`), so the host must spawn onto a same-thread executor.
+pub trait TaskSpawner {
+    /// Spawn a `!Send` future. Fire-and-forget: the task reports progress and
+    /// its final result back through the channel it captured, not a handle.
+    fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>);
 }
 
 #[async_trait(?Send)]
@@ -31,6 +66,40 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with the given arguments
     async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value;
+
+    /// Streaming variant of [`Tool::execute`]. Tools that produce output
+    /// incrementally (subagents) override this and call [`ToolProgressSink::progress`]
+    /// as they work. The default delegates to `execute` and ignores the sink,
+    /// so non-streaming tools are unaffected.
+    async fn execute_streaming(
+        &self,
+        config: Arc<AgentConfig>,
+        args: Value,
+        sink: ToolProgressSink,
+    ) -> Value {
+        let _ = sink;
+        self.execute(config, args).await
+    }
+
+    /// Format of this tool's successful, human-facing output. Governs how the
+    /// result is rendered to the user (see [`ToolOutputFormat`]).
+    fn output_format(&self) -> ToolOutputFormat {
+        ToolOutputFormat::Json
+    }
+
+    /// Whether this tool streams incremental output through
+    /// [`Tool::execute_streaming`]. When true the base loop wires a progress
+    /// sink so partial output reaches the user live.
+    fn streams(&self) -> bool {
+        false
+    }
+
+    /// Whether this tool may run asynchronously (in the background) when the
+    /// model sets the injected `async` argument. Opt-in: only tools that return
+    /// true expose the `async` parameter and can be spawned off the main loop.
+    fn supports_async(&self) -> bool {
+        false
+    }
 
     /// Whether this tool requires confirmation before execution
     fn requires_confirmation(&self) -> bool {

@@ -91,6 +91,10 @@ pub async fn cli_main() -> anyhow::Result<()> {
                                             let _ = answered.send(vec![]);
                                             false
                                         }
+                                        Some(Ok(AgentResponseChunk::ToolProgress { delta, .. })) => {
+                                            term_output.print(&delta, None);
+                                            false
+                                        }
                                         Some(Ok(AgentResponseChunk::ToolStarted { .. } | AgentResponseChunk::ToolFinished { .. })) => false,
                                         None => true,
                                     }

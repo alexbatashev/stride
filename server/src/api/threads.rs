@@ -52,6 +52,13 @@ pub struct MessageResponse {
     content: String,
     thinking: Option<String>,
     tool_call_name: Option<String>,
+    /// Id linking a tool result back to the assistant tool call it answers.
+    /// Lets the client match streaming progress to the right message.
+    tool_call_id: Option<String>,
+    /// Human-facing rendering of a tool result (falls back to `content`).
+    tool_display: Option<String>,
+    /// Output format of a tool result (`json` | `markdown` | `plaintext`).
+    tool_format: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -181,10 +188,19 @@ enum EventKindResponse {
         seq: u64,
     },
     ToolStarted {
+        tool_call_id: String,
         name: String,
     },
-    ToolFinished {
+    ToolProgress {
+        tool_call_id: String,
         name: String,
+        delta: String,
+        format: String,
+    },
+    ToolFinished {
+        tool_call_id: String,
+        name: String,
+        format: String,
     },
     WaitingForApproval {
         approval_id: String,
@@ -513,14 +529,24 @@ pub async fn thread_page_data(
             .map(|message| {
                 let (message_type, tool_name) = message_template_type(&message);
                 let has_thinking = message.thinking.is_some();
+                // A tool message renders its human-facing display in the given
+                // output format; everything else uses its own content/format.
+                let (content, format) = if message.role == "tool" {
+                    (
+                        message.tool_display.clone().unwrap_or(message.content),
+                        tool_output_format(message.tool_format.as_deref()),
+                    )
+                } else {
+                    (message.content, message.format)
+                };
                 MessageTemplateData {
                     id: message.id,
                     seq: message.seq,
                     role: message.role,
-                    format: message.format,
+                    format,
                     message_type,
                     tool_name,
-                    content: message.content,
+                    content,
                     thinking: message.thinking,
                     has_thinking,
                 }
@@ -803,6 +829,9 @@ async fn thread_messages(
             content: row.content,
             thinking: row.thinking,
             tool_call_name: tool_call_name(row.tool_calls.as_deref()),
+            tool_call_id: row.tool_call_id,
+            tool_display: row.tool_display,
+            tool_format: row.tool_format,
         })
         .filter(|message| {
             message.role != "agent"
@@ -1120,6 +1149,16 @@ fn message_format_name(format: MessageFormat) -> &'static str {
     match format {
         MessageFormat::Markdown => "markdown",
         MessageFormat::Html => "html",
+    }
+}
+
+/// Maps a tool result's declared output format to a renderer format. Markdown
+/// flows through the automarkdown widget; everything else (json, plaintext, or a
+/// legacy tool row with no format) is shown as escaped text.
+fn tool_output_format(tool_format: Option<&str>) -> &'static str {
+    match tool_format {
+        Some("markdown") => "markdown",
+        _ => "plaintext",
     }
 }
 
@@ -1531,8 +1570,29 @@ fn event_response(event: AgentEvent) -> EventResponse {
                     seq,
                 }
             }
-            AgentEventKind::ToolStarted { name } => EventKindResponse::ToolStarted { name },
-            AgentEventKind::ToolFinished { name } => EventKindResponse::ToolFinished { name },
+            AgentEventKind::ToolStarted { tool_call_id, name } => {
+                EventKindResponse::ToolStarted { tool_call_id, name }
+            }
+            AgentEventKind::ToolProgress {
+                tool_call_id,
+                name,
+                delta,
+                format,
+            } => EventKindResponse::ToolProgress {
+                tool_call_id,
+                name,
+                delta,
+                format,
+            },
+            AgentEventKind::ToolFinished {
+                tool_call_id,
+                name,
+                format,
+            } => EventKindResponse::ToolFinished {
+                tool_call_id,
+                name,
+                format,
+            },
             AgentEventKind::WaitingForApproval {
                 approval_id,
                 message,

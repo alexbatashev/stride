@@ -1,6 +1,7 @@
 import { Component, css, state } from "@frontiers-labs/argon";
 import { IconChevronDown } from "./icons/chevron-down.js";
 import { IconChevronRight } from "./icons/chevron-right.js";
+import { AutoMarkdown } from "./auto-markdown.js";
 
 const styles = css`
   :host {
@@ -44,8 +45,17 @@ const styles = css`
   }
 `;
 
-export function AppSpoiler({ title = "Spoiler title", content = "" }: { title?: string; content?: string }): Component {
+export function AppSpoiler({
+  title = "Spoiler title",
+  content = "",
+  format = "",
+}: {
+  title?: string;
+  content?: string;
+  format?: string;
+}): Component {
   let visible = state(false);
+  const body = format === "markdown" ? <AutoMarkdown text={content} format="markdown" /> : content;
   return (
     <>
       <style>{styles}</style>
@@ -61,7 +71,7 @@ export function AppSpoiler({ title = "Spoiler title", content = "" }: { title?: 
           {visible ? <IconChevronDown /> : <IconChevronRight />}
         </span>
       </button>
-      {visible && <div class="content">{content}</div>}
+      {visible && <div class="content">{body}</div>}
     </>
   );
 }

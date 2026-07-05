@@ -5,7 +5,10 @@ use futures::StreamExt;
 use llm::{Function, Tool as LlmTool};
 use serde_json::{Value, json};
 
-use crate::{AgentConfig, AgentResponseChunk, BaseAgent, Tool, ToolDesc, ToolRegistry};
+use crate::{
+    AgentConfig, AgentResponseChunk, BaseAgent, Tool, ToolDesc, ToolOutputFormat, ToolProgressSink,
+    ToolRegistry,
+};
 
 pub const SUBAGENT_NAME: &str = "subagent";
 
@@ -58,6 +61,77 @@ impl SubAgentTool {
             confirmation_prompt: None,
         }
     }
+
+    /// Runs the subagent turn, forwarding assistant text deltas to `sink` when
+    /// one is provided so the parent can stream the answer live. Returns the
+    /// final answer with a `__display` copy for markdown rendering.
+    async fn run(
+        &self,
+        config: Arc<AgentConfig>,
+        args: Value,
+        sink: Option<ToolProgressSink>,
+    ) -> Value {
+        let args = match SubAgentParams::decode(args) {
+            Ok(args) => args,
+            Err(error) => return json!({ "success": false, "error": error }),
+        };
+
+        let model = args.model.trim();
+        if model.is_empty() {
+            return json!({ "success": false, "error": "model is required" });
+        }
+        if !self.allowed_models.iter().any(|allowed| allowed == model) {
+            return json!({
+                "success": false,
+                "error": format!("model '{model}' is not allowed for subagents")
+            });
+        }
+        if config.model_registry.get(model).is_none() {
+            return json!({
+                "success": false,
+                "error": format!("unknown model '{model}'")
+            });
+        }
+
+        let agent = BaseAgent::new_with_tools(
+            model.to_string(),
+            config,
+            self.system_prompt.clone(),
+            vec![],
+            self.tool_registry.clone(),
+        );
+        let mut stream = agent.make_turn(args.prompt, Vec::new()).await;
+        let mut content = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(AgentResponseChunk::Chunk(chunk)) => {
+                    for choice in chunk.choices {
+                        if let Some(delta_content) = choice.delta.and_then(|d| d.content) {
+                            if let Some(sink) = sink.as_ref() {
+                                sink.progress(delta_content.clone());
+                            }
+                            content.push_str(&delta_content);
+                        }
+                    }
+                }
+                Ok(AgentResponseChunk::Approval { approved, .. }) => {
+                    let _ = approved.send(false);
+                }
+                Ok(AgentResponseChunk::Quiz { answered, .. }) => {
+                    let _ = answered.send(vec![]);
+                }
+                Ok(
+                    AgentResponseChunk::ToolStarted { .. }
+                    | AgentResponseChunk::ToolProgress { .. }
+                    | AgentResponseChunk::ToolFinished { .. },
+                ) => {}
+                Err(error) => return json!({ "success": false, "error": error.to_string() }),
+            }
+        }
+
+        json!({ "success": true, "content": content, "__display": content })
+    }
 }
 
 fn build_description(allowed_models: &[String], guidelines: &str) -> String {
@@ -96,62 +170,28 @@ impl Tool for SubAgentTool {
     }
 
     async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value {
-        let args = match SubAgentParams::decode(args) {
-            Ok(args) => args,
-            Err(error) => return json!({ "success": false, "error": error }),
-        };
+        self.run(config, args, None).await
+    }
 
-        let model = args.model.trim();
-        if model.is_empty() {
-            return json!({ "success": false, "error": "model is required" });
-        }
-        if !self.allowed_models.iter().any(|allowed| allowed == model) {
-            return json!({
-                "success": false,
-                "error": format!("model '{model}' is not allowed for subagents")
-            });
-        }
-        if config.model_registry.get(model).is_none() {
-            return json!({
-                "success": false,
-                "error": format!("unknown model '{model}'")
-            });
-        }
+    async fn execute_streaming(
+        &self,
+        config: Arc<AgentConfig>,
+        args: Value,
+        sink: ToolProgressSink,
+    ) -> Value {
+        self.run(config, args, Some(sink)).await
+    }
 
-        let agent = BaseAgent::new_with_tools(
-            model.to_string(),
-            config,
-            self.system_prompt.clone(),
-            vec![],
-            self.tool_registry.clone(),
-        );
-        let mut stream = agent.make_turn(args.prompt, Vec::new()).await;
-        let mut content = String::new();
+    fn output_format(&self) -> ToolOutputFormat {
+        ToolOutputFormat::Markdown
+    }
 
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(AgentResponseChunk::Chunk(chunk)) => {
-                    for choice in chunk.choices {
-                        if let Some(delta_content) = choice.delta.and_then(|d| d.content) {
-                            content.push_str(&delta_content);
-                        }
-                    }
-                }
-                Ok(AgentResponseChunk::Approval { approved, .. }) => {
-                    let _ = approved.send(false);
-                }
-                Ok(AgentResponseChunk::Quiz { answered, .. }) => {
-                    let _ = answered.send(vec![]);
-                }
-                Ok(
-                    AgentResponseChunk::ToolStarted { .. }
-                    | AgentResponseChunk::ToolFinished { .. },
-                ) => {}
-                Err(error) => return json!({ "success": false, "error": error.to_string() }),
-            }
-        }
+    fn streams(&self) -> bool {
+        true
+    }
 
-        json!({ "success": true, "content": content })
+    fn supports_async(&self) -> bool {
+        true
     }
 
     fn requires_confirmation(&self) -> bool {
@@ -226,6 +266,37 @@ impl Tool for FixedModelSubAgentTool {
                 json!({ "prompt": args.prompt, "model": self.model }),
             )
             .await
+    }
+
+    async fn execute_streaming(
+        &self,
+        config: Arc<AgentConfig>,
+        args: Value,
+        sink: ToolProgressSink,
+    ) -> Value {
+        let args = match SubAgentPromptOnlyParams::decode(args) {
+            Ok(args) => args,
+            Err(error) => return json!({ "success": false, "error": error }),
+        };
+        self.inner
+            .execute_streaming(
+                config,
+                json!({ "prompt": args.prompt, "model": self.model }),
+                sink,
+            )
+            .await
+    }
+
+    fn output_format(&self) -> ToolOutputFormat {
+        self.inner.output_format()
+    }
+
+    fn streams(&self) -> bool {
+        self.inner.streams()
+    }
+
+    fn supports_async(&self) -> bool {
+        self.inner.supports_async()
     }
 }
 
@@ -304,7 +375,7 @@ mod tests {
 
             assert_eq!(
                 result,
-                json!({ "success": true, "content": "final answer" })
+                json!({ "success": true, "content": "final answer", "__display": "final answer" })
             );
             let messages = &mock.stream_requests()[0].messages;
             assert_eq!(messages[0].role, llm::Role::System);
@@ -334,7 +405,10 @@ mod tests {
                 )
                 .await;
 
-            assert_eq!(result, json!({ "success": true, "content": "done" }));
+            assert_eq!(
+                result,
+                json!({ "success": true, "content": "done", "__display": "done" })
+            );
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         });
     }

@@ -40,6 +40,8 @@ export type ArchivedThread = {
 	last_activity_at: number;
 };
 
+export type ToolOutputFormat = 'json' | 'markdown' | 'plaintext';
+
 export type ThreadMessage = {
 	id: string;
 	seq: number;
@@ -48,6 +50,9 @@ export type ThreadMessage = {
 	content: string;
 	thinking: string | null;
 	tool_call_name: string | null;
+	tool_call_id: string | null;
+	tool_display: string | null;
+	tool_format: ToolOutputFormat | null;
 };
 
 export type SendMessageResponse = {
@@ -72,8 +77,9 @@ export type ThreadEvent = {
 		| {type: 'AgentDelta'; content: string; format: 'markdown' | 'html'}
 		| {type: 'ThinkingDelta'; thinking: string}
 		| {type: 'AgentMessageCommitted'; message_id: string; seq: number}
-		| {type: 'ToolStarted'; name: string}
-		| {type: 'ToolFinished'; name: string}
+		| {type: 'ToolStarted'; tool_call_id: string; name: string}
+		| {type: 'ToolProgress'; tool_call_id: string; name: string; delta: string; format: ToolOutputFormat}
+		| {type: 'ToolFinished'; tool_call_id: string; name: string; format: ToolOutputFormat}
 		| {type: 'WaitingForApproval'; approval_id: string; message: string}
 		| {type: 'ApprovalResolved'; approval_id: string; approved: boolean}
 		| {type: 'WaitingForQuiz'; quiz_id: string; questions: QuizQuestion[]}

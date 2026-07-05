@@ -127,10 +127,20 @@ pub enum AgentEventKind {
         seq: u64,
     },
     ToolStarted {
+        tool_call_id: String,
         name: String,
     },
-    ToolFinished {
+    /// Incremental human-facing output from a streaming or backgrounded tool.
+    ToolProgress {
+        tool_call_id: String,
         name: String,
+        delta: String,
+        format: String,
+    },
+    ToolFinished {
+        tool_call_id: String,
+        name: String,
+        format: String,
     },
     WaitingForApproval {
         approval_id: Uuid,

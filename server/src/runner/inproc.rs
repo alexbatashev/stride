@@ -1,7 +1,9 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, VecDeque},
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -11,7 +13,7 @@ use async_trait::async_trait;
 use futures::{StreamExt, channel::oneshot as futures_oneshot};
 use minisql::{ConnectionPool, Value};
 use stride_agent::{
-    AgentConfig, AgentResponseChunk, BaseAgent, QuizQuestion, Tool, ToolRegistry,
+    AgentConfig, AgentResponseChunk, BaseAgent, QuizQuestion, TaskSpawner, Tool, ToolRegistry,
     mcp::McpTool,
     sanitizer::{HtmlFormattingSanitizer, StreamingMessageSanitizer},
     tools::{
@@ -412,6 +414,24 @@ struct AssistantMessageState {
     tool_calls: BTreeMap<usize, PartialToolCall>,
     format: MessageFormat,
     output_sanitizer: Box<dyn StreamingMessageSanitizer>,
+}
+
+/// Bridges the agent crate's executor hook to the worker's `LocalSet`. Each
+/// turn runs on a `spawn_local`-capable current-thread runtime, so backgrounded
+/// (async) tool calls can be spawned there.
+struct LocalSpawner;
+
+impl TaskSpawner for LocalSpawner {
+    fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
+        tokio::task::spawn_local(future);
+    }
+}
+
+/// Per-run bookkeeping for a tool whose output streams in incrementally. Tracks
+/// the persisted row and the human-facing text accumulated so far.
+struct ToolStreamState {
+    message_id: Uuid,
+    display: String,
 }
 
 #[derive(Default)]
@@ -1082,6 +1102,7 @@ async fn ensure_runner(
         system_prompt,
         thread,
     );
+    agent.set_spawner(Rc::new(LocalSpawner));
     agent.set_searchable_tools_preview_limit(server_config.searchable_tools_preview_limit());
     configure_agent_tools(
         &agent,
@@ -1590,6 +1611,7 @@ async fn run_agent_turn(
         format,
         output_sanitizer: output_sanitizer(format, &state),
     };
+    let mut tool_streams: HashMap<String, ToolStreamState> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -1613,22 +1635,31 @@ async fn run_agent_turn(
                             return;
                         }
                     }
-                    Ok(AgentResponseChunk::ToolStarted { name, .. }) => {
+                    Ok(AgentResponseChunk::ToolStarted { tool_call_id, name, .. }) => {
                         emit(
                             &state,
                             thread_id,
                             Some(run_id),
-                            AgentEventKind::ToolStarted { name },
+                            AgentEventKind::ToolStarted { tool_call_id, name },
                         )
                         .await;
                     }
-                    Ok(AgentResponseChunk::ToolFinished {
+                    Ok(AgentResponseChunk::ToolProgress {
                         tool_call_id,
                         name,
-                        result,
+                        delta,
+                        format,
                     }) => {
-                        if let Err(error) =
-                            persist_tool_message(&state, thread_id, &tool_call_id, &result).await
+                        let format = format.as_str();
+                        if let Err(error) = persist_tool_progress(
+                            &state,
+                            thread_id,
+                            &mut tool_streams,
+                            &tool_call_id,
+                            &delta,
+                            format,
+                        )
+                        .await
                         {
                             fail_run(&state, thread_id, run_id, error.to_string()).await;
                             restore_agent(&state, thread_id, agent);
@@ -1640,7 +1671,53 @@ async fn run_agent_turn(
                             &state,
                             thread_id,
                             Some(run_id),
-                            AgentEventKind::ToolFinished { name },
+                            AgentEventKind::ToolProgress {
+                                tool_call_id,
+                                name,
+                                delta,
+                                format: format.to_string(),
+                            },
+                        )
+                        .await;
+                    }
+                    Ok(AgentResponseChunk::ToolFinished {
+                        tool_call_id,
+                        name,
+                        result,
+                        display,
+                        format,
+                        wake_message,
+                    }) => {
+                        let format = format.as_str();
+                        if let Err(error) = finalize_tool_message(
+                            &state,
+                            thread_id,
+                            &mut tool_streams,
+                            ToolFinish {
+                                tool_call_id: &tool_call_id,
+                                result: &result,
+                                display: display.as_deref(),
+                                format,
+                                wake_message: wake_message.as_deref(),
+                            },
+                        )
+                        .await
+                        {
+                            fail_run(&state, thread_id, run_id, error.to_string()).await;
+                            restore_agent(&state, thread_id, agent);
+                            drain_queue(&state, thread_id).await;
+                            return;
+                        }
+
+                        emit(
+                            &state,
+                            thread_id,
+                            Some(run_id),
+                            AgentEventKind::ToolFinished {
+                                tool_call_id,
+                                name,
+                                format: format.to_string(),
+                            },
                         )
                         .await;
                     }
@@ -2035,10 +2112,143 @@ fn thread_message_format(
         .map(|runner| runner.message_format)
 }
 
-async fn persist_tool_message(
+/// Returns the row backing a streaming tool's output, creating an empty one on
+/// first use so later progress updates and the final result share it.
+async fn ensure_tool_row(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
+    tool_streams: &mut HashMap<String, ToolStreamState>,
     tool_call_id: &str,
+    format: &str,
+) -> Result<Uuid, AgentPoolError> {
+    if let Some(existing) = tool_streams.get(tool_call_id) {
+        return Ok(existing.message_id);
+    }
+    let id = Uuid::now_v7();
+    let seq = next_message_seq(state, thread_id)?;
+    let db = state.borrow().init.db.clone();
+
+    messages::insert()
+        .id(id)
+        .parent_thread(thread_id)
+        .seq(seq)
+        .role(Role::Tool)
+        .content("")
+        .content_format(MessageFormat::Markdown)
+        .images(Option::<&str>::None)
+        .thinking(Option::<&str>::None)
+        .tool_calls(Option::<&str>::None)
+        .tool_call_id(Some(tool_call_id))
+        .tool_format(Some(format))
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+
+    tool_streams.insert(
+        tool_call_id.to_string(),
+        ToolStreamState {
+            message_id: id,
+            display: String::new(),
+        },
+    );
+    Ok(id)
+}
+
+/// Appends a streamed delta to a tool's row and updates its human-facing text.
+async fn persist_tool_progress(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    tool_streams: &mut HashMap<String, ToolStreamState>,
+    tool_call_id: &str,
+    delta: &str,
+    format: &str,
+) -> Result<(), AgentPoolError> {
+    let id = ensure_tool_row(state, thread_id, tool_streams, tool_call_id, format).await?;
+    let display = {
+        let stream = tool_streams
+            .get_mut(tool_call_id)
+            .expect("row just ensured");
+        stream.display.push_str(delta);
+        stream.display.clone()
+    };
+    let db = state.borrow().init.db.clone();
+    messages::update()
+        .tool_display(Some(display.as_str()))
+        .tool_format(Some(format))
+        .where_(messages::id.eq(id))
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
+
+/// A tool result to commit, as delivered by the agent stream.
+struct ToolFinish<'a> {
+    tool_call_id: &'a str,
+    result: &'a str,
+    display: Option<&'a str>,
+    format: &'a str,
+    /// Present for a backgrounded completion: the exact user message the agent
+    /// injected into the thread, to be persisted identically.
+    wake_message: Option<&'a str>,
+}
+
+/// Commits a tool's final output. A synchronous finish stores the model-facing
+/// result in `content` and the display text in `tool_display`. A backgrounded
+/// completion (`wake_message`) instead persists the injected user message so a
+/// reloaded thread matches the live one, then finalizes the streamed row.
+async fn finalize_tool_message(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    tool_streams: &mut HashMap<String, ToolStreamState>,
+    finish: ToolFinish<'_>,
+) -> Result<(), AgentPoolError> {
+    if let Some(wake) = finish.wake_message {
+        persist_user_message(state, thread_id, wake).await?;
+        if let Some(stream) = tool_streams.remove(finish.tool_call_id) {
+            let final_display = finish.display.map(str::to_string).unwrap_or(stream.display);
+            let db = state.borrow().init.db.clone();
+            messages::update()
+                .tool_display(Some(final_display.as_str()))
+                .tool_format(Some(finish.format))
+                .where_(messages::id.eq(stream.message_id))
+                .execute(&db)
+                .await
+                .map_err(db_error)?;
+        }
+        return Ok(());
+    }
+
+    let id = ensure_tool_row(
+        state,
+        thread_id,
+        tool_streams,
+        finish.tool_call_id,
+        finish.format,
+    )
+    .await?;
+    let accumulated = tool_streams
+        .get(finish.tool_call_id)
+        .map(|stream| stream.display.clone())
+        .unwrap_or_default();
+    let final_display = finish.display.map(str::to_string).unwrap_or(accumulated);
+    let db = state.borrow().init.db.clone();
+    messages::update()
+        .content(finish.result)
+        .tool_display(Some(final_display.as_str()))
+        .tool_format(Some(finish.format))
+        .where_(messages::id.eq(id))
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
+
+/// Persists a user message. Used to record a backgrounded tool's result exactly
+/// as the agent loop injected it into the thread.
+async fn persist_user_message(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
     content: &str,
 ) -> Result<(), AgentPoolError> {
     let id = Uuid::now_v7();
@@ -2049,13 +2259,13 @@ async fn persist_tool_message(
         .id(id)
         .parent_thread(thread_id)
         .seq(seq)
-        .role(Role::Tool)
+        .role(Role::User)
         .content(content)
         .content_format(MessageFormat::Markdown)
         .images(Option::<&str>::None)
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
-        .tool_call_id(Some(tool_call_id))
+        .tool_call_id(Option::<&str>::None)
         .execute(&db)
         .await
         .map_err(db_error)?;
@@ -2770,10 +2980,10 @@ mod tests {
                 .unwrap();
 
             match event.kind {
-                AgentEventKind::ToolStarted { name } if name == "missing_tool" => {
+                AgentEventKind::ToolStarted { name, .. } if name == "missing_tool" => {
                     saw_tool_started = true;
                 }
-                AgentEventKind::ToolFinished { name } if name == "missing_tool" => {
+                AgentEventKind::ToolFinished { name, .. } if name == "missing_tool" => {
                     saw_tool_finished = true;
                 }
                 AgentEventKind::RunFinished => {

@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 
 use async_stream::stream;
-use futures::channel::oneshot;
-use futures::{Stream, StreamExt};
+use futures::channel::{mpsc, oneshot};
+use futures::{FutureExt, Stream, StreamExt, select};
 use llm::{
     API, CompletionRequest, ImageSource, Message, OpenAI, ReasoningEffort, StreamResponseChunk,
     ToolCallChunk, ToolCallFunction,
@@ -15,7 +15,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::tools::search::{SearchEntry, SearchTool};
-use crate::{QuizQuestion, Tool, ToolRegistry};
+use crate::{QuizQuestion, TaskSpawner, Tool, ToolOutputFormat, ToolRegistry};
 
 pub const DEFAULT_MODEL: &str = "default";
 
@@ -53,10 +53,26 @@ pub enum AgentResponseChunk {
         name: String,
         arguments: String,
     },
+    /// Incremental human-facing output from a streaming or backgrounded tool.
+    ToolProgress {
+        tool_call_id: String,
+        name: String,
+        delta: String,
+        format: ToolOutputFormat,
+    },
     ToolFinished {
         tool_call_id: String,
         name: String,
         result: String,
+        /// Human-facing rendering when it differs from the model-facing result
+        /// (carried out of band via the `__display` result convention).
+        display: Option<String>,
+        format: ToolOutputFormat,
+        /// Present when this finish is a backgrounded tool's completion. Carries
+        /// the exact user message the loop injected into the thread so the host
+        /// persists an identical message and a reloaded thread matches the live
+        /// one. `None` for ordinary (synchronous) tool results.
+        wake_message: Option<String>,
     },
     Approval {
         tool_name: String,
@@ -72,6 +88,47 @@ pub enum AgentResponseChunk {
 
 pub type AgentResponseStream =
     Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>>;
+
+/// Internal event a streaming/async tool reports back to the `make_turn` loop
+/// through a shared unbounded channel. `Progress` streams partial output;
+/// `Finished` delivers a backgrounded tool's final result so the monitor can
+/// inject it into the live thread.
+enum ToolEvent {
+    Progress {
+        id: String,
+        name: String,
+        delta: String,
+        format: ToolOutputFormat,
+    },
+    Finished {
+        id: String,
+        name: String,
+        result: Value,
+        display: Option<String>,
+        format: ToolOutputFormat,
+    },
+}
+
+/// Handle a streaming or backgrounded tool uses to report incremental output.
+/// Cheaply cloneable; `progress` is non-blocking (unbounded send) so a tool
+/// running on the same single-threaded executor never deadlocks the loop.
+pub struct ToolProgressSink {
+    id: String,
+    name: String,
+    format: ToolOutputFormat,
+    tx: mpsc::UnboundedSender<ToolEvent>,
+}
+
+impl ToolProgressSink {
+    pub fn progress(&self, delta: impl Into<String>) {
+        let _ = self.tx.unbounded_send(ToolEvent::Progress {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            delta: delta.into(),
+            format: self.format,
+        });
+    }
+}
 
 #[derive(Debug)]
 pub struct AgentConfig {
@@ -121,6 +178,9 @@ struct BaseAgentInner {
     search_slot: Arc<Mutex<Vec<llm::Tool>>>,
     searchable_entries: Arc<Mutex<Vec<SearchEntry>>>,
     searchable_tools_preview_limit: Arc<Mutex<usize>>,
+    /// Host-provided executor for backgrounded (async) tool calls. When absent,
+    /// `async` tool calls degrade to synchronous inline execution.
+    spawner: Option<Rc<dyn TaskSpawner>>,
 }
 
 #[derive(Default)]
@@ -200,7 +260,14 @@ impl BaseAgent {
             search_slot: Arc::new(Mutex::new(Vec::new())),
             searchable_entries: Arc::new(Mutex::new(Vec::new())),
             searchable_tools_preview_limit: Arc::new(Mutex::new(20)),
+            spawner: None,
         })))
+    }
+
+    /// Install the host executor used to background `async` tool calls. Without
+    /// it, `async` requests run inline.
+    pub fn set_spawner(&self, spawner: Rc<dyn TaskSpawner>) {
+        self.0.borrow_mut().spawner = Some(spawner);
     }
 
     pub fn register_tool(&self, tool: impl Tool + 'static) {
@@ -279,6 +346,9 @@ impl BaseAgent {
         self.0.borrow().tool_registry.definitions()
     }
 
+    // `pending_wake` is reset each iteration and set from several control-flow
+    // paths, some of which continue the loop without reading it back.
+    #[allow(unused_assignments)]
     pub async fn make_turn(
         &self,
         request: String,
@@ -305,8 +375,68 @@ impl BaseAgent {
         });
 
         let agent = self.0.clone();
+        let spawner = self.0.borrow().spawner.clone();
 
         Box::pin(stream! {
+            // Channel every streaming/async tool reports into. Created once so the
+            // sender survives across iterations and all spawned tasks share one
+            // receiver. Unbounded keeps `progress`/`Finished` sends non-blocking,
+            // which is required on a single-threaded executor.
+            let (tool_tx, mut tool_rx) = mpsc::unbounded::<ToolEvent>();
+            let mut outstanding_async: usize = 0;
+            // Set when an async result was injected since the last model request,
+            // so the loop re-requests the model (the wake) even if no async work
+            // remains outstanding.
+            let mut pending_wake = false;
+            // Completed async results wait here until a point where the thread
+            // can safely take a follow-up user message — never between an
+            // assistant's tool call and its tool result.
+            let mut deferred: Vec<ToolEvent> = Vec::new();
+
+            // Route a tool event: emit progress immediately (progress never
+            // mutates the thread, so it is safe any time); buffer a completion
+            // for injection at the next safe point.
+            macro_rules! take_tool_event {
+                ($ev:expr) => {
+                    match $ev {
+                        ToolEvent::Progress { id, name, delta, format } => {
+                            yield Ok(AgentResponseChunk::ToolProgress {
+                                tool_call_id: id,
+                                name,
+                                delta,
+                                format,
+                            });
+                        }
+                        finished => deferred.push(finished),
+                    }
+                };
+            }
+
+            // Inject every buffered async result into the thread and surface it.
+            // Only valid when the last message is not an assistant awaiting tool
+            // results (i.e. at turn end or after all tool results are committed).
+            macro_rules! flush_deferred {
+                () => {
+                    for event in std::mem::take(&mut deferred) {
+                        if let ToolEvent::Finished { id, name, mut result, display, format } = event {
+                            outstanding_async -= 1;
+                            pending_wake = true;
+                            let display = display.or_else(|| take_tool_display(&mut result));
+                            log_tool_result(&name, &result);
+                            let wake_message = inject_async_result(&agent, &id, &name, &result);
+                            yield Ok(AgentResponseChunk::ToolFinished {
+                                tool_call_id: id,
+                                name,
+                                result: wake_message.clone(),
+                                display,
+                                format,
+                                wake_message: Some(wake_message),
+                            });
+                        }
+                    }
+                };
+            }
+
             for _ in 0..max_iterations {
                 let tools = {
                     let lock = agent.borrow();
@@ -315,6 +445,9 @@ impl BaseAgent {
                     t.extend(extra);
                     t
                 };
+
+                // Committing to a new model request consumes any pending wake.
+                pending_wake = false;
 
                 {
                     agent.borrow_mut().thread.push(Message {
@@ -337,26 +470,58 @@ impl BaseAgent {
                     request
                 };
 
-                let mut stream = model.api.stream_completion(&model.token, request);
+                let mut stream = model.api.stream_completion(&model.token, request).fuse();
                 let mut tool_calls = BTreeMap::new();
 
-                while let Some(chunk) = stream.next().await {
-                    let is_err = chunk.is_err();
-                    if let Ok(ref chunk) = chunk {
-                        append_chunk(&agent, chunk, &mut tool_calls);
-                    }
-                    match chunk {
-                        Ok(chunk) => { yield Ok(AgentResponseChunk::Chunk(chunk)); },
-                        Err(err) => { yield Err(AgentError::from(err)); },
-                    }
-                    if is_err {
-                        return;
+                // Model-streaming phase: race model chunks against events from
+                // backgrounded tools so async subagents make progress and stream
+                // their output while the model is still producing this turn.
+                loop {
+                    select! {
+                        chunk = stream.next() => {
+                            let Some(chunk) = chunk else { break };
+                            let is_err = chunk.is_err();
+                            if let Ok(ref chunk) = chunk {
+                                append_chunk(&agent, chunk, &mut tool_calls);
+                            }
+                            match chunk {
+                                Ok(chunk) => { yield Ok(AgentResponseChunk::Chunk(chunk)); },
+                                Err(err) => { yield Err(AgentError::from(err)); },
+                            }
+                            if is_err {
+                                return;
+                            }
+                        }
+                        ev = tool_rx.next() => {
+                            if let Some(ev) = ev {
+                                take_tool_event!(ev);
+                            }
+                        }
                     }
                 }
 
                 let tool_calls = finish_tool_calls(&agent, tool_calls);
+
                 if tool_calls.is_empty() {
-                    return;
+                    // The last message is the assistant's, so any completed async
+                    // results can be injected as follow-up user messages now.
+                    flush_deferred!();
+                    if pending_wake {
+                        // An async result landed since the last request. Re-request
+                        // so the model can react to it (the wake).
+                        continue;
+                    }
+                    if outstanding_async == 0 {
+                        return;
+                    }
+                    // Monitor: nothing more to say but async work is still running.
+                    // Block for the next event, inject it, and loop again.
+                    match tool_rx.next().await {
+                        Some(ev) => take_tool_event!(ev),
+                        None => return,
+                    }
+                    flush_deferred!();
+                    continue;
                 }
 
                 let mut pending_images: Vec<ImageSource> = Vec::new();
@@ -379,7 +544,7 @@ impl BaseAgent {
                         arguments: arguments.clone(),
                     });
 
-                    let args = match serde_json::from_str::<Value>(&arguments) {
+                    let mut args = match serde_json::from_str::<Value>(&arguments) {
                         Ok(args) => args,
                         Err(err) => {
                             let result = json!({ "error": err.to_string() });
@@ -389,76 +554,158 @@ impl BaseAgent {
                                 tool_call_id: id,
                                 name: readable_name,
                                 result: content,
+                                display: None,
+                                format: ToolOutputFormat::Json,
+                                wake_message: None,
                             });
                             continue;
                         }
                     };
 
-                    let (result, readable_name) = match tool {
-                        Some(tool) => {
-                            let readable_name = tool.readable_name().to_string();
+                    let want_async = take_async_flag(&mut args);
 
-                            if let Some(questions) = tool.quiz_questions(&args) {
-                                let (answered, response) = oneshot::channel();
-                                yield Ok(AgentResponseChunk::Quiz {
-                                    tool_name: readable_name.clone(),
-                                    questions: questions.clone(),
-                                    answered,
-                                });
-                                let answers = response.await.unwrap_or_default();
-                                let result = json!({
-                                    "answers": questions.iter().zip(answers.iter()).map(|(q, a)| {
-                                        json!({ "question": q.question, "answer": a })
-                                    }).collect::<Vec<_>>()
-                                });
-                                log_tool_result(&name, &result);
-                                let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
-                                yield Ok(AgentResponseChunk::ToolFinished {
-                                    tool_call_id: id,
-                                    name: readable_name,
-                                    result: content,
-                                });
-                                continue;
-                            }
-
-                            let needs_approval = {
-                                let lock = agent.borrow();
-                                lock.tool_registry.needs_approval(&name, &args)
-                            };
-
-                            if needs_approval {
-                                let message = tool.confirmation_prompt(&args);
-                                let (approved, response) = oneshot::channel();
-                                yield Ok(AgentResponseChunk::Approval { tool_name: readable_name.clone(), message, approved });
-
-                                if !response.await.unwrap_or(false) {
-                                    let result = json!({ "error": "tool execution denied by user" });
-                                    log_tool_error(&name, &result);
-                                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
-                                    yield Ok(AgentResponseChunk::ToolFinished {
-                                        tool_call_id: id,
-                                        name: readable_name,
-                                        result: content,
-                                    });
-                                    continue;
-                                }
-                            }
-
-                            let result = tool.execute(config.clone(), args).await;
-                            (result, readable_name)
-                        }
-                        None => (
-                            json!({ "error": format!("unknown tool: {}", name) }),
-                            name.clone(),
-                        ),
+                    let Some(tool) = tool else {
+                        let result = json!({ "error": format!("unknown tool: {}", name) });
+                        log_tool_error(&name, &result);
+                        let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
+                        yield Ok(AgentResponseChunk::ToolFinished {
+                            tool_call_id: id,
+                            name: readable_name,
+                            result: content,
+                            display: None,
+                            format: ToolOutputFormat::Json,
+                            wake_message: None,
+                        });
+                        continue;
                     };
 
+                    if let Some(questions) = tool.quiz_questions(&args) {
+                        let (answered, response) = oneshot::channel();
+                        yield Ok(AgentResponseChunk::Quiz {
+                            tool_name: readable_name.clone(),
+                            questions: questions.clone(),
+                            answered,
+                        });
+                        let answers = response.await.unwrap_or_default();
+                        let result = json!({
+                            "answers": questions.iter().zip(answers.iter()).map(|(q, a)| {
+                                json!({ "question": q.question, "answer": a })
+                            }).collect::<Vec<_>>()
+                        });
+                        log_tool_result(&name, &result);
+                        let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
+                        yield Ok(AgentResponseChunk::ToolFinished {
+                            tool_call_id: id,
+                            name: readable_name,
+                            result: content,
+                            display: None,
+                            format: ToolOutputFormat::Json,
+                            wake_message: None,
+                        });
+                        continue;
+                    }
+
+                    let needs_approval = {
+                        let lock = agent.borrow();
+                        lock.tool_registry.needs_approval(&name, &args)
+                    };
+
+                    if needs_approval {
+                        let message = tool.confirmation_prompt(&args);
+                        let (approved, response) = oneshot::channel();
+                        yield Ok(AgentResponseChunk::Approval { tool_name: readable_name.clone(), message, approved });
+
+                        if !response.await.unwrap_or(false) {
+                            let result = json!({ "error": "tool execution denied by user" });
+                            log_tool_error(&name, &result);
+                            let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
+                            yield Ok(AgentResponseChunk::ToolFinished {
+                                tool_call_id: id,
+                                name: readable_name,
+                                result: content,
+                                display: None,
+                                format: ToolOutputFormat::Json,
+                                wake_message: None,
+                            });
+                            continue;
+                        }
+                    }
+
+                    let format = tool.output_format();
+
+                    // Background execution: only when the model asked for it, the
+                    // tool opts in, and the host installed an executor. The
+                    // placeholder result keeps the assistant tool_call API-valid;
+                    // the real result is injected later by the monitor.
+                    if want_async
+                        && tool.supports_async()
+                        && let Some(spawner) = spawner.as_ref()
+                    {
+                        let placeholder = json!({ "status": "started", "async": true });
+                        let content = append_tool_result(&agent, id.clone(), placeholder, readable_name.clone(), &mut pending_images);
+                        yield Ok(AgentResponseChunk::ToolFinished {
+                            tool_call_id: id.clone(),
+                            name: readable_name.clone(),
+                            result: content,
+                            display: None,
+                            format: ToolOutputFormat::Json,
+                            wake_message: None,
+                        });
+                        spawn_tool_task(
+                            spawner,
+                            AsyncToolTask {
+                                tool: tool.clone(),
+                                config: config.clone(),
+                                args,
+                                id,
+                                name: readable_name,
+                                format,
+                            },
+                            tool_tx.clone(),
+                        );
+                        outstanding_async += 1;
+                        continue;
+                    }
+
+                    // Inline execution. Streaming tools drain their progress live
+                    // (backgrounded completions that land meanwhile are buffered
+                    // and injected after this tool's result is committed).
+                    let mut result = if tool.streams() {
+                        let sink = ToolProgressSink {
+                            id: id.clone(),
+                            name: readable_name.clone(),
+                            format,
+                            tx: tool_tx.clone(),
+                        };
+                        let mut exec = Box::pin(tool.execute_streaming(config.clone(), args, sink)).fuse();
+                        let result = loop {
+                            select! {
+                                r = exec => break r,
+                                ev = tool_rx.next() => {
+                                    if let Some(ev) = ev {
+                                        take_tool_event!(ev);
+                                    }
+                                }
+                            }
+                        };
+                        while let Ok(ev) = tool_rx.try_recv() {
+                            take_tool_event!(ev);
+                        }
+                        result
+                    } else {
+                        tool.execute(config.clone(), args).await
+                    };
+
+                    let display = take_tool_display(&mut result);
                     log_tool_result(&name, &result);
                     let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
                     yield Ok(AgentResponseChunk::ToolFinished {
                         tool_call_id: id,
                         name: readable_name,
                         result: content,
+                        display,
+                        format,
+                        wake_message: None,
                     });
                 }
 
@@ -473,6 +720,10 @@ impl BaseAgent {
                         ..Default::default()
                     });
                 }
+
+                // Every tool result for this turn is committed, so it is now safe
+                // to inject any async completions that landed while dispatching.
+                flush_deferred!();
             }
 
             yield Err(AgentError::NetworkError(format!(
@@ -480,6 +731,92 @@ impl BaseAgent {
             )));
         })
     }
+}
+
+/// Removes the reserved `async` flag from a tool call's arguments, returning
+/// whether the model requested background execution.
+fn take_async_flag(args: &mut Value) -> bool {
+    args.as_object_mut()
+        .and_then(|object| object.remove(crate::ASYNC_ARG))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+/// Strips the `__display` convention key from a tool result, returning the
+/// human-facing rendering the tool supplied out of band, if any.
+fn take_tool_display(result: &mut Value) -> Option<String> {
+    result
+        .as_object_mut()?
+        .remove("__display")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Injects a backgrounded tool's final result into the thread as a user message
+/// so the model reads it on the next iteration. The assistant tool_call was
+/// already satisfied by the placeholder, so a second Role::Tool message would be
+/// invalid; a user follow-up keeps provider ordering valid. Returns the exact
+/// injected message so the host can persist an identical one.
+fn inject_async_result(
+    agent: &Rc<RefCell<BaseAgentInner>>,
+    id: &str,
+    name: &str,
+    result: &Value,
+) -> String {
+    let content =
+        serde_json::to_string(result).unwrap_or_else(|err| format!(r#"{{"error":"{}"}}"#, err));
+    let message = format!("Async task `{name}` (call {id}) finished:\n{content}");
+    agent.borrow_mut().thread.push(Message {
+        role: llm::Role::User,
+        content: message.clone(),
+        ..Default::default()
+    });
+    message
+}
+
+/// Spawns a backgrounded tool call on the host executor. The task streams
+/// progress through the sink and delivers its final result over the shared
+/// channel so the monitor loop can inject it into the live thread.
+/// A tool call to run in the background.
+struct AsyncToolTask {
+    tool: Arc<dyn Tool>,
+    config: Arc<AgentConfig>,
+    args: Value,
+    id: String,
+    name: String,
+    format: ToolOutputFormat,
+}
+
+fn spawn_tool_task(
+    spawner: &Rc<dyn TaskSpawner>,
+    task: AsyncToolTask,
+    tx: mpsc::UnboundedSender<ToolEvent>,
+) {
+    let AsyncToolTask {
+        tool,
+        config,
+        args,
+        id,
+        name,
+        format,
+    } = task;
+    let sink = ToolProgressSink {
+        id: id.clone(),
+        name: name.clone(),
+        format,
+        tx: tx.clone(),
+    };
+    spawner.spawn(Box::pin(async move {
+        let mut result = tool.execute_streaming(config, args, sink).await;
+        let display = take_tool_display(&mut result);
+        let _ = tx.unbounded_send(ToolEvent::Finished {
+            id,
+            name,
+            result,
+            display,
+            format,
+        });
+    }));
 }
 
 fn log_tool_error(name: &str, result: &Value) {
@@ -847,6 +1184,7 @@ mod tests {
                 AgentResponseChunk::Chunk(_)
                 | AgentResponseChunk::Quiz { .. }
                 | AgentResponseChunk::ToolStarted { .. }
+                | AgentResponseChunk::ToolProgress { .. }
                 | AgentResponseChunk::ToolFinished { .. } => {
                     panic!("expected approval")
                 }
@@ -894,6 +1232,7 @@ mod tests {
                 AgentResponseChunk::Chunk(_)
                 | AgentResponseChunk::Quiz { .. }
                 | AgentResponseChunk::ToolStarted { .. }
+                | AgentResponseChunk::ToolProgress { .. }
                 | AgentResponseChunk::ToolFinished { .. } => {
                     panic!("expected approval")
                 }
@@ -1199,6 +1538,237 @@ mod tests {
             let names3 = tool_names(&requests[2]);
             assert!(names3.contains(&"search_tools".to_string()));
             assert!(!names3.contains(&"echo".to_string()));
+        });
+    }
+
+    /// Drives each spawned future to completion synchronously. Enough to
+    /// exercise the monitor path in tests, where tool futures resolve without
+    /// real I/O.
+    struct ImmediateSpawner;
+
+    impl TaskSpawner for ImmediateSpawner {
+        fn spawn(&self, mut future: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
+            let waker = std::task::Waker::noop();
+            let mut cx = std::task::Context::from_waker(waker);
+            while future.as_mut().poll(&mut cx).is_pending() {}
+        }
+    }
+
+    struct StreamingTool;
+
+    #[async_trait(?Send)]
+    impl Tool for StreamingTool {
+        fn name(&self) -> &str {
+            "streamer"
+        }
+        fn readable_name(&self) -> &str {
+            "Streamer"
+        }
+        fn definition(&self) -> llm::Tool {
+            llm::Tool {
+                r#type: llm::ToolType::Function,
+                function: Function {
+                    description: "streams".to_string(),
+                    name: self.name().to_string(),
+                    parameters: Some(FunctionParameters {
+                        param_type: "object".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            }
+        }
+        fn streams(&self) -> bool {
+            true
+        }
+        fn output_format(&self) -> ToolOutputFormat {
+            ToolOutputFormat::Markdown
+        }
+        async fn execute(&self, _config: Arc<AgentConfig>, _args: Value) -> Value {
+            json!({ "done": true })
+        }
+        async fn execute_streaming(
+            &self,
+            _config: Arc<AgentConfig>,
+            _args: Value,
+            sink: crate::ToolProgressSink,
+        ) -> Value {
+            sink.progress("chunk-a");
+            sink.progress("chunk-b");
+            json!({ "done": true })
+        }
+    }
+
+    struct AsyncTool {
+        calls: Arc<AtomicUsize>,
+        last_args: Arc<Mutex<Option<Value>>>,
+    }
+
+    #[async_trait(?Send)]
+    impl Tool for AsyncTool {
+        fn name(&self) -> &str {
+            "background"
+        }
+        fn readable_name(&self) -> &str {
+            "Background"
+        }
+        fn definition(&self) -> llm::Tool {
+            llm::Tool {
+                r#type: llm::ToolType::Function,
+                function: Function {
+                    description: "runs in background".to_string(),
+                    name: self.name().to_string(),
+                    parameters: Some(FunctionParameters {
+                        param_type: "object".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            }
+        }
+        fn supports_async(&self) -> bool {
+            true
+        }
+        fn output_format(&self) -> ToolOutputFormat {
+            ToolOutputFormat::Markdown
+        }
+        async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_args.lock().unwrap() = Some(args);
+            json!({ "ok": true, "__display": "async output" })
+        }
+    }
+
+    #[test]
+    fn streaming_tool_emits_progress() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![named_tool_call_chunk("streamer", "{}")],
+                vec![text_chunk("done")],
+            ]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 50,
+                }),
+                String::new(),
+                vec![],
+            );
+            agent.register_tool(StreamingTool);
+
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            pin_mut!(stream);
+            let mut deltas = Vec::new();
+            let mut markdown_progress = false;
+            while let Some(chunk) = stream.next().await {
+                if let Ok(AgentResponseChunk::ToolProgress { delta, format, .. }) = &chunk {
+                    deltas.push(delta.clone());
+                    markdown_progress = *format == ToolOutputFormat::Markdown;
+                }
+            }
+            assert_eq!(deltas, vec!["chunk-a".to_string(), "chunk-b".to_string()]);
+            assert!(markdown_progress);
+        });
+    }
+
+    #[test]
+    fn async_tool_runs_in_background_and_wakes() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![named_tool_call_chunk("background", r#"{"async":true}"#)],
+                vec![text_chunk("done")],
+            ]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 50,
+                }),
+                String::new(),
+                vec![],
+            );
+            let calls = Arc::new(AtomicUsize::new(0));
+            let last_args = Arc::new(Mutex::new(None));
+            agent.register_tool(AsyncTool {
+                calls: calls.clone(),
+                last_args: last_args.clone(),
+            });
+            agent.set_spawner(Rc::new(ImmediateSpawner));
+
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            pin_mut!(stream);
+            let mut final_display = None;
+            let mut final_format = None;
+            while let Some(chunk) = stream.next().await {
+                if let Ok(AgentResponseChunk::ToolFinished {
+                    display: Some(display),
+                    format,
+                    ..
+                }) = &chunk
+                {
+                    final_display = Some(display.clone());
+                    final_format = Some(*format);
+                }
+            }
+
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(final_display.as_deref(), Some("async output"));
+            assert_eq!(final_format, Some(ToolOutputFormat::Markdown));
+            // The tool never saw the reserved `async` flag.
+            assert!(
+                last_args
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|args| args.get("async"))
+                    .is_none()
+            );
+            // The finished result was injected as a user follow-up so the model
+            // could react to it.
+            assert!(
+                agent
+                    .thread()
+                    .iter()
+                    .any(|message| message.role == llm::Role::User
+                        && message.content.contains("Async task"))
+            );
+        });
+    }
+
+    #[test]
+    fn async_without_spawner_runs_inline() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![named_tool_call_chunk("background", r#"{"async":true}"#)],
+                vec![text_chunk("done")],
+            ]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 50,
+                }),
+                String::new(),
+                vec![],
+            );
+            let calls = Arc::new(AtomicUsize::new(0));
+            agent.register_tool(AsyncTool {
+                calls: calls.clone(),
+                last_args: Arc::new(Mutex::new(None)),
+            });
+            // No spawner installed.
+
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            pin_mut!(stream);
+            while stream.next().await.is_some() {}
+
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            // Ran inline, so no async follow-up user message was injected.
+            assert!(
+                !agent
+                    .thread()
+                    .iter()
+                    .any(|message| message.content.contains("Async task"))
+            );
         });
     }
 }

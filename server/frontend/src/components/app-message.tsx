@@ -71,7 +71,7 @@ export function AppMessage({
     <>
       <style>{styles}</style>
       {kind === "tool_output" ? (
-        <AppSpoiler title={toolName !== "" ? toolName : "Tool output"} content={text} />
+        <AppSpoiler title={toolName !== "" ? toolName : "Tool output"} content={text} format={format} />
       ) : (
         <div class={kind === "user" ? "bubble user" : "bubble"}>
           {thinking !== "" && <AppSpoiler title="Thinking" content={thinking} />}
