@@ -27,6 +27,8 @@ const INTERNAL_MODEL_KEYS: &[&str] = &[
 pub struct ModelSummary {
     pub key: String,
     pub slug: String,
+    pub display_name: String,
+    pub description: String,
     pub source: &'static str,
     pub provider: String,
     pub vision: bool,
@@ -55,6 +57,8 @@ pub struct UserModelInput {
     pub name: String,
     pub slug: String,
     pub provider_id: Uuid,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
     pub reasoning_effort: Option<String>,
     pub vision: Option<bool>,
 }
@@ -64,6 +68,8 @@ pub struct UserModelSummary {
     pub id: String,
     pub name: String,
     pub slug: String,
+    pub display_name: String,
+    pub description: String,
     pub provider_id: String,
     pub provider_name: String,
     pub vision: bool,
@@ -110,6 +116,8 @@ pub fn config_chat_models(config: &Config) -> Vec<ModelSummary> {
         .map(|(key, model)| ModelSummary {
             key: key.clone(),
             slug: model.slug.clone(),
+            display_name: model_display_name(key, model.display_name.as_deref()),
+            description: optional_text(model.description.as_deref()),
             source: "config",
             provider: model.provider.clone(),
             vision: model.vision.unwrap_or(false),
@@ -147,6 +155,8 @@ pub async fn list_user_model_summaries(
         .map(|row| ModelSummary {
             key: row.name.clone(),
             slug: row.slug.clone(),
+            display_name: model_display_name(&row.name, row.display_name.as_deref()),
+            description: optional_text(row.description.as_deref()),
             source: "user",
             provider: provider_names
                 .get(&row.provider_id)
@@ -427,6 +437,8 @@ pub async fn list_user_models(
             id: row.id.to_string(),
             name: row.name.clone(),
             slug: row.slug,
+            display_name: model_display_name(&row.name, row.display_name.as_deref()),
+            description: optional_text(row.description.as_deref()),
             provider_id: row.provider_id.to_string(),
             provider_name: provider_names
                 .get(&row.provider_id)
@@ -457,6 +469,8 @@ pub async fn create_user_model(
         .as_deref()
         .map(normalize_reasoning_effort)
         .transpose()?;
+    let display_name = normalize_optional_string(input.display_name.as_deref());
+    let description = normalize_optional_string(input.description.as_deref());
 
     let id = Uuid::now_v7();
     let created_at = now_secs();
@@ -466,6 +480,8 @@ pub async fn create_user_model(
         .name(name.as_str())
         .slug(slug)
         .provider_id(input.provider_id)
+        .display_name(display_name.as_deref())
+        .description(description.as_deref())
         .reasoning_effort(reasoning_effort.as_deref())
         .vision(input.vision.unwrap_or(false))
         .created_at(created_at)
@@ -481,8 +497,10 @@ pub async fn create_user_model(
 
     Ok(UserModelSummary {
         id: id.to_string(),
-        name,
+        name: name.clone(),
         slug: slug.to_string(),
+        display_name: model_display_name(&name, display_name.as_deref()),
+        description: optional_text(description.as_deref()),
         provider_id: input.provider_id.to_string(),
         provider_name,
         vision: input.vision.unwrap_or(false),
@@ -574,6 +592,21 @@ fn normalize_name(value: &str) -> anyhow::Result<String> {
         anyhow::bail!("name may only contain letters, numbers, underscores, and hyphens");
     }
     Ok(name.to_string())
+}
+
+fn normalize_optional_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn model_display_name(registry_key: &str, display_name: Option<&str>) -> String {
+    normalize_optional_string(display_name).unwrap_or_else(|| registry_key.to_string())
+}
+
+fn optional_text(value: Option<&str>) -> String {
+    normalize_optional_string(value).unwrap_or_default()
 }
 
 fn normalize_url(value: &str) -> anyhow::Result<String> {
@@ -698,13 +731,6 @@ mod tests {
     use crate::config::{Config, Server, ServerAgent};
 
     #[test]
-    fn filters_internal_models_from_chat_list() {
-        assert!(!is_chat_model(EMBEDDING_MODEL));
-        assert!(!is_chat_model(TRANSCRIPTION_MODEL));
-        assert!(is_chat_model("gpt_4_1"));
-    }
-
-    #[test]
     fn default_subagent_guidelines_read_from_config() {
         let mut config = Config {
             providers: HashMap::new(),
@@ -733,5 +759,22 @@ mod tests {
         );
         config.server = None;
         assert_eq!(default_subagent_guidelines(&config), "");
+    }
+
+    #[test]
+    fn filters_internal_models_from_chat_list() {
+        assert!(!is_chat_model(EMBEDDING_MODEL));
+        assert!(!is_chat_model(TRANSCRIPTION_MODEL));
+        assert!(is_chat_model("gpt_4_1"));
+    }
+
+    #[test]
+    fn model_display_name_falls_back_to_registry_key() {
+        assert_eq!(
+            model_display_name("gpt_4_1", Some("GPT-4.1")),
+            "GPT-4.1"
+        );
+        assert_eq!(model_display_name("gpt_4_1", None), "gpt_4_1");
+        assert_eq!(model_display_name("gpt_4_1", Some("  ")), "gpt_4_1");
     }
 }

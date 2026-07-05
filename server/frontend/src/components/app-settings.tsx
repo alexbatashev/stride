@@ -136,11 +136,23 @@ function mcpView(server: McpServer): AccountView {
 
 type ModelItemView = { id: string; name: string; meta: string; badge?: string };
 
+function modelSettingsMeta(model: {
+  description: string;
+  slug: string;
+  provider: string;
+  vision: boolean;
+}): string {
+  if (model.description.trim()) {
+    return model.description;
+  }
+  return `${model.slug} · ${model.provider}${model.vision ? " · vision" : ""}`;
+}
+
 function configModelView(model: ModelSummary): ModelItemView {
   return {
     id: model.key,
-    name: escapeHtml(model.key),
-    meta: escapeHtml(`${model.slug} · ${model.provider}${model.vision ? " · vision" : ""}`),
+    name: escapeHtml(model.display_name),
+    meta: escapeHtml(modelSettingsMeta(model)),
     badge: "Server",
   };
 }
@@ -148,8 +160,15 @@ function configModelView(model: ModelSummary): ModelItemView {
 function userModelItemView(model: UserModelSummary): AccountView {
   return {
     id: model.id,
-    name: escapeHtml(model.name),
-    meta: escapeHtml(`${model.slug} · ${model.provider_name}${model.vision ? " · vision" : ""}`),
+    name: escapeHtml(model.display_name),
+    meta: escapeHtml(
+      modelSettingsMeta({
+        description: model.description,
+        slug: model.slug,
+        provider: model.provider_name,
+        vision: model.vision,
+      }),
+    ),
   };
 }
 
@@ -158,7 +177,7 @@ type SubagentModelView = { key: string; label: string; checked: boolean };
 function subagentModelView(model: ModelSummary, allowed: string[]): SubagentModelView {
   return {
     key: model.key,
-    label: escapeHtml(`${model.key} (${model.slug})`),
+    label: escapeHtml(model.display_name),
     checked: allowed.includes(model.key),
   };
 }
@@ -468,6 +487,8 @@ async function submitUserModel(host: SettingsHost, form: HTMLFormElement): Promi
       name: String(data.get("name") ?? "").trim(),
       slug: String(data.get("slug") ?? "").trim(),
       provider_id: String(data.get("provider_id") ?? "").trim(),
+      display_name: String(data.get("display_name") ?? "").trim() || null,
+      description: String(data.get("description") ?? "").trim() || null,
       reasoning_effort: String(data.get("reasoning_effort") ?? "").trim() || null,
       vision: data.get("vision") === "on",
     });
@@ -2012,7 +2033,7 @@ export function AppSettings({
               </section>
 
               <section class="panel" data-panel="models">
-                <app-card title="Server models" description="Add chat models in config.toml under [models.&lt;key&gt;]. Each key becomes a registry name users pick in the composer (for example default, claude_sonnet_4). Reserved keys embeddings, transcription, title_generator, expert, and explorer are internal and not shown here.">
+                <app-card title="Server models" description="Add chat models in config.toml under [models.&lt;key&gt;]. Set display_name for labels in the composer and description for this list. Reserved keys embeddings, transcription, title_generator, expert, and explorer are internal and not shown here.">
                   {configModelViews.length > 0
                     ? (
                       <div class="model-list">
@@ -2028,7 +2049,7 @@ export function AppSettings({
                       </div>
                     )
                     : <p class="muted">{modelsLoaded ? "No server models are configured." : "Loading models…"}</p>}
-                  <p class="muted">Example: duplicate the [models.default] block in config.toml.example, change the section name to a new key, and set slug plus provider. Restart the server to apply.</p>
+                  <p class="muted">Example: duplicate a [models.*] block in config.toml.example, set display_name and description, then restart the server.</p>
                 </app-card>
 
                 <app-card title="Providers" description="Add your own LLM provider credentials. Models you define below will use these providers.">
@@ -2063,7 +2084,7 @@ export function AppSettings({
                   </form>
                 </app-card>
 
-                <app-card title="Personal models" description="Define models that use your providers. Their registry keys must be unique and are what you select when chatting or spawning subagents.">
+                <app-card title="Personal models" description="Define models that use your providers. The registry key is internal; display_name is shown in the composer and description appears here.">
                   {userModelViews.length > 0
                     ? (
                       <div class="model-list">
@@ -2082,6 +2103,8 @@ export function AppSettings({
                   <form data-form="user-model">
                     <div class="grid">
                       <label>Registry key<input name="name" required placeholder="my_sonnet" autocomplete="off" pattern="[A-Za-z0-9_-]+" /></label>
+                      <label>Display name<input name="display_name" placeholder="Claude Sonnet" autocomplete="off" /></label>
+                      <label class="full">Description<textarea name="description" placeholder="When to use this model." rows="2"></textarea></label>
                       <label>Model slug<input name="slug" required placeholder="claude-sonnet-4-20250514" autocomplete="off" /></label>
                       <label>Provider<select name="provider_id" required innerHTML={providerSelectHtml}></select></label>
                       <label>Reasoning effort<select name="reasoning_effort">

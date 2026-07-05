@@ -508,6 +508,13 @@ migrations! {
             foreign_key(owner -> users.id);
         }
     }
+
+    user_model_labels {
+        alter table user_models {
+            add display_name: Option<String>;
+            add description: Option<String>;
+        }
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

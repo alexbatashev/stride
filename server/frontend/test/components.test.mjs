@@ -154,8 +154,8 @@ test('app-prompt-input populates model picker when models prop updates', () => {
   assert.equal(select().options.length, 0);
 
   el.models = [
-    { value: 'default', label: 'default (gpt-4.1)' },
-    { value: 'claude_sonnet_4', label: 'claude_sonnet_4 (claude-sonnet-4)' },
+    { value: 'default', label: 'GPT-4.1' },
+    { value: 'claude_sonnet_4', label: 'Claude Sonnet 4' },
   ];
   el.selectedModel = 'claude_sonnet_4';
   assert.equal(select().options.length, 2);

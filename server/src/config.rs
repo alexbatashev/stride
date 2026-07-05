@@ -39,6 +39,11 @@ pub struct Provider {
 pub struct Model {
     pub slug: String,
     pub provider: String,
+    /// Human-readable label shown in the web UI. Falls back to the registry key
+    /// when unset.
+    pub display_name: Option<String>,
+    /// Optional longer text shown in Settings. Omitted or empty when not needed.
+    pub description: Option<String>,
     /// Reasoning effort level requested from the model (`"low"`, `"medium"`,
     /// `"high"`). Takes precedence over the legacy `thinking` flag.
     pub reasoning_effort: Option<llm::ReasoningEffort>,
@@ -640,6 +645,12 @@ mod tests {
 
         assert!(cfg.providers.contains_key("openai"));
         assert!(cfg.models.contains_key("gpt_4_1"));
+        let default_model = cfg.models.get("default").unwrap();
+        assert_eq!(
+            default_model.display_name.as_deref(),
+            Some("GPT-4.1")
+        );
+        assert!(default_model.description.as_ref().is_some_and(|text| !text.is_empty()));
         assert!(cfg.server.unwrap().ldap.is_some());
         assert!(cfg.tools.unwrap().web_search.is_some());
         assert!(cfg.mcp.contains_key("deepwiki"));

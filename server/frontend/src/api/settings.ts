@@ -290,6 +290,8 @@ export async function deleteMemory(id: string): Promise<void> {
 export type ModelSummary = {
 	key: string;
 	slug: string;
+	display_name: string;
+	description: string;
 	source: "config" | "user";
 	provider: string;
 	vision: boolean;
@@ -315,6 +317,8 @@ export type UserModelSummary = {
 	id: string;
 	name: string;
 	slug: string;
+	display_name: string;
+	description: string;
 	provider_id: string;
 	provider_name: string;
 	vision: boolean;
@@ -326,6 +330,8 @@ export type NewUserModel = {
 	name: string;
 	slug: string;
 	provider_id: string;
+	display_name?: string | null;
+	description?: string | null;
 	reasoning_effort?: string | null;
 	vision?: boolean;
 };

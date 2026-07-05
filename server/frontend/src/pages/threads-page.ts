@@ -1,5 +1,5 @@
 import { ProjectSummary, listProjects } from "../api/projects.js";
-import { listModels, type ModelSummary } from "../api/settings.js";
+import { listModels } from "../api/settings.js";
 import {
 	QuizQuestion,
 	ThreadEvent,
@@ -454,7 +454,7 @@ class ThreadsPageHydrator {
 			const models = await listModels();
 			this.modelOptions = models.map((model) => ({
 				value: model.key,
-				label: modelLabel(model),
+				label: model.display_name,
 			}));
 			if (!this.selectedModel) {
 				this.selectedModel =
@@ -857,11 +857,6 @@ class ThreadsPageHydrator {
 			}),
 		);
 	}
-}
-
-function modelLabel(model: ModelSummary): string {
-	const source = model.source === "config" ? "server" : "personal";
-	return `${model.key} (${model.slug}, ${source})`;
 }
 
 if (root) {

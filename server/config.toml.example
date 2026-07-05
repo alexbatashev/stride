@@ -26,8 +26,8 @@ url = "http://localhost:11434/v1"
 #
 # Add a chat model by creating a new [models.<registry_key>] section. The
 # registry key is what users select in the composer and what subagents receive
-# as the `model` argument. Use letters, numbers, and underscores. Examples
-# below register gpt_4_1, default, claude_sonnet_4, and llama.
+# as the `model` argument. Use letters, numbers, and underscores. Set
+# display_name for the label shown in the UI; description appears in Settings.
 #
 # Reserved registry keys (do not use for chat): embeddings, transcription,
 # title_generator, expert, explorer.
@@ -36,12 +36,16 @@ url = "http://localhost:11434/v1"
 # that section is missing, the first chat model in this file is aliased as
 # `default`.
 [models.default]
+display_name = "GPT-4.1"
+description = "Default OpenAI model for general chat and coding."
 slug = "gpt-4.1"
 provider = "openai"
 reasoning_effort = "high"
 vision = true
 
 [models.gpt_4_1]
+display_name = "GPT-4.1"
+description = "Same model under an alternate registry key."
 slug = "gpt-4.1"
 provider = "openai"
 # Reasoning effort: "low", "medium", "high", or "xhigh". Omit to disable.
@@ -51,11 +55,15 @@ reasoning_effort = "high"
 vision = true
 
 [models.claude_sonnet_4]
+display_name = "Claude Sonnet 4"
+description = "Balanced Anthropic model for reasoning and writing."
 slug = "claude-sonnet-4-20250514"
 provider = "anthropic"
 reasoning_effort = "medium"
 
 [models.llama]
+display_name = "Llama 3.2"
+description = "Local Ollama model for offline or low-cost runs."
 slug = "llama3.2"
 provider = "ollama"
 # Omit reasoning_effort (or the legacy `thinking` flag) to disable reasoning.
