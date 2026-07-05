@@ -108,12 +108,63 @@ test('app-message escaped text stays text in html renderer', () => {
   assert.match(html.shadowRoot.textContent, /a <tag> & more/);
 });
 
+test('app-message decodes escaped html code blocks as text', () => {
+  const el = mount('app-message', {
+    kind: 'agent',
+    format: 'html',
+    text: '<pre><code>#include &amp;lt;stdio.h&amp;gt;\n&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;</code></pre>',
+  });
+  const html = el.shadowRoot.querySelector('auto-markdown');
+  const code = html.shadowRoot.querySelector('pre code');
+  assert.equal(code?.textContent, '#include <stdio.h>\n<script>alert(1)</script>');
+  assert.equal(html.shadowRoot.querySelector('script'), null);
+});
+
+test('app-message sanitizes html renderer output defensively', () => {
+  const el = mount('app-message', {
+    kind: 'agent',
+    format: 'html',
+    text: '<p onclick="alert(1)">ok <strong data-x="1">bold</strong></p><script>alert(1)</script><a href="javascript:alert(1)" onclick="x()">bad</a><a href="/safe?q=1&amp;x=2">safe</a><iframe src="https://evil.example/widget.html"></iframe><img src="javascript:alert(1)" onerror="x()" alt="A">',
+  });
+  const html = el.shadowRoot.querySelector('auto-markdown');
+  assert.equal(html.shadowRoot.querySelector('script'), null);
+  assert.equal(html.shadowRoot.querySelector('p')?.hasAttribute('onclick'), false);
+  assert.equal(html.shadowRoot.querySelector('strong')?.hasAttribute('data-x'), false);
+  assert.equal(html.shadowRoot.querySelector('a')?.hasAttribute('href'), false);
+  assert.equal(html.shadowRoot.querySelector('a[href="/safe?q=1&x=2"]')?.getAttribute('rel'), 'noopener noreferrer');
+  assert.equal(html.shadowRoot.querySelector('iframe'), null);
+  assert.equal(html.shadowRoot.querySelector('img'), null);
+});
+
 test('app-message renders markdown for agent text by default', () => {
   const el = mount('app-message', { kind: 'agent', text: '# Title\n\nHello **boss**' });
   const html = el.shadowRoot.querySelector('auto-markdown');
   assert.ok(html);
   assert.equal(html.shadowRoot.querySelector('h1')?.textContent, 'Title');
   assert.equal(html.shadowRoot.querySelector('strong')?.textContent, 'boss');
+});
+
+test('app-message decodes escaped markdown text before rendering', () => {
+  const el = mount('app-message', {
+    kind: 'agent',
+    text: 'That&#39;s the proof of concept right there\n\n```c\n#include &lt;stdio.h&gt;\n```',
+  });
+  const html = el.shadowRoot.querySelector('auto-markdown');
+  assert.match(html.shadowRoot.textContent, /That's the proof of concept right there/);
+  assert.equal(html.shadowRoot.querySelector('pre code')?.textContent, '#include <stdio.h>');
+});
+
+test('app-message renders markdown tables', () => {
+  const el = mount('app-message', {
+    kind: 'agent',
+    text: '| Name | Meaning |\n| --- | --- |\n| **A** | `alpha` |\n| B | beta |',
+  });
+  const html = el.shadowRoot.querySelector('auto-markdown');
+  const table = html.shadowRoot.querySelector('table');
+  assert.ok(table);
+  assert.equal(table.querySelectorAll('thead th').length, 2);
+  assert.equal(table.querySelector('tbody tr:first-child td:first-child strong')?.textContent, 'A');
+  assert.equal(table.querySelector('tbody tr:first-child td:last-child code')?.textContent, 'alpha');
 });
 
 test('app-message wraps html tables for horizontal scrolling', () => {
