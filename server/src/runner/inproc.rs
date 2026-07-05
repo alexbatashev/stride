@@ -1831,8 +1831,33 @@ async fn run_agent_turn(
                         display,
                         format,
                         wake_message,
+                        background_spawned,
                     }) => {
                         let format = format.as_str();
+                        // A backgrounded call's placeholder ack persists the tool
+                        // message that keeps the LLM thread valid, but the task
+                        // keeps running: the call stays Running, its streamed
+                        // progress keeps accumulating, and no ToolFinished event
+                        // fires until the wake arrives.
+                        if background_spawned {
+                            if let Err(error) = persist_tool_placeholder_message(
+                                &state,
+                                thread_id,
+                                run_id,
+                                &tool_call_id,
+                                &name,
+                                &result,
+                            )
+                            .await
+                            {
+                                fail_run(&state, thread_id, run_id, error.to_string()).await;
+                                restore_agent(&state, thread_id, agent);
+                                drain_queue(&state, thread_id).await;
+                                return;
+                            }
+                            continue;
+                        }
+
                         let status = if tool_result_is_error(&result) {
                             ToolCallStatus::Failed
                         } else {
@@ -2174,6 +2199,14 @@ async fn handle_agent_chunk(
                 AgentEventKind::AgentMessageCommitted { message_id, seq },
             )
             .await;
+
+            // The committed message is now a durable row; drop the in-progress
+            // snapshot so a mid-run reload does not replay it as a pending bubble
+            // below the group. The next AgentDelta recreates in_progress for the
+            // following message.
+            with_runner(state, thread_id, |runner| {
+                runner.in_progress = None;
+            });
         }
 
         assistant.id = None;
@@ -2487,6 +2520,47 @@ async fn persist_tool_message(
         .output_format(format)
         .display_path(display_path.as_deref())
         .finished_at_ms(Some(finished_at_ms))
+        .where_(tool_call_records::tool_call_id.eq(tool_call_id))
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
+
+/// Persists a backgrounded call's placeholder tool message so the LLM thread
+/// stays valid, records the tool_message_id, and leaves the call Running. The
+/// task keeps streaming into the same tool_call_id, so this deliberately does
+/// not clear `tool_streams` or `runner.tool_progress`.
+async fn persist_tool_placeholder_message(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    run_id: RunId,
+    tool_call_id: &str,
+    name: &str,
+    content: &str,
+) -> Result<(), AgentPoolError> {
+    let id = Uuid::now_v7();
+    let seq = next_message_seq(state, thread_id)?;
+    let db = state.borrow().init.db.clone();
+    messages::insert()
+        .id(id)
+        .parent_thread(thread_id)
+        .seq(seq)
+        .role(Role::Tool)
+        .content(content)
+        .content_format(MessageFormat::Markdown)
+        .images(Option::<&str>::None)
+        .thinking(Option::<&str>::None)
+        .tool_calls(Option::<&str>::None)
+        .tool_call_id(Some(tool_call_id))
+        .run_id(Some(run_id.0))
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+
+    tool_call_records::update()
+        .tool_message_id(Some(id))
+        .name(name)
         .where_(tool_call_records::tool_call_id.eq(tool_call_id))
         .execute(&db)
         .await
@@ -4715,5 +4789,119 @@ mod tests {
             .unwrap();
         assert_eq!(call[0].status, ToolCallStatus::Finished);
         assert!(call[0].finished_at_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn background_spawn_ack_keeps_record_running() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+        let thread_id = seed_user_thread(&db).await;
+
+        let run_id = RunId(Uuid::now_v7());
+        runs::insert()
+            .id(run_id.0)
+            .thread_id(thread_id)
+            .status(AgentRunStatus::Running)
+            .user_message_id(Option::<Uuid>::None)
+            .final_message_id(Option::<Uuid>::None)
+            .error(Option::<&str>::None)
+            .started_at_ms(uuid_v7_ms(run_id.0))
+            .finished_at_ms(Option::<i64>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+        tool_call_records::insert()
+            .tool_call_id("call-b")
+            .parent_thread(thread_id)
+            .run_id(Some(run_id.0))
+            .assistant_message_id(Option::<Uuid>::None)
+            .tool_message_id(Option::<Uuid>::None)
+            .name("async_tool")
+            .status(ToolCallStatus::Running)
+            .output_format("json")
+            .display_path(Option::<&str>::None)
+            .call_seq(0)
+            .background(true)
+            .started_at_ms(now_ms())
+            .finished_at_ms(Option::<i64>::None)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let mut runner = ThreadRunner {
+            agent: None,
+            cancel_tx: None,
+            pending_approvals: HashMap::new(),
+            pending_quizzes: HashMap::new(),
+            queued: VecDeque::new(),
+            last_event_seq: 0,
+            next_message_seq: 0,
+            status: ThreadStatus::Running { run_id },
+            in_progress: None,
+            tool_progress: HashMap::new(),
+            message_format: MessageFormat::Html,
+            last_used: Instant::now(),
+        };
+        runner.tool_progress.insert(
+            "call-b".to_string(),
+            PartialToolProgress {
+                tool_call_id: "call-b".to_string(),
+                name: "async_tool".to_string(),
+                content: "streaming so far".to_string(),
+                format: "markdown".to_string(),
+                call_seq: 0,
+                background: true,
+                started_at_ms: now_ms(),
+            },
+        );
+        let mut threads = HashMap::new();
+        threads.insert(thread_id, runner);
+        let state = Rc::new(RefCell::new(WorkerState {
+            init: test_worker_init(db.clone()),
+            pool: PoolHandle::for_tests(),
+            threads,
+            spawn_registry: Rc::new(RefCell::new(HashMap::new())),
+        }));
+
+        persist_tool_placeholder_message(
+            &state,
+            thread_id,
+            run_id,
+            "call-b",
+            "async_tool",
+            r#"{"status":"started","async":true,"tool_call_id":"call-b"}"#,
+        )
+        .await
+        .unwrap();
+
+        let messages = messages::select()
+            .where_(messages::parent_thread.eq(thread_id))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::Tool);
+        assert_eq!(messages[0].tool_call_id.as_deref(), Some("call-b"));
+
+        let call = tool_call_records::select()
+            .where_(tool_call_records::tool_call_id.eq("call-b"))
+            .all(&db)
+            .await
+            .unwrap();
+        assert_eq!(call[0].status, ToolCallStatus::Running);
+        assert!(call[0].finished_at_ms.is_none());
+        assert_eq!(call[0].tool_message_id, Some(messages[0].id));
+
+        // The task keeps streaming into the same call, so its progress snapshot
+        // must survive the placeholder ack.
+        let progress = state
+            .borrow()
+            .threads
+            .get(&thread_id)
+            .unwrap()
+            .tool_progress
+            .get("call-b")
+            .cloned();
+        assert_eq!(progress.unwrap().content, "streaming so far");
     }
 }

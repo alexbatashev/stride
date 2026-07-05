@@ -698,6 +698,18 @@ test('app-tool-call renders content and a result section when open', () => {
   assert.match(result.textContent, /async wakeup result/);
 });
 
+test('app-tool-call renders a markdown result through auto-markdown', () => {
+  const el = mount('app-tool-call', {
+    toolCallId: 'c1', name: 'Sub', status: 'finished', open: true,
+    format: 'markdown', content: '', resultText: '# Summary',
+  });
+  const result = el.shadowRoot.querySelector('.result');
+  assert.ok(result, 'result section missing');
+  const md = result.querySelector('auto-markdown');
+  assert.ok(md, 'auto-markdown missing for markdown result');
+  assert.equal(md.shadowRoot.querySelector('h1')?.textContent, 'Summary');
+});
+
 test('app-tool-call renders markdown content through auto-markdown', () => {
   const el = mount('app-tool-call', {
     toolCallId: 'c1', name: 'Shell', status: 'finished', open: true,
@@ -706,4 +718,24 @@ test('app-tool-call renders markdown content through auto-markdown', () => {
   const md = el.shadowRoot.querySelector('auto-markdown');
   assert.ok(md, 'auto-markdown missing for markdown format');
   assert.equal(md.shadowRoot.querySelector('h1')?.textContent, 'Done');
+});
+
+test('isAsyncPlaceholderAck detects backgrounded tool acks only', async () => {
+  const { isAsyncPlaceholderAck } = await import('../dist/pages/threads-page.js');
+  assert.equal(isAsyncPlaceholderAck('{"status":"started","async":true,"tool_call_id":"c1"}'), true);
+  assert.equal(isAsyncPlaceholderAck('  {"async": true, "status": "already_started"}  '), true);
+  assert.equal(isAsyncPlaceholderAck('{"result":"ok"}'), false);
+  assert.equal(isAsyncPlaceholderAck('{"async":true}'), false);
+  assert.equal(isAsyncPlaceholderAck('plain text'), false);
+});
+
+test('wakeupResultText extracts the content field or falls back', async () => {
+  const { wakeupResultText } = await import('../dist/pages/threads-page.js');
+  assert.equal(
+    wakeupResultText('Async task `sub` (call c-1) finished:\n{"content":"# Report\\nGood"}'),
+    '# Report\nGood',
+  );
+  const noContent = 'Async task `sub` (call c-1) finished:\n{"error":"boom"}';
+  assert.equal(wakeupResultText(noContent), noContent);
+  assert.equal(wakeupResultText('plain wakeup'), 'plain wakeup');
 });

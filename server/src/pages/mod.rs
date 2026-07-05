@@ -153,10 +153,25 @@ fn render_sidebar(
 }
 
 fn render_flat_message(message: &MessageTemplateData) -> String {
+    render_message(message, false)
+}
+
+fn render_message(message: &MessageTemplateData, suppress_tool_name: bool) -> String {
     let content = if message.message_type == "agent" && message.format == "html" {
         message.content.clone()
     } else {
         html_escape(&message.content)
+    };
+    // Inside a run group the tool slots sit right below, so the "Called tool X"
+    // footer is redundant noise; drop it for group children.
+    let tool_name = if suppress_tool_name {
+        String::new()
+    } else {
+        message
+            .tool_name
+            .as_deref()
+            .map(html_escape)
+            .unwrap_or_default()
     };
     AppMessage::new(
         &message.id,
@@ -171,11 +186,7 @@ fn render_flat_message(message: &MessageTemplateData) -> String {
             .as_deref()
             .map(html_escape)
             .unwrap_or_default(),
-        message
-            .tool_name
-            .as_deref()
-            .map(html_escape)
-            .unwrap_or_default(),
+        tool_name,
     )
     .render()
 }
@@ -277,7 +288,7 @@ fn render_run_group(run: &RunTemplateData, messages: &[MessageTemplateData]) -> 
     let children = items
         .into_iter()
         .map(|(_, _, item)| match item {
-            Item::Message(message) => render_flat_message(message),
+            Item::Message(message) => render_message(message, true),
             Item::Tool(call) => render_tool_call(call),
         })
         .collect::<Vec<_>>()

@@ -80,6 +80,10 @@ pub enum AgentResponseChunk {
         /// persists an identical message and a reloaded thread matches the live
         /// one. `None` for ordinary (synchronous) tool results.
         wake_message: Option<String>,
+        /// True only for the initial `started` placeholder ack of a backgrounded
+        /// call, whose task keeps running. The host persists the placeholder tool
+        /// message but leaves the call marked running until the wake arrives.
+        background_spawned: bool,
     },
     Approval {
         tool_name: String,
@@ -450,6 +454,7 @@ impl BaseAgent {
                                 display,
                                 format,
                                 wake_message: Some(wake_message),
+                                background_spawned: false,
                             });
                         }
                     }
@@ -580,6 +585,7 @@ impl BaseAgent {
                                 display: None,
                                 format: ToolOutputFormat::Json,
                                 wake_message: None,
+                                background_spawned: false,
                             });
                             continue;
                         }
@@ -610,6 +616,7 @@ impl BaseAgent {
                             display: None,
                             format: ToolOutputFormat::Json,
                             wake_message: None,
+                            background_spawned: false,
                         });
                         continue;
                     }
@@ -639,6 +646,7 @@ impl BaseAgent {
                             display: None,
                             format: ToolOutputFormat::Json,
                             wake_message: None,
+                            background_spawned: false,
                         });
                         flush_deferred!();
                         continue;
@@ -655,6 +663,7 @@ impl BaseAgent {
                             display: None,
                             format: ToolOutputFormat::Json,
                             wake_message: None,
+                            background_spawned: false,
                         });
                         continue;
                     };
@@ -673,6 +682,7 @@ impl BaseAgent {
                             display: None,
                             format: ToolOutputFormat::Json,
                             wake_message: None,
+                            background_spawned: false,
                         });
                         continue;
                     }
@@ -699,6 +709,7 @@ impl BaseAgent {
                             display: None,
                             format: ToolOutputFormat::Json,
                             wake_message: None,
+                            background_spawned: false,
                         });
                         continue;
                     }
@@ -724,6 +735,7 @@ impl BaseAgent {
                                 display: None,
                                 format: ToolOutputFormat::Json,
                                 wake_message: None,
+                                background_spawned: false,
                             });
                             continue;
                         }
@@ -763,6 +775,7 @@ impl BaseAgent {
                             display: None,
                             format: ToolOutputFormat::Json,
                             wake_message: None,
+                            background_spawned: true,
                         });
                         continue;
                     }
@@ -806,6 +819,7 @@ impl BaseAgent {
                         display,
                         format,
                         wake_message: None,
+                        background_spawned: false,
                     });
                 }
 
@@ -2098,6 +2112,7 @@ mod tests {
                 AgentResponseChunk::ToolFinished {
                     tool_call_id,
                     wake_message: None,
+                    background_spawned: true,
                     ..
                 } if tool_call_id == "async_1"
             ));
@@ -2130,6 +2145,7 @@ mod tests {
                     tool_call_id,
                     name,
                     wake_message: None,
+                    background_spawned: false,
                     ..
                 } if tool_call_id == "wait_1" && name == WAIT_TOOLS_NAME
             ));

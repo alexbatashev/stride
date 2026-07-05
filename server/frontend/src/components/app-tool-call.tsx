@@ -188,6 +188,7 @@ export function AppToolCall({
   const elapsedMs = startedAtMs > 0 ? endMs - startedAtMs : 0;
   const timer = formatDuration(elapsedMs);
   const body = format === "markdown" ? <AutoMarkdown text={content} format="markdown" /> : <pre class="plain">{content}</pre>;
+  const result = format === "markdown" ? <AutoMarkdown text={resultText} format="markdown" /> : <pre class="plain">{resultText}</pre>;
   onMount(() => {
     const tick = () => {
       nowMs = Date.now();
@@ -237,7 +238,7 @@ export function AppToolCall({
             {resultText !== "" ? (
               <div class="result">
                 <div class="result-label">Result</div>
-                <pre class="plain">{resultText}</pre>
+                {result}
               </div>
             ) : (
               ""

@@ -1052,6 +1052,43 @@ async fn collect_thread_runs(
     Ok(RunsResponse { runs })
 }
 
+// The placeholder ack a backgrounded call persists as its tool message is a
+// JSON object carrying `"async": true` and a `"status"` field — bookkeeping for
+// the LLM thread, not something to show as a tool slot's body.
+fn is_async_placeholder_ack(content: &str) -> bool {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(content.trim())
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|object| {
+            object.get("async") == Some(&serde_json::Value::Bool(true))
+                && object.contains_key("status")
+        })
+}
+
+// Extracts the human-facing result from a wakeup message. Its format is
+// "Async task `X` (call id) finished:\n{json}"; take the JSON after the first
+// newline and, when it is an object with a string `content` field, surface that
+// string. Falls back to the raw wakeup text when the shape does not match.
+fn wakeup_result_text(wakeup: &str) -> String {
+    let Some(newline) = wakeup.find('\n') else {
+        return wakeup.to_string();
+    };
+    let body = wakeup[newline + 1..].trim();
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("content")
+                .and_then(|content| content.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| wakeup.to_string())
+}
+
 // Builds the SSR run/tool-call timeline data. Tool content is folded from the
 // thread's messages: a tool-role message supplies the body, a tool_wakeup
 // message supplies the result section — mirroring the client hydrator.
@@ -1093,11 +1130,12 @@ async fn build_run_template_data(
         };
         let content = tool_bodies
             .get(call.tool_call_id.as_str())
+            .filter(|body| !is_async_placeholder_ack(body))
             .map(|s| s.to_string())
             .unwrap_or_default();
         let result_text = wakeups
             .get(call.tool_call_id.as_str())
-            .map(|s| s.to_string())
+            .map(|wakeup| wakeup_result_text(wakeup))
             .unwrap_or_default();
         calls_by_run
             .entry(run_id)
@@ -2087,6 +2125,33 @@ mod tests {
             ts >= before - 5 && ts <= after + 5,
             "ts={ts} before={before} after={after}"
         );
+    }
+
+    #[test]
+    fn detects_async_placeholder_ack() {
+        assert!(is_async_placeholder_ack(
+            r#"{"status":"started","async":true,"tool_call_id":"call-1"}"#
+        ));
+        assert!(is_async_placeholder_ack(
+            r#"  {"async": true, "status": "already_started"}  "#
+        ));
+        assert!(!is_async_placeholder_ack(r#"{"result":"ok"}"#));
+        assert!(!is_async_placeholder_ack(r#"{"async":true}"#));
+        assert!(!is_async_placeholder_ack("plain text"));
+    }
+
+    #[test]
+    fn extracts_wakeup_result_content() {
+        let wakeup = "Async task `sub` (call c-1) finished:\n{\"content\":\"# Report\\nAll good\"}";
+        assert_eq!(wakeup_result_text(wakeup), "# Report\nAll good");
+    }
+
+    #[test]
+    fn wakeup_result_falls_back_to_raw_text() {
+        let no_content = "Async task `sub` (call c-1) finished:\n{\"error\":\"boom\"}";
+        assert_eq!(wakeup_result_text(no_content), no_content);
+        let no_newline = "plain wakeup";
+        assert_eq!(wakeup_result_text(no_newline), no_newline);
     }
 
     #[test]

@@ -130,6 +130,39 @@ function esc(value: string): string {
 		.replace(/'/g, "&#39;");
 }
 
+// The placeholder ack a backgrounded call persists as its tool message is a
+// JSON object carrying `"async": true` and a `"status"` field. It is bookkeeping
+// for the LLM thread, never something to show as a tool slot's body.
+export function isAsyncPlaceholderAck(content: string): boolean {
+	const trimmed = content.trim();
+	if (!trimmed.startsWith("{")) return false;
+	try {
+		const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+		return parsed !== null && typeof parsed === "object" && parsed.async === true && "status" in parsed;
+	} catch {
+		return false;
+	}
+}
+
+// Extracts the human-facing result from a wakeup message. Its format is
+// "Async task `X` (call id) finished:\n{json}"; take the JSON after the first
+// newline and, when it is an object with a string `content` field, surface that
+// string. Falls back to the raw wakeup text when the shape does not match.
+export function wakeupResultText(wakeup: string): string {
+	const newline = wakeup.indexOf("\n");
+	if (newline < 0) return wakeup;
+	const body = wakeup.slice(newline + 1).trim();
+	try {
+		const parsed = JSON.parse(body) as Record<string, unknown>;
+		if (parsed !== null && typeof parsed === "object" && typeof parsed.content === "string") {
+			return parsed.content;
+		}
+	} catch {
+		// Not JSON with a content field; show the whole wakeup text.
+	}
+	return wakeup;
+}
+
 // A run's items sort into the timeline by (assistant message seq, call_seq).
 // Tool calls anchor to the point where they were issued, not when they finished.
 export type TimelineEntry =
@@ -747,14 +780,16 @@ class ThreadsPageHydrator {
 		if (run) run.finalMessageId = null;
 	}
 
-	// Folds persisted wakeup messages (source tool_wakeup, tool_call_id set)
-	// into their matching tool-call slot as the result text, so they never
-	// render as standalone bubbles.
+	// Folds persisted tool-role bodies into their matching slot as body content,
+	// skipping the async placeholder ack (bookkeeping the model needs but the
+	// user should not see). Wakeup messages become the result section via
+	// toolResultText, so they never render as standalone bubbles here.
 	private hydrateToolResultsFromMessages() {
 		for (const message of this.messages) {
-			if (message.source !== "tool_wakeup" || !message.tool_call_id) continue;
+			if (message.role !== "tool" || !message.tool_call_id) continue;
+			if (isAsyncPlaceholderAck(message.content)) continue;
 			const call = this.findToolCall(message.tool_call_id);
-			if (call) call.content = call.content || message.content;
+			if (call && !call.content) call.content = message.content;
 		}
 	}
 
@@ -1124,8 +1159,8 @@ class ThreadsPageHydrator {
 		for (const item of items) {
 			if (item.kind === "message") {
 				const itemId = this.messageItemId(item.message);
-				const element = childMessageEls.get(itemId) ?? this.createMessageElement(item.message);
-				this.syncMessageElement(element, item.message);
+				const element = childMessageEls.get(itemId) ?? this.createMessageElement(item.message, true);
+				this.syncMessageElement(element, item.message, true);
 				this.placeChildAfter(host, element, cursor);
 				childMessageEls.delete(itemId);
 				cursor = element;
@@ -1201,16 +1236,17 @@ class ThreadsPageHydrator {
 		target.finishedAtMs = call.finishedAtMs;
 		target.open = this.toolOpen(call);
 		target.format = call.format;
-		target.content = call.content ? esc(call.content) : "";
+		const content = call.content && !isAsyncPlaceholderAck(call.content) ? call.content : "";
+		target.content = content ? esc(content) : "";
 		target.resultText = this.toolResultText(call);
 	}
 
-	// The wakeup message content becomes the tool's result section.
+	// The wakeup message's extracted content becomes the tool's result section.
 	private toolResultText(call: ToolCallState): string {
 		const wakeup = this.messages.find(
 			(message) => message.source === "tool_wakeup" && message.tool_call_id === call.toolCallId,
 		);
-		return wakeup?.content ? esc(wakeup.content) : "";
+		return wakeup?.content ? esc(wakeupResultText(wakeup.content)) : "";
 	}
 
 	private onRunGroupToggle(event: CustomEvent<{ open: boolean }>) {
@@ -1251,8 +1287,11 @@ class ThreadsPageHydrator {
 		this.syncMessageElement(element, message);
 	}
 
-	private syncMessageElement(element: MessageEl, message: ViewMessage) {
+	private syncMessageElement(element: MessageEl, message: ViewMessage, suppressToolName = false) {
 		const messageType = this.messageType(message);
+		// Inside a run group the tool slots sit right below, so the "Called tool X"
+		// footer is redundant noise; drop it for group children.
+		const toolName = suppressToolName ? undefined : messageType.toolName;
 		const itemId = this.messageItemId(message);
 		element.setAttribute("data-message-id", message.id);
 		element.setAttribute("data-item-id", itemId);
@@ -1262,18 +1301,18 @@ class ThreadsPageHydrator {
 		element.source = message.source;
 
 		if (element.kind === "tool_output" && messageType.type === "tool_output") {
-			this.syncToolSpoiler(element, message, messageType.toolName ?? "Tool output");
+			this.syncToolSpoiler(element, message, toolName ?? "Tool output");
 			return;
 		}
 
 		if (element.kind === "agent" && messageType.type === "agent") {
-			if (this.syncAgentBlock(element, message, messageType.toolName ?? "")) {
+			if (this.syncAgentBlock(element, message, toolName ?? "")) {
 				return;
 			}
 		}
 
 		element.kind = messageType.type;
-		element.toolName = esc(messageType.toolName ?? "");
+		element.toolName = esc(toolName ?? "");
 		element.thinking = message.thinking ? esc(message.thinking) : "";
 
 		if (messageType.type === "tool_output") {
@@ -1380,9 +1419,9 @@ class ThreadsPageHydrator {
 		return typeof CSS !== "undefined" ? CSS.escape(value) : value.replace(/\"/g, '\\"');
 	}
 
-	private createMessageElement(message: ViewMessage) {
+	private createMessageElement(message: ViewMessage, suppressToolName = false) {
 		const element = document.createElement("app-message") as MessageEl;
-		this.syncMessageElement(element, message);
+		this.syncMessageElement(element, message, suppressToolName);
 		return element;
 	}
 
