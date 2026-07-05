@@ -259,7 +259,34 @@ function closePreview(host: VersionHost): void {
   host.previewTitle = "";
 }
 
+function sameMenuTarget(current: FileMenuTarget | null, next: FileMenuTarget): boolean {
+  if (!current || current.kind !== next.kind || current.path !== next.path) return false;
+  return current.kind === "file" || current.version === next.version;
+}
+
+function openFileRowMenu(
+  host: VersionHost,
+  entry: FileItem,
+  left: number,
+  top: number,
+): void {
+  const target: FileMenuTarget = { kind: "file", path: entry.path };
+  if (host.menuOpen && sameMenuTarget(host.menuTarget, target)) {
+    closeMenu(host);
+    return;
+  }
+  host.menuTarget = target;
+  host.actionItems = buildMenuItems(host, target);
+  host.menuLeft = Math.max(8, left - 176);
+  host.menuTop = top + 4;
+  host.menuOpen = true;
+}
+
 function openMenu(host: VersionHost, event: MouseEvent, target: FileMenuTarget): void {
+  if (host.menuOpen && sameMenuTarget(host.menuTarget, target)) {
+    closeMenu(host);
+    return;
+  }
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
   host.menuTarget = target;
   host.actionItems = buildMenuItems(host, target);
@@ -295,26 +322,31 @@ function bindMenuDismiss(host: VersionHost, root: ShadowRoot): () => void {
     dismissKey = null;
   };
 
-  clearDismiss();
-  if (!host.menuOpen) return clearDismiss;
-
   const menu = root.querySelector("app-dropdown-menu");
   requestAnimationFrame(() => {
-    dismissClick = (event: Event) => {
+    requestAnimationFrame(() => {
       if (!host.menuOpen) return;
-      const path = event.composedPath();
-      if (menu && path.includes(menu)) return;
-      const openedFromRowMenu = path.some(
-        (node) => node instanceof HTMLElement && node.dataset.rowAction === "menu",
-      );
-      if (openedFromRowMenu) return;
-      closeMenu(host);
-    };
-    dismissKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu(host);
-    };
-    document.addEventListener("click", dismissClick, true);
-    document.addEventListener("keydown", dismissKey, true);
+      dismissClick = (event: Event) => {
+        if (!host.menuOpen) return;
+        const path = event.composedPath();
+        if (menu && path.includes(menu)) return;
+        if (
+          path.some(
+            (node) =>
+              node instanceof HTMLElement &&
+              (node.dataset.rowAction === "menu" || node.dataset.versionAction === "menu"),
+          )
+        ) {
+          return;
+        }
+        closeMenu(host);
+      };
+      dismissKey = (event: KeyboardEvent) => {
+        if (event.key === "Escape") closeMenu(host);
+      };
+      document.addEventListener("click", dismissClick, true);
+      document.addEventListener("keydown", dismissKey, true);
+    });
   });
 
   return clearDismiss;
@@ -925,11 +957,7 @@ export function AppFileBrowser({
       const entry = (this.entries as FileItem[]).find((item) => item.path === detail.rowId);
       if (!entry) return;
       if (detail.action === "menu") {
-        this.menuTarget = { kind: "file", path: entry.path };
-        this.actionItems = buildMenuItems(this as VersionHost, this.menuTarget);
-        this.menuLeft = Math.max(8, detail.left - 176);
-        this.menuTop = detail.top + 4;
-        this.menuOpen = true;
+        openFileRowMenu(this as VersionHost, entry, detail.left, detail.top);
         return;
       }
       if (detail.action !== "open") return;
@@ -967,7 +995,7 @@ export function AppFileBrowser({
 
   effect(() => {
     const root = this.shadowRoot;
-    if (!root) return;
+    if (!root || !menuOpen) return;
     return bindMenuDismiss(this as VersionHost, root);
   });
 
@@ -1406,11 +1434,7 @@ export function AppFileManager({
       const entry = (this.entries as FileItem[]).find((item) => item.path === detail.rowId);
       if (!entry) return;
       if (detail.action === "menu") {
-        this.menuTarget = { kind: "file", path: entry.path };
-        this.actionItems = buildMenuItems(this as VersionHost, this.menuTarget);
-        this.menuLeft = Math.max(8, detail.left - 176);
-        this.menuTop = detail.top + 4;
-        this.menuOpen = true;
+        openFileRowMenu(this as VersionHost, entry, detail.left, detail.top);
         return;
       }
       if (detail.action !== "open") return;
@@ -1449,7 +1473,7 @@ export function AppFileManager({
 
   effect(() => {
     const root = this.shadowRoot;
-    if (!root) return;
+    if (!root || !menuOpen) return;
     return bindMenuDismiss(this as VersionHost, root);
   });
 

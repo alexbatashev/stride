@@ -96,6 +96,14 @@ const styles = css`
   }
 
   .close .icon {
+    align-items: center;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+
+  .close .icon > * {
     height: 16px;
     width: 16px;
   }

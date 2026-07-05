@@ -87,6 +87,8 @@ export function AppDropdownMenu({
 }): Component {
   effect(() => {
     if (position) this.setAttribute("style", position);
+    this.style.pointerEvents = open ? "" : "none";
+    this.style.visibility = open ? "" : "hidden";
   });
 
   effect(() => {

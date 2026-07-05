@@ -31,6 +31,10 @@ function tick() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
 test('all custom elements register', () => {
   for (const tag of [
     'app-button', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
@@ -329,6 +333,44 @@ test('app-file-manager file menu renders supported actions', async () => {
   assert.match(menu.shadowRoot.innerHTML, /Download/);
   assert.match(menu.shadowRoot.innerHTML, /Preview/);
   assert.doesNotMatch(menu.shadowRoot.innerHTML, /\[object Object\]/);
+});
+
+test('app-file-manager file menu closes on outside click and toggles from menu button', async () => {
+  const el = mount('app-file-manager', {
+    threadId: 't1',
+    open: false,
+  });
+  el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
+  await tick();
+  const menuButton = el.shadowRoot
+    .querySelector('app-data-table')
+    .shadowRoot.querySelector('button[data-row-action="menu"]');
+
+  menuButton.click();
+  await tick();
+  await nextFrame();
+  assert.equal(el.menuOpen, true);
+
+  document.body.click();
+  await tick();
+  assert.equal(el.menuOpen, false);
+
+  menuButton.click();
+  await tick();
+  assert.equal(el.menuOpen, true);
+
+  menuButton.click();
+  await tick();
+  assert.equal(el.menuOpen, false);
+});
+
+test('app-dialog close icon fits its button', async () => {
+  const el = mount('app-dialog', { open: true, title: 'Title', dialogId: 'test' });
+  await tick();
+  const icon = el.shadowRoot.querySelector('.close .icon > *');
+  assert.ok(icon);
+  assert.equal(getComputedStyle(icon).width, '16px');
+  assert.equal(getComputedStyle(icon).height, '16px');
 });
 
 test('app-file-manager closes version dialog from close button', async () => {
