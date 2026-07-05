@@ -169,12 +169,15 @@ export type TimelineEntry =
 	| { kind: "message"; message: ViewMessage }
 	| { kind: "group"; runId: string };
 
-// The message a run currently treats as its final response: the authoritative
-// finalMessageId when known, else — while the run has no committed final — the
-// newest agent message provided no tool call was issued at or after it. That
-// "candidate final" renders below the group; once a later tool starts it stops
-// qualifying and folds back into the group as an intermediate note.
+// The message a run renders below its group as the final response. Only
+// finished runs have one: while a run is active everything (including the
+// streaming bubble) stays inside the open group, and the final moves out in
+// the same beat the group collapses — placement never shifts mid-run and
+// live/refresh always agree. Failed/cancelled/interrupted runs keep all
+// content inside. The seq heuristic is a fallback for finished runs missing
+// final_message_id.
 export function candidateFinalId(run: RunState, messages: ViewMessage[]): string | null {
+	if (run.status !== "finished") return null;
 	if (run.finalMessageId) return run.finalMessageId;
 
 	let best: ViewMessage | null = null;
@@ -237,12 +240,32 @@ export function buildTimeline(messages: ViewMessage[], runs: Map<string, RunStat
 		}
 	}
 	for (const run of runs.values()) {
+		if (!runHasGroupContent(run, messages, candidateFinalId(run, messages))) continue;
 		const anchor = anchorSeq.get(run.runId) ?? Number.MAX_SAFE_INTEGER;
 		entries.push({ sort: anchor, tiebreak: 1, entry: { kind: "group", runId: run.runId } });
 	}
 
 	entries.sort((a, b) => a.sort - b.sort || a.tiebreak - b.tiebreak);
 	return entries.map((item) => item.entry);
+}
+
+// A plain answer (no tool calls, no intermediate notes) needs no group: the
+// final message renders alone instead of leaving an empty "Worked for" bar.
+export function runHasGroupContent(
+	run: RunState,
+	messages: ViewMessage[],
+	finalId: string | null,
+): boolean {
+	if (run.toolCalls.size > 0) return true;
+	return messages.some(
+		(message) =>
+			message.run_id === run.runId &&
+			message.id !== run.userMessageId &&
+			message.id !== finalId &&
+			message.source !== "human" &&
+			message.role !== "tool" &&
+			message.source !== "tool_wakeup",
+	);
 }
 
 const OVERRIDE_PREFIX = "stride.ui.";
@@ -739,9 +762,6 @@ class ThreadsPageHydrator {
 				format: "plaintext",
 			});
 		}
-		// A tool starting after the candidate final message means that message was
-		// an intermediate note; recompute so it folds into the group.
-		this.reclassifyPendingFinal(runId);
 		this.renderTimeline();
 	}
 
@@ -768,16 +788,6 @@ class ThreadsPageHydrator {
 			pending.run_id = runId ?? pending.run_id;
 			this.renderTimeline();
 		}
-	}
-
-	// While a run streams, the freshly committed assistant message is a
-	// candidate final response shown below the group. When further activity
-	// happens (a new tool call), it becomes an intermediate note inside the
-	// group. renderTimeline derives placement from finalMessageId + seq order,
-	// so this only needs to drop the stale finalMessageId guess.
-	private reclassifyPendingFinal(runId: string) {
-		const run = this.runs.get(runId);
-		if (run) run.finalMessageId = null;
 	}
 
 	// Folds persisted tool-role bodies into their matching slot as body content,
@@ -849,8 +859,8 @@ class ThreadsPageHydrator {
 		message.content = this.pendingAssistant;
 		message.thinking = this.pendingThinking || null;
 		message.run_id = this.pendingAssistantRunId;
-		// A streaming pending message is always the candidate final response;
-		// update it in place without a full timeline rebuild.
+		// Streaming updates patch the pending bubble in place (inside the open
+		// run group while the run is active) without a full timeline rebuild.
 		this.syncFlatMessage(message);
 	}
 
@@ -1278,13 +1288,14 @@ class ThreadsPageHydrator {
 	private syncFlatMessage(message: ViewMessage) {
 		const itemId = this.messageItemId(message);
 		const element = this.messagesEl.querySelector<MessageEl>(
-			`:scope > app-message[data-item-id="${this.escapeSelectorValue(itemId)}"]`,
+			`app-message[data-item-id="${this.escapeSelectorValue(itemId)}"]`,
 		);
 		if (!element) {
 			this.renderTimeline();
 			return;
 		}
-		this.syncMessageElement(element, message);
+		const inGroup = element.parentElement?.tagName === "APP-RUN-GROUP";
+		this.syncMessageElement(element, message, inGroup);
 	}
 
 	private syncMessageElement(element: MessageEl, message: ViewMessage, suppressToolName = false) {

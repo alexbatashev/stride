@@ -226,6 +226,9 @@ fn candidate_final_id<'a>(
     run: &'a RunTemplateData,
     messages: &'a [MessageTemplateData],
 ) -> Option<&'a str> {
+    if run.status != "finished" {
+        return None;
+    }
     if let Some(id) = run.final_message_id.as_deref() {
         return Some(id);
     }
@@ -311,6 +314,23 @@ fn render_run_group(run: &RunTemplateData, messages: &[MessageTemplateData]) -> 
     )
 }
 
+// A plain answer (no tool calls, no intermediate notes) needs no group —
+// mirrors the client's runHasGroupContent so hydration agrees.
+fn run_has_group_content(run: &RunTemplateData, messages: &[MessageTemplateData]) -> bool {
+    if !run.tool_calls.is_empty() {
+        return true;
+    }
+    let final_id = candidate_final_id(run, messages);
+    messages.iter().any(|m| {
+        m.run_id.as_deref() == Some(&run.id)
+            && Some(m.id.as_str()) != run.user_message_id.as_deref()
+            && Some(m.id.as_str()) != final_id
+            && m.source != "human"
+            && m.role != "tool"
+            && m.source != "tool_wakeup"
+    })
+}
+
 // Builds the run-grouped timeline. User (human) messages, legacy messages
 // (run_id null), and run final responses render flat; each run gets one group
 // slotted at its anchor seq. Runs order by start time / anchor.
@@ -353,6 +373,9 @@ fn render_messages(data: &ThreadPageData) -> String {
         }
     }
     for run in &data.runs {
+        if !run_has_group_content(run, &data.messages) {
+            continue;
+        }
         entries.push((run_anchor_seq(run, &data.messages), 1, Entry::Group(run)));
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));

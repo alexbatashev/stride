@@ -79,7 +79,9 @@ export function AppMessage({
   let thinkingOpen = state(false);
   onMount(() => {
     const onToggle = (event: Event) => {
-      const target = (event.target as Element | null)?.closest("app-spoiler");
+      const target = event
+        .composedPath()
+        .find((node): node is Element => node instanceof Element && node.tagName === "APP-SPOILER");
       if (!target) return;
       const open = (event as CustomEvent<{ open: boolean }>).detail.open;
       if (target.classList.contains("thinking")) {
