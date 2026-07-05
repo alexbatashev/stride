@@ -222,6 +222,7 @@ impl Tool for StartThreadTool {
                 AgentRequest {
                     content: message,
                     images: Vec::new(),
+                    model: None,
                 },
             )
             .await

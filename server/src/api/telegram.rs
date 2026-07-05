@@ -327,6 +327,7 @@ async fn handle_topic_message(
             AgentRequest {
                 content,
                 images: Vec::new(),
+                model: None,
             },
         )
         .await

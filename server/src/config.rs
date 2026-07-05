@@ -2,7 +2,7 @@ use std::{collections::HashMap, env, fs, io, path::Path};
 
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     pub providers: HashMap<String, Provider>,
     pub models: HashMap<String, Model>,
@@ -20,7 +20,7 @@ pub struct McpServer {
     pub headers: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub enum Kind {
     OpenAI,
     OpenRouter,
@@ -28,14 +28,14 @@ pub enum Kind {
     Ollama,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Provider {
     pub kind: Kind,
     pub url: String,
     token: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Model {
     pub slug: String,
     pub provider: String,
@@ -62,14 +62,14 @@ impl Model {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Ldap {
     pub url: String,
     /// DN template for binding, e.g. "uid={username},ou=users,dc=example,dc=com"
     pub user_dn_template: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Server {
     /// Full database connection URL. Takes precedence over `db_path`. Supports
     /// `sqlite://<path>`, `postgres://...`, and `postgresql://...`. May also be

@@ -287,6 +287,102 @@ export async function deleteMemory(id: string): Promise<void> {
 	await request(`/api/settings/memories/${id}`, { method: "DELETE" });
 }
 
+export type ModelSummary = {
+	key: string;
+	slug: string;
+	source: "config" | "user";
+	provider: string;
+	vision: boolean;
+	reasoning_effort: string | null;
+};
+
+export type ProviderSummary = {
+	id: string;
+	name: string;
+	kind: string;
+	url: string;
+	created_at: number;
+};
+
+export type NewProvider = {
+	name: string;
+	kind: string;
+	url: string;
+	token: string;
+};
+
+export type UserModelSummary = {
+	id: string;
+	name: string;
+	slug: string;
+	provider_id: string;
+	provider_name: string;
+	vision: boolean;
+	reasoning_effort: string | null;
+	created_at: number;
+};
+
+export type NewUserModel = {
+	name: string;
+	slug: string;
+	provider_id: string;
+	reasoning_effort?: string | null;
+	vision?: boolean;
+};
+
+export type AgentSettings = {
+	subagent_allowed_models: string[];
+	subagent_guidelines: string;
+};
+
+export async function listModels(): Promise<ModelSummary[]> {
+	return request("/api/models");
+}
+
+export async function listProviders(): Promise<ProviderSummary[]> {
+	return request("/api/settings/providers");
+}
+
+export async function createProvider(data: NewProvider): Promise<ProviderSummary> {
+	return request("/api/settings/providers", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
+export async function deleteProvider(id: string): Promise<void> {
+	await request(`/api/settings/providers/${id}`, { method: "DELETE" });
+}
+
+export async function listUserModels(): Promise<UserModelSummary[]> {
+	return request("/api/settings/user-models");
+}
+
+export async function createUserModel(data: NewUserModel): Promise<UserModelSummary> {
+	return request("/api/settings/user-models", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
+export async function deleteUserModel(id: string): Promise<void> {
+	await request(`/api/settings/user-models/${id}`, { method: "DELETE" });
+}
+
+export async function getAgentSettings(): Promise<AgentSettings> {
+	return request("/api/settings/agent");
+}
+
+export async function updateAgentSettings(data: AgentSettings): Promise<AgentSettings> {
+	return request("/api/settings/agent", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 	const token = readToken();
 	const headers = new Headers(init.headers);

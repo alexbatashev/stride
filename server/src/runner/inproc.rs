@@ -16,7 +16,7 @@ use stride_agent::{
     sanitizer::{HtmlFormattingSanitizer, StreamingMessageSanitizer},
     tools::{
         email::{CreateEmailDraftTool, ListEmailsTool},
-        expert::{EXPERT_NAME, make_expert},
+        subagent::{SUBAGENT_NAME, SubAgentTool},
         firecrawl::FirecrawlTool,
         quiz::QuizTool,
         shell::ShellTool,
@@ -34,11 +34,13 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    config::{Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
+    config::{self, Firecrawl, Python, PythonBackend, PythonNetwork, Tools, WebSearch},
+    crypto::SecretCipher,
     db::{MessageFormat, Role, messages, threads},
     email::ImapService,
     github::GitHubRuntime,
     google::GoogleService,
+    model_registry,
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
         PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId, RunnerLifecycle,
@@ -294,6 +296,8 @@ enum WorkerCommand {
 struct WorkerInit {
     db: ConnectionPool,
     config: Arc<AgentConfig>,
+    server_config: config::Config,
+    cipher: SecretCipher,
     tools: Tools,
     mcp_tools: Vec<McpTool>,
     vfs: Option<Arc<Vfs>>,
@@ -378,7 +382,7 @@ struct ThreadRunner {
     pending_approvals: HashMap<Uuid, PendingApprovalState>,
     pending_quizzes: HashMap<Uuid, PendingQuizState>,
     /// Requests received while a run is in progress, started in order once the thread goes idle.
-    queued: VecDeque<(RunId, String, Vec<llm::ImageSource>)>,
+    queued: VecDeque<(RunId, String, Vec<llm::ImageSource>, Option<String>)>,
     last_event_seq: u64,
     next_message_seq: u64,
     status: ThreadStatus,
@@ -439,11 +443,15 @@ impl InProcessAgentPool {
     pub(crate) fn builder(
         db: ConnectionPool,
         config: Arc<AgentConfig>,
+        server_config: config::Config,
+        cipher: SecretCipher,
     ) -> InProcessAgentPoolBuilder {
         InProcessAgentPoolBuilder {
             init: WorkerInit {
                 db,
                 config,
+                server_config,
+                cipher,
                 tools: Tools::default(),
                 mcp_tools: Vec::new(),
                 vfs: None,
@@ -458,8 +466,13 @@ impl InProcessAgentPool {
         }
     }
 
-    pub fn new(db: ConnectionPool, config: Arc<AgentConfig>) -> Self {
-        Self::builder(db, config)
+    pub fn new(
+        db: ConnectionPool,
+        config: Arc<AgentConfig>,
+        server_config: config::Config,
+        cipher: SecretCipher,
+    ) -> Self {
+        Self::builder(db, config, server_config, cipher)
             .system_prompt(BASE_SYSTEM_PROMPT)
             .idle_ttl(DEFAULT_IDLE_TTL)
             .build()
@@ -733,12 +746,23 @@ async fn handle_send(
     };
 
     if start_now {
-        start_run(&state, thread_id, run_id, request.content, request.images).await;
+        start_run(
+            &state,
+            thread_id,
+            run_id,
+            request.content,
+            request.images,
+            request.model,
+        )
+        .await;
     } else {
         with_runner(&state, thread_id, |runner| {
-            runner
-                .queued
-                .push_back((run_id, request.content, request.images));
+            runner.queued.push_back((
+                run_id,
+                request.content,
+                request.images,
+                request.model,
+            ));
         });
     }
 
@@ -753,6 +777,7 @@ async fn start_run(
     run_id: RunId,
     content: String,
     images: Vec<llm::ImageSource>,
+    model: Option<String>,
 ) {
     let cancel_rx = {
         let mut state = state.borrow_mut();
@@ -773,6 +798,7 @@ async fn start_run(
         run_id,
         content,
         images,
+        model,
         cancel_rx,
     ));
 }
@@ -790,8 +816,8 @@ async fn drain_queue(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid) {
         runner.queued.pop_front()
     };
 
-    if let Some((run_id, content, images)) = next {
-        start_run(state, thread_id, run_id, content, images).await;
+    if let Some((run_id, content, images, model)) = next {
+        start_run(state, thread_id, run_id, content, images, model).await;
     }
 }
 
@@ -931,6 +957,8 @@ async fn ensure_runner(
     let (
         db,
         config,
+        server_config,
+        cipher,
         tools,
         mcp_tools,
         vfs,
@@ -946,6 +974,8 @@ async fn ensure_runner(
         (
             state.init.db.clone(),
             state.init.config.clone(),
+            state.init.server_config.clone(),
+            state.init.cipher.clone(),
             state.init.tools.clone(),
             state.init.mcp_tools.clone(),
             state.init.vfs.clone(),
@@ -959,10 +989,25 @@ async fn ensure_runner(
         )
     };
 
-    let vision = config.model_registry.get_or_default("default").vision;
-
     ensure_thread_exists(&db, thread_id).await?;
     let user_id = thread_owner(&db, thread_id).await?;
+    let merged_registry = model_registry::build_user_registry(
+        &server_config,
+        &config.model_registry,
+        &db,
+        user_id,
+        &cipher,
+    )
+    .await
+    .map_err(|error| AgentPoolError::Internal(anyhow::anyhow!(error)))?;
+    let agent_settings = model_registry::load_agent_settings(&server_config, &db, user_id)
+        .await
+        .map_err(|error| AgentPoolError::Internal(anyhow::anyhow!(error)))?;
+    let config = Arc::new(AgentConfig {
+        model_registry: merged_registry,
+        max_iterations: config.max_iterations,
+    });
+    let vision = config.model_registry.get_or_default("default").vision;
     let mut mcp_tools = mcp_tools;
     mcp_tools.extend(crate::mcp_servers::connect_user_mcp_servers(&db, user_id).await);
     if let Some(github_runtime) = github_runtime.as_ref() {
@@ -1033,8 +1078,18 @@ async fn ensure_runner(
     system_prompt
         .push_str(&crate::tools::memory::palace_map(&db, user_id, project_title.as_deref()).await);
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
-    let agent = BaseAgent::new("default".to_string(), config, system_prompt, thread);
-    configure_agent_tools(&agent, &tools);
+    let agent = BaseAgent::new(
+        stride_agent::DEFAULT_MODEL.to_string(),
+        config.clone(),
+        system_prompt,
+        thread,
+    );
+    configure_agent_tools(
+        &agent,
+        &tools,
+        &agent_settings.subagent_allowed_models,
+        &agent_settings.subagent_guidelines,
+    );
     // The Python sandbox tool set is built from the same place as scheduled
     // automations (`scriptable_tool_registry`), so scripts behave identically in
     // the interactive loop and on cron. Built before `mcp_tools`/`email_service`
@@ -1237,11 +1292,20 @@ async fn ensure_runner(
     Ok(())
 }
 
-fn configure_agent_tools(agent: &BaseAgent, tools: &Tools) {
+fn configure_agent_tools(
+    agent: &BaseAgent,
+    tools: &Tools,
+    allowed_models: &[String],
+    guidelines: &str,
+) {
     agent.register_tool(QuizTool);
 
-    agent.register_tool(make_expert(expert_tool_registry(tools)));
-    agent.allow_tool(EXPERT_NAME);
+    agent.register_tool(SubAgentTool::new(
+        subagent_tool_registry(tools),
+        allowed_models.to_vec(),
+        guidelines,
+    ));
+    agent.allow_tool(SUBAGENT_NAME);
 
     if let Some(web_search) = &tools.web_search {
         agent.register_tool(web_search_tool(web_search));
@@ -1314,7 +1378,7 @@ pub(crate) fn python_tool_config(python: &Python) -> execenv::PythonToolConfig {
     config
 }
 
-pub(crate) fn expert_tool_registry(tools: &Tools) -> ToolRegistry {
+pub(crate) fn subagent_tool_registry(tools: &Tools) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
     if let Some(web_search) = &tools.web_search {
@@ -1349,7 +1413,7 @@ pub(crate) struct ScriptableToolRegistryContext<'a> {
 }
 
 pub(crate) fn scriptable_tool_registry(ctx: ScriptableToolRegistryContext<'_>) -> ToolRegistry {
-    let mut registry = expert_tool_registry(ctx.tools);
+    let mut registry = subagent_tool_registry(ctx.tools);
 
     if let Some(provider) = ctx.email_provider {
         registry.register(ListEmailsTool {
@@ -1474,6 +1538,7 @@ async fn run_agent_turn(
     run_id: RunId,
     content: String,
     images: Vec<llm::ImageSource>,
+    model: Option<String>,
     mut cancel_rx: watch::Receiver<bool>,
 ) {
     let agent = {
@@ -1494,6 +1559,17 @@ async fn run_agent_turn(
         .await;
         return;
     };
+
+    let resolved_model = match model_registry::resolve_chat_model(&agent.model_registry(), model.as_deref()) {
+        Ok(key) => key,
+        Err(error) => {
+            fail_run(&state, thread_id, run_id, error).await;
+            restore_agent(&state, thread_id, agent);
+            drain_queue(&state, thread_id).await;
+            return;
+        }
+    };
+    agent.set_model(resolved_model);
 
     let mut stream = agent.make_turn(content, images).await;
     let format = thread_message_format(&state, thread_id).unwrap_or(MessageFormat::Markdown);
@@ -2323,6 +2399,8 @@ fn db_error(err: Box<dyn std::error::Error + Send + Sync>) -> AgentPoolError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::config::{Firecrawl, WebSearch};
     use llm::{CompletionChoice, Delta, StreamResponseChunk, ToolCallChunk, ToolCallFunction};
     use stride_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
@@ -2335,6 +2413,16 @@ mod tests {
         pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe()
     }
 
+    fn test_server_config() -> config::Config {
+        config::Config {
+            providers: HashMap::new(),
+            models: HashMap::new(),
+            server: None,
+            tools: None,
+            mcp: HashMap::new(),
+        }
+    }
+
     fn test_worker_init(db: ConnectionPool) -> WorkerInit {
         WorkerInit {
             db,
@@ -2342,6 +2430,8 @@ mod tests {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 4,
             }),
+            server_config: test_server_config(),
+            cipher: SecretCipher::new("test-secret"),
             tools: Tools::default(),
             mcp_tools: Vec::new(),
             vfs: None,
@@ -2362,6 +2452,8 @@ mod tests {
                 model_registry: models,
                 max_iterations: 4,
             }),
+            test_server_config(),
+            SecretCipher::new("test-secret"),
         )
         .system_prompt("System prompt")
         .idle_ttl(Duration::from_secs(60))
@@ -2443,6 +2535,8 @@ mod tests {
                 }),
                 python: None,
             },
+            &["default".to_string()],
+            "",
         );
 
         let names: Vec<_> = agent
@@ -2451,7 +2545,7 @@ mod tests {
             .map(|tool| tool.function.name)
             .collect();
 
-        assert!(names.contains(&"expert".to_string()));
+        assert!(names.contains(&"subagent".to_string()));
         assert!(names.contains(&"web_search".to_string()));
         assert!(names.contains(&"firecrawl".to_string()));
     }
@@ -2468,7 +2562,7 @@ mod tests {
             Vec::new(),
         );
 
-        configure_agent_tools(&agent, &Tools::default());
+        configure_agent_tools(&agent, &Tools::default(), &["default".to_string()], "");
 
         let mut names: Vec<_> = agent
             .tool_definitions()
@@ -2477,12 +2571,12 @@ mod tests {
             .collect();
         names.sort();
 
-        assert_eq!(names, vec!["expert".to_string(), "quiz".to_string()]);
+        assert_eq!(names, vec!["quiz".to_string(), "subagent".to_string()]);
     }
 
     #[test]
-    fn configured_web_tools_are_registered_on_expert() {
-        let registry = expert_tool_registry(&Tools {
+    fn configured_web_tools_are_registered_on_subagent() {
+        let registry = subagent_tool_registry(&Tools {
             web_search: Some(WebSearch {
                 searxng_endpoint: "https://search.example.com".to_string(),
                 searxng_request_delay_seconds: None,
@@ -2555,6 +2649,7 @@ mod tests {
                 AgentRequest {
                     content: "ping".to_string(),
                     images: Vec::new(),
+                    model: None,
                 },
             )
             .await
@@ -2651,6 +2746,7 @@ mod tests {
             AgentRequest {
                 content: "run tool".to_string(),
                 images: Vec::new(),
+                model: None,
             },
         )
         .await
@@ -2761,6 +2857,7 @@ mod tests {
             AgentRequest {
                 content: "ping".to_string(),
                 images: Vec::new(),
+                model: None,
             },
         )
         .await
@@ -2979,6 +3076,7 @@ mod tests {
             AgentRequest {
                 content: "ping".to_string(),
                 images: Vec::new(),
+                model: None,
             },
         )
         .await
@@ -3056,6 +3154,7 @@ mod tests {
             AgentRequest {
                 content: "ping".to_string(),
                 images: Vec::new(),
+                model: None,
             },
         )
         .await
@@ -3230,6 +3329,7 @@ mod tests {
             AgentRequest {
                 content: "ping".to_string(),
                 images: Vec::new(),
+                model: None,
             },
         )
         .await
@@ -3305,6 +3405,7 @@ mod tests {
             AgentRequest {
                 content: "ping".to_string(),
                 images: Vec::new(),
+                model: None,
             },
         )
         .await
@@ -3379,6 +3480,7 @@ mod tests {
                 AgentRequest {
                     content: content.to_string(),
                     images: Vec::new(),
+                    model: None,
                 },
             )
             .await
@@ -3467,6 +3569,7 @@ mod tests {
             AgentRequest {
                 content: "ask".to_string(),
                 images: Vec::new(),
+                model: None,
             },
         )
         .await
@@ -3559,6 +3662,7 @@ mod tests {
                 AgentRequest {
                     content: "ping".to_string(),
                     images: Vec::new(),
+                    model: None,
                 },
             ),
         )
@@ -3616,6 +3720,7 @@ mod tests {
             AgentRequest {
                 content: "ping".to_string(),
                 images: Vec::new(),
+                model: None,
             },
         )
         .await

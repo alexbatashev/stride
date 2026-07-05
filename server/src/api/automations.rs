@@ -568,15 +568,21 @@ mod tests {
             model_registry: ModelRegistry::new(),
             max_iterations: 1,
         });
-        let runner = Arc::new(InProcessAgentPool::new(db.clone(), model_config.clone()));
+        let config = Config {
+            providers: HashMap::new(),
+            models: HashMap::new(),
+            server: None,
+            tools: None,
+            mcp: HashMap::new(),
+        };
+        let runner = Arc::new(InProcessAgentPool::new(
+            db.clone(),
+            model_config.clone(),
+            config.clone(),
+            crate::crypto::SecretCipher::new("test-secret"),
+        ));
         Arc::new(ServerState {
-            config: Config {
-                providers: HashMap::new(),
-                models: HashMap::new(),
-                server: None,
-                tools: None,
-                mcp: HashMap::new(),
-            },
+            config,
             db,
             jwt_secret: String::new(),
             runner,

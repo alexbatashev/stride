@@ -4,6 +4,7 @@ use axum::{
     response::Response,
 };
 
+pub mod agent_settings;
 pub mod auth;
 pub mod automations;
 pub mod email;
@@ -13,14 +14,17 @@ pub mod google;
 pub mod images;
 pub mod mcp;
 pub mod memories;
+pub mod models;
 pub mod openai;
 pub mod projects;
+pub mod providers;
 pub mod skills;
 pub mod telegram;
 pub mod thread_settings;
 pub mod threads;
 pub mod transcribe;
 pub mod uploads;
+pub mod user_models;
 pub mod writable_dirs;
 
 const HTML_WIDGET_CSP: &str = "sandbox allow-scripts; default-src 'self'; script-src 'self' \

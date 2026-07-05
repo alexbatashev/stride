@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, effect, ref, state } from "@frontiers-labs/argon";
+import { Component, css, effect, onMount, ref, state } from "@frontiers-labs/argon";
 import { transcribeAudio } from "../api/threads.js";
 import { IconArrowUp } from "./icons/arrow-up.js";
 import { IconMic } from "./icons/mic.js";
@@ -218,6 +218,27 @@ const styles = css`
     }
   }
 
+  .model-select select {
+    background: transparent;
+    border: 1px solid var(--prompt-control-border, #343434);
+    border-radius: 999px;
+    box-sizing: border-box;
+    color: var(--prompt-control-fg, #bdbdbd);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.8125rem;
+    height: 32px;
+    max-width: 180px;
+    min-width: 120px;
+    outline: none;
+    padding: 0 28px 0 12px;
+  }
+
+  .model-select select:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
   @media (max-width: 640px) {
     :host {
       max-width: 100%;
@@ -251,8 +272,13 @@ function submitPrompt(host: HTMLElement, textarea: HTMLTextAreaElement): void {
   if (!value || textarea.disabled) return;
   textarea.value = "";
   textarea.style.height = "";
+  const model = host.getAttribute("data-selected-model") ?? "";
   host.dispatchEvent(
-    new CustomEvent("prompt-submit", { bubbles: true, composed: true, detail: { value } }),
+    new CustomEvent("prompt-submit", {
+      bubbles: true,
+      composed: true,
+      detail: { value, model: model || null },
+    }),
   );
 }
 
@@ -298,29 +324,67 @@ export function AppPromptInput({
   disabled = false,
   running = false,
   placeholder = "Send a message",
+  models = [],
+  selectedModel = "",
 }: {
   disabled?: boolean;
   running?: boolean;
   placeholder?: string;
+  models?: { value: string; label: string }[];
+  selectedModel?: string;
 }): Component {
   const input = ref<HTMLTextAreaElement>();
   const micButton = ref<HTMLButtonElement>();
   let recording = state(false);
   let transcribing = state(false);
 
+  onMount(() => {
+    const onModelChange = (event: Event) => {
+      const select = (event.target as HTMLSelectElement | null);
+      if (!select?.matches("select.model-picker")) return;
+      const value = select.value;
+      if (value) {
+        this.setAttribute("data-selected-model", value);
+      } else {
+        this.removeAttribute("data-selected-model");
+      }
+      this.dispatchEvent(
+        new CustomEvent("model-change", {
+          bubbles: true,
+          composed: true,
+          detail: { value },
+        }),
+      );
+    };
+    this.addEventListener("change", onModelChange);
+    return () => this.removeEventListener("change", onModelChange);
+  });
+
   effect(() => {
-    // Boolean attributes can't be driven by JSX bindings here: server-side
-    // render emits a present `disabled` attribute even for `false`, so the
-    // control would stay greyed until a state change re-renders it. Toggle the
-    // disabled state imperatively instead, the way the textarea and send button
-    // are handled.
+    this.toggleAttribute("data-selected-model", Boolean(selectedModel));
+    if (selectedModel) {
+      this.setAttribute("data-selected-model", selectedModel);
+    } else {
+      this.removeAttribute("data-selected-model");
+    }
     const mic = micButton.current;
     if (mic) mic.disabled = transcribing;
+    const modelSelect = this.shadowRoot?.querySelector<HTMLSelectElement>("select.model-picker");
+    if (modelSelect) {
+      modelSelect.toggleAttribute("disabled", disabled || running || transcribing);
+      if (selectedModel) {
+        modelSelect.value = selectedModel;
+      }
+    }
     const textarea = input.current;
     if (!textarea) return;
     textarea.toggleAttribute("disabled", disabled || running || transcribing);
     syncSendButton(this.shadowRoot!);
   });
+
+  const modelOptionsHtml = models
+    .map((model) => `<option value="${model.value}">${model.label}</option>`)
+    .join("");
 
   return (
     <>
@@ -374,6 +438,13 @@ export function AppPromptInput({
             <button class="tool-button icon" type="button" aria-label="Tools">
               <IconSettingsHorizontal />
             </button>
+            <div class="model-select">
+              <select
+                class="model-picker"
+                disabled={disabled || running || transcribing}
+                innerHTML={modelOptionsHtml}
+              ></select>
+            </div>
             <button
               ref={micButton}
               class={`tool-button icon${recording ? " recording" : ""}`}

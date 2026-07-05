@@ -519,7 +519,12 @@ mod tests {
             model_registry: mock_model_registry(),
             max_iterations: 2,
         });
-        let runner = Arc::new(InProcessAgentPool::new(db.clone(), model_config.clone()));
+        let runner = Arc::new(InProcessAgentPool::new(
+            db.clone(),
+            model_config.clone(),
+            config.clone(),
+            crate::crypto::SecretCipher::new("test-secret"),
+        ));
 
         app(
             Arc::new(ServerState {

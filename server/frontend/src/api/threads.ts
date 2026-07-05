@@ -92,10 +92,20 @@ export async function listThreads(): Promise<ThreadSummary[]> {
 	return request('/api/threads');
 }
 
-export async function createThread(content: string, projectId?: string, stagedUploads?: string[]): Promise<SendMessageResponse> {
+export async function createThread(
+	content: string,
+	projectId?: string,
+	stagedUploads?: string[],
+	model?: string,
+): Promise<SendMessageResponse> {
 	return request('/api/threads', {
 		method: 'POST',
-		body: JSON.stringify({content, project_id: projectId ?? null, staged_uploads: stagedUploads ?? []})
+		body: JSON.stringify({
+			content,
+			project_id: projectId ?? null,
+			staged_uploads: stagedUploads ?? [],
+			model: model ?? null,
+		})
 	});
 }
 
@@ -123,10 +133,15 @@ export async function listMessages(threadId: string): Promise<ThreadMessage[]> {
 	return request(`/api/threads/${threadId}/messages`);
 }
 
-export async function sendMessage(threadId: string, content: string, stagedUploads?: string[]): Promise<SendMessageResponse> {
+export async function sendMessage(
+	threadId: string,
+	content: string,
+	stagedUploads?: string[],
+	model?: string,
+): Promise<SendMessageResponse> {
 	return request(`/api/threads/${threadId}/messages`, {
 		method: 'POST',
-		body: JSON.stringify({content, staged_uploads: stagedUploads ?? []})
+		body: JSON.stringify({content, staged_uploads: stagedUploads ?? [], model: model ?? null})
 	});
 }
 
