@@ -86,6 +86,7 @@ pub struct ExecutorConfig {
     pub db: ConnectionPool,
     pub model_config: Arc<AgentConfig>,
     pub tools: Tools,
+    pub searchable_tools_preview_limit: usize,
     pub telegram_bot_token: Option<String>,
     pub email_service: ImapService,
     pub mcp_tools: Vec<McpTool>,
@@ -371,6 +372,7 @@ async fn run_automation(ctx: ExecutorConfig, request: FireRequest) {
                 ctx.email_service.provider(automation.owner),
                 mcp_tools,
                 google,
+                ctx.searchable_tools_preview_limit,
             )
             .await
         }
@@ -499,6 +501,7 @@ async fn run_agent(
     email_provider: Arc<dyn stride_agent::tools::email::EmailProvider>,
     mcp_tools: Vec<McpTool>,
     google: Option<(GoogleService, Uuid)>,
+    searchable_tools_preview_limit: usize,
 ) -> Result<String, String> {
     let agent = BaseAgent::new(
         "default".to_string(),
@@ -506,6 +509,7 @@ async fn run_agent(
         AGENT_SYSTEM_PROMPT.to_string(),
         Vec::new(),
     );
+    agent.set_searchable_tools_preview_limit(searchable_tools_preview_limit);
     for tool in mcp_tools {
         agent.register_searchable_tool(tool);
     }
@@ -703,6 +707,7 @@ mod tests {
                     db: db.clone(),
                     model_config: mock_model_config(),
                     tools: python_tools(),
+                    searchable_tools_preview_limit: 20,
                     telegram_bot_token: None,
                     email_service: ImapService::new(db.clone(), "test-secret"),
                     mcp_tools: Vec::new(),

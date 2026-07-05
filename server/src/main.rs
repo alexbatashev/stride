@@ -169,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         model_config: model_config.clone(),
         tools: tools.clone(),
+        searchable_tools_preview_limit: config.searchable_tools_preview_limit(),
         telegram_bot_token: telegram_bot_token.clone(),
         email_service: email_service.clone(),
         mcp_tools: mcp_tools.clone(),
