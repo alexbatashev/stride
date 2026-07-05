@@ -20,6 +20,13 @@ pub struct DirEntry {
     pub mime_type: Option<String>,
 }
 
+pub struct FileVersion {
+    pub version: i64,
+    pub size: i64,
+    pub created_at: i64,
+    pub mime_type: Option<String>,
+}
+
 pub enum EntryKind {
     Directory,
     File,
@@ -337,6 +344,53 @@ impl Vfs {
         }
     }
 
+    pub async fn area_read_version(
+        &self,
+        area: &WritableArea,
+        owner: Uuid,
+        rel: &str,
+        version: i64,
+    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+        match area {
+            WritableArea::Workspace(id) => self.read_version(*id, rel, version).await,
+            WritableArea::ProjectDir(prefix) => {
+                self.read_version_global(owner, &join_under(prefix, rel), version)
+                    .await
+            }
+        }
+    }
+
+    pub async fn area_list_versions(
+        &self,
+        area: &WritableArea,
+        owner: Uuid,
+        rel: &str,
+    ) -> anyhow::Result<Vec<FileVersion>> {
+        match area {
+            WritableArea::Workspace(id) => self.list_versions(*id, rel).await,
+            WritableArea::ProjectDir(prefix) => {
+                self.list_versions_global(owner, &join_under(prefix, rel))
+                    .await
+            }
+        }
+    }
+
+    pub async fn area_restore_version(
+        &self,
+        area: &WritableArea,
+        owner: Uuid,
+        rel: &str,
+        version: i64,
+    ) -> anyhow::Result<()> {
+        match area {
+            WritableArea::Workspace(id) => self.restore_version(*id, rel, version).await,
+            WritableArea::ProjectDir(prefix) => {
+                self.restore_version_global(owner, &join_under(prefix, rel), version)
+                    .await
+            }
+        }
+    }
+
     /// Writes raw bytes to a writable area at `rel`.
     pub async fn area_write_bytes(
         &self,
@@ -411,6 +465,23 @@ impl Vfs {
         self.find_child(scope, parent, last)
             .await?
             .ok_or_else(|| anyhow::anyhow!("path not found: {path}"))
+    }
+
+    async fn resolve_file_node(&self, scope: Scope, path: &str) -> anyhow::Result<Uuid> {
+        let segments = split_path(path);
+        if segments.is_empty() {
+            bail!("path is a directory");
+        }
+        let (dir_segs, file_part) = segments.split_at(segments.len() - 1);
+        let parent = self.resolve_dir(scope, dir_segs).await?;
+        let node_id = self
+            .find_child(scope, parent, file_part[0])
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("file not found: {path}"))?;
+        if self.node_kind(node_id).await? != "file" {
+            bail!("path is a directory");
+        }
+        Ok(node_id)
     }
 
     async fn list_scoped(&self, scope: Scope, path: &str) -> anyhow::Result<Vec<DirEntry>> {
@@ -652,6 +723,26 @@ impl Vfs {
         self.read_bytes_scoped(Scope::Global(owner), path).await
     }
 
+    pub async fn read_version(
+        &self,
+        workspace_id: Uuid,
+        path: &str,
+        version: i64,
+    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+        self.read_version_scoped(Scope::Workspace(workspace_id), path, version)
+            .await
+    }
+
+    pub async fn read_version_global(
+        &self,
+        owner: Uuid,
+        path: &str,
+        version: i64,
+    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+        self.read_version_scoped(Scope::Global(owner), path, version)
+            .await
+    }
+
     async fn read_bytes_scoped(
         &self,
         scope: Scope,
@@ -700,6 +791,158 @@ impl Vfs {
             .with_context(|| format!("load {location}"))?;
 
         Ok((bytes, mime_type))
+    }
+
+    async fn read_version_scoped(
+        &self,
+        scope: Scope,
+        path: &str,
+        version: i64,
+    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+        let node_id = self.resolve_file_node(scope, path).await?;
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT n.mime_type, o.location FROM vfs_nodes n \
+                 JOIN vfs_objects o ON o.node = n.id \
+                 WHERE n.id = ? AND o.version = ? LIMIT 1",
+                vec![Value::Uuid(node_id), Value::Integer(version)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        let row = rows
+            .rows()
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("version not found: {path}#{version}"))?;
+        let mime_type = row.get_text("mime_type").map(|s| s.to_string());
+        let location = row
+            .get_text("location")
+            .ok_or_else(|| anyhow::anyhow!("missing location for: {path}#{version}"))?
+            .to_string();
+        let bytes = self
+            .storage
+            .load(&location)
+            .await
+            .with_context(|| format!("load {location}"))?;
+
+        Ok((bytes, mime_type))
+    }
+
+    pub async fn list_versions(
+        &self,
+        workspace_id: Uuid,
+        path: &str,
+    ) -> anyhow::Result<Vec<FileVersion>> {
+        self.list_versions_scoped(Scope::Workspace(workspace_id), path)
+            .await
+    }
+
+    pub async fn list_versions_global(
+        &self,
+        owner: Uuid,
+        path: &str,
+    ) -> anyhow::Result<Vec<FileVersion>> {
+        self.list_versions_scoped(Scope::Global(owner), path).await
+    }
+
+    async fn list_versions_scoped(
+        &self,
+        scope: Scope,
+        path: &str,
+    ) -> anyhow::Result<Vec<FileVersion>> {
+        let node_id = self.resolve_file_node(scope, path).await?;
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT n.mime_type, o.version, o.size, o.created_at FROM vfs_nodes n \
+                 JOIN vfs_objects o ON o.node = n.id \
+                 WHERE n.id = ? ORDER BY o.version DESC",
+                vec![Value::Uuid(node_id)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        Ok(rows
+            .rows()
+            .iter()
+            .map(|row| FileVersion {
+                version: row.get_int("version").unwrap_or_default(),
+                size: row.get_int("size").unwrap_or_default(),
+                created_at: row.get_int("created_at").unwrap_or_default(),
+                mime_type: row.get_text("mime_type").map(|s| s.to_string()),
+            })
+            .collect())
+    }
+
+    pub async fn restore_version(
+        &self,
+        workspace_id: Uuid,
+        path: &str,
+        version: i64,
+    ) -> anyhow::Result<()> {
+        self.restore_version_scoped(Scope::Workspace(workspace_id), path, version)
+            .await
+    }
+
+    pub async fn restore_version_global(
+        &self,
+        owner: Uuid,
+        path: &str,
+        version: i64,
+    ) -> anyhow::Result<()> {
+        self.restore_version_scoped(Scope::Global(owner), path, version)
+            .await
+    }
+
+    async fn restore_version_scoped(
+        &self,
+        scope: Scope,
+        path: &str,
+        version: i64,
+    ) -> anyhow::Result<()> {
+        let node_id = self.resolve_file_node(scope, path).await?;
+        let rows = self
+            .db
+            .query_with_params(
+                "SELECT location, size FROM vfs_objects WHERE node = ? AND version = ? LIMIT 1",
+                vec![Value::Uuid(node_id), Value::Integer(version)],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let row = rows
+            .rows()
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("version not found: {path}#{version}"))?;
+        let source_location = row
+            .get_text("location")
+            .ok_or_else(|| anyhow::anyhow!("missing location for: {path}#{version}"))?
+            .to_string();
+        let size = row.get_int("size").unwrap_or_default();
+        let bytes = self
+            .storage
+            .load(&source_location)
+            .await
+            .with_context(|| format!("load {source_location}"))?;
+        let location = self.storage.store(&bytes).await?;
+        let next = self.next_version(node_id).await?;
+
+        self.db
+            .query_with_params(
+                "INSERT INTO vfs_objects (id, version, location, created_at, node, size) VALUES (?, ?, ?, ?, ?, ?)",
+                vec![
+                    Value::Uuid(Uuid::now_v7()),
+                    Value::Integer(next),
+                    Value::Text(location),
+                    Value::Integer(now_ms()),
+                    Value::Uuid(node_id),
+                    Value::Integer(size),
+                ],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        self.prune_versions(node_id).await
     }
 
     /// Writes UTF-8 content to `path` relative to workspace root.

@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, onMount } from "@frontiers-labs/argon";
+import { Component, css, effect, onMount } from "@frontiers-labs/argon";
 import { IconX } from "./icons/x.js";
 
 function requestClose(host: HTMLElement): void {
@@ -39,6 +39,10 @@ const styles = css`
     overflow: auto;
     padding: 24px;
     width: 100%;
+  }
+
+  :host([size="wide"]) .dialog {
+    max-width: min(980px, calc(100dvw - 32px));
   }
 
   .header {
@@ -110,10 +114,14 @@ export function AppDialog({
   open = false,
   title = "",
   description = "",
+  size = "",
+  "data-dialog": dialogId = "",
 }: {
   open?: boolean;
   title?: string;
   description?: string;
+  size?: string;
+  "data-dialog"?: string;
 }): Component {
   onMount(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -121,6 +129,18 @@ export function AppDialog({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
+  });
+  effect(() => {
+    if (size) {
+      this.setAttribute("size", size);
+    } else {
+      this.removeAttribute("size");
+    }
+    if (dialogId) {
+      this.dataset.dialog = dialogId;
+    } else {
+      delete this.dataset.dialog;
+    }
   });
   return (
     <>

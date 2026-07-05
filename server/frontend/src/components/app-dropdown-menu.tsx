@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, effect } from "@frontiers-labs/argon";
 
 type MenuItem = { label: string; action: string; variant?: string };
 
@@ -67,10 +67,15 @@ const styles = css`
 export function AppDropdownMenu({
   open = false,
   items = [],
+  position = "",
 }: {
   open?: boolean;
   items?: MenuItem[];
+  position?: string;
 }): Component {
+  effect(() => {
+    this.setAttribute("style", position);
+  });
   return (
     <>
       <style>{styles}</style>

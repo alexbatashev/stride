@@ -616,6 +616,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
                 .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
         )
         .route(
+            "/api/threads/{id}/file-versions",
+            get(api::threads::list_file_versions).post(api::threads::restore_file_version),
+        )
+        .route(
             "/api/threads/{id}/directories",
             post(api::threads::create_directory),
         )
@@ -639,6 +643,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         )
         .route("/api/files/directories", post(api::files::create_directory))
         .route("/api/files/rename", patch(api::files::rename))
+        .route(
+            "/api/files/versions",
+            get(api::files::list_versions).post(api::files::restore_version),
+        )
         .route(
             "/api/automations",
             get(api::automations::list).post(api::automations::create),
