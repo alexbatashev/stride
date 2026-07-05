@@ -2,6 +2,7 @@ pub mod attach_image;
 pub mod automations;
 pub mod google;
 pub mod memory;
+pub mod ocr;
 pub mod personality;
 pub mod projects;
 pub mod python;

@@ -30,7 +30,7 @@ url = "http://localhost:11434/v1"
 # display_name for the label shown in the UI; description appears in Settings.
 #
 # Reserved registry keys (do not use for chat): embeddings, transcription,
-# title_generator, expert, explorer.
+# title_generator, ocr, expert, explorer.
 #
 # Point one entry at [models.default] to control the composer default. When
 # that section is missing, the first chat model in this file is aliased as
@@ -84,6 +84,19 @@ provider = "openai"
 [models.transcription]
 slug = "whisper-1"
 provider = "openai"
+
+# A model registered under the reserved name `ocr` powers the `ocr` tool, which
+# extracts text from scanned PDFs and images. It must accept image inputs, so set
+# vision = true. Point it at a strong OCR vision model, e.g. Gemini Flash or
+# Qwen2.5-VL via OpenRouter. Without it, the tool falls back to the default model
+# (when that model is vision-capable). Digital PDFs with a real text layer are
+# read directly and never touch this model.
+[models.ocr]
+display_name = "OCR"
+description = "Vision model used by the OCR tool for scanned documents and images."
+slug = "google/gemini-2.5-flash"
+provider = "openrouter"
+vision = true
 
 [server]
 # SQLite database path. Used when `db_url` (below) is unset.

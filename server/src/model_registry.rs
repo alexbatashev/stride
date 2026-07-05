@@ -19,6 +19,7 @@ const INTERNAL_MODEL_KEYS: &[&str] = &[
     EMBEDDING_MODEL,
     TRANSCRIPTION_MODEL,
     TITLE_GENERATOR_MODEL,
+    crate::tools::ocr::OCR_MODEL,
     "expert",
     "explorer",
 ];
