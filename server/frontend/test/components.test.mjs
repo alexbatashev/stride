@@ -148,6 +148,21 @@ test('app-prompt-input submits on Enter and clears', () => {
   assert.equal(textarea.value, '');
 });
 
+test('app-prompt-input populates model picker when models prop updates', () => {
+  const el = mount('app-prompt-input');
+  const select = () => el.shadowRoot.querySelector('select.model-picker');
+  assert.equal(select().options.length, 0);
+
+  el.models = [
+    { value: 'default', label: 'GPT-4.1' },
+    { value: 'claude_sonnet_4', label: 'Claude Sonnet 4' },
+  ];
+  el.selectedModel = 'claude_sonnet_4';
+  assert.equal(select().options.length, 2);
+  assert.equal(select().value, 'claude_sonnet_4');
+  assert.equal(select().disabled, false);
+});
+
 test('app-prompt-input swaps send for stop while running', () => {
   const el = mount('app-prompt-input');
   assert.ok(el.shadowRoot.querySelector('button[type="submit"]'));

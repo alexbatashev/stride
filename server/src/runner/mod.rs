@@ -58,6 +58,7 @@ pub trait AgentPool: Send + Sync + 'static {
 pub struct AgentRequest {
     pub content: String,
     pub images: Vec<llm::ImageSource>,
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

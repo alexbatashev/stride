@@ -240,6 +240,18 @@ impl BaseAgent {
         self.0.borrow_mut().config = config;
     }
 
+    pub fn set_model(&self, model: String) {
+        self.0.borrow_mut().model = model;
+    }
+
+    pub fn model(&self) -> String {
+        self.0.borrow().model.clone()
+    }
+
+    pub fn model_registry(&self) -> ModelRegistry {
+        self.0.borrow().config.model_registry.clone()
+    }
+
     pub fn set_thread(&self, system_prompt: String, thread: Vec<Message>) {
         let mut lock = self.0.borrow_mut();
         lock.thread = thread_with_system_prompt(system_prompt, thread);

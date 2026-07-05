@@ -22,7 +22,7 @@ use crate::{
         auth::{self, AuthError},
         projects::ProjectResponse,
     },
-    db::{MessageFormat, Role, messages, projects, threads},
+    db::{MessageFormat, Role, messages, projects, threads, user_models},
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
         ThreadStatus, thread_events_topic,
@@ -96,6 +96,7 @@ pub struct MessageTemplateData {
 pub struct SendMessageRequest {
     content: String,
     project_id: Option<Uuid>,
+    model: Option<String>,
     #[serde(default)]
     file_paths: Vec<String>,
     /// Ids of files uploaded to the staging area before this thread existed.
@@ -607,11 +608,20 @@ pub async fn create_thread(
         materialize_staged_uploads(&state, thread_id, owner, &request.staged_uploads).await?;
     file_paths.extend(staged);
 
-    let (content, images) =
-        prepare_message(&state, thread_id, owner, request.content, file_paths).await?;
+    let (content, images) = prepare_message(
+        &state,
+        thread_id,
+        owner,
+        request.content,
+        file_paths,
+        request.model.as_deref(),
+    )
+    .await?;
     let content = normalize_content(content)?;
 
-    let run_id = send_to_runner_with_images(&state, thread_id, content.clone(), images).await?;
+    let run_id =
+        send_to_runner_with_images(&state, thread_id, content.clone(), images, request.model)
+            .await?;
 
     spawn_title_generation(state.clone(), thread_id, content, None);
 
@@ -817,10 +827,18 @@ pub async fn send_message(
         materialize_staged_uploads(&state, thread_id, owner, &request.staged_uploads).await?;
     file_paths.extend(staged);
 
-    let (content, images) =
-        prepare_message(&state, thread_id, owner, request.content, file_paths).await?;
+    let (content, images) = prepare_message(
+        &state,
+        thread_id,
+        owner,
+        request.content,
+        file_paths,
+        request.model.as_deref(),
+    )
+    .await?;
     let content = normalize_content(content)?;
-    let run_id = send_to_runner_with_images(&state, thread_id, content, images).await?;
+    let run_id =
+        send_to_runner_with_images(&state, thread_id, content, images, request.model).await?;
 
     Ok(Json(SendMessageResponse {
         thread_id: thread_id.to_string(),
@@ -965,21 +983,52 @@ async fn send_to_runner_with_images(
     thread_id: Uuid,
     content: String,
     images: Vec<llm::ImageSource>,
+    model: Option<String>,
 ) -> Result<RunId, ThreadApiError> {
     state
         .runner
-        .send(thread_id, AgentRequest { content, images })
+        .send(
+            thread_id,
+            AgentRequest {
+                content,
+                images,
+                model,
+            },
+        )
         .await
         .map_err(pool_error)
 }
 
-/// True when the default model accepts image inputs.
-fn vision_enabled(state: &ServerState) -> bool {
-    state
-        .model_config
-        .model_registry
-        .get_or_default(DEFAULT_MODEL)
-        .vision
+fn vision_enabled(state: &ServerState, model: Option<&str>) -> bool {
+    let key = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_MODEL);
+    state.model_config.model_registry.get_or_default(key).vision
+}
+
+async fn model_has_vision(
+    state: &ServerState,
+    owner: Uuid,
+    model: Option<&str>,
+) -> Result<bool, ThreadApiError> {
+    let key = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_MODEL);
+    if state.model_config.model_registry.get(key).is_some() {
+        return Ok(vision_enabled(state, Some(key)));
+    }
+    let rows = user_models::select_cols((user_models::vision,))
+        .where_(user_models::owner.eq(owner).and(user_models::name.eq(key)))
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .map(|(vision,)| vision)
+        .unwrap_or(false))
 }
 
 /// Splits attachments into images (sent to a vision model) and other files
@@ -992,8 +1041,9 @@ async fn prepare_message(
     owner: Uuid,
     content: String,
     file_paths: Vec<String>,
+    model: Option<&str>,
 ) -> Result<(String, Vec<llm::ImageSource>), ThreadApiError> {
-    if file_paths.is_empty() || !vision_enabled(state) {
+    if file_paths.is_empty() || !model_has_vision(state, owner, model).await? {
         return Ok((build_content(content, file_paths), Vec::new()));
     }
 

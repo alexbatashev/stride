@@ -1,4 +1,5 @@
 import { ProjectSummary, listProjects } from "../api/projects.js";
+import { listModels } from "../api/settings.js";
 import {
 	QuizQuestion,
 	ThreadEvent,
@@ -45,6 +46,8 @@ type PromptEl = HTMLElement & {
 	disabled: boolean;
 	running: boolean;
 	placeholder: string;
+	models: { value: string; label: string }[];
+	selectedModel: string;
 };
 
 type ApprovalEl = HTMLElement & { message: string };
@@ -71,6 +74,8 @@ class ThreadsPageHydrator {
 	private currentProjectId: string | null = null;
 	private messages: ViewMessage[] = [];
 	private attachedFiles: { name: string; id: string }[] = [];
+	private modelOptions: { value: string; label: string }[] = [];
+	private selectedModel = "";
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
@@ -110,6 +115,7 @@ class ThreadsPageHydrator {
 			: this.readProjectFromQuery();
 
 		this.bindEvents();
+		void this.loadModels();
 		this.syncComposer();
 
 		if (this.threadId) {
@@ -177,8 +183,12 @@ class ThreadsPageHydrator {
 			this.fileManagerEl.open = false;
 		});
 		this.promptEl.addEventListener("prompt-submit", (event) =>
-			this.onPromptSubmit(event as CustomEvent<{ value: string }>),
+			this.onPromptSubmit(event as CustomEvent<{ value: string; model: string | null }>),
 		);
+		this.promptEl.addEventListener("model-change", (event) => {
+			this.selectedModel = (event as CustomEvent<{ value: string }>).detail.value;
+			this.syncComposer();
+		});
 		this.promptEl.addEventListener("prompt-stop", () => void this.onStop());
 		this.promptEl.addEventListener("prompt-error", (event) =>
 			this.setError((event as CustomEvent<{ message: string }>).detail.message),
@@ -435,11 +445,31 @@ class ThreadsPageHydrator {
 		this.syncTitle();
 	}
 
-	private onPromptSubmit(event: CustomEvent<{ value: string }>) {
-		void this.submitDraft(event.detail.value.trim());
+	private onPromptSubmit(event: CustomEvent<{ value: string; model: string | null }>) {
+		void this.submitDraft(event.detail.value.trim(), event.detail.model ?? this.selectedModel);
 	}
 
-	private async submitDraft(content: string) {
+	private async loadModels() {
+		try {
+			const models = await listModels();
+			this.modelOptions = models.map((model) => ({
+				value: model.key,
+				label: model.display_name,
+			}));
+			if (!this.selectedModel) {
+				this.selectedModel =
+					models.find((model) => model.key === "default")?.key ??
+					models[0]?.key ??
+					"";
+			}
+			this.syncComposer();
+		} catch {
+			this.modelOptions = [];
+			this.syncComposer();
+		}
+	}
+
+	private async submitDraft(content: string, model?: string) {
 		if (!content || this.running) {
 			return;
 		}
@@ -453,9 +483,14 @@ class ThreadsPageHydrator {
 
 		try {
 			if (this.threadId) {
-				await sendMessage(this.threadId, content, stagedUploads);
+				await sendMessage(this.threadId, content, stagedUploads, model || undefined);
 			} else {
-				const response = await createThread(content, this.currentProjectId ?? undefined, stagedUploads);
+				const response = await createThread(
+					content,
+					this.currentProjectId ?? undefined,
+					stagedUploads,
+					model || undefined,
+				);
 				this.threadId = response.thread_id;
 				this.root.dataset.threadId = this.threadId;
 				this.fileManagerEl.threadId = this.threadId;
@@ -669,6 +704,8 @@ class ThreadsPageHydrator {
 	private syncComposer() {
 		this.promptEl.running = this.running;
 		this.promptEl.placeholder = this.composerPlaceholder();
+		this.promptEl.models = this.modelOptions;
+		this.promptEl.selectedModel = this.selectedModel;
 		const hasApproval = this.pendingApproval !== null;
 		const hasQuiz = this.pendingQuiz !== null;
 		this.promptEl.hidden = hasApproval || hasQuiz;

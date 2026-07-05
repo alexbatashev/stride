@@ -2,7 +2,7 @@ use std::{collections::HashMap, env, fs, io, path::Path};
 
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     pub providers: HashMap<String, Provider>,
     pub models: HashMap<String, Model>,
@@ -20,7 +20,7 @@ pub struct McpServer {
     pub headers: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub enum Kind {
     OpenAI,
     OpenRouter,
@@ -28,17 +28,22 @@ pub enum Kind {
     Ollama,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Provider {
     pub kind: Kind,
     pub url: String,
     token: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Model {
     pub slug: String,
     pub provider: String,
+    /// Human-readable label shown in the web UI. Falls back to the registry key
+    /// when unset.
+    pub display_name: Option<String>,
+    /// Optional longer text shown in Settings. Omitted or empty when not needed.
+    pub description: Option<String>,
     /// Reasoning effort level requested from the model (`"low"`, `"medium"`,
     /// `"high"`). Takes precedence over the legacy `thinking` flag.
     pub reasoning_effort: Option<llm::ReasoningEffort>,
@@ -62,14 +67,14 @@ impl Model {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Ldap {
     pub url: String,
     /// DN template for binding, e.g. "uid={username},ou=users,dc=example,dc=com"
     pub user_dn_template: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Server {
     /// Full database connection URL. Takes precedence over `db_path`. Supports
     /// `sqlite://<path>`, `postgres://...`, and `postgresql://...`. May also be
@@ -89,6 +94,15 @@ pub struct Server {
     /// Used to build capability URLs for image attachments served to vision
     /// models. When unset, images are sent inline as base64 instead.
     pub public_url: Option<String>,
+    pub agent: Option<ServerAgent>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ServerAgent {
+    /// Default subagent routing guide applied to users who have not saved their
+    /// own agent settings. Admins can update this in config to roll out new
+    /// guidance without overwriting per-user overrides stored in the database.
+    pub default_subagent_guidelines: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -416,6 +430,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn server_agent_settings_load_from_config() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [server.agent]
+            default_subagent_guidelines = "Prefer fast models for search."
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cfg.server
+                .as_ref()
+                .and_then(|server| server.agent.as_ref())
+                .and_then(|agent| agent.default_subagent_guidelines.as_deref()),
+            Some("Prefer fast models for search.")
+        );
+    }
+
+    #[test]
     fn server_parameters_use_config_values() {
         let cfg = Config {
             providers: HashMap::new(),
@@ -431,6 +467,7 @@ mod tests {
                 github: None,
                 google: None,
                 public_url: None,
+                agent: None,
             }),
             tools: None,
             mcp: HashMap::new(),
@@ -608,6 +645,14 @@ mod tests {
 
         assert!(cfg.providers.contains_key("openai"));
         assert!(cfg.models.contains_key("gpt_4_1"));
+        let default_model = cfg.models.get("default").unwrap();
+        assert_eq!(default_model.display_name.as_deref(), Some("GPT-4.1"));
+        assert!(
+            default_model
+                .description
+                .as_ref()
+                .is_some_and(|text| !text.is_empty())
+        );
         assert!(cfg.server.unwrap().ldap.is_some());
         assert!(cfg.tools.unwrap().web_search.is_some());
         assert!(cfg.mcp.contains_key("deepwiki"));

@@ -327,6 +327,7 @@ async fn handle_topic_message(
             AgentRequest {
                 content,
                 images: Vec::new(),
+                model: None,
             },
         )
         .await
@@ -2929,6 +2930,7 @@ mod tests {
             github: None,
             google: None,
             public_url: None,
+            agent: None,
         };
         ServerState {
             config: Config {

@@ -467,6 +467,54 @@ migrations! {
             foreign_key(owner -> users.id);
         }
     }
+
+    user_model_providers {
+        table user_providers {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            name: String,
+            kind: String,
+            url: String,
+            token_ciphertext: String,
+            created_at: i64,
+
+            foreign_key(owner -> users.id);
+        }
+
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_providers_owner_name ON user_providers(owner, name)";
+
+        table user_models {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            name: String,
+            slug: String,
+            provider_id: Uuid,
+            reasoning_effort: Option<String>,
+            vision: bool,
+            created_at: i64,
+
+            foreign_key(owner -> users.id);
+            foreign_key(provider_id -> user_providers.id);
+        }
+
+        raw "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_models_owner_name ON user_models(owner, name)";
+
+        table agent_settings {
+            owner: Uuid [PrimaryKey],
+            subagent_allowed_models: Option<String>,
+            subagent_guidelines: Option<String>,
+            updated_at: i64,
+
+            foreign_key(owner -> users.id);
+        }
+    }
+
+    user_model_labels {
+        alter table user_models {
+            add display_name: Option<String>;
+            add description: Option<String>;
+        }
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

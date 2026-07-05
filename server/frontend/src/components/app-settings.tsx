@@ -3,16 +3,21 @@ import {
   connectGitHubPat,
   createEmailAccount,
   createMcpServer,
+  createProvider,
   createSkill,
+  createUserModel,
   createWritableDir,
   deleteEmailAccount,
   deleteMemory,
   deleteMcpServer,
+  deleteProvider,
   deleteSkill,
+  deleteUserModel,
   deleteWritableDir,
   disconnectGitHub,
   disconnectGoogle,
   disconnectTelegram,
+  getAgentSettings,
   getGitHubSettings,
   getGoogleSettings,
   getTelegramSettings,
@@ -20,21 +25,29 @@ import {
   listEmailAccounts,
   listMemories,
   listMcpServers,
+  listModels,
+  listProviders,
   listSkills,
+  listUserModels,
   listWritableDirs,
   loginTelegram,
   startGitHubAuthorize,
   startGoogleAuthorize,
+  updateAgentSettings,
   updateSkill,
   updateThreadRetention,
+  type AgentSettings,
   type EmailAccount,
   type Memory,
   type MemoryRoom,
   type MemorySettings,
   type MemoryWing,
+  type ModelSummary,
   type McpServer,
+  type ProviderSummary,
   type Skill,
   type TelegramAuthData,
+  type UserModelSummary,
   type WritableDir,
 } from "../api/settings.js";
 
@@ -82,6 +95,15 @@ type SettingsHost = HTMLElement & {
   retentionLoaded: boolean;
   retentionError: string;
   retentionSaved: boolean;
+  availableModels: ModelSummary[];
+  providers: ProviderSummary[];
+  userModels: UserModelSummary[];
+  modelsLoaded: boolean;
+  modelsError: string;
+  agentSettings: AgentSettings;
+  agentSettingsLoaded: boolean;
+  agentSettingsError: string;
+  agentSettingsSaved: boolean;
 };
 
 function escapeHtml(value: string): string {
@@ -109,6 +131,54 @@ function mcpView(server: McpServer): AccountView {
     id: server.id,
     name: escapeHtml(server.name),
     meta: escapeHtml(headers.length > 0 ? `${server.url} · headers: ${headers.join(", ")}` : server.url),
+  };
+}
+
+type ModelItemView = { id: string; name: string; meta: string; badge?: string };
+
+function modelSettingsMeta(model: {
+  description: string;
+  slug: string;
+  provider: string;
+  vision: boolean;
+}): string {
+  if (model.description.trim()) {
+    return model.description;
+  }
+  return `${model.slug} · ${model.provider}${model.vision ? " · vision" : ""}`;
+}
+
+function configModelView(model: ModelSummary): ModelItemView {
+  return {
+    id: model.key,
+    name: escapeHtml(model.display_name),
+    meta: escapeHtml(modelSettingsMeta(model)),
+    badge: "Server",
+  };
+}
+
+function userModelItemView(model: UserModelSummary): AccountView {
+  return {
+    id: model.id,
+    name: escapeHtml(model.display_name),
+    meta: escapeHtml(
+      modelSettingsMeta({
+        description: model.description,
+        slug: model.slug,
+        provider: model.provider_name,
+        vision: model.vision,
+      }),
+    ),
+  };
+}
+
+type SubagentModelView = { key: string; label: string; checked: boolean };
+
+function subagentModelView(model: ModelSummary, allowed: string[]): SubagentModelView {
+  return {
+    key: model.key,
+    label: escapeHtml(model.display_name),
+    checked: allowed.includes(model.key),
   };
 }
 
@@ -371,6 +441,89 @@ async function refreshRetention(host: SettingsHost): Promise<void> {
   }
 }
 
+async function refreshModels(host: SettingsHost): Promise<void> {
+  try {
+    const [availableModels, providers, userModels, agentSettings] = await Promise.all([
+      listModels(),
+      listProviders(),
+      listUserModels(),
+      getAgentSettings(),
+    ]);
+    host.availableModels = availableModels;
+    host.providers = providers;
+    host.userModels = userModels;
+    host.agentSettings = agentSettings;
+    host.modelsLoaded = true;
+    host.modelsError = "";
+    host.agentSettingsLoaded = true;
+    host.agentSettingsError = "";
+  } catch {
+    host.modelsError = "Failed to load model settings.";
+  }
+}
+
+async function submitProvider(host: SettingsHost, form: HTMLFormElement): Promise<void> {
+  const data = new FormData(form);
+  host.modelsError = "";
+  try {
+    await createProvider({
+      name: String(data.get("name") ?? "").trim(),
+      kind: String(data.get("kind") ?? "").trim(),
+      url: String(data.get("url") ?? "").trim(),
+      token: String(data.get("token") ?? "").trim(),
+    });
+    form.reset();
+    await refreshModels(host);
+  } catch (error) {
+    host.modelsError = error instanceof Error ? error.message : "Failed to add provider.";
+  }
+}
+
+async function submitUserModel(host: SettingsHost, form: HTMLFormElement): Promise<void> {
+  const data = new FormData(form);
+  host.modelsError = "";
+  try {
+    await createUserModel({
+      name: String(data.get("name") ?? "").trim(),
+      slug: String(data.get("slug") ?? "").trim(),
+      provider_id: String(data.get("provider_id") ?? "").trim(),
+      display_name: String(data.get("display_name") ?? "").trim() || null,
+      description: String(data.get("description") ?? "").trim() || null,
+      reasoning_effort: String(data.get("reasoning_effort") ?? "").trim() || null,
+      vision: data.get("vision") === "on",
+    });
+    form.reset();
+    await refreshModels(host);
+  } catch (error) {
+    host.modelsError = error instanceof Error ? error.message : "Failed to add model.";
+  }
+}
+
+async function submitAgentSettings(host: SettingsHost): Promise<void> {
+  host.agentSettingsError = "";
+  host.agentSettingsSaved = false;
+  try {
+    host.agentSettings = await updateAgentSettings(host.agentSettings);
+    host.agentSettingsSaved = true;
+  } catch (error) {
+    host.agentSettingsError =
+      error instanceof Error ? error.message : "Failed to save agent settings.";
+  }
+}
+
+function toggleSubagentModel(host: SettingsHost, modelKey: string, enabled: boolean): void {
+  const current = new Set(host.agentSettings.subagent_allowed_models);
+  if (enabled) {
+    current.add(modelKey);
+  } else {
+    current.delete(modelKey);
+  }
+  host.agentSettings = {
+    ...host.agentSettings,
+    subagent_allowed_models: [...current],
+  };
+}
+
 async function submitRetention(host: SettingsHost): Promise<void> {
   host.retentionError = "";
   host.retentionSaved = false;
@@ -571,7 +724,8 @@ const styles = css`
   .layout[data-active="files"] .tab[data-section="files"],
   .layout[data-active="memories"] .tab[data-section="memories"],
   .layout[data-active="skills"] .tab[data-section="skills"],
-  .layout[data-active="threads"] .tab[data-section="threads"] {
+  .layout[data-active="threads"] .tab[data-section="threads"],
+  .layout[data-active="models"] .tab[data-section="models"] {
     background: var(--accent);
     color: var(--foreground);
     font-weight: 600;
@@ -596,7 +750,8 @@ const styles = css`
   .layout[data-active="files"] .panel[data-panel="files"],
   .layout[data-active="memories"] .panel[data-panel="memories"],
   .layout[data-active="skills"] .panel[data-panel="skills"],
-  .layout[data-active="threads"] .panel[data-panel="threads"] {
+  .layout[data-active="threads"] .panel[data-panel="threads"],
+  .layout[data-active="models"] .panel[data-panel="models"] {
     display: flex;
   }
 
@@ -1038,6 +1193,34 @@ const styles = css`
     display: none;
   }
 
+  .checkbox-row {
+    align-items: center;
+    display: flex;
+    gap: 10px;
+  }
+
+  .checkbox-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .model-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .model-item {
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 12px;
+  }
+
   @media (max-width: 760px) {
     .root {
       padding: 24px 16px 48px;
@@ -1064,6 +1247,13 @@ const styles = css`
     }
   }
 `;
+
+const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  subagent_allowed_models: [],
+  subagent_guidelines: "",
+  using_server_defaults: true,
+  server_default_guidelines: "",
+};
 
 export function AppSettings({
   activeSection = "connections",
@@ -1109,6 +1299,15 @@ export function AppSettings({
   retentionLoaded = false,
   retentionError = "",
   retentionSaved = false,
+  availableModels = [],
+  providers = [],
+  userModels = [],
+  modelsLoaded = false,
+  modelsError = "",
+  agentSettings = DEFAULT_AGENT_SETTINGS,
+  agentSettingsLoaded = false,
+  agentSettingsError = "",
+  agentSettingsSaved = false,
 }: {
   activeSection?: string;
   tgConfigured?: boolean;
@@ -1153,6 +1352,15 @@ export function AppSettings({
   retentionLoaded?: boolean;
   retentionError?: string;
   retentionSaved?: boolean;
+  availableModels?: ModelSummary[];
+  providers?: ProviderSummary[];
+  userModels?: UserModelSummary[];
+  modelsLoaded?: boolean;
+  modelsError?: string;
+  agentSettings?: AgentSettings;
+  agentSettingsLoaded?: boolean;
+  agentSettingsError?: string;
+  agentSettingsSaved?: boolean;
 }): Component {
   onMount(() => {
     (window as unknown as Record<string, unknown>).onTelegramAuth = (user: TelegramAuthData) => {
@@ -1167,6 +1375,7 @@ export function AppSettings({
     void refreshWritableDirs(this);
     void refreshMemories(this);
     void refreshRetention(this);
+    void refreshModels(this);
   });
 
   // Telegram's widget script finds its own <script> tag in the document and
@@ -1201,6 +1410,20 @@ export function AppSettings({
 
   const emailViews = emails.map(emailView);
   const mcpViews = mcps.map(mcpView);
+  const configModelViews = availableModels.filter((model) => model.source === "config").map(configModelView);
+  const providerViews = providers.map((provider) => ({
+    id: provider.id,
+    name: escapeHtml(provider.name),
+    meta: escapeHtml(`${provider.kind} · ${provider.url}`),
+  }));
+  const userModelViews = userModels.map(userModelItemView);
+  const subagentModelViews = availableModels.map((model) =>
+    subagentModelView(model, agentSettings.subagent_allowed_models),
+  );
+  const providerOptions = providers
+    .map((provider) => `<option value="${provider.id}">${escapeHtml(provider.name)}</option>`)
+    .join("");
+  const providerSelectHtml = `<option value="">Select provider</option>${providerOptions}`;
   const skillViews = skills.map(skillView);
   const writableDirViews = writableDirs.map(writableDirView);
   const query = memoryQuery.trim().toLowerCase();
@@ -1300,6 +1523,37 @@ export function AppSettings({
             case "save-retention":
               void submitRetention(this);
               return;
+            case "add-provider": {
+              const form = action.closest<HTMLFormElement>("form");
+              if (form) void submitProvider(this, form);
+              return;
+            }
+            case "add-user-model": {
+              const form = action.closest<HTMLFormElement>("form");
+              if (form) void submitUserModel(this, form);
+              return;
+            }
+            case "save-agent-settings":
+              void submitAgentSettings(this);
+              return;
+            case "del-provider":
+              if (action.dataset.id && window.confirm("Remove this provider and its models?")) {
+                void deleteProvider(action.dataset.id)
+                  .then(() => refreshModels(this))
+                  .catch(() => {
+                    this.modelsError = "Failed to remove provider.";
+                  });
+              }
+              return;
+            case "del-user-model":
+              if (action.dataset.id && window.confirm("Remove this model?")) {
+                void deleteUserModel(action.dataset.id)
+                  .then(() => refreshModels(this))
+                  .catch(() => {
+                    this.modelsError = "Failed to remove model.";
+                  });
+              }
+              return;
             case "select-memory":
               this.selectedMemoryId = action.dataset.id ?? "";
               return;
@@ -1379,8 +1633,24 @@ export function AppSettings({
             this.retentionRemoveDays = Number(input.value);
             this.retentionSaved = false;
           }
+          if (input.name === "subagent-guidelines") {
+            this.agentSettings = {
+              ...this.agentSettings,
+              subagent_guidelines: input.value,
+            };
+            this.agentSettingsSaved = false;
+          }
         }}
         onChange={(event: Event) => {
+          const checkbox = (event.target as HTMLElement).closest<HTMLElement>("app-checkbox");
+          if (checkbox?.dataset.model) {
+            const checked = (event as CustomEvent<{ checked: boolean }>).detail?.checked;
+            if (typeof checked === "boolean") {
+              toggleSubagentModel(this, checkbox.dataset.model, checked);
+              this.agentSettingsSaved = false;
+            }
+            return;
+          }
           const wrap = (event.target as HTMLElement).closest<HTMLElement>("[data-switch]");
           if (!wrap) return;
           const checked = (event as CustomEvent<{ checked: boolean }>).detail?.checked;
@@ -1399,6 +1669,8 @@ export function AppSettings({
           if (form.dataset.form === "skill-edit" && this.editingSkill) {
             void submitSkillEdit(this, form, this.editingSkill.id);
           }
+          if (form.dataset.form === "provider") void submitProvider(this, form);
+          if (form.dataset.form === "user-model") void submitUserModel(this, form);
         }}
       >
         <div class="shell">
@@ -1415,6 +1687,7 @@ export function AppSettings({
               <button type="button" class="tab" data-section="files">Writable folders</button>
               <button type="button" class="tab" data-section="memories">Memories</button>
               <button type="button" class="tab" data-section="skills">Skills</button>
+              <button type="button" class="tab" data-section="models">Models</button>
               <button type="button" class="tab" data-section="threads">Threads</button>
             </nav>
 
@@ -1757,6 +2030,123 @@ export function AppSettings({
                       </form>
                     </app-card>
                   )}
+              </section>
+
+              <section class="panel" data-panel="models">
+                <app-card title="Server models" description="Add chat models in config.toml under [models.&lt;key&gt;]. Set display_name for labels in the composer and description for this list. Reserved keys embeddings, transcription, title_generator, expert, and explorer are internal and not shown here.">
+                  {configModelViews.length > 0
+                    ? (
+                      <div class="model-list">
+                        {configModelViews.map((model) => (
+                          <div class="model-item">
+                            <div>
+                              <div class="name">{model.name}</div>
+                              <div class="desc">{model.meta}</div>
+                            </div>
+                            <app-badge variant="secondary">{model.badge}</app-badge>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                    : <p class="muted">{modelsLoaded ? "No server models are configured." : "Loading models…"}</p>}
+                  <p class="muted">Example: duplicate a [models.*] block in config.toml.example, set display_name and description, then restart the server.</p>
+                </app-card>
+
+                <app-card title="Providers" description="Add your own LLM provider credentials. Models you define below will use these providers.">
+                  {providerViews.length > 0
+                    ? (
+                      <div class="model-list">
+                        {providerViews.map((provider) => (
+                          <div class="model-item">
+                            <div>
+                              <div class="name">{provider.name}</div>
+                              <div class="desc">{provider.meta}</div>
+                            </div>
+                            <app-button variant="outline" size="sm" data-action="del-provider" data-id={provider.id}>Remove</app-button>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                    : <p class="muted">{modelsLoaded ? "No personal providers yet." : "Loading providers…"}</p>}
+                  <form data-form="provider">
+                    <div class="grid">
+                      <label>Name<input name="name" required placeholder="my_openai" autocomplete="off" pattern="[A-Za-z0-9_-]+" /></label>
+                      <label>Kind<select name="kind" required>
+                        <option value="openai">OpenAI</option>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="anthropic">Anthropic</option>
+                        <option value="ollama">Ollama</option>
+                      </select></label>
+                      <label class="full">URL<input name="url" type="url" required placeholder="https://api.openai.com/v1" autocomplete="off" /></label>
+                      <label class="full">API token<input name="token" type="password" required autocomplete="off" /></label>
+                    </div>
+                    <div class="actions"><app-button data-action="add-provider">Add provider</app-button></div>
+                  </form>
+                </app-card>
+
+                <app-card title="Personal models" description="Define models that use your providers. The registry key is internal; display_name is shown in the composer and description appears here.">
+                  {userModelViews.length > 0
+                    ? (
+                      <div class="model-list">
+                        {userModelViews.map((model) => (
+                          <div class="model-item">
+                            <div>
+                              <div class="name">{model.name}</div>
+                              <div class="desc">{model.meta}</div>
+                            </div>
+                            <app-button variant="outline" size="sm" data-action="del-user-model" data-id={model.id}>Remove</app-button>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                    : <p class="muted">{modelsLoaded ? "No personal models yet." : "Loading models…"}</p>}
+                  <form data-form="user-model">
+                    <div class="grid">
+                      <label>Registry key<input name="name" required placeholder="my_sonnet" autocomplete="off" pattern="[A-Za-z0-9_-]+" /></label>
+                      <label>Display name<input name="display_name" placeholder="Claude Sonnet" autocomplete="off" /></label>
+                      <label class="full">Description<textarea name="description" placeholder="When to use this model." rows="2"></textarea></label>
+                      <label>Model slug<input name="slug" required placeholder="claude-sonnet-4-20250514" autocomplete="off" /></label>
+                      <label>Provider<select name="provider_id" required innerHTML={providerSelectHtml}></select></label>
+                      <label>Reasoning effort<select name="reasoning_effort">
+                        <option value="">Disabled</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="xhigh">XHigh</option>
+                      </select></label>
+                      <label class="checkbox-row"><app-checkbox name="vision" value="on" /> Supports vision</label>
+                    </div>
+                    <div class="actions"><app-button data-action="add-user-model">Add model</app-button></div>
+                  </form>
+                </app-card>
+
+                <app-card title="Subagent settings" description="Control which models the main agent can use when spawning subagents, and add guidance on when to pick each one. Users without saved settings inherit the server default routing guide from config.">
+                  <p class="muted">Allowed subagent models</p>
+                  <div class="checkbox-list">
+                    {subagentModelViews.map((model) => (
+                      <label class="checkbox-row">
+                        <app-checkbox data-model={model.key} checked={model.checked} />
+                        <span>{model.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <label class="full skill-content">Model selection guidelines
+                    <textarea
+                      name="subagent-guidelines"
+                      placeholder="Describe when to use faster vs stronger models, cost constraints, or task-specific preferences."
+                    >{escapeHtml(agentSettings.subagent_guidelines)}</textarea>
+                  </label>
+                  {agentSettings.using_server_defaults
+                    ? <p class="muted">Showing the server default from config. Save to keep your own copy; your settings will not change when admins update config.</p>
+                    : <p class="muted">Using your saved settings.</p>}
+                  <div class="actions">
+                    <app-button data-action="save-agent-settings">Save agent settings</app-button>
+                    {agentSettingsSaved ? <span class="saved">Saved.</span> : ""}
+                  </div>
+                  <p class="error">{agentSettingsError}</p>
+                </app-card>
+
+                <p class="error">{modelsError}</p>
               </section>
 
               <section class="panel" data-panel="threads">

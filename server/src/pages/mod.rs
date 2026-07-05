@@ -10,7 +10,7 @@ use crate::components::{
     app_approval_bar::AppApprovalBar,
     app_button::AppButton,
     app_message::AppMessage,
-    app_prompt_input::AppPromptInput,
+    app_prompt_input::{AppPromptInput, Models},
     app_quiz_bar::AppQuizBar,
     app_sidebar::{AppSidebar, AppSidebarToggle, SidebarProject, SidebarThread},
     auth_form::AuthForm,
@@ -268,7 +268,7 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
         "Message S.T.R.I.D.E."
     };
     let prompt = with_attrs(
-        &AppPromptInput::new(false, data.running, placeholder).render(),
+        &AppPromptInput::new(false, data.running, placeholder, Vec::<Models>::new(), "").render(),
         r#"style="margin: auto" data-prompt"#,
     );
     let approval = with_attrs(

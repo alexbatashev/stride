@@ -8,6 +8,7 @@ mod email;
 mod github;
 mod google;
 mod mcp_servers;
+mod model_registry;
 mod notify;
 mod pages;
 mod rate_limit;
@@ -173,15 +174,19 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let public_url = config.public_url();
-    let mut runner_builder =
-        runner::inproc::InProcessAgentPool::builder(db.clone(), model_config.clone())
-            .tools(tools)
-            .mcp_tools(mcp_tools)
-            .telegram_bot_token(telegram_bot_token.clone())
-            .public_url(public_url)
-            .github_runtime(github_runtime.clone())
-            .email_service(email_service)
-            .google_service(google_service.clone());
+    let mut runner_builder = runner::inproc::InProcessAgentPool::builder(
+        db.clone(),
+        model_config.clone(),
+        config.clone(),
+        cipher.clone(),
+    )
+    .tools(tools)
+    .mcp_tools(mcp_tools)
+    .telegram_bot_token(telegram_bot_token.clone())
+    .public_url(public_url)
+    .github_runtime(github_runtime.clone())
+    .email_service(email_service)
+    .google_service(google_service.clone());
     if let Some(ref vfs) = vfs_provider {
         runner_builder = runner_builder.vfs(vfs.clone());
     }
@@ -505,6 +510,27 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route(
             "/api/settings/thread-retention",
             get(api::thread_settings::get).put(api::thread_settings::update),
+        )
+        .route("/api/models", get(api::models::list))
+        .route(
+            "/api/settings/providers",
+            get(api::providers::list).post(api::providers::create),
+        )
+        .route(
+            "/api/settings/providers/{id}",
+            delete(api::providers::delete),
+        )
+        .route(
+            "/api/settings/user-models",
+            get(api::user_models::list).post(api::user_models::create),
+        )
+        .route(
+            "/api/settings/user-models/{id}",
+            delete(api::user_models::delete),
+        )
+        .route(
+            "/api/settings/agent",
+            get(api::agent_settings::get).put(api::agent_settings::update),
         )
         .route("/api/settings/telegram/login", post(api::telegram::login))
         .route(
