@@ -53,6 +53,32 @@ export type ThreadMessage = {
 	tool_call_name: string | null;
 	tool_call_id: string | null;
 	tool_format: ToolOutputFormat | null;
+	run_id: string | null;
+};
+
+export type RunStatus = 'running' | 'finished' | 'failed' | 'cancelled' | 'interrupted';
+
+export type RunToolCall = {
+	tool_call_id: string;
+	call_seq: number;
+	name: string;
+	status: RunStatus;
+	output_format: string;
+	background: boolean;
+	started_at_ms: number;
+	finished_at_ms?: number;
+	assistant_message_id?: string;
+};
+
+export type RunInfo = {
+	id: string;
+	status: RunStatus;
+	started_at_ms: number;
+	finished_at_ms?: number;
+	final_message_id?: string;
+	error?: string;
+	user_message_id?: string;
+	tool_calls: RunToolCall[];
 };
 
 export type SendMessageResponse = {
@@ -68,26 +94,27 @@ export type ThreadEvent = {
 		| {
 				type: 'Snapshot';
 				status: 'idle' | 'running';
+					run: {run_id: string; started_at_ms: number} | null;
 					in_progress: {run_id: string; content: string; format: 'markdown' | 'html'; thinking: string | null} | null;
-					tool_progress: {tool_call_id: string; name: string; content: string; format: ToolOutputFormat}[];
+					tool_progress: {tool_call_id: string; name: string; content: string; format: ToolOutputFormat; call_seq: number; background: boolean; started_at_ms: number}[];
 				pending_approval: {approval_id: string; message: string} | null;
 				pending_quiz: {quiz_id: string; questions: QuizQuestion[]} | null;
 		  }
-		| {type: 'RunStarted'}
+		| {type: 'RunStarted'; started_at_ms: number}
 		| {type: 'UserMessageCommitted'; message_id: string; seq: number}
 		| {type: 'AgentDelta'; content: string; format: 'markdown' | 'html'}
 		| {type: 'ThinkingDelta'; thinking: string}
 		| {type: 'AgentMessageCommitted'; message_id: string; seq: number}
-		| {type: 'ToolStarted'; tool_call_id: string; name: string}
+		| {type: 'ToolStarted'; tool_call_id: string; name: string; call_seq: number; started_at_ms: number; background: boolean}
 		| {type: 'ToolProgress'; tool_call_id: string; name: string; delta: string; format: ToolOutputFormat}
-		| {type: 'ToolFinished'; tool_call_id: string; name: string; format: ToolOutputFormat}
+		| {type: 'ToolFinished'; tool_call_id: string; name: string; format: ToolOutputFormat; finished_at_ms: number; status: 'finished' | 'failed'}
 		| {type: 'WaitingForApproval'; approval_id: string; message: string}
 		| {type: 'ApprovalResolved'; approval_id: string; approved: boolean}
 		| {type: 'WaitingForQuiz'; quiz_id: string; questions: QuizQuestion[]}
 		| {type: 'QuizAnswered'; quiz_id: string}
-		| {type: 'RunFinished'}
-		| {type: 'RunFailed'; error: string}
-		| {type: 'RunCancelled'};
+		| {type: 'RunFinished'; finished_at_ms: number; final_message_id?: string}
+		| {type: 'RunFailed'; error: string; finished_at_ms: number}
+		| {type: 'RunCancelled'; finished_at_ms: number};
 };
 
 export type QuizQuestion = {
@@ -138,6 +165,11 @@ export async function deleteThread(threadId: string): Promise<void> {
 
 export async function listMessages(threadId: string): Promise<ThreadMessage[]> {
 	return request(`/api/threads/${threadId}/messages`);
+}
+
+export async function fetchRuns(threadId: string): Promise<RunInfo[]> {
+	const data = await request<{runs: RunInfo[]}>(`/api/threads/${threadId}/runs`);
+	return data?.runs ?? [];
 }
 
 export async function sendMessage(

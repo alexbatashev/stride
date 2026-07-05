@@ -16,15 +16,18 @@ argon_module!(app_button);
 argon_module!(app_message);
 argon_module!(app_prompt_input);
 argon_module!(app_quiz_bar);
+argon_module!(app_run_group);
 argon_module!(app_sidebar);
 argon_module!(app_spoiler);
 argon_module!(app_text_input);
+argon_module!(app_tool_call);
 argon_module!(auth_form);
 argon_module!(auto_markdown);
 
 argon_module!(archive);
 argon_module!(arrow_up);
 argon_module!(bot_message_square);
+argon_module!(check);
 argon_module!(chevron_down);
 argon_module!(chevron_left);
 argon_module!(chevron_right);

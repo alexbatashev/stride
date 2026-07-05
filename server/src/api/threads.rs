@@ -105,6 +105,33 @@ pub struct ThreadPageData {
     pub projects: Vec<ProjectTemplateData>,
     pub ungrouped_threads: Vec<ThreadTemplateData>,
     pub messages: Vec<MessageTemplateData>,
+    pub runs: Vec<RunTemplateData>,
+}
+
+#[derive(Serialize)]
+pub struct RunTemplateData {
+    pub id: String,
+    pub status: &'static str,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+    pub user_message_id: Option<String>,
+    pub final_message_id: Option<String>,
+    pub tool_calls: Vec<ToolCallTemplateData>,
+}
+
+#[derive(Serialize)]
+pub struct ToolCallTemplateData {
+    pub tool_call_id: String,
+    pub name: String,
+    pub status: &'static str,
+    pub background: bool,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+    pub call_seq: i64,
+    pub format: &'static str,
+    pub assistant_message_id: Option<String>,
+    pub content: String,
+    pub result_text: String,
 }
 
 #[derive(Serialize)]
@@ -134,6 +161,8 @@ pub struct MessageTemplateData {
     pub content: String,
     pub thinking: Option<String>,
     pub has_thinking: bool,
+    pub run_id: Option<String>,
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -557,6 +586,12 @@ pub async fn thread_page_data(
         (Vec::new(), false)
     };
 
+    let run_template_data = if let Some(thread_id) = thread_id {
+        build_run_template_data(state, thread_id, &messages).await?
+    } else {
+        Vec::new()
+    };
+
     let thread_template_data: Vec<ThreadTemplateData> = all_threads
         .iter()
         .map(|thread| ThreadTemplateData {
@@ -614,9 +649,12 @@ pub async fn thread_page_data(
                     content: message.content,
                     thinking: message.thinking,
                     has_thinking,
+                    run_id: message.run_id,
+                    tool_call_id: message.tool_call_id,
                 }
             })
             .collect(),
+        runs: run_template_data,
     })
 }
 
@@ -1012,6 +1050,88 @@ async fn collect_thread_runs(
         .collect();
 
     Ok(RunsResponse { runs })
+}
+
+// Builds the SSR run/tool-call timeline data. Tool content is folded from the
+// thread's messages: a tool-role message supplies the body, a tool_wakeup
+// message supplies the result section — mirroring the client hydrator.
+async fn build_run_template_data(
+    state: &ServerState,
+    thread_id: Uuid,
+    messages: &[MessageResponse],
+) -> Result<Vec<RunTemplateData>, ThreadApiError> {
+    let mut run_rows = runs::select()
+        .where_(runs::thread_id.eq(thread_id))
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+    run_rows.sort_by_key(|run| run.started_at_ms);
+
+    let mut call_rows = tool_call_records::select()
+        .where_(tool_call_records::parent_thread.eq(thread_id))
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+    call_rows.sort_by_key(|call| call.call_seq);
+
+    let wakeups: std::collections::HashMap<&str, &str> = messages
+        .iter()
+        .filter(|m| m.source == "tool_wakeup")
+        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m.content.as_str())))
+        .collect();
+    let tool_bodies: std::collections::HashMap<&str, &str> = messages
+        .iter()
+        .filter(|m| m.role == "tool")
+        .filter_map(|m| m.tool_call_id.as_deref().map(|id| (id, m.content.as_str())))
+        .collect();
+
+    let mut calls_by_run: std::collections::HashMap<Uuid, Vec<ToolCallTemplateData>> =
+        std::collections::HashMap::new();
+    for call in call_rows {
+        let Some(run_id) = call.run_id else {
+            continue;
+        };
+        let content = tool_bodies
+            .get(call.tool_call_id.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let result_text = wakeups
+            .get(call.tool_call_id.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        calls_by_run
+            .entry(run_id)
+            .or_default()
+            .push(ToolCallTemplateData {
+                tool_call_id: call.tool_call_id,
+                name: call.name,
+                status: call.status.as_str(),
+                background: call.background,
+                started_at_ms: call.started_at_ms,
+                finished_at_ms: call.finished_at_ms.unwrap_or(0),
+                call_seq: call.call_seq,
+                format: tool_output_format(Some(call.output_format.as_str())),
+                assistant_message_id: call.assistant_message_id.map(|id| id.to_string()),
+                content,
+                result_text,
+            });
+    }
+
+    Ok(run_rows
+        .into_iter()
+        .map(|run| {
+            let tool_calls = calls_by_run.remove(&run.id).unwrap_or_default();
+            RunTemplateData {
+                id: run.id.to_string(),
+                status: run.status.as_str(),
+                started_at_ms: run.started_at_ms,
+                finished_at_ms: run.finished_at_ms.unwrap_or(0),
+                user_message_id: run.user_message_id.map(|id| id.to_string()),
+                final_message_id: run.final_message_id.map(|id| id.to_string()),
+                tool_calls,
+            }
+        })
+        .collect())
 }
 
 pub async fn send_message(

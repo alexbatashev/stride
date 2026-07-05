@@ -5,14 +5,20 @@ pub mod automations;
 pub mod files;
 pub mod settings;
 
-use crate::api::threads::ThreadPageData;
+use std::collections::{HashMap, HashSet};
+
+use crate::api::threads::{
+    MessageTemplateData, RunTemplateData, ThreadPageData, ToolCallTemplateData,
+};
 use crate::components::{
     app_approval_bar::AppApprovalBar,
     app_button::AppButton,
     app_message::AppMessage,
     app_prompt_input::{AppPromptInput, Models},
     app_quiz_bar::AppQuizBar,
+    app_run_group::AppRunGroup,
     app_sidebar::{AppSidebar, AppSidebarToggle, SidebarProject, SidebarThread},
+    app_tool_call::AppToolCall,
     auth_form::AuthForm,
 };
 
@@ -146,8 +152,159 @@ fn render_sidebar(
     format!("<nav>{sidebar}</nav>")
 }
 
+fn render_flat_message(message: &MessageTemplateData) -> String {
+    let content = if message.message_type == "agent" && message.format == "html" {
+        message.content.clone()
+    } else {
+        html_escape(&message.content)
+    };
+    AppMessage::new(
+        &message.id,
+        message.seq as f64,
+        message.role,
+        message.source,
+        message.message_type,
+        message.format,
+        content,
+        message
+            .thinking
+            .as_deref()
+            .map(html_escape)
+            .unwrap_or_default(),
+        message
+            .tool_name
+            .as_deref()
+            .map(html_escape)
+            .unwrap_or_default(),
+    )
+    .render()
+}
+
+fn render_tool_call(call: &ToolCallTemplateData) -> String {
+    AppToolCall::new(
+        &call.tool_call_id,
+        html_escape(&call.name),
+        call.status,
+        call.background,
+        call.started_at_ms as f64,
+        call.finished_at_ms as f64,
+        false,
+        html_escape(&call.content),
+        call.format,
+        html_escape(&call.result_text),
+    )
+    .render()
+}
+
+// The seq at which a run's items anchor into the timeline: the smallest seq of
+// any message belonging to the run (its triggering user message in practice).
+fn run_anchor_seq(run: &RunTemplateData, messages: &[MessageTemplateData]) -> u64 {
+    messages
+        .iter()
+        .filter(|m| m.run_id.as_deref() == Some(&run.id))
+        .map(|m| m.seq)
+        .min()
+        .unwrap_or(u64::MAX)
+}
+
+// The message a run treats as its final response: the authoritative
+// final_message_id when known, else — while no final is committed — the newest
+// agent message provided no tool call was issued at or after it. Mirrors the
+// client hydrator so SSR/hydration placement agrees.
+fn candidate_final_id<'a>(
+    run: &'a RunTemplateData,
+    messages: &'a [MessageTemplateData],
+) -> Option<&'a str> {
+    if let Some(id) = run.final_message_id.as_deref() {
+        return Some(id);
+    }
+
+    let best = messages
+        .iter()
+        .filter(|m| m.run_id.as_deref() == Some(&run.id))
+        .filter(|m| Some(&m.id) != run.user_message_id.as_ref())
+        .filter(|m| m.role == "agent" && m.tool_name.is_none() && m.source != "tool_wakeup")
+        .max_by_key(|m| m.seq)?;
+
+    let seq_by_id: HashMap<&str, u64> = messages.iter().map(|m| (m.id.as_str(), m.seq)).collect();
+    for call in &run.tool_calls {
+        let anchor = call
+            .assistant_message_id
+            .as_deref()
+            .and_then(|id| seq_by_id.get(id).copied());
+        if anchor.is_some_and(|anchor| anchor >= best.seq) {
+            return None;
+        }
+    }
+    Some(&best.id)
+}
+
+// A run group's light-DOM children: intermediate agent notes and tool-call
+// slots ordered by (anchor seq, call_seq) — matching the client hydrator.
+fn render_run_group(run: &RunTemplateData, messages: &[MessageTemplateData]) -> String {
+    let seq_by_id: HashMap<&str, u64> = messages.iter().map(|m| (m.id.as_str(), m.seq)).collect();
+    let final_id = candidate_final_id(run, messages);
+
+    enum Item<'a> {
+        Message(&'a MessageTemplateData),
+        Tool(&'a ToolCallTemplateData),
+    }
+    let mut items: Vec<(u64, u64, Item)> = Vec::new();
+    for message in messages {
+        if message.run_id.as_deref() != Some(&run.id) {
+            continue;
+        }
+        if Some(message.id.as_str()) == run.user_message_id.as_deref()
+            || Some(message.id.as_str()) == final_id
+        {
+            continue;
+        }
+        if message.source == "human" || message.role == "tool" || message.source == "tool_wakeup" {
+            continue;
+        }
+        items.push((message.seq, 0, Item::Message(message)));
+    }
+    for call in &run.tool_calls {
+        let anchor = call
+            .assistant_message_id
+            .as_deref()
+            .and_then(|id| seq_by_id.get(id).copied())
+            .unwrap_or(call.started_at_ms as u64);
+        items.push((anchor, 1 + call.call_seq as u64, Item::Tool(call)));
+    }
+    items.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    let children = items
+        .into_iter()
+        .map(|(_, _, item)| match item {
+            Item::Message(message) => render_flat_message(message),
+            Item::Tool(call) => render_tool_call(call),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let group = AppRunGroup::new(
+        &run.id,
+        run.status,
+        run.started_at_ms as f64,
+        run.finished_at_ms as f64,
+        false,
+    )
+    .render();
+    // Children ride in the host's light DOM, after the shadow template, so the
+    // client hydrator reconciles them by key without duplicating nodes.
+    group.replacen(
+        "</app-run-group>",
+        &format!("{children}</app-run-group>"),
+        1,
+    )
+}
+
+// Builds the run-grouped timeline. User (human) messages, legacy messages
+// (run_id null), and run final responses render flat; each run gets one group
+// slotted at its anchor seq. Runs order by start time / anchor.
 fn render_messages(data: &ThreadPageData) -> String {
-    if data.thread_id.is_empty() || data.messages.is_empty() {
+    if data.thread_id.is_empty() || (data.messages.is_empty() && data.runs.is_empty()) {
         return r#"<div class="empty" data-empty>
                 <h2>What are we working on?</h2>
                 <p>Start a thread and S.T.R.I.D.E. will keep the context here.</p>
@@ -155,34 +312,45 @@ fn render_messages(data: &ThreadPageData) -> String {
             .to_string();
     }
 
-    data.messages
+    let run_ids: HashSet<&str> = data.runs.iter().map(|r| r.id.as_str()).collect();
+    let final_ids: HashSet<&str> = data
+        .runs
         .iter()
-        .map(|message| {
-            let content = if message.message_type == "agent" && message.format == "html" {
-                message.content.clone()
-            } else {
-                html_escape(&message.content)
-            };
-            AppMessage::new(
-                &message.id,
-                message.seq as f64,
-                message.role,
-                message.source,
-                message.message_type,
-                message.format,
-                content,
-                message
-                    .thinking
-                    .as_deref()
-                    .map(html_escape)
-                    .unwrap_or_default(),
-                message
-                    .tool_name
-                    .as_deref()
-                    .map(html_escape)
-                    .unwrap_or_default(),
-            )
-            .render()
+        .filter_map(|r| candidate_final_id(r, &data.messages))
+        .collect();
+    let user_trigger_ids: HashSet<&str> = data
+        .runs
+        .iter()
+        .filter_map(|r| r.user_message_id.as_deref())
+        .collect();
+
+    enum Entry<'a> {
+        Message(&'a MessageTemplateData),
+        Group(&'a RunTemplateData),
+    }
+    let mut entries: Vec<(u64, u8, Entry)> = Vec::new();
+    for message in &data.messages {
+        match &message.run_id {
+            Some(run_id) if run_ids.contains(run_id.as_str()) => {
+                if user_trigger_ids.contains(message.id.as_str()) {
+                    entries.push((message.seq, 0, Entry::Message(message)));
+                } else if final_ids.contains(message.id.as_str()) {
+                    entries.push((message.seq, 2, Entry::Message(message)));
+                }
+            }
+            _ => entries.push((message.seq, 0, Entry::Message(message))),
+        }
+    }
+    for run in &data.runs {
+        entries.push((run_anchor_seq(run, &data.messages), 1, Entry::Group(run)));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    entries
+        .into_iter()
+        .map(|(_, _, entry)| match entry {
+            Entry::Message(message) => render_flat_message(message),
+            Entry::Group(run) => render_run_group(run, &data.messages),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -513,7 +681,8 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
 #[cfg(test)]
 mod tests {
     use crate::api::threads::{
-        MessageTemplateData, ProjectTemplateData, ThreadPageData, ThreadTemplateData,
+        MessageTemplateData, ProjectTemplateData, RunTemplateData, ThreadPageData,
+        ThreadTemplateData, ToolCallTemplateData,
     };
 
     fn sample_data() -> ThreadPageData {
@@ -549,6 +718,8 @@ mod tests {
                     content: "done".to_string(),
                     thinking: None,
                     has_thinking: false,
+                    run_id: None,
+                    tool_call_id: Some("legacy-tool".to_string()),
                 },
                 MessageTemplateData {
                     id: "message-2".to_string(),
@@ -561,8 +732,59 @@ mod tests {
                     content: "hello & <world>".to_string(),
                     thinking: None,
                     has_thinking: false,
+                    run_id: None,
+                    tool_call_id: None,
+                },
+                MessageTemplateData {
+                    id: "user-run".to_string(),
+                    seq: 3,
+                    role: "user",
+                    source: "human",
+                    format: "markdown",
+                    message_type: "user",
+                    tool_name: None,
+                    content: "run something".to_string(),
+                    thinking: None,
+                    has_thinking: false,
+                    run_id: Some("run-1".to_string()),
+                    tool_call_id: None,
+                },
+                MessageTemplateData {
+                    id: "agent-final".to_string(),
+                    seq: 5,
+                    role: "agent",
+                    source: "system",
+                    format: "markdown",
+                    message_type: "agent",
+                    tool_name: None,
+                    content: "all done".to_string(),
+                    thinking: None,
+                    has_thinking: false,
+                    run_id: Some("run-1".to_string()),
+                    tool_call_id: None,
                 },
             ],
+            runs: vec![RunTemplateData {
+                id: "run-1".to_string(),
+                status: "finished",
+                started_at_ms: 1_000_000,
+                finished_at_ms: 1_005_000,
+                user_message_id: Some("user-run".to_string()),
+                final_message_id: Some("agent-final".to_string()),
+                tool_calls: vec![ToolCallTemplateData {
+                    tool_call_id: "call-1".to_string(),
+                    name: "Shell".to_string(),
+                    status: "finished",
+                    background: false,
+                    started_at_ms: 1_001_000,
+                    finished_at_ms: 1_002_000,
+                    call_seq: 0,
+                    format: "plaintext",
+                    assistant_message_id: Some("user-run".to_string()),
+                    content: "stdout".to_string(),
+                    result_text: String::new(),
+                }],
+            }],
         }
     }
 
@@ -587,6 +809,17 @@ mod tests {
         assert!(html.contains(r#"data-kind="tool_output""#));
         assert!(html.contains(r#"data-message-id="message-2""#));
         assert!(html.contains("hello &amp; &lt;world&gt;"));
+        // The run renders as a group wrapping its tool-call slot, with the
+        // triggering user message and final response flat outside it.
+        assert!(html.contains(r#"<app-run-group data-run-id="run-1""#));
+        assert!(html.contains(r#"data-tool-call-id="call-1""#));
+        assert!(html.contains(r#"data-message-id="user-run""#));
+        assert!(html.contains(r#"data-message-id="agent-final""#));
+        // The tool-call slot nests inside its run group, not at the top level.
+        let group_start = html.find(r#"<app-run-group data-run-id="run-1""#).unwrap();
+        let group_end = html[group_start..].find("</app-run-group>").unwrap() + group_start;
+        let call_at = html.find(r#"data-tool-call-id="call-1""#).unwrap();
+        assert!(call_at > group_start && call_at < group_end);
         // Composer state mirrors the running flag.
         assert!(html.contains(r#"data-running="true""#));
         assert!(html.contains(r#"data-prompt"#));
