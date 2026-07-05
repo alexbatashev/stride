@@ -4,8 +4,6 @@
  */
 import { Component, css, effect } from "@frontiers-labs/argon";
 
-type MenuItem = { label: string; action: string; variant?: string };
-
 const styles = css`
   :host {
     position: fixed;
@@ -70,7 +68,7 @@ export function AppDropdownMenu({
   position = "",
 }: {
   open?: boolean;
-  items?: MenuItem[];
+  items?: string[];
   position?: string;
 }): Component {
   effect(() => {
@@ -84,26 +82,22 @@ export function AppDropdownMenu({
         role="menu"
         style={open ? "" : "display:none"}
         onClick={(event: Event) => {
-          const item = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
-          if (!item?.dataset.action) return;
+          const item = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
+          const action = item?.textContent?.trim().toLowerCase();
+          if (!action) return;
           this.dispatchEvent(
             new CustomEvent("select", {
               bubbles: true,
               composed: true,
-              detail: { action: item.dataset.action },
+              detail: { action },
             }),
           );
         }}
       >
         {items
           .map((item) => (
-            <button
-              type="button"
-              role="menuitem"
-              class={`item ${item.variant ?? ""}`}
-              data-action={item.action}
-            >
-              {item.label}
+            <button type="button" role="menuitem" class="item">
+              {item}
             </button>
           ))
           .join("")}

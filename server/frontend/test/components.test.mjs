@@ -276,7 +276,10 @@ test('app-data-table renders rows and reports selection', () => {
 
   const action = lastEvent(el, 'row-action');
   el.shadowRoot.querySelector('button[data-row-id="dir/sub"]').click();
-  assert.deepEqual(action.detail, { action: 'open', rowId: 'dir/sub' });
+  assert.equal(action.detail.action, 'open');
+  assert.equal(action.detail.rowId, 'dir/sub');
+  assert.equal(typeof action.detail.left, 'number');
+  assert.equal(typeof action.detail.top, 'number');
 });
 
 test('app-settings switches sections and lists integrations', () => {

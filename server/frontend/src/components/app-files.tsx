@@ -35,14 +35,14 @@ interface FileItem {
   kind: string;
   sizeLabel: string;
   updatedLabel: string;
-  mimeType: string | null;
+  mimeType: string;
 }
 
 interface FileVersionItem {
   version: number;
   sizeLabel: string;
   createdLabel: string;
-  mimeType: string | null;
+  mimeType: string;
   latest: boolean;
 }
 
@@ -99,7 +99,7 @@ function toFileItem(entry: {
     kind: entry.kind,
     sizeLabel: entry.kind === "directory" ? "" : formatSize(entry.size),
     updatedLabel: formatDate(entry.updated_at),
-    mimeType: entry.mime_type ?? null,
+    mimeType: entry.mime_type ?? "",
   };
 }
 
@@ -141,7 +141,7 @@ function fileName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? "download";
 }
 
-function isPreviewable(mimeType: string | null, path: string): boolean {
+function isPreviewable(mimeType: string, path: string): boolean {
   const lower = path.toLowerCase();
   return (
     mimeType === "application/pdf" ||
@@ -159,14 +159,14 @@ function versionByNumber(host: VersionHost, version: number): FileVersionItem | 
   return (host.versions as FileVersionItem[]).find((item) => item.version === version);
 }
 
-function menuItems(host: VersionHost): { label: string; action: string }[] {
+function menuItems(host: VersionHost): string[] {
   const target = host.menuTarget;
   if (!target) return [];
   const mimeType =
-    target.kind === "file" ? fileByPath(host, target.path)?.mimeType ?? null : versionByNumber(host, target.version)?.mimeType ?? null;
-  const items = [{ label: "Download", action: "download" }];
+    target.kind === "file" ? fileByPath(host, target.path)?.mimeType ?? "" : versionByNumber(host, target.version)?.mimeType ?? "";
+  const items = ["Download"];
   if (isPreviewable(mimeType, target.path)) {
-    items.push({ label: "Preview", action: "preview" });
+    items.push("Preview");
   }
   return items;
 }
@@ -179,7 +179,7 @@ function toVersionItem(
     version: version.version,
     sizeLabel: formatSize(version.size),
     createdLabel: formatDateTime(version.created_at),
-    mimeType: version.mime_type,
+    mimeType: version.mime_type ?? "",
     latest,
   };
 }
@@ -1024,14 +1024,29 @@ export function AppFileBrowser({
         title={activeFile ? fileName(activeFile.path) : "File versions"}
         description="Restore, download, or preview a saved version."
       >
-        <div class="versions">
+        <div
+          class="versions"
+          onClick={(event: MouseEvent) => {
+            const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-version-action]");
+            if (!button) return;
+            const row = button.closest(".version-row");
+            const index = row ? Array.from(row.parentElement?.children ?? []).indexOf(row) : -1;
+            const version = (this.versions as FileVersionItem[])[index]?.version;
+            if (version == null) return;
+            if (button.dataset.versionAction === "restore") {
+              void restoreVersionAndReload(this as VersionHost, actions, version);
+            } else if (button.dataset.versionAction === "menu" && activeFile) {
+              openMenu(this as VersionHost, event, { kind: "version", path: activeFile.path, version });
+            }
+          }}
+        >
           {versionsLoading ? (
             <div class="dialog-empty">Loading versions...</div>
           ) : versions.length === 0 ? (
             <div class="dialog-empty">No versions found.</div>
           ) : (
             versions.map((version) => (
-              <div class="version-row" key={String(version.version)}>
+              <div class="version-row">
                 <div class="version-main">
                   <div class="version-title">
                     <span>Version {version.version}</span>
@@ -1044,18 +1059,15 @@ export function AppFileBrowser({
                 <button
                   class="text-button"
                   type="button"
-                  onClick={() => void restoreVersionAndReload(this as VersionHost, actions, version.version)}
+                  data-version-action="restore"
                 >
                   Restore
                 </button>
                 <button
                   class="version-menu"
                   type="button"
-                  aria-label={`Actions for version ${version.version}`}
-                  onClick={(event: MouseEvent) => {
-                    if (!activeFile) return;
-                    openMenu(this as VersionHost, event, { kind: "version", path: activeFile.path, version: version.version });
-                  }}
+                  aria-label="Version actions"
+                  data-version-action="menu"
                 >
                   <IconEllipsisVertical />
                 </button>
@@ -1518,14 +1530,29 @@ export function AppFileManager({
         title={activeFile ? fileName(activeFile.path) : "File versions"}
         description="Restore, download, or preview a saved version."
       >
-        <div class="versions">
+        <div
+          class="versions"
+          onClick={(event: MouseEvent) => {
+            const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-version-action]");
+            if (!button) return;
+            const row = button.closest(".version-row");
+            const index = row ? Array.from(row.parentElement?.children ?? []).indexOf(row) : -1;
+            const version = (this.versions as FileVersionItem[])[index]?.version;
+            if (version == null) return;
+            if (button.dataset.versionAction === "restore") {
+              void restoreVersionAndReload(this as VersionHost, actions, version);
+            } else if (button.dataset.versionAction === "menu" && activeFile) {
+              openMenu(this as VersionHost, event, { kind: "version", path: activeFile.path, version });
+            }
+          }}
+        >
           {versionsLoading ? (
             <div class="dialog-empty">Loading versions...</div>
           ) : versions.length === 0 ? (
             <div class="dialog-empty">No versions found.</div>
           ) : (
             versions.map((version) => (
-              <div class="version-row" key={String(version.version)}>
+              <div class="version-row">
                 <div class="version-main">
                   <div class="version-title">
                     <span>Version {version.version}</span>
@@ -1538,18 +1565,15 @@ export function AppFileManager({
                 <button
                   class="text-button"
                   type="button"
-                  onClick={() => void restoreVersionAndReload(this as VersionHost, actions, version.version)}
+                  data-version-action="restore"
                 >
                   Restore
                 </button>
                 <button
                   class="version-menu"
                   type="button"
-                  aria-label={`Actions for version ${version.version}`}
-                  onClick={(event: MouseEvent) => {
-                    if (!activeFile) return;
-                    openMenu(this as VersionHost, event, { kind: "version", path: activeFile.path, version: version.version });
-                  }}
+                  aria-label="Version actions"
+                  data-version-action="menu"
                 >
                   <IconEllipsisVertical />
                 </button>
