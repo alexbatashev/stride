@@ -38,7 +38,7 @@ test('all custom elements register', () => {
     'app-switch', 'app-toggle', 'app-textarea', 'app-radio-group', 'app-slider',
     'app-breadcrumb', 'app-tabs', 'app-accordion', 'app-pagination', 'app-dialog',
     'app-alert-dialog', 'app-sheet', 'app-tooltip', 'app-popover', 'app-hover-card',
-    'app-select', 'icon-check',
+    'app-select', 'icon-check', 'app-run-group', 'app-tool-call',
   ]) {
     assert.ok(customElements.get(tag), `${tag} is not registered`);
   }
@@ -185,16 +185,32 @@ test('app-message tool output folds into a spoiler', () => {
   assert.ok(spoiler);
   assert.match(spoiler.shadowRoot.innerHTML, /Shell/);
   assert.doesNotMatch(spoiler.shadowRoot.innerHTML, /output/);
+  // Clicking the spoiler proposes a toggle; app-message keeps the open state
+  // and re-renders the spoiler open.
   spoiler.shadowRoot.querySelector('button').click();
-  assert.match(spoiler.shadowRoot.innerHTML, /output/);
+  const opened = el.shadowRoot.querySelector('app-spoiler');
+  assert.equal(opened.getAttribute('data-open'), 'true');
+  assert.match(opened.shadowRoot.innerHTML, /output/);
 });
 
-test('app-spoiler keeps open state across content updates', () => {
+test('app-spoiler is controlled: dispatches intent, renders from prop', () => {
   const el = mount('app-spoiler', { title: 'Shell', content: 'first' });
+  const toggled = lastEvent(el, 'spoiler-toggle');
+  assert.equal(el.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'false');
   el.shadowRoot.querySelector('button').click();
+  // No self-mutation: a click only proposes the next state.
+  assert.equal(toggled.detail.open, true);
+  assert.equal(el.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'false');
+  assert.doesNotMatch(el.shadowRoot.innerHTML, /first/);
+  // Parent applies the change; the spoiler re-syncs and content shows.
+  el.open = true;
   assert.equal(el.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'true');
   assert.match(el.shadowRoot.innerHTML, /first/);
+});
 
+test('app-spoiler open content survives content updates', () => {
+  const el = mount('app-spoiler', { title: 'Shell', content: 'first', open: true });
+  assert.match(el.shadowRoot.innerHTML, /first/);
   el.content = 'first second';
   assert.equal(el.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'true');
   assert.match(el.shadowRoot.innerHTML, /first second/);
@@ -595,4 +611,99 @@ test('app-alert-dialog is controlled: reports confirm and cancel', () => {
   assert.match(el.shadowRoot.querySelector('.overlay').getAttribute('style'), /display:\s*flex/);
   el.shadowRoot.querySelector('.cancel').click();
   assert.equal(answered.detail.confirmed, false);
+});
+
+test('app-run-group is controlled: dispatches toggle intent from prop', () => {
+  const el = mount('app-run-group', { runId: 'r1', status: 'running', startedAtMs: Date.now(), open: true });
+  const toggled = lastEvent(el, 'rungroup-toggle');
+  assert.equal(el.shadowRoot.querySelector('.header').getAttribute('aria-expanded'), 'true');
+  assert.ok(el.shadowRoot.querySelector('.body slot'), 'body slot missing while open');
+  el.shadowRoot.querySelector('.header').click();
+  // No self-mutation: click proposes the closed state.
+  assert.equal(toggled.detail.open, false);
+  assert.equal(el.shadowRoot.querySelector('.header').getAttribute('aria-expanded'), 'true');
+  el.open = false;
+  assert.equal(el.shadowRoot.querySelector('.header').getAttribute('aria-expanded'), 'false');
+  assert.equal(el.shadowRoot.querySelector('.body'), null);
+});
+
+test('app-run-group shows a ticking label while running', () => {
+  const el = mount('app-run-group', { runId: 'r1', status: 'running', startedAtMs: Date.now() - 5000, open: true });
+  assert.match(el.shadowRoot.querySelector('.label').textContent, /Working…/);
+  assert.match(el.shadowRoot.querySelector('.label').getAttribute('class'), /running/);
+});
+
+test('app-run-group formats a finished run duration', () => {
+  const started = 1_000_000;
+  const el = mount('app-run-group', {
+    runId: 'r1',
+    status: 'finished',
+    startedAtMs: started,
+    finishedAtMs: started + (5 * 60 + 54) * 1000,
+    open: false,
+  });
+  assert.equal(el.shadowRoot.querySelector('.label').textContent, 'Worked for 5m 54s');
+});
+
+test('app-run-group labels failed and interrupted runs distinctly', () => {
+  const started = 1_000_000;
+  const failed = mount('app-run-group', {
+    runId: 'r1', status: 'failed', startedAtMs: started, finishedAtMs: started + 12000, open: false,
+  });
+  assert.equal(failed.shadowRoot.querySelector('.label').textContent, 'Failed after 12s');
+  assert.match(failed.shadowRoot.querySelector('.label').getAttribute('class'), /failed/);
+
+  const interrupted = mount('app-run-group', { runId: 'r2', status: 'interrupted', startedAtMs: started, open: false });
+  assert.equal(interrupted.shadowRoot.querySelector('.label').textContent, 'Interrupted');
+});
+
+test('app-tool-call is controlled: dispatches toggle intent, renders body from prop', () => {
+  const el = mount('app-tool-call', { toolCallId: 'c1', name: 'Shell', status: 'running', startedAtMs: Date.now(), open: false });
+  const toggled = lastEvent(el, 'toolcall-toggle');
+  assert.match(el.shadowRoot.innerHTML, /Shell/);
+  assert.equal(el.shadowRoot.querySelector('.body'), null);
+  el.shadowRoot.querySelector('.header').click();
+  // No self-mutation: click proposes the open state.
+  assert.equal(toggled.detail.open, true);
+  assert.equal(el.shadowRoot.querySelector('.body'), null);
+  el.open = true;
+  assert.ok(el.shadowRoot.querySelector('.body'));
+});
+
+test('app-tool-call shows a spinner and ticking timer while running', () => {
+  const el = mount('app-tool-call', { toolCallId: 'c1', name: 'Shell', status: 'running', startedAtMs: Date.now() });
+  assert.ok(el.shadowRoot.querySelector('.spinner'), 'spinner missing while running');
+  assert.ok(el.shadowRoot.querySelector('.timer'), 'timer missing while running');
+});
+
+test('app-tool-call reports a background badge and finished duration', () => {
+  const started = 1_000_000;
+  const el = mount('app-tool-call', {
+    toolCallId: 'c1', name: 'Subagent', status: 'finished', background: true,
+    startedAtMs: started, finishedAtMs: started + 8000,
+  });
+  assert.match(el.shadowRoot.querySelector('.badge').textContent, /background/);
+  assert.equal(el.shadowRoot.querySelector('.timer').textContent, '8s');
+  assert.equal(el.shadowRoot.querySelector('.spinner'), null);
+});
+
+test('app-tool-call renders content and a result section when open', () => {
+  const el = mount('app-tool-call', {
+    toolCallId: 'c1', name: 'Shell', status: 'finished', open: true,
+    format: 'plaintext', content: 'stdout line', resultText: 'async wakeup result',
+  });
+  assert.match(el.shadowRoot.querySelector('.body').textContent, /stdout line/);
+  const result = el.shadowRoot.querySelector('.result');
+  assert.ok(result, 'result section missing');
+  assert.match(result.textContent, /async wakeup result/);
+});
+
+test('app-tool-call renders markdown content through auto-markdown', () => {
+  const el = mount('app-tool-call', {
+    toolCallId: 'c1', name: 'Shell', status: 'finished', open: true,
+    format: 'markdown', content: '# Done',
+  });
+  const md = el.shadowRoot.querySelector('auto-markdown');
+  assert.ok(md, 'auto-markdown missing for markdown format');
+  assert.equal(md.shadowRoot.querySelector('h1')?.textContent, 'Done');
 });

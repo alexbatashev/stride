@@ -1,4 +1,4 @@
-import { Component, css, state } from "@frontiers-labs/argon";
+import { Component, css } from "@frontiers-labs/argon";
 import { IconChevronDown } from "./icons/chevron-down.js";
 import { IconChevronRight } from "./icons/chevron-right.js";
 import { AutoMarkdown } from "./auto-markdown.js";
@@ -49,29 +49,36 @@ export function AppSpoiler({
   title = "Spoiler title",
   content = "",
   format = "",
+  open = false,
 }: {
   title?: string;
   content?: string;
   format?: string;
+  open?: boolean;
 }): Component {
-  let visible = state(false);
   const body = format === "markdown" ? <AutoMarkdown text={content} format="markdown" /> : content;
   return (
     <>
       <style>{styles}</style>
       <button
         type="button"
-        aria-expanded={visible ? "true" : "false"}
+        aria-expanded={open ? "true" : "false"}
         onClick={() => {
-          visible = !visible;
+          this.dispatchEvent(
+            new CustomEvent("spoiler-toggle", {
+              bubbles: true,
+              composed: true,
+              detail: { open: !open },
+            }),
+          );
         }}
       >
         <span class="title">{title}</span>
         <span class="chevron" aria-hidden="true">
-          {visible ? <IconChevronDown /> : <IconChevronRight />}
+          {open ? <IconChevronDown /> : <IconChevronRight />}
         </span>
       </button>
-      {visible && <div class="content">{body}</div>}
+      {open && <div class="content">{body}</div>}
     </>
   );
 }

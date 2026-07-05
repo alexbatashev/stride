@@ -1,4 +1,4 @@
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, onMount, state } from "@frontiers-labs/argon";
 import { AppSpoiler } from "./app-spoiler.js";
 import { AutoMarkdown } from "./auto-markdown.js";
 
@@ -75,14 +75,35 @@ export function AppMessage({
   thinking?: string;
   toolName?: string;
 }): Component {
+  let toolOutputOpen = state(false);
+  let thinkingOpen = state(false);
+  onMount(() => {
+    const onToggle = (event: Event) => {
+      const target = (event.target as Element | null)?.closest("app-spoiler");
+      if (!target) return;
+      const open = (event as CustomEvent<{ open: boolean }>).detail.open;
+      if (target.classList.contains("thinking")) {
+        thinkingOpen = open;
+      } else {
+        toolOutputOpen = open;
+      }
+    };
+    this.addEventListener("spoiler-toggle", onToggle);
+    return () => this.removeEventListener("spoiler-toggle", onToggle);
+  });
   return (
     <>
       <style>{styles}</style>
       {kind === "tool_output" ? (
-        <AppSpoiler title={toolName !== "" ? toolName : "Tool output"} content={text} format={format} />
+        <AppSpoiler
+          title={toolName !== "" ? toolName : "Tool output"}
+          content={text}
+          format={format}
+          open={toolOutputOpen}
+        />
       ) : (
         <div class={kind === "user" && source === "human" ? "bubble user" : "bubble"}>
-          {thinking !== "" && <AppSpoiler title="Thinking" content={thinking} />}
+          {thinking !== "" && <AppSpoiler class="thinking" title="Thinking" content={thinking} open={thinkingOpen} />}
           {kind === "agent" ? (
             <AutoMarkdown text={text} format={format} />
           ) : kind === "agent_note" ? (
