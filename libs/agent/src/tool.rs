@@ -44,9 +44,10 @@ impl ToolOutputFormat {
 /// because the whole agent is single-threaded (`Rc`/`RefCell`,
 /// `async_trait(?Send)`), so the host must spawn onto a same-thread executor.
 pub trait TaskSpawner {
-    /// Spawn a `!Send` future. Fire-and-forget: the task reports progress and
-    /// its final result back through the channel it captured, not a handle.
-    fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>);
+    /// Spawn a `!Send` future identified by the originating tool_call_id. The
+    /// task reports progress and its final result back through the channel it
+    /// captured; the id lets the host retain a handle keyed by the call.
+    fn spawn(&self, id: &str, future: Pin<Box<dyn Future<Output = ()> + 'static>>);
 }
 
 #[async_trait(?Send)]

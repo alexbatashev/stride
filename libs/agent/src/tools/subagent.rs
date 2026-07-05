@@ -120,11 +120,17 @@ impl SubAgentTool {
                 Ok(AgentResponseChunk::Quiz { answered, .. }) => {
                     let _ = answered.send(vec![]);
                 }
-                Ok(
-                    AgentResponseChunk::ToolStarted { .. }
-                    | AgentResponseChunk::ToolProgress { .. }
-                    | AgentResponseChunk::ToolFinished { .. },
-                ) => {}
+                Ok(AgentResponseChunk::ToolStarted { name, .. }) => {
+                    if let Some(sink) = sink.as_ref() {
+                        sink.progress(format!("\n\n> running tool `{name}`…\n"));
+                    }
+                }
+                Ok(AgentResponseChunk::ToolFinished { name, .. }) => {
+                    if let Some(sink) = sink.as_ref() {
+                        sink.progress(format!("\n> tool `{name}` finished\n"));
+                    }
+                }
+                Ok(AgentResponseChunk::ToolProgress { .. }) => {}
                 Err(error) => return json!({ "success": false, "error": error.to_string() }),
             }
         }
@@ -356,6 +362,110 @@ mod tests {
 
         fn requires_confirmation(&self) -> bool {
             true
+        }
+    }
+
+    struct EchoTool;
+
+    #[async_trait(?Send)]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo"
+        }
+
+        fn readable_name(&self) -> &str {
+            "Echo"
+        }
+
+        fn definition(&self) -> LlmTool {
+            LlmTool {
+                r#type: llm::ToolType::Function,
+                function: Function {
+                    description: "Echo the input.".to_string(),
+                    name: self.name().to_string(),
+                    parameters: Some(FunctionParameters {
+                        param_type: "object".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            }
+        }
+
+        async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
+            json!({ "echoed": args })
+        }
+    }
+
+    #[test]
+    fn forwards_nested_tool_markers_to_sink() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![named_tool_call_chunk(
+                    "subagent",
+                    r#"{"prompt":"p","model":"default"}"#,
+                )],
+                vec![named_tool_call_chunk("echo", r#"{"msg":"hi"}"#)],
+                vec![text_chunk("inner done")],
+                vec![text_chunk("outer done")],
+            ]);
+
+            let mut inner_registry = ToolRegistry::new();
+            inner_registry.register(EchoTool);
+            let subagent = SubAgentTool::new(inner_registry, vec![DEFAULT_MODEL.to_string()], "");
+
+            let mut parent_registry = ToolRegistry::new();
+            parent_registry.register(subagent);
+            let agent = BaseAgent::new_with_tools(
+                DEFAULT_MODEL.to_string(),
+                config(&mock),
+                String::new(),
+                vec![],
+                parent_registry,
+            );
+
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            futures::pin_mut!(stream);
+
+            let mut progress = String::new();
+            while let Some(chunk) = stream.next().await {
+                if let Ok(AgentResponseChunk::ToolProgress { delta, .. }) = &chunk {
+                    progress.push_str(delta);
+                }
+            }
+
+            assert!(progress.contains("running tool `Echo`"));
+            assert!(progress.contains("tool `Echo` finished"));
+        });
+    }
+
+    fn named_tool_call_chunk(name: &str, arguments: &str) -> StreamResponseChunk {
+        StreamResponseChunk {
+            id: "chunk".to_string(),
+            object: "mock.stream".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            system_fingerprint: None,
+            choices: vec![CompletionChoice {
+                message: None,
+                text: None,
+                index: 0,
+                delta: Some(Delta {
+                    content: None,
+                    thinking: None,
+                    tool_calls: Some(vec![ToolCallChunk {
+                        index: Some(0),
+                        id: Some("call_1".to_string()),
+                        call_type: None,
+                        function: Some(ToolCallFunction {
+                            name: Some(name.to_string()),
+                            arguments: Some(arguments.to_string()),
+                        }),
+                    }]),
+                }),
+                logprobs: None,
+                tool_calls: None,
+                finish_reason: Some("tool_calls".to_string()),
+            }],
         }
     }
 

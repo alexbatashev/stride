@@ -19,6 +19,9 @@ use crate::{QuizQuestion, TaskSpawner, Tool, ToolOutputFormat, ToolRegistry};
 
 pub const DEFAULT_MODEL: &str = "default";
 const WAIT_TOOLS_NAME: &str = "wait_tools";
+const CHECK_TOOLS_NAME: &str = "check_tools";
+/// Maximum bytes retained in a per-call progress tail served by `check_tools`.
+const PROGRESS_TAIL_CAP: usize = 2048;
 
 /// Registry key reserved for the text embedding model. When a model is
 /// registered under this name (pointing at an OpenAI- or Ollama-compatible
@@ -53,6 +56,9 @@ pub enum AgentResponseChunk {
         tool_call_id: String,
         name: String,
         arguments: String,
+        /// True when this call is being backgrounded via the async flag. Known
+        /// at emission because it is emitted after `take_async_flag`.
+        background: bool,
     },
     /// Incremental human-facing output from a streaming or backgrounded tool.
     ToolProgress {
@@ -386,6 +392,11 @@ impl BaseAgent {
             let (tool_tx, mut tool_rx) = mpsc::unbounded::<ToolEvent>();
             let mut outstanding_async: HashSet<String> = HashSet::new();
             let mut async_keys: HashMap<String, String> = HashMap::new();
+            // Rolling tail of progress output per outstanding async call, served
+            // to the model via `check_tools`. Capped and dropped on injection.
+            let mut progress_buffers: HashMap<String, String> = HashMap::new();
+            // Readable tool name per outstanding async call, for `check_tools`.
+            let mut async_names: HashMap<String, String> = HashMap::new();
             // Set when an async result was injected since the last model request,
             // so the loop re-requests the model (the wake) even if no async work
             // remains outstanding.
@@ -402,6 +413,9 @@ impl BaseAgent {
                 ($ev:expr) => {
                     match $ev {
                         ToolEvent::Progress { id, name, delta, format } => {
+                            if outstanding_async.contains(&id) {
+                                append_progress_tail(&mut progress_buffers, &id, &delta);
+                            }
                             yield Ok(AgentResponseChunk::ToolProgress {
                                 tool_call_id: id,
                                 name,
@@ -423,6 +437,8 @@ impl BaseAgent {
                         if let ToolEvent::Finished { id, name, mut result, display, format } = event {
                             outstanding_async.remove(&id);
                             async_keys.retain(|_, pending_id| pending_id != &id);
+                            progress_buffers.remove(&id);
+                            async_names.remove(&id);
                             pending_wake = true;
                             let display = display.or_else(|| take_tool_display(&mut result));
                             log_tool_result(&name, &result);
@@ -448,6 +464,7 @@ impl BaseAgent {
                     t.extend(extra);
                     if !outstanding_async.is_empty() {
                         t.push(wait_tools_definition());
+                        t.push(check_tools_definition());
                     }
                     t
                 };
@@ -544,15 +561,15 @@ impl BaseAgent {
                         .map(|tool| tool.readable_name().to_string())
                         .unwrap_or_else(|| name.clone());
 
-                    yield Ok(AgentResponseChunk::ToolStarted {
-                        tool_call_id: id.clone(),
-                        name: readable_name.clone(),
-                        arguments: arguments.clone(),
-                    });
-
                     let mut args = match serde_json::from_str::<Value>(&arguments) {
                         Ok(args) => args,
                         Err(err) => {
+                            yield Ok(AgentResponseChunk::ToolStarted {
+                                tool_call_id: id.clone(),
+                                name: readable_name.clone(),
+                                arguments: arguments.clone(),
+                                background: false,
+                            });
                             let result = json!({ "error": err.to_string() });
                             log_tool_error(&name, &result);
                             let content = append_tool_result(&agent, id.clone(), result, "tool error".to_string(), &mut pending_images);
@@ -569,6 +586,33 @@ impl BaseAgent {
                     };
 
                     let want_async = take_async_flag(&mut args);
+                    let background = want_async
+                        && tool.as_ref().is_some_and(|tool| tool.supports_async())
+                        && spawner.is_some();
+
+                    yield Ok(AgentResponseChunk::ToolStarted {
+                        tool_call_id: id.clone(),
+                        name: readable_name.clone(),
+                        arguments: arguments.clone(),
+                        background,
+                    });
+
+                    if name == CHECK_TOOLS_NAME {
+                        while let Ok(ev) = tool_rx.try_recv() {
+                            take_tool_event!(ev);
+                        }
+                        let result = check_tools_result(&outstanding_async, &deferred, &progress_buffers, &async_names);
+                        let content = append_tool_result(&agent, id.clone(), result, CHECK_TOOLS_NAME.to_string(), &mut pending_images);
+                        yield Ok(AgentResponseChunk::ToolFinished {
+                            tool_call_id: id,
+                            name: CHECK_TOOLS_NAME.to_string(),
+                            result: content,
+                            display: None,
+                            format: ToolOutputFormat::Json,
+                            wake_message: None,
+                        });
+                        continue;
+                    }
 
                     if name == WAIT_TOOLS_NAME {
                         let target_ids = wait_tool_ids(&args, &outstanding_async);
@@ -711,6 +755,7 @@ impl BaseAgent {
                         );
                         async_keys.insert(async_key, id.clone());
                         outstanding_async.insert(id.clone());
+                        async_names.insert(id.clone(), readable_name.clone());
                         yield Ok(AgentResponseChunk::ToolFinished {
                             tool_call_id: id.clone(),
                             name: readable_name.clone(),
@@ -826,6 +871,82 @@ fn wait_tools_definition() -> llm::Tool {
             }),
         },
     }
+}
+
+fn check_tools_definition() -> llm::Tool {
+    llm::Tool {
+        r#type: llm::ToolType::Function,
+        function: Function {
+            name: CHECK_TOOLS_NAME.to_string(),
+            description: "Check the status of pending async tool calls without blocking. Returns each outstanding call's status (running or finished) and a tail of its latest progress output. Use this to poll async work while you keep going instead of waiting.".to_string(),
+            parameters: Some(FunctionParameters {
+                param_type: "object".to_string(),
+                properties: HashMap::new(),
+                required: None,
+                extra: Map::new(),
+            }),
+        },
+    }
+}
+
+/// Appends a progress delta to a per-call rolling tail, truncating from the
+/// front to stay within [`PROGRESS_TAIL_CAP`] bytes on a char boundary.
+fn append_progress_tail(buffers: &mut HashMap<String, String>, id: &str, delta: &str) {
+    let buffer = buffers.entry(id.to_string()).or_default();
+    buffer.push_str(delta);
+    if buffer.len() > PROGRESS_TAIL_CAP {
+        let mut start = buffer.len() - PROGRESS_TAIL_CAP;
+        while start < buffer.len() && !buffer.is_char_boundary(start) {
+            start += 1;
+        }
+        *buffer = buffer[start..].to_string();
+    }
+}
+
+/// Builds the non-blocking `check_tools` result: one entry per outstanding
+/// async call plus any finished-but-not-yet-injected (deferred) completions.
+fn check_tools_result(
+    outstanding_async: &HashSet<String>,
+    deferred: &[ToolEvent],
+    progress_buffers: &HashMap<String, String>,
+    async_names: &HashMap<String, String>,
+) -> Value {
+    let finished: HashMap<&str, &str> = deferred
+        .iter()
+        .filter_map(|event| match event {
+            ToolEvent::Finished { id, name, .. } => Some((id.as_str(), name.as_str())),
+            ToolEvent::Progress { .. } => None,
+        })
+        .collect();
+
+    let mut tasks: Vec<Value> = Vec::new();
+    for id in outstanding_async {
+        let (status, tool_name) = match finished.get(id.as_str()) {
+            Some(name) => ("finished", *name),
+            None => (
+                "running",
+                async_names.get(id).map(String::as_str).unwrap_or(""),
+            ),
+        };
+        tasks.push(json!({
+            "tool_call_id": id,
+            "tool_name": tool_name,
+            "status": status,
+            "progress_tail": progress_buffers.get(id).cloned().unwrap_or_default(),
+        }));
+    }
+    for (id, name) in &finished {
+        if !outstanding_async.contains(*id) {
+            tasks.push(json!({
+                "tool_call_id": id,
+                "tool_name": name,
+                "status": "finished",
+                "progress_tail": progress_buffers.get(*id).cloned().unwrap_or_default(),
+            }));
+        }
+    }
+
+    json!({ "tasks": tasks })
 }
 
 fn async_placeholder(status: &str, tool_call_id: &str, name: &str) -> Value {
@@ -963,17 +1084,21 @@ fn spawn_tool_task(
         format,
         tx: tx.clone(),
     };
-    spawner.spawn(Box::pin(async move {
-        let mut result = tool.execute_streaming(config, args, sink).await;
-        let display = take_tool_display(&mut result);
-        let _ = tx.unbounded_send(ToolEvent::Finished {
-            id,
-            name,
-            result,
-            display,
-            format,
-        });
-    }));
+    let spawn_id = id.clone();
+    spawner.spawn(
+        &spawn_id,
+        Box::pin(async move {
+            let mut result = tool.execute_streaming(config, args, sink).await;
+            let display = take_tool_display(&mut result);
+            let _ = tx.unbounded_send(ToolEvent::Finished {
+                id,
+                name,
+                result,
+                display,
+                format,
+            });
+        }),
+    );
 }
 
 fn log_tool_error(name: &str, result: &Value) {
@@ -1708,7 +1833,11 @@ mod tests {
     struct ImmediateSpawner;
 
     impl TaskSpawner for ImmediateSpawner {
-        fn spawn(&self, mut future: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
+        fn spawn(
+            &self,
+            _id: &str,
+            mut future: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+        ) {
             let waker = std::task::Waker::noop();
             let mut cx = std::task::Context::from_waker(waker);
             while future.as_mut().poll(&mut cx).is_pending() {}
@@ -1736,7 +1865,7 @@ mod tests {
     }
 
     impl TaskSpawner for ManualSpawner {
-        fn spawn(&self, future: Pin<Box<dyn std::future::Future<Output = ()>>>) {
+        fn spawn(&self, _id: &str, future: Pin<Box<dyn std::future::Future<Output = ()>>>) {
             self.tasks.borrow_mut().push(future);
         }
     }
@@ -2090,6 +2219,158 @@ mod tests {
             assert_eq!(spawner.task_count(), 1);
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         });
+    }
+
+    #[test]
+    fn tool_started_carries_background_flag() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![named_tool_call_chunk_with_id(
+                    "async_1",
+                    "background",
+                    r#"{"async":true}"#,
+                )],
+                vec![text_chunk("done")],
+            ]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 50,
+                }),
+                String::new(),
+                vec![],
+            );
+            agent.register_tool(AsyncTool {
+                calls: Arc::new(AtomicUsize::new(0)),
+                last_args: Arc::new(Mutex::new(None)),
+            });
+            let spawner = ManualSpawner::default();
+            agent.set_spawner(Rc::new(spawner.clone()));
+
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            pin_mut!(stream);
+
+            let mut background_flag = None;
+            while let Some(chunk) = stream.next().await {
+                if let Ok(AgentResponseChunk::ToolStarted { background, .. }) = &chunk {
+                    background_flag = Some(*background);
+                    break;
+                }
+            }
+            assert_eq!(background_flag, Some(true));
+        });
+    }
+
+    #[test]
+    fn tool_started_background_false_for_sync_tool() {
+        futures::executor::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![tool_call_chunk(r#"{"value":1}"#)],
+                vec![text_chunk("done")],
+            ]);
+            let agent = make_agent(&mock, calls);
+
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            pin_mut!(stream);
+
+            let mut background_flag = None;
+            while let Some(chunk) = stream.next().await {
+                match chunk.unwrap() {
+                    AgentResponseChunk::ToolStarted { background, .. } => {
+                        background_flag = Some(background);
+                        break;
+                    }
+                    AgentResponseChunk::Approval { approved, .. } => {
+                        let _ = approved.send(false);
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(background_flag, Some(false));
+        });
+    }
+
+    #[test]
+    fn check_tools_reports_running_then_finished() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![named_tool_call_chunk_with_id(
+                    "async_1",
+                    "background",
+                    r#"{"async":true}"#,
+                )],
+                vec![named_tool_call_chunk_with_id(
+                    "check_1",
+                    CHECK_TOOLS_NAME,
+                    "{}",
+                )],
+                vec![named_tool_call_chunk_with_id(
+                    "check_2",
+                    CHECK_TOOLS_NAME,
+                    "{}",
+                )],
+                vec![text_chunk("done")],
+            ]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 50,
+                }),
+                String::new(),
+                vec![],
+            );
+            agent.register_tool(AsyncTool {
+                calls: Arc::new(AtomicUsize::new(0)),
+                last_args: Arc::new(Mutex::new(None)),
+            });
+            let spawner = ManualSpawner::default();
+            agent.set_spawner(Rc::new(spawner.clone()));
+
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            pin_mut!(stream);
+
+            let running = check_tools_content(stream.as_mut(), "check_1").await;
+            let running: Value = serde_json::from_str(&running).unwrap();
+            let tasks = running["tasks"].as_array().unwrap();
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0]["tool_call_id"], "async_1");
+            assert_eq!(tasks[0]["status"], "running");
+            assert_eq!(tasks[0]["tool_name"], "Background");
+
+            spawner.run_one();
+
+            let finished = check_tools_content(stream.as_mut(), "check_2").await;
+            let finished: Value = serde_json::from_str(&finished).unwrap();
+            let tasks = finished["tasks"].as_array().unwrap();
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0]["tool_call_id"], "async_1");
+            assert_eq!(tasks[0]["status"], "finished");
+
+            while stream.next().await.is_some() {}
+        });
+    }
+
+    async fn check_tools_content(
+        mut stream: Pin<&mut impl Stream<Item = Result<AgentResponseChunk, AgentError>>>,
+        target_id: &str,
+    ) -> String {
+        while let Some(chunk) = stream.next().await {
+            if let Ok(AgentResponseChunk::ToolFinished {
+                tool_call_id,
+                name,
+                result,
+                ..
+            }) = chunk
+                && name == CHECK_TOOLS_NAME
+                && tool_call_id == target_id
+            {
+                return result;
+            }
+        }
+        panic!("check_tools result for {target_id} not seen");
     }
 
     #[test]

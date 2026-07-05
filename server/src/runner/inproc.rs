@@ -423,7 +423,7 @@ struct AssistantMessageState {
 struct LocalSpawner;
 
 impl TaskSpawner for LocalSpawner {
-    fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
+    fn spawn(&self, _id: &str, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
         tokio::task::spawn_local(future);
     }
 }
