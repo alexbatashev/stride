@@ -43,12 +43,24 @@ const NAVIGATE_SCRIPT: &str = r#"<script type="module">
     });
 </script>"#;
 
+// A `<script type="module">` tag for a built page bundle, cache-busted with the
+// asset's content hash. Page modules build their page_script() through this.
+pub(super) fn module_script(rel: &str) -> String {
+    format!(
+        r#"<script type="module" src="{}"></script>"#,
+        crate::assets::url(rel)
+    )
+}
+
 pub fn render_page(title: &str, page_script: &str, body_attrs: &str, body: &str) -> String {
     let attrs = if body_attrs.is_empty() {
         String::new()
     } else {
         format!(" {body_attrs}")
     };
+    let common_css = crate::assets::url("common.css");
+    let components_js = crate::assets::url("components.js");
+    let api_js = crate::assets::url("api.js");
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -56,10 +68,10 @@ pub fn render_page(title: &str, page_script: &str, body_attrs: &str, body: &str)
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{title}</title>
-        <link rel="stylesheet" href="/static/common.css" />
-        <link rel="modulepreload" href="/static/components.js">
-        <script type="module" src="/static/components.js"></script>
-        <script type="module" src="/static/api.js"></script>
+        <link rel="stylesheet" href="{common_css}" />
+        <link rel="modulepreload" href="{components_js}">
+        <script type="module" src="{components_js}"></script>
+        <script type="module" src="{api_js}"></script>
         {page_script}
     </head>
     <body{attrs}>
@@ -311,7 +323,7 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
         r#"id="threads-page" data-thread-id="{thread_id}" data-running="{running}""#,
         running = data.running,
     );
-    render_page("S.T.R.I.D.E.", agent::PAGE_SCRIPT, &body_attrs, &body)
+    render_page("S.T.R.I.D.E.", &agent::page_script(), &body_attrs, &body)
 }
 
 const FILES_STYLE: &str = r#"<style>
@@ -354,7 +366,7 @@ pub fn render_files_page(data: &ThreadPageData) -> String {
     );
     render_page(
         "Files - S.T.R.I.D.E.",
-        files::PAGE_SCRIPT,
+        &files::page_script(),
         r#"id="files-page""#,
         &body,
     )
@@ -400,7 +412,7 @@ pub fn render_automations_page(data: &ThreadPageData) -> String {
     );
     render_page(
         "Automations - S.T.R.I.D.E.",
-        automations::PAGE_SCRIPT,
+        &automations::page_script(),
         r#"id="automations-page""#,
         &body,
     )
@@ -445,7 +457,7 @@ pub fn render_archived_page(data: &ThreadPageData) -> String {
 
     render_page(
         "Archived - S.T.R.I.D.E.",
-        archived::PAGE_SCRIPT,
+        &archived::page_script(),
         r#"id="archived-page""#,
         &body,
     )
@@ -491,7 +503,7 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
 
     render_page(
         "Settings - S.T.R.I.D.E.",
-        settings::PAGE_SCRIPT,
+        &settings::page_script(),
         r#"id="settings-page""#,
         &body,
     )

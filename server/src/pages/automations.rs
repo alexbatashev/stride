@@ -8,8 +8,9 @@ use axum::{
 
 use crate::{ServerState, api::threads};
 
-pub const PAGE_SCRIPT: &str =
-    r#"<script type="module" src="/static/pages/automations-page.js"></script>"#;
+pub(super) fn page_script() -> String {
+    super::module_script("pages/automations-page.js")
+}
 
 pub async fn automations(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
     let data = match threads::thread_page_data(&state, &headers, None).await {

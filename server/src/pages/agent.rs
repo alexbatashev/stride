@@ -9,8 +9,9 @@ use uuid::Uuid;
 
 use crate::{ServerState, api::threads};
 
-pub(super) const PAGE_SCRIPT: &str =
-    r#"<script type="module" src="/static/pages/threads-page.js"></script>"#;
+pub(super) fn page_script() -> String {
+    super::module_script("pages/threads-page.js")
+}
 
 pub async fn new_thread(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
     render_threads(state, headers, None).await

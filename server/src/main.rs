@@ -1,4 +1,5 @@
 mod api;
+mod assets;
 mod components;
 mod config;
 mod cron;
@@ -26,8 +27,9 @@ use std::{
 
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
-    http::HeaderMap,
+    extract::{DefaultBodyLimit, Request, State},
+    http::{HeaderMap, HeaderValue, header},
+    middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, patch, post},
 };
@@ -40,7 +42,7 @@ use stride_agent::{
 };
 use tower_http::{
     services::ServeDir,
-    set_header::SetResponseHeader,
+    set_header::{SetResponseHeader, SetResponseHeaderLayer},
     trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
@@ -441,6 +443,7 @@ fn load_jwt_secret() -> anyhow::Result<String> {
 }
 
 fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
+    assets::init(&static_dir);
     let limiter = Arc::new(RateLimiter::new());
 
     let auth_routes = Router::new()
@@ -450,6 +453,31 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             limiter,
             rate_limit::limit,
         ));
+
+    // Server-rendered shells must never be cached, or a browser keeps serving
+    // HTML that points at last deploy's `?v=` asset tokens.
+    let page_routes = Router::new()
+        .route("/auth/login", get(pages::auth::login))
+        .route("/auth/register", get(pages::auth::register))
+        .route("/threads", get(pages::agent::new_thread))
+        .route("/threads/{id}", get(pages::agent::thread))
+        .route("/files", get(pages::files::files))
+        .route("/automations", get(pages::automations::automations))
+        .route("/archived", get(pages::archived::archived))
+        .route("/settings", get(pages::settings::settings))
+        .route("/", get(root))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ));
+
+    let static_service = Router::new()
+        .fallback_service(SetResponseHeader::if_not_present(
+            ServeDir::new(static_dir),
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        ))
+        .layer(middleware::from_fn(static_cache_control));
 
     Router::new()
         .merge(auth_routes)
@@ -629,23 +657,8 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             get(api::files::download_file).delete(api::files::delete_file),
         )
         .route("/api/public/images/{token}", get(api::images::serve))
-        .route("/auth/login", get(pages::auth::login))
-        .route("/auth/register", get(pages::auth::register))
-        .route("/threads", get(pages::agent::new_thread))
-        .route("/threads/{id}", get(pages::agent::thread))
-        .route("/files", get(pages::files::files))
-        .route("/automations", get(pages::automations::automations))
-        .route("/archived", get(pages::archived::archived))
-        .route("/settings", get(pages::settings::settings))
-        .route("/", get(root))
-        .nest_service(
-            "/static",
-            SetResponseHeader::if_not_present(
-                ServeDir::new(static_dir),
-                axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                axum::http::HeaderValue::from_static("*"),
-            ),
-        )
+        .merge(page_routes)
+        .nest("/static", static_service)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|req: &axum::http::Request<_>| {
@@ -659,6 +672,26 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
         .with_state(state)
+}
+
+/// Cache policy for `/static`. Content-hashed URLs (`?v=`) are immutable and
+/// cached for a year; stable-named assets (widget `vendor/*`, `widget-frame.js`)
+/// get a one-day TTL so they self-heal within a day without a hard refresh.
+async fn static_cache_control(req: Request, next: Next) -> Response {
+    let versioned = req.uri().query().is_some_and(|q| q.contains("v="));
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    // Nix pins store-path mtimes to the epoch, so Last-Modified is a broken
+    // validator that answers 304 for changed files. Drop it; an expired entry
+    // then re-fetches in full instead of revalidating against a stale date.
+    headers.remove(header::LAST_MODIFIED);
+    let policy = if versioned {
+        "public, max-age=31536000, immutable"
+    } else {
+        "public, max-age=86400"
+    };
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+    resp
 }
 
 async fn connect_mcp_servers(config: &config::Config) -> Vec<McpTool> {
