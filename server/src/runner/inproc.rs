@@ -97,7 +97,7 @@ fn build_system_prompt(
     let public_url = public_url.map(|url| url.trim_end_matches('/'));
     if let Some(public_url) = public_url {
         prompt.push_str(&format!(
-            "\nConfigured public URL for HTML media src values: {public_url}"
+            "\nConfigured public URL for referencing files and resources: {public_url}"
         ));
     }
     if telegram {
@@ -111,12 +111,15 @@ fn build_system_prompt(
     } else {
         prompt.push_str(
             "\n\nOutput formatting:\n\
-             - Use safe HTML, not Markdown, for user-facing assistant messages.\n\
+             - Use safe HTML for user-facing assistant messages. DO NOT use Markdown.\n\
              - Use only these tags: h1-h6, p, strong, b, em, i, u, s, del, code, pre, \
              blockquote, ul, ol, li, table, thead, tbody, tfoot, tr, th, td, a, br, hr, \
              img, video, audio, iframe.\n\
              - Use img, video, audio, and iframe only when their src starts with the configured \
              public URL. If no configured public URL is provided, do not use media tags.\n\
+             - Do not write Markdown syntax such as `[file](url)`, `**bold**`, `*italic*`, \
+             or fenced code blocks. Use `<a href=\"...\">`, `<strong>`, `<em>`, `<code>`, \
+             and `<pre><code>` instead.\n\
              - Do not include style, class, id, event-handler, script, SVG, or form markup.\n\
              - Use ordinary text when no formatting is needed.\n\n\
              Interactive widgets:\n\
@@ -139,13 +142,23 @@ fn build_system_prompt(
         // Telegram only renders absolute links, so prefix download URLs with the server's public
         // base URL there; elsewhere a relative path keeps working across deployments.
         let base_url = telegram.then_some(public_url).flatten().unwrap_or("");
+        let file_link_example = if telegram {
+            format!(
+                "Example: `{root}/report.pdf` -> `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
+            )
+        } else {
+            format!(
+                "When linking to a file in a user-facing response, use an HTML anchor, not Markdown: \
+                 `<a href=\"/api/threads/{id}/files/report.pdf\">report.pdf</a>`."
+            )
+        };
         prompt.push_str(&format!(
             "\n\nFile system: list `/` to see the user's files. \
              Your writable directory is `{root}` — write all outputs you create there; \
              everything else under `/` is read-only (this applies in the shell and the Python sandbox alike). \
              Files in it are downloadable via `{base_url}/api/threads/{id}/files/<path>` \
              where `<path>` is relative to your writable directory (drop the leading `{root}/`). \
-             Example: `{root}/report.pdf` → `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
+             {file_link_example}"
         ));
         if let Some(public_url) = public_url {
             prompt.push_str(&format!(
@@ -2484,6 +2497,9 @@ mod tests {
         assert!(prompt.contains("send_telegram_file"));
         assert!(prompt.contains("happens over Telegram"));
         assert!(prompt.contains("Use Markdown, not HTML"));
+        assert!(prompt.contains(&format!(
+            "[report.pdf](https://stride.example.com/api/threads/{id}/files/report.pdf)"
+        )));
         assert!(!prompt.contains("inline-widget"));
     }
 
@@ -2501,15 +2517,25 @@ mod tests {
         );
         assert!(prompt.contains("`/api/threads/"));
         assert!(prompt.contains(
-            "Configured public URL for HTML media src values: https://stride.example.com"
+            "Configured public URL for referencing files and resources: https://stride.example.com"
         ));
+        assert!(prompt.contains(
+            "Do not write Markdown syntax such as `[file](url)`, `**bold**`, `*italic*`"
+        ));
+        assert!(prompt.contains(&format!(
+            "<a href=\"/api/threads/{id}/files/report.pdf\">report.pdf</a>"
+        )));
         assert!(prompt.contains(&format!(
             "<iframe src=\"https://stride.example.com/api/threads/{id}/files/sorting-widget.html\"></iframe>"
         )));
         assert!(prompt.contains("Do not use a relative `/api/threads/...` iframe src"));
         assert!(prompt.contains("do not use `/static/...` for"));
-        assert!(prompt.contains("Use safe HTML, not Markdown"));
+        assert!(
+            prompt
+                .contains("Use safe HTML for user-facing assistant messages. DO NOT use Markdown")
+        );
         assert!(prompt.contains("inline-widget"));
+        assert!(!prompt.contains("[report.pdf]("));
         assert!(!prompt.contains("send_telegram_file"));
     }
 
