@@ -749,6 +749,7 @@ mod tests {
                 public_url: None,
                 agent: Some(ServerAgent {
                     default_subagent_guidelines: Some("Use fast models for lookups.".to_string()),
+                    searchable_tools_preview_limit: None,
                 }),
             }),
             tools: None,

@@ -120,6 +120,7 @@ struct BaseAgentInner {
     model: String,
     search_slot: Arc<Mutex<Vec<llm::Tool>>>,
     searchable_entries: Arc<Mutex<Vec<SearchEntry>>>,
+    searchable_tools_preview_limit: Arc<Mutex<usize>>,
 }
 
 #[derive(Default)]
@@ -198,6 +199,7 @@ impl BaseAgent {
             model,
             search_slot: Arc::new(Mutex::new(Vec::new())),
             searchable_entries: Arc::new(Mutex::new(Vec::new())),
+            searchable_tools_preview_limit: Arc::new(Mutex::new(20)),
         })))
     }
 
@@ -213,6 +215,7 @@ impl BaseAgent {
             name: tool.name().to_string(),
             description: tool.definition().function.description.clone(),
             definition: tool.definition(),
+            group: tool.searchable_group(),
         };
         lock.searchable_entries.lock().unwrap().push(entry);
         lock.tool_registry.register_searchable(tool);
@@ -221,9 +224,15 @@ impl BaseAgent {
             let search_tool = SearchTool {
                 entries: lock.searchable_entries.clone(),
                 slot: lock.search_slot.clone(),
+                preview_limit: lock.searchable_tools_preview_limit.clone(),
             };
             lock.tool_registry.register(search_tool);
         }
+    }
+
+    pub fn set_searchable_tools_preview_limit(&self, limit: usize) {
+        let preview_limit = self.0.borrow().searchable_tools_preview_limit.clone();
+        *preview_limit.lock().unwrap() = limit;
     }
 
     pub fn allow_tool(&self, name: &str) {
@@ -1048,6 +1057,93 @@ mod tests {
         async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
             json!({ "echoed": args })
         }
+    }
+
+    struct NamedSearchableTool {
+        name: &'static str,
+        group: Option<&'static str>,
+    }
+
+    #[async_trait(?Send)]
+    impl Tool for NamedSearchableTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn readable_name(&self) -> &str {
+            self.name
+        }
+
+        fn definition(&self) -> llm::Tool {
+            llm::Tool {
+                r#type: llm::ToolType::Function,
+                function: Function {
+                    description: format!("Searchable test tool {}", self.name),
+                    name: self.name().to_string(),
+                    parameters: Some(FunctionParameters {
+                        param_type: "object".to_string(),
+                        ..Default::default()
+                    }),
+                },
+            }
+        }
+
+        fn searchable_group(&self) -> Option<String> {
+            self.group.map(str::to_string)
+        }
+
+        async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
+            json!({ "args": args })
+        }
+    }
+
+    #[test]
+    fn search_tools_description_summarizes_hidden_tools() {
+        let mock = llm::Mock::new();
+        let agent = BaseAgent::new(
+            DEFAULT_MODEL.to_string(),
+            Arc::new(AgentConfig {
+                model_registry: registry(&mock),
+                max_iterations: 50,
+            }),
+            String::new(),
+            vec![],
+        );
+        agent.set_searchable_tools_preview_limit(2);
+        agent.register_searchable_tool(NamedSearchableTool {
+            name: "alpha",
+            group: None,
+        });
+        agent.register_searchable_tool(NamedSearchableTool {
+            name: "beta",
+            group: None,
+        });
+        agent.register_searchable_tool(NamedSearchableTool {
+            name: "gamma",
+            group: None,
+        });
+        agent.register_searchable_tool(NamedSearchableTool {
+            name: "github_create_issue",
+            group: Some("GitHub MCP"),
+        });
+        agent.register_searchable_tool(NamedSearchableTool {
+            name: "github_list_issues",
+            group: Some("GitHub MCP"),
+        });
+
+        let description = agent
+            .tool_definitions()
+            .into_iter()
+            .find(|tool| tool.function.name == "search_tools")
+            .unwrap()
+            .function
+            .description;
+
+        assert!(description.contains("5 additional tools"));
+        assert!(description.contains("Tool names include: alpha, beta and 1 more."));
+        assert!(description.contains("MCP servers include: GitHub MCP (2 tools)."));
+        assert!(!description.contains("gamma,"));
+        assert!(!description.contains("github_create_issue"));
     }
 
     #[test]

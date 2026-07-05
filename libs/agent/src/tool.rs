@@ -24,6 +24,11 @@ pub trait Tool: Send + Sync {
     /// Get the tool definition for the LLM (OpenAI function format)
     fn definition(&self) -> LlmTool;
 
+    /// Optional group used when summarizing searchable tools to the model.
+    fn searchable_group(&self) -> Option<String> {
+        None
+    }
+
     /// Execute the tool with the given arguments
     async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value;
 

@@ -1082,6 +1082,7 @@ async fn ensure_runner(
         system_prompt,
         thread,
     );
+    agent.set_searchable_tools_preview_limit(server_config.searchable_tools_preview_limit());
     configure_agent_tools(
         &agent,
         &tools,

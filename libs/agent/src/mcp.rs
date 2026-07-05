@@ -35,6 +35,7 @@ struct McpClient {
 #[derive(Clone)]
 pub struct McpTool {
     client: Arc<McpClient>,
+    server_name: String,
     name: String,
     readable: String,
     remote_name: String,
@@ -96,6 +97,7 @@ pub async fn connect(server_name: &str, server: McpServer) -> Result<Vec<McpTool
 
         result.push(McpTool {
             client: client.clone(),
+            server_name: server_name.to_string(),
             definition: LlmTool {
                 r#type: llm::ToolType::Function,
                 function: Function {
@@ -128,6 +130,10 @@ impl Tool for McpTool {
         self.definition.clone()
     }
 
+    fn searchable_group(&self) -> Option<String> {
+        Some(format!("{} MCP", display_server_name(&self.server_name)))
+    }
+
     /// State-changing tools (anything not annotated read-only) require explicit
     /// user approval before the call is forwarded to the server.
     fn requires_confirmation(&self) -> bool {
@@ -143,6 +149,34 @@ impl Tool for McpTool {
         match self.client.rpc("tools/call", params).await {
             Ok((result, _)) => result,
             Err(error) => json!({ "error": error }),
+        }
+    }
+}
+
+fn display_server_name(name: &str) -> String {
+    name.split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(display_server_name_part)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn display_server_name_part(part: &str) -> String {
+    match part.to_ascii_lowercase().as_str() {
+        "github" => "GitHub".to_string(),
+        "gitlab" => "GitLab".to_string(),
+        "gmail" => "Gmail".to_string(),
+        "google" => "Google".to_string(),
+        "jira" => "Jira".to_string(),
+        "slack" => "Slack".to_string(),
+        "figma" => "Figma".to_string(),
+        _ if part.chars().any(char::is_uppercase) => part.to_string(),
+        _ => {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
         }
     }
 }

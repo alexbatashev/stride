@@ -103,6 +103,9 @@ pub struct ServerAgent {
     /// own agent settings. Admins can update this in config to roll out new
     /// guidance without overwriting per-user overrides stored in the database.
     pub default_subagent_guidelines: Option<String>,
+    /// Number of standalone searchable tool names to preview in the
+    /// `search_tools` description. MCP tools are summarized by server name.
+    pub searchable_tools_preview_limit: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -336,6 +339,14 @@ impl Config {
             .and_then(|server| server.public_url.as_deref())
             .map(|url| url.trim_end_matches('/').to_string())
     }
+
+    pub fn searchable_tools_preview_limit(&self) -> usize {
+        self.server
+            .as_ref()
+            .and_then(|server| server.agent.as_ref())
+            .and_then(|agent| agent.searchable_tools_preview_limit)
+            .unwrap_or(20)
+    }
 }
 
 impl Provider {
@@ -438,6 +449,7 @@ mod tests {
 
             [server.agent]
             default_subagent_guidelines = "Prefer fast models for search."
+            searchable_tools_preview_limit = 12
             "#,
         )
         .unwrap();
@@ -449,6 +461,7 @@ mod tests {
                 .and_then(|agent| agent.default_subagent_guidelines.as_deref()),
             Some("Prefer fast models for search.")
         );
+        assert_eq!(cfg.searchable_tools_preview_limit(), 12);
     }
 
     #[test]
@@ -476,6 +489,7 @@ mod tests {
         assert_eq!(cfg.db_url(), "sqlite:///tmp/stride-test.db");
         assert_eq!(cfg.listen_addr(), "127.0.0.1:4000");
         assert!(!cfg.allow_registration());
+        assert_eq!(cfg.searchable_tools_preview_limit(), 20);
     }
 
     #[test]
