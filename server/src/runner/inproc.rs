@@ -49,7 +49,7 @@ use crate::{
     runner::{
         AgentEvent, AgentEventKind, AgentPool, AgentPoolError, AgentRequest, PartialAgentMessage,
         PartialToolProgress, PendingApproval, PendingQuiz, RUNNER_LIFECYCLE_TOPIC, RunId,
-        RunnerLifecycle, ThreadSnapshot, ThreadStatus, thread_events_topic,
+        RunSnapshot, RunnerLifecycle, ThreadSnapshot, ThreadStatus, thread_events_topic,
     },
     tools::{
         attach_image::AttachImageTool,
@@ -471,6 +471,15 @@ struct ToolStreamState {
     display: String,
 }
 
+/// The timeline coordinates a tool call got at [`AgentResponseChunk::ToolStarted`],
+/// carried onto snapshot progress rows so a reconnecting client can place and time it.
+#[derive(Clone, Copy)]
+struct ToolMeta {
+    call_seq: i64,
+    background: bool,
+    started_at_ms: i64,
+}
+
 #[derive(Default)]
 struct PartialToolCall {
     id: String,
@@ -872,7 +881,15 @@ async fn start_run(
         tracing::warn!(%thread_id, run_id = %run_id.0, %error, "failed to persist run row");
     }
 
-    emit(state, thread_id, Some(run_id), AgentEventKind::RunStarted).await;
+    emit(
+        state,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::RunStarted {
+            started_at_ms: uuid_v7_ms(run_id.0),
+        },
+    )
+    .await;
     tokio::task::spawn_local(run_agent_turn(
         state.clone(),
         thread_id,
@@ -924,10 +941,18 @@ async fn handle_snapshot(
         .ok_or(AgentPoolError::ThreadNotFound)?;
 
     runner.last_used = Instant::now();
+    let run = match runner.status {
+        ThreadStatus::Running { run_id } => Some(RunSnapshot {
+            run_id,
+            started_at_ms: uuid_v7_ms(run_id.0),
+        }),
+        ThreadStatus::Idle => None,
+    };
     Ok(ThreadSnapshot {
         thread_id,
         last_event_seq: runner.last_event_seq,
         status: runner.status.clone(),
+        run,
         in_progress: runner.in_progress.clone(),
         tool_progress: runner.tool_progress.values().cloned().collect(),
         pending_approval: runner
@@ -1691,6 +1716,7 @@ async fn run_agent_turn(
         output_sanitizer: output_sanitizer(format, &state),
     };
     let mut tool_streams: HashMap<String, ToolStreamState> = HashMap::new();
+    let mut tool_meta: HashMap<String, ToolMeta> = HashMap::new();
     let mut tool_assistant_messages: HashMap<String, Uuid> = HashMap::new();
     let mut next_call_seq: i64 = 0;
     let mut final_message_id: Option<Uuid> = None;
@@ -1729,6 +1755,11 @@ async fn run_agent_turn(
                     Ok(AgentResponseChunk::ToolStarted { tool_call_id, name, background, .. }) => {
                         let call_seq = next_call_seq;
                         next_call_seq += 1;
+                        let started_at_ms = now_ms();
+                        tool_meta.insert(
+                            tool_call_id.clone(),
+                            ToolMeta { call_seq, background, started_at_ms },
+                        );
                         if let Err(error) =
                             record_tool_started(
                                 &state,
@@ -1739,6 +1770,7 @@ async fn run_agent_turn(
                                 &name,
                                 call_seq,
                                 background,
+                                started_at_ms,
                             )
                             .await
                         {
@@ -1751,7 +1783,13 @@ async fn run_agent_turn(
                             &state,
                             thread_id,
                             Some(run_id),
-                            AgentEventKind::ToolStarted { tool_call_id, name },
+                            AgentEventKind::ToolStarted {
+                                tool_call_id,
+                                name,
+                                call_seq,
+                                started_at_ms,
+                                background,
+                            },
                         )
                         .await;
                     }
@@ -1766,6 +1804,7 @@ async fn run_agent_turn(
                             &state,
                             thread_id,
                             &mut tool_streams,
+                            tool_meta.get(&tool_call_id).copied(),
                             &tool_call_id,
                             &name,
                             &delta,
@@ -1799,6 +1838,7 @@ async fn run_agent_turn(
                         } else {
                             ToolCallStatus::Finished
                         };
+                        let finished_at_ms = now_ms();
                         let persisted = if let Some(wake_message) = wake_message {
                             persist_tool_wakeup_message(
                                 &state,
@@ -1810,6 +1850,7 @@ async fn run_agent_turn(
                                 display.as_deref(),
                                 format,
                                 status,
+                                finished_at_ms,
                             )
                             .await
                         } else {
@@ -1823,6 +1864,7 @@ async fn run_agent_turn(
                                 &result,
                                 format,
                                 status,
+                                finished_at_ms,
                             )
                             .await
                         };
@@ -1843,6 +1885,8 @@ async fn run_agent_turn(
                                 tool_call_id,
                                 name,
                                 format: format.to_string(),
+                                finished_at_ms,
+                                status: status.as_str().to_string(),
                             },
                         )
                         .await;
@@ -1933,8 +1977,18 @@ async fn run_agent_turn(
         runner.in_progress = None;
         runner.last_used = Instant::now();
     });
-    finish_run_row(&state, run_id, final_message_id).await;
-    emit(&state, thread_id, Some(run_id), AgentEventKind::RunFinished).await;
+    let finished_at_ms = now_ms();
+    finish_run_row(&state, run_id, final_message_id, finished_at_ms).await;
+    emit(
+        &state,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::RunFinished {
+            finished_at_ms,
+            final_message_id,
+        },
+    )
+    .await;
     restore_agent(&state, thread_id, agent);
     drain_queue(&state, thread_id).await;
 }
@@ -1943,12 +1997,13 @@ async fn finish_run_row(
     state: &Rc<RefCell<WorkerState>>,
     run_id: RunId,
     final_message_id: Option<Uuid>,
+    finished_at_ms: i64,
 ) {
     let db = state.borrow().init.db.clone();
     if let Err(error) = runs::update()
         .status(AgentRunStatus::Finished)
         .final_message_id(final_message_id)
-        .finished_at_ms(Some(now_ms()))
+        .finished_at_ms(Some(finished_at_ms))
         .where_(runs::id.eq(run_id.0))
         .execute(&db)
         .await
@@ -2290,6 +2345,7 @@ async fn record_tool_started(
     name: &str,
     call_seq: i64,
     background: bool,
+    started_at_ms: i64,
 ) -> Result<(), AgentPoolError> {
     let db = state.borrow().init.db.clone();
     tool_call_records::insert()
@@ -2304,7 +2360,7 @@ async fn record_tool_started(
         .display_path(Option::<&str>::None)
         .call_seq(call_seq)
         .background(background)
-        .started_at_ms(now_ms())
+        .started_at_ms(started_at_ms)
         .finished_at_ms(Option::<i64>::None)
         .execute(&db)
         .await
@@ -2343,10 +2399,12 @@ async fn record_assistant_tool_calls(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_tool_progress(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
     tool_streams: &mut HashMap<String, ToolStreamState>,
+    meta: Option<ToolMeta>,
     tool_call_id: &str,
     name: &str,
     delta: &str,
@@ -2362,6 +2420,12 @@ fn record_tool_progress(
     entry.display.push_str(delta);
     entry.format = format.to_string();
 
+    let meta = meta.unwrap_or(ToolMeta {
+        call_seq: 0,
+        background: false,
+        started_at_ms: 0,
+    });
+
     with_runner(state, thread_id, |runner| {
         runner.tool_progress.insert(
             tool_call_id.to_string(),
@@ -2370,6 +2434,9 @@ fn record_tool_progress(
                 name: entry.name.clone(),
                 content: entry.display.clone(),
                 format: entry.format.clone(),
+                call_seq: meta.call_seq,
+                background: meta.background,
+                started_at_ms: meta.started_at_ms,
             },
         );
     });
@@ -2386,6 +2453,7 @@ async fn persist_tool_message(
     content: &str,
     format: &str,
     status: ToolCallStatus,
+    finished_at_ms: i64,
 ) -> Result<(), AgentPoolError> {
     tool_streams.remove(tool_call_id);
     with_runner(state, thread_id, |runner| {
@@ -2418,7 +2486,7 @@ async fn persist_tool_message(
         .status(status)
         .output_format(format)
         .display_path(display_path.as_deref())
-        .finished_at_ms(Some(now_ms()))
+        .finished_at_ms(Some(finished_at_ms))
         .where_(tool_call_records::tool_call_id.eq(tool_call_id))
         .execute(&db)
         .await
@@ -2437,6 +2505,7 @@ async fn persist_tool_wakeup_message(
     _display: Option<&str>,
     format: &str,
     status: ToolCallStatus,
+    finished_at_ms: i64,
 ) -> Result<(), AgentPoolError> {
     with_runner(state, thread_id, |runner| {
         runner.tool_progress.remove(tool_call_id);
@@ -2466,7 +2535,7 @@ async fn persist_tool_wakeup_message(
         .name(name)
         .status(status)
         .output_format(format)
-        .finished_at_ms(Some(now_ms()))
+        .finished_at_ms(Some(finished_at_ms))
         .where_(tool_call_records::tool_call_id.eq(tool_call_id))
         .execute(&db)
         .await
@@ -2527,11 +2596,12 @@ async fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: Run
         runner.last_used = Instant::now();
     });
 
+    let finished_at_ms = now_ms();
     let db = state.borrow().init.db.clone();
     if let Err(update_error) = runs::update()
         .status(AgentRunStatus::Failed)
         .error(Some(error.as_str()))
-        .finished_at_ms(Some(now_ms()))
+        .finished_at_ms(Some(finished_at_ms))
         .where_(runs::id.eq(run_id.0))
         .execute(&db)
         .await
@@ -2543,7 +2613,10 @@ async fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: Run
         state,
         thread_id,
         Some(run_id),
-        AgentEventKind::RunFailed { error },
+        AgentEventKind::RunFailed {
+            error,
+            finished_at_ms,
+        },
     )
     .await;
 }
@@ -2585,7 +2658,15 @@ async fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_
         tracing::warn!(run_id = %run_id.0, %error, "failed to mark run cancelled");
     }
 
-    emit(state, thread_id, Some(run_id), AgentEventKind::RunCancelled).await;
+    emit(
+        state,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::RunCancelled {
+            finished_at_ms: now,
+        },
+    )
+    .await;
 }
 
 /// Aborts every backgrounded tool task belonging to `thread_id` and clears them
@@ -3192,7 +3273,7 @@ mod tests {
                 AgentEventKind::AgentDelta { content, .. } if content == "pong" => {
                     saw_delta = true;
                 }
-                AgentEventKind::RunFinished => {
+                AgentEventKind::RunFinished { .. } => {
                     saw_finished = true;
                     break;
                 }
@@ -3285,13 +3366,26 @@ mod tests {
                 .unwrap();
 
             match event.kind {
-                AgentEventKind::ToolStarted { name, .. } if name == "missing_tool" => {
+                AgentEventKind::ToolStarted {
+                    name,
+                    call_seq,
+                    started_at_ms,
+                    background,
+                    ..
+                } if name == "missing_tool" => {
+                    assert_eq!(call_seq, 0);
+                    assert!(started_at_ms > 0);
+                    assert!(!background);
                     saw_tool_started = true;
                 }
-                AgentEventKind::ToolFinished { name, .. } if name == "missing_tool" => {
+                AgentEventKind::ToolFinished { name, status, .. } if name == "missing_tool" => {
+                    assert_eq!(status, "failed");
                     saw_tool_finished = true;
                 }
-                AgentEventKind::RunFinished => {
+                AgentEventKind::RunFinished {
+                    final_message_id, ..
+                } => {
+                    assert!(final_message_id.is_some());
                     saw_finished = true;
                     break;
                 }
@@ -3410,7 +3504,7 @@ mod tests {
                 {
                     saw_speculative_html = true;
                 }
-                AgentEventKind::RunFinished => break,
+                AgentEventKind::RunFinished { .. } => break,
                 _ => {}
             }
         }
@@ -3552,7 +3646,10 @@ mod tests {
             snapshot.pending_quiz.as_ref().map(|q| q.quiz_id),
             Some(quiz_id)
         );
-        assert_eq!(snapshot.pending_quiz.unwrap().questions, questions);
+        assert_eq!(snapshot.pending_quiz.as_ref().unwrap().questions, questions);
+        let run = snapshot.run.as_ref().expect("running snapshot carries run");
+        assert_eq!(run.run_id, run_id);
+        assert_eq!(run.started_at_ms, uuid_v7_ms(run_id.0));
 
         handle_answer_quiz(&state, thread_id, quiz_id, vec!["B".to_string()])
             .await
@@ -3891,7 +3988,7 @@ mod tests {
         assert!(
             replayed
                 .iter()
-                .any(|e| matches!(e.kind, AgentEventKind::RunFinished)),
+                .any(|e| matches!(e.kind, AgentEventKind::RunFinished { .. })),
             "backlog replay must include RunFinished"
         );
         // Every replayed event is at or below the snapshot watermark, so a consumer that gates on
@@ -3962,7 +4059,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             match event.kind {
-                AgentEventKind::RunCancelled | AgentEventKind::RunFinished => {
+                AgentEventKind::RunCancelled { .. } | AgentEventKind::RunFinished { .. } => {
                     terminated = true;
                     break;
                 }
@@ -4144,7 +4241,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            if matches!(event.kind, AgentEventKind::RunFinished) {
+            if matches!(event.kind, AgentEventKind::RunFinished { .. }) {
                 finished = true;
                 break;
             }
@@ -4283,9 +4380,9 @@ mod tests {
                 break;
             };
             match event.kind {
-                AgentEventKind::RunStarted => saw_started = true,
+                AgentEventKind::RunStarted { .. } => saw_started = true,
                 AgentEventKind::AgentDelta { .. } => saw_delta = true,
-                AgentEventKind::RunFinished => {
+                AgentEventKind::RunFinished { .. } => {
                     saw_finished = true;
                     break;
                 }
@@ -4595,6 +4692,7 @@ mod tests {
             None,
             "markdown",
             ToolCallStatus::Finished,
+            now_ms(),
         )
         .await
         .unwrap();

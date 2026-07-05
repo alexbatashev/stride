@@ -88,10 +88,18 @@ pub struct ThreadSnapshot {
     pub thread_id: Uuid,
     pub last_event_seq: EventSeq,
     pub status: ThreadStatus,
+    pub run: Option<RunSnapshot>,
     pub in_progress: Option<PartialAgentMessage>,
     pub tool_progress: Vec<PartialToolProgress>,
     pub pending_approval: Option<PendingApproval>,
     pub pending_quiz: Option<PendingQuiz>,
+}
+
+/// The currently running run, so a reconnecting frontend can restart its ticking timer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunSnapshot {
+    pub run_id: RunId,
+    pub started_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,6 +122,9 @@ pub struct PartialToolProgress {
     pub name: String,
     pub content: String,
     pub format: String,
+    pub call_seq: i64,
+    pub background: bool,
+    pub started_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,7 +149,9 @@ pub struct AgentEvent {
 
 #[derive(Clone, Debug)]
 pub enum AgentEventKind {
-    RunStarted,
+    RunStarted {
+        started_at_ms: i64,
+    },
     UserMessageCommitted {
         message_id: Uuid,
         seq: u64,
@@ -157,6 +170,9 @@ pub enum AgentEventKind {
     ToolStarted {
         tool_call_id: String,
         name: String,
+        call_seq: i64,
+        started_at_ms: i64,
+        background: bool,
     },
     /// Incremental human-facing output from a streaming or backgrounded tool.
     ToolProgress {
@@ -169,6 +185,8 @@ pub enum AgentEventKind {
         tool_call_id: String,
         name: String,
         format: String,
+        finished_at_ms: i64,
+        status: String,
     },
     WaitingForApproval {
         approval_id: Uuid,
@@ -185,11 +203,17 @@ pub enum AgentEventKind {
     QuizAnswered {
         quiz_id: Uuid,
     },
-    RunFinished,
+    RunFinished {
+        finished_at_ms: i64,
+        final_message_id: Option<Uuid>,
+    },
     RunFailed {
         error: String,
+        finished_at_ms: i64,
     },
-    RunCancelled,
+    RunCancelled {
+        finished_at_ms: i64,
+    },
 }
 
 #[derive(Debug)]

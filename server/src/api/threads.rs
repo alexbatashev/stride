@@ -23,7 +23,7 @@ use crate::{
         projects::ProjectResponse,
     },
     db::{
-        MessageFormat, MessageSource, Role, messages, projects, threads, tool_call_records,
+        MessageFormat, MessageSource, Role, messages, projects, runs, threads, tool_call_records,
         user_models,
     },
     runner::{
@@ -58,6 +58,43 @@ pub struct MessageResponse {
     tool_call_name: Option<String>,
     tool_call_id: Option<String>,
     tool_format: Option<String>,
+    run_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RunsResponse {
+    runs: Vec<RunResponse>,
+}
+
+#[derive(Serialize)]
+pub struct RunResponse {
+    id: String,
+    status: &'static str,
+    started_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_message_id: Option<String>,
+    tool_calls: Vec<RunToolCallResponse>,
+}
+
+#[derive(Serialize)]
+pub struct RunToolCallResponse {
+    tool_call_id: String,
+    call_seq: i64,
+    name: String,
+    status: &'static str,
+    output_format: String,
+    background: bool,
+    started_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assistant_message_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -145,11 +182,20 @@ struct SnapshotMessageResponse {
 }
 
 #[derive(Serialize)]
+struct SnapshotRunResponse {
+    run_id: String,
+    started_at_ms: i64,
+}
+
+#[derive(Serialize)]
 struct SnapshotToolProgressResponse {
     tool_call_id: String,
     name: String,
     content: String,
     format: String,
+    call_seq: i64,
+    background: bool,
+    started_at_ms: i64,
 }
 
 #[derive(Serialize)]
@@ -175,12 +221,15 @@ struct QuizResponse {
 enum EventKindResponse {
     Snapshot {
         status: &'static str,
+        run: Option<SnapshotRunResponse>,
         in_progress: Option<SnapshotMessageResponse>,
         tool_progress: Vec<SnapshotToolProgressResponse>,
         pending_approval: Option<ApprovalResponse>,
         pending_quiz: Option<QuizResponse>,
     },
-    RunStarted,
+    RunStarted {
+        started_at_ms: i64,
+    },
     UserMessageCommitted {
         message_id: String,
         seq: u64,
@@ -199,6 +248,9 @@ enum EventKindResponse {
     ToolStarted {
         tool_call_id: String,
         name: String,
+        call_seq: i64,
+        started_at_ms: i64,
+        background: bool,
     },
     ToolProgress {
         tool_call_id: String,
@@ -210,6 +262,8 @@ enum EventKindResponse {
         tool_call_id: String,
         name: String,
         format: String,
+        finished_at_ms: i64,
+        status: String,
     },
     WaitingForApproval {
         approval_id: String,
@@ -226,11 +280,17 @@ enum EventKindResponse {
     QuizAnswered {
         quiz_id: String,
     },
-    RunFinished,
+    RunFinished {
+        finished_at_ms: i64,
+        final_message_id: Option<String>,
+    },
     RunFailed {
         error: String,
+        finished_at_ms: i64,
     },
-    RunCancelled,
+    RunCancelled {
+        finished_at_ms: i64,
+    },
 }
 
 #[derive(Debug)]
@@ -869,6 +929,7 @@ async fn thread_messages(
                 tool_call_name: tool_call_name(row.tool_calls.as_deref()),
                 tool_call_id: row.tool_call_id,
                 tool_format,
+                run_id: row.run_id.map(|id| id.to_string()),
             }
         })
         .filter(|message| {
@@ -878,6 +939,79 @@ async fn thread_messages(
                 || message.tool_call_name.is_some()
         })
         .collect())
+}
+
+pub async fn list_runs(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+) -> Result<Json<RunsResponse>, ThreadApiError> {
+    require_thread_owner(&state, &headers, thread_id).await?;
+    Ok(Json(thread_runs(&state, thread_id).await?))
+}
+
+async fn thread_runs(state: &ServerState, thread_id: Uuid) -> Result<RunsResponse, ThreadApiError> {
+    collect_thread_runs(&state.db, thread_id).await
+}
+
+async fn collect_thread_runs(
+    db: &minisql::ConnectionPool,
+    thread_id: Uuid,
+) -> Result<RunsResponse, ThreadApiError> {
+    let mut run_rows = runs::select()
+        .where_(runs::thread_id.eq(thread_id))
+        .all(db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+    run_rows.sort_by_key(|run| run.started_at_ms);
+
+    let mut call_rows = tool_call_records::select()
+        .where_(tool_call_records::parent_thread.eq(thread_id))
+        .all(db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+    call_rows.sort_by_key(|call| call.call_seq);
+
+    let mut calls_by_run: std::collections::HashMap<Uuid, Vec<RunToolCallResponse>> =
+        std::collections::HashMap::new();
+    for call in call_rows {
+        let Some(run_id) = call.run_id else {
+            continue;
+        };
+        calls_by_run
+            .entry(run_id)
+            .or_default()
+            .push(RunToolCallResponse {
+                tool_call_id: call.tool_call_id,
+                call_seq: call.call_seq,
+                name: call.name,
+                status: call.status.as_str(),
+                output_format: call.output_format,
+                background: call.background,
+                started_at_ms: call.started_at_ms,
+                finished_at_ms: call.finished_at_ms,
+                assistant_message_id: call.assistant_message_id.map(|id| id.to_string()),
+            });
+    }
+
+    let runs = run_rows
+        .into_iter()
+        .map(|run| {
+            let tool_calls = calls_by_run.remove(&run.id).unwrap_or_default();
+            RunResponse {
+                id: run.id.to_string(),
+                status: run.status.as_str(),
+                started_at_ms: run.started_at_ms,
+                finished_at_ms: run.finished_at_ms,
+                final_message_id: run.final_message_id.map(|id| id.to_string()),
+                error: run.error,
+                user_message_id: run.user_message_id.map(|id| id.to_string()),
+                tool_calls,
+            }
+        })
+        .collect();
+
+    Ok(RunsResponse { runs })
 }
 
 pub async fn send_message(
@@ -1594,7 +1728,9 @@ fn event_response(event: AgentEvent) -> EventResponse {
         thread_id: event.thread_id.to_string(),
         run_id: event.run_id.map(|run_id| run_id.0.to_string()),
         kind: match event.kind {
-            AgentEventKind::RunStarted => EventKindResponse::RunStarted,
+            AgentEventKind::RunStarted { started_at_ms } => {
+                EventKindResponse::RunStarted { started_at_ms }
+            }
             AgentEventKind::UserMessageCommitted { message_id, seq } => {
                 EventKindResponse::UserMessageCommitted {
                     message_id: message_id.to_string(),
@@ -1614,9 +1750,19 @@ fn event_response(event: AgentEvent) -> EventResponse {
                     seq,
                 }
             }
-            AgentEventKind::ToolStarted { tool_call_id, name } => {
-                EventKindResponse::ToolStarted { tool_call_id, name }
-            }
+            AgentEventKind::ToolStarted {
+                tool_call_id,
+                name,
+                call_seq,
+                started_at_ms,
+                background,
+            } => EventKindResponse::ToolStarted {
+                tool_call_id,
+                name,
+                call_seq,
+                started_at_ms,
+                background,
+            },
             AgentEventKind::ToolProgress {
                 tool_call_id,
                 name,
@@ -1632,10 +1778,14 @@ fn event_response(event: AgentEvent) -> EventResponse {
                 tool_call_id,
                 name,
                 format,
+                finished_at_ms,
+                status,
             } => EventKindResponse::ToolFinished {
                 tool_call_id,
                 name,
                 format,
+                finished_at_ms,
+                status,
             },
             AgentEventKind::WaitingForApproval {
                 approval_id,
@@ -1660,9 +1810,23 @@ fn event_response(event: AgentEvent) -> EventResponse {
             AgentEventKind::QuizAnswered { quiz_id } => EventKindResponse::QuizAnswered {
                 quiz_id: quiz_id.to_string(),
             },
-            AgentEventKind::RunFinished => EventKindResponse::RunFinished,
-            AgentEventKind::RunFailed { error } => EventKindResponse::RunFailed { error },
-            AgentEventKind::RunCancelled => EventKindResponse::RunCancelled,
+            AgentEventKind::RunFinished {
+                finished_at_ms,
+                final_message_id,
+            } => EventKindResponse::RunFinished {
+                finished_at_ms,
+                final_message_id: final_message_id.map(|id| id.to_string()),
+            },
+            AgentEventKind::RunFailed {
+                error,
+                finished_at_ms,
+            } => EventKindResponse::RunFailed {
+                error,
+                finished_at_ms,
+            },
+            AgentEventKind::RunCancelled { finished_at_ms } => {
+                EventKindResponse::RunCancelled { finished_at_ms }
+            }
         },
     }
 }
@@ -1677,6 +1841,10 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
                 ThreadStatus::Idle => "idle",
                 ThreadStatus::Running { .. } => "running",
             },
+            run: snapshot.run.as_ref().map(|run| SnapshotRunResponse {
+                run_id: run.run_id.0.to_string(),
+                started_at_ms: run.started_at_ms,
+            }),
             in_progress: snapshot
                 .in_progress
                 .as_ref()
@@ -1694,6 +1862,9 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
                     name: tool.name.clone(),
                     content: tool.content.clone(),
                     format: tool.format.clone(),
+                    call_seq: tool.call_seq,
+                    background: tool.background,
+                    started_at_ms: tool.started_at_ms,
                 })
                 .collect(),
             pending_approval: snapshot
@@ -1828,6 +1999,213 @@ mod tests {
         assert_eq!(
             clean_workspace_path(Some("/reports/a.pdf")),
             "reports/a.pdf"
+        );
+    }
+
+    fn event_json(kind: AgentEventKind) -> serde_json::Value {
+        let event = AgentEvent {
+            seq: 1,
+            thread_id: Uuid::now_v7(),
+            run_id: Some(RunId(Uuid::now_v7())),
+            kind,
+        };
+        serde_json::to_value(event_response(event)).unwrap()["kind"].clone()
+    }
+
+    #[test]
+    fn tool_started_event_carries_timeline_fields() {
+        let value = event_json(AgentEventKind::ToolStarted {
+            tool_call_id: "call-1".to_string(),
+            name: "web_search".to_string(),
+            call_seq: 2,
+            started_at_ms: 1234,
+            background: true,
+        });
+        assert_eq!(value["type"], "ToolStarted");
+        assert_eq!(value["call_seq"], 2);
+        assert_eq!(value["started_at_ms"], 1234);
+        assert_eq!(value["background"], true);
+    }
+
+    #[test]
+    fn tool_finished_event_carries_status_and_finished_at() {
+        let value = event_json(AgentEventKind::ToolFinished {
+            tool_call_id: "call-1".to_string(),
+            name: "web_search".to_string(),
+            format: "markdown".to_string(),
+            finished_at_ms: 9999,
+            status: "failed".to_string(),
+        });
+        assert_eq!(value["type"], "ToolFinished");
+        assert_eq!(value["finished_at_ms"], 9999);
+        assert_eq!(value["status"], "failed");
+    }
+
+    #[test]
+    fn run_lifecycle_events_carry_timestamps_and_final_message() {
+        let started = event_json(AgentEventKind::RunStarted { started_at_ms: 100 });
+        assert_eq!(started["type"], "RunStarted");
+        assert_eq!(started["started_at_ms"], 100);
+
+        let final_id = Uuid::now_v7();
+        let finished = event_json(AgentEventKind::RunFinished {
+            finished_at_ms: 200,
+            final_message_id: Some(final_id),
+        });
+        assert_eq!(finished["type"], "RunFinished");
+        assert_eq!(finished["finished_at_ms"], 200);
+        assert_eq!(finished["final_message_id"], final_id.to_string());
+
+        let failed = event_json(AgentEventKind::RunFailed {
+            error: "boom".to_string(),
+            finished_at_ms: 300,
+        });
+        assert_eq!(failed["type"], "RunFailed");
+        assert_eq!(failed["error"], "boom");
+        assert_eq!(failed["finished_at_ms"], 300);
+
+        let cancelled = event_json(AgentEventKind::RunCancelled {
+            finished_at_ms: 400,
+        });
+        assert_eq!(cancelled["type"], "RunCancelled");
+        assert_eq!(cancelled["finished_at_ms"], 400);
+    }
+
+    #[test]
+    fn snapshot_event_includes_running_run_and_tool_timeline() {
+        use crate::runner::{PartialToolProgress, RunSnapshot};
+
+        let run_id = RunId(Uuid::now_v7());
+        let snapshot = ThreadSnapshot {
+            thread_id: Uuid::now_v7(),
+            last_event_seq: 7,
+            status: ThreadStatus::Running { run_id },
+            run: Some(RunSnapshot {
+                run_id,
+                started_at_ms: 555,
+            }),
+            in_progress: None,
+            tool_progress: vec![PartialToolProgress {
+                tool_call_id: "call-1".to_string(),
+                name: "web_search".to_string(),
+                content: "partial".to_string(),
+                format: "markdown".to_string(),
+                call_seq: 3,
+                background: true,
+                started_at_ms: 777,
+            }],
+            pending_approval: None,
+            pending_quiz: None,
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&snapshot_event(&snapshot)).unwrap();
+        assert_eq!(value["kind"]["type"], "Snapshot");
+        assert_eq!(value["kind"]["status"], "running");
+        assert_eq!(value["kind"]["run"]["run_id"], run_id.0.to_string());
+        assert_eq!(value["kind"]["run"]["started_at_ms"], 555);
+        let tool = &value["kind"]["tool_progress"][0];
+        assert_eq!(tool["call_seq"], 3);
+        assert_eq!(tool["background"], true);
+        assert_eq!(tool["started_at_ms"], 777);
+    }
+
+    #[test]
+    fn snapshot_event_run_is_null_when_idle() {
+        let snapshot = ThreadSnapshot {
+            thread_id: Uuid::now_v7(),
+            last_event_seq: 0,
+            status: ThreadStatus::Idle,
+            run: None,
+            in_progress: None,
+            tool_progress: Vec::new(),
+            pending_approval: None,
+            pending_quiz: None,
+        };
+        let value: serde_json::Value = serde_json::from_str(&snapshot_event(&snapshot)).unwrap();
+        assert_eq!(value["kind"]["status"], "idle");
+        assert!(value["kind"]["run"].is_null());
+    }
+
+    #[tokio::test]
+    async fn thread_runs_returns_run_with_tool_calls() {
+        use crate::db::{self, AgentRunStatus, ToolCallStatus, runs, users};
+        use minisql::ConnectionPool;
+
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let user_message_id = Uuid::now_v7();
+        let assistant_message_id = Uuid::now_v7();
+        let final_message_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        runs::insert()
+            .id(run_id)
+            .thread_id(thread_id)
+            .status(AgentRunStatus::Finished)
+            .user_message_id(Some(user_message_id))
+            .final_message_id(Some(final_message_id))
+            .error(Option::<&str>::None)
+            .started_at_ms(1000)
+            .finished_at_ms(Some(2000))
+            .execute(&db)
+            .await
+            .unwrap();
+        for (call_id, seq) in [("call-b", 1i64), ("call-a", 0i64)] {
+            tool_call_records::insert()
+                .tool_call_id(call_id)
+                .parent_thread(thread_id)
+                .run_id(Some(run_id))
+                .assistant_message_id(Some(assistant_message_id))
+                .tool_message_id(Option::<Uuid>::None)
+                .name("web_search")
+                .status(ToolCallStatus::Finished)
+                .output_format("markdown")
+                .display_path(Option::<&str>::None)
+                .call_seq(seq)
+                .background(false)
+                .started_at_ms(1100 + seq)
+                .finished_at_ms(Some(1200 + seq))
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+
+        let response = collect_thread_runs(&db, thread_id).await.unwrap();
+        assert_eq!(response.runs.len(), 1);
+        let run = &response.runs[0];
+        assert_eq!(run.id, run_id.to_string());
+        assert_eq!(run.status, "finished");
+        assert_eq!(run.started_at_ms, 1000);
+        assert_eq!(run.finished_at_ms, Some(2000));
+        assert_eq!(run.final_message_id, Some(final_message_id.to_string()));
+        assert_eq!(run.user_message_id, Some(user_message_id.to_string()));
+        assert_eq!(run.tool_calls.len(), 2);
+        assert_eq!(run.tool_calls[0].tool_call_id, "call-a");
+        assert_eq!(run.tool_calls[0].call_seq, 0);
+        assert_eq!(run.tool_calls[1].tool_call_id, "call-b");
+        assert_eq!(run.tool_calls[1].call_seq, 1);
+        assert_eq!(run.tool_calls[0].status, "finished");
+        assert_eq!(run.tool_calls[0].output_format, "markdown");
+        assert_eq!(
+            run.tool_calls[0].assistant_message_id,
+            Some(assistant_message_id.to_string())
         );
     }
 }

@@ -715,7 +715,7 @@ impl TelegramSubscriber {
             return;
         };
 
-        if matches!(event.kind, AgentEventKind::RunStarted) {
+        if matches!(event.kind, AgentEventKind::RunStarted { .. }) {
             let Some((chat_id, topic_id, user_id)) =
                 telegram_destination(&self.state.db, self.thread_id).await
             else {
@@ -829,7 +829,7 @@ impl TelegramSubscriber {
                     }
                 }
             }
-            AgentEventKind::RunFinished => {
+            AgentEventKind::RunFinished { .. } => {
                 let info = self
                     .active
                     .as_ref()
@@ -858,7 +858,7 @@ impl TelegramSubscriber {
                     self.end_run(chat_id, topic_id);
                 }
             }
-            AgentEventKind::RunFailed { error } => {
+            AgentEventKind::RunFailed { error, .. } => {
                 if let Some((_, chat_id, topic_id)) = self.active_run(run_id) {
                     send_telegram_message(
                         &self.state,
@@ -870,7 +870,7 @@ impl TelegramSubscriber {
                     self.end_run(chat_id, topic_id);
                 }
             }
-            AgentEventKind::RunCancelled => {
+            AgentEventKind::RunCancelled { .. } => {
                 if let Some((_, chat_id, topic_id)) = self.active_run(run_id) {
                     self.end_run(chat_id, topic_id);
                 }
@@ -3050,13 +3050,16 @@ mod tests {
                 seq: 1,
                 thread_id,
                 run_id: Some(run_id),
-                kind: AgentEventKind::RunStarted,
+                kind: AgentEventKind::RunStarted { started_at_ms: 0 },
             });
             pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(AgentEvent {
                 seq: 2,
                 thread_id,
                 run_id: Some(run_id),
-                kind: AgentEventKind::RunFinished,
+                kind: AgentEventKind::RunFinished {
+                    finished_at_ms: 0,
+                    final_message_id: None,
+                },
             });
             Ok(run_id)
         }
@@ -3066,6 +3069,7 @@ mod tests {
                 thread_id,
                 last_event_seq: 0,
                 status: ThreadStatus::Idle,
+                run: None,
                 in_progress: None,
                 tool_progress: Vec::new(),
                 pending_approval: None,
@@ -3413,7 +3417,7 @@ mod tests {
             kind,
         };
         subscriber
-            .handle_event(&event(AgentEventKind::RunStarted))
+            .handle_event(&event(AgentEventKind::RunStarted { started_at_ms: 0 }))
             .await;
         let quiz_id = Uuid::now_v7();
         subscriber
