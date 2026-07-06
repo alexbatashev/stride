@@ -1,7 +1,10 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Attribute, Data, DeriveInput, Expr, Fields, Lit, Meta, Type, parse_macro_input};
+use syn::{
+    Attribute, Data, DeriveInput, Expr, Fields, Lit, LitStr, Meta, Pat, Type, parse::Parser,
+    parse_macro_input,
+};
 
 #[proc_macro_derive(ToolDesc)]
 pub fn derive_tool_desc(input: TokenStream) -> TokenStream {
@@ -9,6 +12,291 @@ pub fn derive_tool_desc(input: TokenStream) -> TokenStream {
     expand_tool_desc(input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+#[proc_macro]
+pub fn build_prompt(input: TokenStream) -> TokenStream {
+    let template = parse_macro_input!(input as LitStr);
+    expand_build_prompt(template)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[derive(Debug)]
+enum TemplateNode {
+    Text(String),
+    Expr(String),
+    If {
+        condition: String,
+        then_nodes: Vec<TemplateNode>,
+        else_nodes: Vec<TemplateNode>,
+    },
+    For {
+        pattern: String,
+        iterable: String,
+        nodes: Vec<TemplateNode>,
+    },
+}
+
+#[derive(Debug)]
+enum TemplatePart {
+    Text(String),
+    Tag(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopTag {
+    Else,
+    EndIf,
+    EndFor,
+}
+
+fn expand_build_prompt(template: LitStr) -> syn::Result<TokenStream2> {
+    let parts = tokenize_template(&template.value(), template.span())?;
+    let mut parser = TemplateParser {
+        parts: &parts,
+        index: 0,
+        span: template.span(),
+    };
+    let nodes = parser.parse_nodes(&[])?;
+    if parser.index != parts.len() {
+        return Err(syn::Error::new(
+            template.span(),
+            "unexpected trailing prompt template tag",
+        ));
+    }
+
+    let writes = render_nodes(&nodes)?;
+    Ok(quote! {{
+        let mut __prompt = String::new();
+        {
+            use std::fmt::Write as _;
+            #(#writes)*
+        }
+        __prompt
+    }})
+}
+
+fn tokenize_template(src: &str, span: proc_macro2::Span) -> syn::Result<Vec<TemplatePart>> {
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    let mut chars = src.char_indices().peekable();
+
+    while let Some((_, ch)) = chars.next() {
+        match ch {
+            '{' => {
+                if matches!(chars.peek(), Some((_, '{'))) {
+                    chars.next();
+                    text.push('{');
+                    continue;
+                }
+
+                if !text.is_empty() {
+                    parts.push(TemplatePart::Text(std::mem::take(&mut text)));
+                }
+
+                let mut tag = String::new();
+                let mut closed = false;
+                for (_, tag_ch) in chars.by_ref() {
+                    if tag_ch == '}' {
+                        closed = true;
+                        break;
+                    }
+                    tag.push(tag_ch);
+                }
+
+                if !closed {
+                    return Err(syn::Error::new(span, "unclosed prompt template tag"));
+                }
+                parts.push(TemplatePart::Tag(tag.trim().to_string()));
+            }
+            '}' => {
+                if matches!(chars.peek(), Some((_, '}'))) {
+                    chars.next();
+                    text.push('}');
+                } else {
+                    return Err(syn::Error::new(
+                        span,
+                        "unmatched `}` in prompt template; use `}}` for a literal brace",
+                    ));
+                }
+            }
+            _ => text.push(ch),
+        }
+    }
+
+    if !text.is_empty() {
+        parts.push(TemplatePart::Text(text));
+    }
+    Ok(parts)
+}
+
+struct TemplateParser<'a> {
+    parts: &'a [TemplatePart],
+    index: usize,
+    span: proc_macro2::Span,
+}
+
+impl TemplateParser<'_> {
+    fn parse_nodes(&mut self, stop_tags: &[StopTag]) -> syn::Result<Vec<TemplateNode>> {
+        let mut nodes = Vec::new();
+
+        while self.index < self.parts.len() {
+            match &self.parts[self.index] {
+                TemplatePart::Text(text) => {
+                    nodes.push(TemplateNode::Text(text.clone()));
+                    self.index += 1;
+                }
+                TemplatePart::Tag(tag) => {
+                    if let Some(stop_tag) = parse_stop_tag(tag) {
+                        if stop_tags.contains(&stop_tag) {
+                            return Ok(nodes);
+                        }
+                        return Err(syn::Error::new(
+                            self.span,
+                            format!("unexpected prompt template tag `{{{tag}}}`"),
+                        ));
+                    }
+
+                    if let Some(condition) = tag.strip_prefix("if ") {
+                        nodes.push(self.parse_if(condition.trim().to_string())?);
+                    } else if let Some(loop_src) = tag.strip_prefix("for ") {
+                        nodes.push(self.parse_for(loop_src.trim())?);
+                    } else if tag.is_empty() {
+                        return Err(syn::Error::new(
+                            self.span,
+                            "empty prompt template tag is not allowed",
+                        ));
+                    } else {
+                        nodes.push(TemplateNode::Expr(tag.clone()));
+                        self.index += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(nodes)
+    }
+
+    fn parse_if(&mut self, condition: String) -> syn::Result<TemplateNode> {
+        self.index += 1;
+        let then_nodes = self.parse_nodes(&[StopTag::Else, StopTag::EndIf])?;
+        let stop = self.current_stop_tag()?;
+        let else_nodes = if stop == StopTag::Else {
+            self.index += 1;
+            let nodes = self.parse_nodes(&[StopTag::EndIf])?;
+            let stop = self.current_stop_tag()?;
+            if stop != StopTag::EndIf {
+                return Err(syn::Error::new(self.span, "expected `{/if}`"));
+            }
+            nodes
+        } else {
+            Vec::new()
+        };
+        self.index += 1;
+
+        Ok(TemplateNode::If {
+            condition,
+            then_nodes,
+            else_nodes,
+        })
+    }
+
+    fn parse_for(&mut self, loop_src: &str) -> syn::Result<TemplateNode> {
+        self.index += 1;
+        let Some((pattern, iterable)) = loop_src.split_once(" in ") else {
+            return Err(syn::Error::new(
+                self.span,
+                "for prompt template tag must use `{for pattern in iterable}`",
+            ));
+        };
+
+        let nodes = self.parse_nodes(&[StopTag::EndFor])?;
+        let stop = self.current_stop_tag()?;
+        if stop != StopTag::EndFor {
+            return Err(syn::Error::new(self.span, "expected `{/for}`"));
+        }
+        self.index += 1;
+
+        Ok(TemplateNode::For {
+            pattern: pattern.trim().to_string(),
+            iterable: iterable.trim().to_string(),
+            nodes,
+        })
+    }
+
+    fn current_stop_tag(&self) -> syn::Result<StopTag> {
+        let Some(TemplatePart::Tag(tag)) = self.parts.get(self.index) else {
+            return Err(syn::Error::new(self.span, "unclosed prompt template block"));
+        };
+        parse_stop_tag(tag).ok_or_else(|| {
+            syn::Error::new(
+                self.span,
+                format!("expected prompt template block end, found `{{{tag}}}`"),
+            )
+        })
+    }
+}
+
+fn parse_stop_tag(tag: &str) -> Option<StopTag> {
+    match tag {
+        "else" => Some(StopTag::Else),
+        "/if" => Some(StopTag::EndIf),
+        "/for" => Some(StopTag::EndFor),
+        _ => None,
+    }
+}
+
+fn render_nodes(nodes: &[TemplateNode]) -> syn::Result<Vec<TokenStream2>> {
+    let mut writes = Vec::new();
+    for node in nodes {
+        writes.push(render_node(node)?);
+    }
+    Ok(writes)
+}
+
+fn render_node(node: &TemplateNode) -> syn::Result<TokenStream2> {
+    match node {
+        TemplateNode::Text(text) => Ok(quote! {
+            __prompt.push_str(#text);
+        }),
+        TemplateNode::Expr(expr) => {
+            let expr: Expr = syn::parse_str(expr)?;
+            Ok(quote! {
+                write!(&mut __prompt, "{}", #expr).expect("writing to prompt string cannot fail");
+            })
+        }
+        TemplateNode::If {
+            condition,
+            then_nodes,
+            else_nodes,
+        } => {
+            let condition: Expr = syn::parse_str(condition)?;
+            let then_writes = render_nodes(then_nodes)?;
+            let else_writes = render_nodes(else_nodes)?;
+            Ok(quote! {
+                if #condition {
+                    #(#then_writes)*
+                } else {
+                    #(#else_writes)*
+                }
+            })
+        }
+        TemplateNode::For {
+            pattern,
+            iterable,
+            nodes,
+        } => {
+            let pattern = Pat::parse_single.parse_str(pattern)?;
+            let iterable: Expr = syn::parse_str(iterable)?;
+            let writes = render_nodes(nodes)?;
+            Ok(quote! {
+                for #pattern in #iterable {
+                    #(#writes)*
+                }
+            })
+        }
+    }
 }
 
 fn expand_tool_desc(input: DeriveInput) -> syn::Result<TokenStream2> {
