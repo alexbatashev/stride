@@ -120,8 +120,8 @@ pub struct ServerAgent {
     /// own agent settings. Admins can update this in config to roll out new
     /// guidance without overwriting per-user overrides stored in the database.
     pub default_subagent_guidelines: Option<String>,
-    /// Number of standalone searchable tool names to preview in the
-    /// `search_tools` description. MCP tools are summarized by server name.
+    /// Number of searchable tool categories to preview in the `search_tools`
+    /// description.
     pub searchable_tools_preview_limit: Option<usize>,
 }
 

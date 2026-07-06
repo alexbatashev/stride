@@ -13,7 +13,7 @@ pub(crate) struct SearchEntry {
     pub name: String,
     pub description: String,
     pub definition: LlmTool,
-    pub group: Option<String>,
+    pub category: Option<String>,
 }
 
 pub struct SearchTool {
@@ -61,6 +61,11 @@ impl Tool for SearchTool {
             .filter(|e| {
                 e.name.to_lowercase().contains(&query)
                     || e.description.to_lowercase().contains(&query)
+                    || e.category
+                        .as_deref()
+                        .unwrap_or("NONE")
+                        .to_lowercase()
+                        .contains(&query)
             })
             .collect();
 
@@ -85,41 +90,37 @@ impl SearchTool {
             entries.len()
         ));
 
-        let preview_limit = *self.preview_limit.lock().unwrap();
-        let standalone: Vec<&str> = entries
-            .iter()
-            .filter(|entry| entry.group.is_none())
-            .map(|entry| entry.name.as_str())
-            .take(preview_limit)
-            .collect();
-        if !standalone.is_empty() {
-            description.push_str(" Tool names include: ");
-            description.push_str(&standalone.join(", "));
-            let standalone_count = entries.iter().filter(|entry| entry.group.is_none()).count();
-            if standalone_count > standalone.len() {
-                description.push_str(&format!(
-                    " and {} more",
-                    standalone_count - standalone.len()
-                ));
-            }
-            description.push('.');
+        let mut categories = BTreeMap::<String, usize>::new();
+        for entry in entries.iter() {
+            let category = entry.category.as_deref().unwrap_or("NONE");
+            *categories.entry(category.to_string()).or_default() += 1;
         }
-
-        let mut groups = BTreeMap::<String, usize>::new();
-        for entry in entries.iter().filter_map(|entry| entry.group.as_ref()) {
-            *groups.entry(entry.clone()).or_default() += 1;
-        }
-        if !groups.is_empty() {
-            let groups: Vec<String> = groups
+        if !categories.is_empty() {
+            let preview_limit = *self.preview_limit.lock().unwrap();
+            let category_count = categories.len();
+            let categories: Vec<String> = categories
                 .into_iter()
+                .take(preview_limit)
                 .map(|(group, count)| {
                     let suffix = if count == 1 { "tool" } else { "tools" };
                     format!("{group} ({count} {suffix})")
                 })
                 .collect();
-            description.push_str(" MCP servers include: ");
-            description.push_str(&groups.join(", "));
-            description.push('.');
+            if categories.is_empty() {
+                description.push_str(&format!(" {category_count} categories are available."));
+            } else {
+                description.push_str(" Categories include: ");
+                description.push_str(&categories.join(", "));
+            }
+            if category_count > categories.len() && !categories.is_empty() {
+                description.push_str(&format!(
+                    " and {} more categories",
+                    category_count - categories.len()
+                ));
+            }
+            if !description.ends_with('.') {
+                description.push('.');
+            }
         }
 
         description

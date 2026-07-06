@@ -24,8 +24,8 @@ pub trait Tool: Send + Sync {
     /// Get the tool definition for the LLM (OpenAI function format)
     fn definition(&self) -> LlmTool;
 
-    /// Optional group used when summarizing searchable tools to the model.
-    fn searchable_group(&self) -> Option<String> {
+    /// Optional category used when summarizing searchable tools to the model.
+    fn searchable_category(&self) -> Option<String> {
         None
     }
 
