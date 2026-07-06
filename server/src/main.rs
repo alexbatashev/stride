@@ -769,6 +769,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
             config::Kind::OpenRouter => OpenAI::openrouter(&provider.url).into(),
             config::Kind::Anthropic => Anthropic::new(&provider.url).into(),
             config::Kind::Ollama => Ollama::new(&provider.url).into(),
+            config::Kind::OllamaCloud => Ollama::cloud(&provider.url).into(),
         };
         registry.add_model(
             name,
@@ -793,6 +794,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
             config::Kind::OpenRouter => OpenAI::openrouter(&provider.url).into(),
             config::Kind::Anthropic => Anthropic::new(&provider.url).into(),
             config::Kind::Ollama => Ollama::new(&provider.url).into(),
+            config::Kind::OllamaCloud => Ollama::cloud(&provider.url).into(),
         };
         registry.add_model(
             DEFAULT_MODEL,

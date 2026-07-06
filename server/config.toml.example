@@ -18,7 +18,12 @@ token = "sk-ant-..."
 
 [providers.ollama]
 kind = "Ollama"
-url = "http://localhost:11434/v1"
+url = "http://localhost:11434"
+
+[providers.ollama_cloud]
+kind = "OllamaCloud"
+url = "https://ollama.com"
+token = "ollama-api-key"
 
 # Predefined models in this section are available to every user in the web UI
 # and OpenAI-compatible API. Users can also add personal providers and models
@@ -67,6 +72,13 @@ description = "Local Ollama model for offline or low-cost runs."
 slug = "llama3.2"
 provider = "ollama"
 # Omit reasoning_effort (or the legacy `thinking` flag) to disable reasoning.
+
+[models.gpt_oss_120b]
+display_name = "GPT-OSS 120B"
+description = "Ollama Cloud model with native streaming, thinking, tools, vision, and embeddings support where the selected model provides it."
+slug = "gpt-oss:120b"
+provider = "ollama_cloud"
+reasoning_effort = "high"
 
 # A model registered under the reserved name `embeddings` is used to embed text
 # for the agent's memory palace, enabling semantic recall. It must point at an

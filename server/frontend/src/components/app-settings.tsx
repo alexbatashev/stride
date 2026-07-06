@@ -2076,6 +2076,7 @@ export function AppSettings({
                         <option value="openrouter">OpenRouter</option>
                         <option value="anthropic">Anthropic</option>
                         <option value="ollama">Ollama</option>
+                        <option value="ollama_cloud">Ollama Cloud</option>
                       </select></label>
                       <label class="full">URL<input name="url" type="url" required placeholder="https://api.openai.com/v1" autocomplete="off" /></label>
                       <label class="full">API token<input name="token" type="password" required autocomplete="off" /></label>

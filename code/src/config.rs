@@ -14,6 +14,7 @@ pub enum Kind {
     OpenRouter,
     Anthropic,
     Ollama,
+    OllamaCloud,
 }
 
 #[derive(Debug, Deserialize)]
