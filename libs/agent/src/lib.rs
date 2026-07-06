@@ -8,7 +8,7 @@ pub mod tools;
 
 extern crate self as stride_agent;
 
-pub use agent_macro::ToolDesc;
+pub use agent_macro::{ToolDesc, build_prompt};
 pub use base::*;
 pub use sanitizer::*;
 pub use tool::*;
