@@ -1,6 +1,7 @@
 mod base;
 pub mod mcp;
 pub mod memory;
+pub mod prompt_template;
 pub mod sanitizer;
 mod tool;
 mod tool_registry;

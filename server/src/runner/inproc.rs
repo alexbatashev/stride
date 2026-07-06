@@ -13,6 +13,7 @@ use minisql::{ConnectionPool, Value};
 use stride_agent::{
     AgentConfig, AgentResponseChunk, BaseAgent, QuizQuestion, Tool, ToolRegistry,
     mcp::McpTool,
+    prompt_template,
     sanitizer::{HtmlFormattingSanitizer, StreamingMessageSanitizer},
     tools::{
         email::{CreateEmailDraftTool, ListEmailsTool},
@@ -91,115 +92,132 @@ fn build_system_prompt(
     telegram: bool,
     public_url: Option<&str>,
 ) -> String {
-    let date = current_date();
-    let mut prompt = base.to_string();
-    prompt.push_str(&format!("\nCurrent date: {date}"));
     let public_url = public_url.map(|url| url.trim_end_matches('/'));
-    if let Some(public_url) = public_url {
-        prompt.push_str(&format!(
-            "\nConfigured public URL for referencing files and resources: {public_url}"
-        ));
-    }
+    let public_url_section = public_url
+        .map(|url| {
+            prompt_template!("\nConfigured public URL for referencing files and resources: {url}")
+        })
+        .unwrap_or_default();
+    let output_formatting = output_formatting_prompt(telegram);
+    let file_system_section = file_system_prompt(
+        thread_id,
+        writable_root,
+        writable_extra,
+        telegram,
+        public_url,
+    );
+    let telegram_section = telegram_prompt(telegram, public_url);
+    let personality_section = personality
+        .map(|personality| {
+            prompt_template!("\n\n<user_personality>\n{personality}\n</user_personality>")
+        })
+        .unwrap_or_default();
+
+    prompt_template!(
+        "{base}\nCurrent date: {date}{public_url_section}\n\n{output_formatting}{file_system_section}{telegram_section}{personality_section}",
+        date = current_date()
+    )
+}
+
+fn output_formatting_prompt(telegram: bool) -> String {
     if telegram {
-        prompt.push_str(
-            "\n\nOutput formatting:\n\
+        return prompt_template!(
+            "Output formatting:\n\
              - Use Markdown, not HTML, for user-facing assistant messages.\n\
-             - Telegram is the rendering surface, so do not use HTML tags, iframes, inline widgets, \
-             SVG, forms, scripts, styles, or custom markup.\n\
-             - Use ordinary text when no formatting is needed.",
-        );
-    } else {
-        prompt.push_str(
-            "\n\nOutput formatting:\n\
-             - Use safe HTML for user-facing assistant messages. DO NOT use Markdown.\n\
-             - Use only these tags: h1-h6, p, strong, b, em, i, u, s, del, code, pre, \
-             blockquote, ul, ol, li, table, thead, tbody, tfoot, tr, th, td, a, br, hr, \
-             img, video, audio, iframe.\n\
-             - Use img, video, audio, and iframe only when their src starts with the configured \
-             public URL. If no configured public URL is provided, do not use media tags.\n\
-             - Do not write Markdown syntax such as `[file](url)`, `**bold**`, `*italic*`, \
-             or fenced code blocks. Use `<a href=\"...\">`, `<strong>`, `<em>`, `<code>`, \
-             and `<pre><code>` instead.\n\
-             - Do not include style, class, id, event-handler, script, SVG, or form markup.\n\
-             - Use ordinary text when no formatting is needed.\n\n\
-             Interactive widgets:\n\
-             - When a user asks for an interactive explanation, simulation, chart, calculator, \
-             or visualization, load the `inline-widget` skill before answering.\n\
-             - Inline widgets are standalone HTML files you create in the writable directory, \
-             then embed with an iframe in the final answer.\n\
-             - The iframe `src` for a generated widget must be the configured public URL plus \
-             `/api/threads/<thread-id>/files/<path>`, where `<path>` is relative to the writable \
-             directory. Do not use `/static` for generated widgets; `/static` is only for built-in \
-             CSS and JS assets.\n\
-             - Widget HTML must load `/static/common.css` and `/static/widget-frame.js`; use \
-             bundled scripts in `/static/vendor/` when D3, Observable Plot, Decimal, or Dagre is \
-             needed.\n\
-             - Name widget files with URL-safe ASCII names such as `sorting-widget.html` to avoid \
-             broken iframe URLs.",
+             - Telegram is the rendering surface, so do not use HTML tags, iframes, inline widgets, SVG, forms, scripts, styles, or custom markup.\n\
+             - Use ordinary text when no formatting is needed."
         );
     }
-    if let (Some(id), Some(root)) = (thread_id, writable_root) {
-        // Telegram only renders absolute links, so prefix download URLs with the server's public
-        // base URL there; elsewhere a relative path keeps working across deployments.
-        let base_url = telegram.then_some(public_url).flatten().unwrap_or("");
-        let file_link_example = if telegram {
-            format!(
-                "Example: `{root}/report.pdf` -> `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
+
+    prompt_template!(
+        "Output formatting:\n\
+         - Use safe HTML for user-facing assistant messages. DO NOT use Markdown.\n\
+         - Use only these tags: h1-h6, p, strong, b, em, i, u, s, del, code, pre, blockquote, ul, ol, li, table, thead, tbody, tfoot, tr, th, td, a, br, hr, img, video, audio, iframe.\n\
+         - Use img, video, audio, and iframe only when their src starts with the configured public URL. If no configured public URL is provided, do not use media tags.\n\
+         - Do not write Markdown syntax such as `[file](url)`, `**bold**`, `*italic*`, or fenced code blocks. Use `<a href=\"...\">`, `<strong>`, `<em>`, `<code>`, and `<pre><code>` instead.\n\
+         - Do not include style, class, id, event-handler, script, SVG, or form markup.\n\
+         - Use ordinary text when no formatting is needed.\n\n\
+         Interactive widgets:\n\
+         - When a user asks for an interactive explanation, simulation, chart, calculator, or visualization, load the `inline-widget` skill before answering.\n\
+         - Inline widgets are standalone HTML files you create in the writable directory, then embed with an iframe in the final answer.\n\
+         - The iframe `src` for a generated widget must be the configured public URL plus `/api/threads/<thread-id>/files/<path>`, where `<path>` is relative to the writable directory. Do not use `/static` for generated widgets; `/static` is only for built-in CSS and JS assets.\n\
+         - Widget HTML must load `/static/common.css` and `/static/widget-frame.js`; use bundled scripts in `/static/vendor/` when D3, Observable Plot, Decimal, or Dagre is needed.\n\
+         - Name widget files with URL-safe ASCII names such as `sorting-widget.html` to avoid broken iframe URLs."
+    )
+}
+
+fn file_system_prompt(
+    thread_id: Option<Uuid>,
+    writable_root: Option<&str>,
+    writable_extra: &[String],
+    telegram: bool,
+    public_url: Option<&str>,
+) -> String {
+    let Some((id, root)) = thread_id.zip(writable_root) else {
+        return String::new();
+    };
+
+    let base_url = telegram.then_some(public_url).flatten().unwrap_or("");
+    let link_example = file_link_example(id, root, base_url, telegram);
+    let html_media = public_url
+        .map(|url| {
+            prompt_template!(
+                " {html_media}",
+                html_media = html_media_prompt(id, root, url)
             )
-        } else {
-            format!(
-                "When linking to a file in a user-facing response, use an HTML anchor, not Markdown: \
-                 `<a href=\"/api/threads/{id}/files/report.pdf\">report.pdf</a>`."
-            )
-        };
-        prompt.push_str(&format!(
-            "\n\nFile system: list `/` to see the user's files. \
-             Your writable directory is `{root}` — write all outputs you create there; \
-             everything else under `/` is read-only (this applies in the shell and the Python sandbox alike). \
-             Files in it are downloadable via `{base_url}/api/threads/{id}/files/<path>` \
-             where `<path>` is relative to your writable directory (drop the leading `{root}/`). \
-             {file_link_example}"
-        ));
-        if let Some(public_url) = public_url {
-            prompt.push_str(&format!(
-                " For HTML media tags such as iframe/img/video/audio, the src must be absolute: \
-                 `{public_url}/api/threads/{id}/files/<path>`. \
-                 For example, if you create `{root}/sorting-widget.html`, embed it as \
-                 `<iframe src=\"{public_url}/api/threads/{id}/files/sorting-widget.html\"></iframe>`. \
-                 Do not use a relative `/api/threads/...` iframe src, do not use `/static/...` for \
-                 generated files, and do not include the `{root}/` prefix in the URL path."
-            ));
-        }
-        if !writable_extra.is_empty() {
-            let list = writable_extra
-                .iter()
-                .map(|dir| format!("`/{dir}`"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            prompt.push_str(&format!(
-                " The user also granted write access to these directories and everything under \
-                 them: {list}. You may create and edit files there too."
-            ));
-        }
-    }
+        })
+        .unwrap_or_default();
+    let writable_extra = writable_extra_prompt(writable_extra);
+
+    prompt_template!(
+        "\n\nFile system: list `/` to see the user's files. Your writable directory is `{root}` — write all outputs you create there; everything else under `/` is read-only (this applies in the shell and the Python sandbox alike). Files in it are downloadable via `{base_url}/api/threads/{id}/files/<path>` where `<path>` is relative to your writable directory (drop the leading `{root}/`). {link_example}{html_media}{writable_extra}"
+    )
+}
+
+fn file_link_example(id: Uuid, root: &str, base_url: &str, telegram: bool) -> String {
     if telegram {
-        prompt.push_str(
-            "\n\nThis conversation happens over Telegram. The user can send you files; they are \
-             downloaded into an `uploads/` folder in your writable directory and noted in their \
-             message with their full path. When you produce a file for the user, deliver it with \
-             the `send_telegram_file` tool so it arrives as a native Telegram attachment.",
+        return prompt_template!(
+            "Example: `{root}/report.pdf` -> `[report.pdf]({base_url}/api/threads/{id}/files/report.pdf)`."
         );
-        if public_url.is_some() {
-            prompt.push_str(
-                " You may also include a download link, but Telegram markdown only renders \
-                 absolute links, so always use the full `https://` download URL shown above.",
-            );
-        }
     }
-    if let Some(p) = personality {
-        prompt.push_str(&format!("\n\n<user_personality>\n{p}\n</user_personality>"));
+
+    prompt_template!(
+        "When linking to a file in a user-facing response, use an HTML anchor, not Markdown: `<a href=\"/api/threads/{id}/files/report.pdf\">report.pdf</a>`."
+    )
+}
+
+fn html_media_prompt(id: Uuid, root: &str, public_url: &str) -> String {
+    prompt_template!(
+        "For HTML media tags such as iframe/img/video/audio, the src must be absolute: `{public_url}/api/threads/{id}/files/<path>`. For example, if you create `{root}/sorting-widget.html`, embed it as `<iframe src=\"{public_url}/api/threads/{id}/files/sorting-widget.html\"></iframe>`. Do not use a relative `/api/threads/...` iframe src, do not use `/static/...` for generated files, and do not include the `{root}/` prefix in the URL path."
+    )
+}
+
+fn writable_extra_prompt(writable_extra: &[String]) -> String {
+    if writable_extra.is_empty() {
+        return String::new();
     }
-    prompt
+
+    let list = writable_extra
+        .iter()
+        .map(|dir| prompt_template!("`/{dir}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    prompt_template!(
+        " The user also granted write access to these directories and everything under them: {list}. You may create and edit files there too."
+    )
+}
+
+fn telegram_prompt(telegram: bool, public_url: Option<&str>) -> String {
+    if !telegram {
+        return String::new();
+    }
+
+    let download_hint = public_url.map(|_| {
+        " You may also include a download link, but Telegram markdown only renders absolute links, so always use the full `https://` download URL shown above."
+    }).unwrap_or("");
+    prompt_template!(
+        "\n\nThis conversation happens over Telegram. The user can send you files; they are downloaded into an `uploads/` folder in your writable directory and noted in their message with their full path. When you produce a file for the user, deliver it with the `send_telegram_file` tool so it arrives as a native Telegram attachment.{download_hint}"
+    )
 }
 
 fn current_date() -> String {
