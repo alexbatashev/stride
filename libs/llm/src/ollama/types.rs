@@ -99,6 +99,7 @@ impl From<OllamaMessageResponse> for StreamResponseChunk {
             created: 0,
             model: val.model.clone(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: Some(val.message.clone()),
                 text: None,

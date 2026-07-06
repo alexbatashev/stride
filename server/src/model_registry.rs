@@ -751,6 +751,7 @@ mod tests {
                     default_subagent_guidelines: Some("Use fast models for lookups.".to_string()),
                     searchable_tools_preview_limit: None,
                 }),
+                prometheus: None,
             }),
             tools: None,
             mcp: HashMap::new(),

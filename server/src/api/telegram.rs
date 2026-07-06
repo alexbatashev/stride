@@ -2931,6 +2931,7 @@ mod tests {
             google: None,
             public_url: None,
             agent: None,
+            prometheus: None,
         };
         ServerState {
             config: Config {
@@ -2946,6 +2947,7 @@ mod tests {
             model_config: Arc::new(stride_agent::AgentConfig {
                 model_registry: stride_agent::ModelRegistry::default(),
                 max_iterations: 1,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
@@ -3129,6 +3131,7 @@ mod tests {
             model_config: Arc::new(stride_agent::AgentConfig {
                 model_registry: stride_agent::ModelRegistry::default(),
                 max_iterations: 1,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),

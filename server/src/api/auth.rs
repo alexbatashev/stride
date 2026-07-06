@@ -455,6 +455,7 @@ mod tests {
                     google: None,
                     public_url: None,
                     agent: None,
+                    prometheus: None,
                 }),
                 ..empty_config()
             },
@@ -510,6 +511,7 @@ mod tests {
                 google: None,
                 public_url: None,
                 agent: None,
+                prometheus: None,
             }),
             tools: None,
             mcp: HashMap::new(),
@@ -520,6 +522,7 @@ mod tests {
         let model_config = Arc::new(AgentConfig {
             model_registry: mock_model_registry(),
             max_iterations: 2,
+            observer: Arc::new(stride_agent::NoopAgentObserver),
         });
         let runner = Arc::new(InProcessAgentPool::new(
             db.clone(),

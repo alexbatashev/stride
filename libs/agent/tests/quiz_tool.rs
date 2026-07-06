@@ -29,6 +29,7 @@ fn tool_call_chunk(name: &str, arguments: &str) -> StreamResponseChunk {
         created: 0,
         model: "mock-model".to_string(),
         system_fingerprint: None,
+        usage: None,
         choices: vec![CompletionChoice {
             message: None,
             text: None,
@@ -60,6 +61,7 @@ fn text_chunk(content: &str) -> StreamResponseChunk {
         created: 0,
         model: "mock-model".to_string(),
         system_fingerprint: None,
+        usage: None,
         choices: vec![CompletionChoice {
             message: None,
             text: Some(content.to_string()),
@@ -95,6 +97,7 @@ fn quiz_yields_questions_and_returns_answers() {
             Arc::new(AgentConfig {
                 model_registry: registry(&mock),
                 max_iterations: 50,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             String::new(),
             vec![],

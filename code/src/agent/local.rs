@@ -45,6 +45,7 @@ impl LocalAgent {
         let base_config = Arc::new(AgentConfig {
             model_registry,
             max_iterations: 90,
+            observer: Arc::new(stride_agent::NoopAgentObserver),
         });
 
         let mut agent = BaseAgent::new(

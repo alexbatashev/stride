@@ -11,6 +11,7 @@ mod google;
 mod mcp_servers;
 mod model_registry;
 mod notify;
+mod observability;
 mod pages;
 mod rate_limit;
 pub mod runner;
@@ -110,9 +111,11 @@ async fn main() -> anyhow::Result<()> {
             execenv::prepare_eryx_runtime(python_config).await?;
         }
     }
+    let observability = observability::Observability::new();
     let model_config = Arc::new(AgentConfig {
         model_registry: create_model_registry(&config),
         max_iterations: 90,
+        observer: observability.clone(),
     });
     let encryption_secret = email::encryption_secret(&jwt_secret);
     let cipher = crypto::SecretCipher::new(&encryption_secret);
@@ -195,6 +198,8 @@ async fn main() -> anyhow::Result<()> {
     }
     let runner: Arc<dyn runner::AgentPool> = Arc::new(runner_builder.build());
 
+    spawn_prometheus(&config, db.clone(), observability.clone()).await?;
+
     let state = Arc::new(ServerState {
         config,
         db,
@@ -256,6 +261,33 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    Ok(())
+}
+
+async fn spawn_prometheus(
+    config: &config::Config,
+    db: ConnectionPool,
+    observability: Arc<observability::Observability>,
+) -> anyhow::Result<()> {
+    let Some(prometheus) = config
+        .server
+        .as_ref()
+        .and_then(|server| server.prometheus.as_ref())
+    else {
+        return Ok(());
+    };
+    if !prometheus.enabled() {
+        return Ok(());
+    }
+
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], prometheus.port()));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(addr = %listener.local_addr()?, "prometheus metrics listening");
+    tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, observability.router(db)).await {
+            tracing::error!(%error, "prometheus metrics server stopped");
+        }
+    });
     Ok(())
 }
 

@@ -32,6 +32,24 @@ pub const TRANSCRIPTION_MODEL: &str = "transcription";
 
 pub struct BaseAgent(Rc<RefCell<BaseAgentInner>>);
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+pub trait AgentObserver: Send + Sync {
+    fn user_message_added(&self) {}
+    fn agent_message_started(&self) {}
+    fn tool_call_started(&self, _name: &str) {}
+    fn token_usage(&self, _usage: TokenUsage) {}
+}
+
+#[derive(Default)]
+pub struct NoopAgentObserver;
+
+impl AgentObserver for NoopAgentObserver {}
+
 #[derive(Debug, Error)]
 pub enum AgentError {
     #[error("Missing model designated as '{0}'")]
@@ -73,10 +91,10 @@ pub enum AgentResponseChunk {
 pub type AgentResponseStream =
     Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>>;
 
-#[derive(Debug)]
 pub struct AgentConfig {
     pub model_registry: ModelRegistry,
     pub max_iterations: usize,
+    pub observer: Arc<dyn AgentObserver>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -297,6 +315,8 @@ impl BaseAgent {
             )
         };
 
+        config.observer.user_message_added();
+
         self.0.borrow_mut().thread.push(Message {
             role: llm::Role::User,
             content: request,
@@ -317,6 +337,7 @@ impl BaseAgent {
                 };
 
                 {
+                    config.observer.agent_message_started();
                     agent.borrow_mut().thread.push(Message {
                         role: llm::Role::Assistant,
                         content: String::new(),
@@ -343,6 +364,12 @@ impl BaseAgent {
                 while let Some(chunk) = stream.next().await {
                     let is_err = chunk.is_err();
                     if let Ok(ref chunk) = chunk {
+                        if let Some(usage) = &chunk.usage {
+                            config.observer.token_usage(TokenUsage {
+                                input_tokens: usage.prompt_tokens as u64,
+                                output_tokens: usage.completion_tokens as u64,
+                            });
+                        }
                         append_chunk(&agent, chunk, &mut tool_calls);
                     }
                     match chunk {
@@ -362,6 +389,7 @@ impl BaseAgent {
                 let mut pending_images: Vec<ImageSource> = Vec::new();
 
                 for (id, name, arguments) in tool_calls {
+                    config.observer.tool_call_started(&name);
                     tracing::info!(tool = %name, arguments = %arguments, "tool call requested");
 
                     let tool = {
@@ -728,6 +756,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: registry,
                 max_iterations: 50,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             String::new(),
             vec![],
@@ -758,6 +787,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: registry(&mock),
                     max_iterations: 50,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 String::new(),
                 vec![],
@@ -793,6 +823,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: registry(&mock),
                     max_iterations: 50,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 "Use short answers.".to_string(),
                 vec![Message {
@@ -923,6 +954,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: None,
@@ -954,6 +986,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: Some(content.to_string()),
@@ -1004,6 +1037,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: None,
@@ -1105,6 +1139,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: registry(&mock),
                 max_iterations: 50,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             String::new(),
             vec![],
@@ -1163,6 +1198,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: registry(&mock),
                     max_iterations: 50,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 String::new(),
                 vec![],
