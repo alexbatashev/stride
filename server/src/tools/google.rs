@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 use crate::google::{CalendarEventInput, GoogleService, tool_error};
 
+const GOOGLE_CATEGORY: &str = "Google";
+
 /// Register every Google tool on `agent`, bound to `user`. The tools are
 /// searchable: the agent discovers them through `search_tools` rather than
 /// having them always in context.
@@ -88,6 +90,10 @@ impl Tool for GmailListTool {
         )
     }
 
+    fn searchable_category(&self) -> Option<String> {
+        Some(GOOGLE_CATEGORY.to_string())
+    }
+
     async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
         let params = match GmailListParams::decode(args) {
             Ok(params) => params,
@@ -130,6 +136,10 @@ impl Tool for GmailDraftReplyTool {
             "Create a reply draft to a Gmail message. The draft is saved to Gmail Drafts and is never sent.",
             GmailDraftReplyParams::function_parameters(),
         )
+    }
+
+    fn searchable_category(&self) -> Option<String> {
+        Some(GOOGLE_CATEGORY.to_string())
     }
 
     async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
@@ -180,6 +190,10 @@ impl Tool for CalendarListTool {
             "List upcoming events from the connected Google Calendar (primary calendar). Read-only.",
             CalendarListParams::function_parameters(),
         )
+    }
+
+    fn searchable_category(&self) -> Option<String> {
+        Some(GOOGLE_CATEGORY.to_string())
     }
 
     async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
@@ -245,6 +259,10 @@ impl Tool for CalendarAddEventTool {
         )
     }
 
+    fn searchable_category(&self) -> Option<String> {
+        Some(GOOGLE_CATEGORY.to_string())
+    }
+
     async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
         let params = match CalendarAddEventParams::decode(args) {
             Ok(params) => params,
@@ -300,6 +318,10 @@ impl Tool for DriveListTool {
         )
     }
 
+    fn searchable_category(&self) -> Option<String> {
+        Some(GOOGLE_CATEGORY.to_string())
+    }
+
     async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
         let params = match DriveListParams::decode(args) {
             Ok(params) => params,
@@ -348,6 +370,10 @@ impl Tool for DriveFetchTool {
             "Fetch a Google Drive file's text content. Google Docs/Sheets/Slides are exported as text; other text files are returned as-is. Read-only.",
             DriveFetchParams::function_parameters(),
         )
+    }
+
+    fn searchable_category(&self) -> Option<String> {
+        Some(GOOGLE_CATEGORY.to_string())
     }
 
     async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {

@@ -233,7 +233,7 @@ impl BaseAgent {
             name: tool.name().to_string(),
             description: tool.definition().function.description.clone(),
             definition: tool.definition(),
-            group: tool.searchable_group(),
+            category: tool.searchable_category(),
         };
         lock.searchable_entries.lock().unwrap().push(entry);
         lock.tool_registry.register_searchable(tool);
@@ -1095,7 +1095,7 @@ mod tests {
 
     struct NamedSearchableTool {
         name: &'static str,
-        group: Option<&'static str>,
+        category: Option<&'static str>,
     }
 
     #[async_trait(?Send)]
@@ -1122,8 +1122,8 @@ mod tests {
             }
         }
 
-        fn searchable_group(&self) -> Option<String> {
-            self.group.map(str::to_string)
+        fn searchable_category(&self) -> Option<String> {
+            self.category.map(str::to_string)
         }
 
         async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
@@ -1147,23 +1147,23 @@ mod tests {
         agent.set_searchable_tools_preview_limit(2);
         agent.register_searchable_tool(NamedSearchableTool {
             name: "alpha",
-            group: None,
+            category: None,
         });
         agent.register_searchable_tool(NamedSearchableTool {
             name: "beta",
-            group: None,
+            category: None,
         });
         agent.register_searchable_tool(NamedSearchableTool {
             name: "gamma",
-            group: None,
+            category: None,
         });
         agent.register_searchable_tool(NamedSearchableTool {
             name: "github_create_issue",
-            group: Some("GitHub MCP"),
+            category: Some("GitHub MCP"),
         });
         agent.register_searchable_tool(NamedSearchableTool {
             name: "github_list_issues",
-            group: Some("GitHub MCP"),
+            category: Some("GitHub MCP"),
         });
 
         let description = agent
@@ -1175,10 +1175,57 @@ mod tests {
             .description;
 
         assert!(description.contains("5 additional tools"));
-        assert!(description.contains("Tool names include: alpha, beta and 1 more."));
-        assert!(description.contains("MCP servers include: GitHub MCP (2 tools)."));
+        assert!(description.contains("Categories include: GitHub MCP (2 tools), NONE (3 tools)."));
+        assert!(!description.contains("Tool names include:"));
+        assert!(!description.contains("alpha"));
         assert!(!description.contains("gamma,"));
         assert!(!description.contains("github_create_issue"));
+    }
+
+    #[test]
+    fn search_tools_matches_hidden_tool_categories() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![named_tool_call_chunk(
+                    "search_tools",
+                    r#"{"query":"google"}"#,
+                )],
+                vec![text_chunk("done")],
+            ]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_string(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 50,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                }),
+                String::new(),
+                vec![],
+            );
+            agent.register_searchable_tool(NamedSearchableTool {
+                name: "gmail_draft_reply",
+                category: Some("Google"),
+            });
+            agent.register_searchable_tool(NamedSearchableTool {
+                name: "alpha",
+                category: None,
+            });
+
+            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            pin_mut!(stream);
+            let mut search_result = None;
+            while let Some(chunk) = stream.next().await {
+                if let AgentResponseChunk::ToolFinished { name, result, .. } = chunk.unwrap()
+                    && name == "Search Tools"
+                {
+                    search_result = Some(result);
+                }
+            }
+
+            let result: Value = serde_json::from_str(&search_result.unwrap()).unwrap();
+            assert_eq!(result["found"], 1);
+            assert_eq!(result["tools"][0], "gmail_draft_reply");
+        });
     }
 
     #[test]

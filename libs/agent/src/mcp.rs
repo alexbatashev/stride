@@ -130,7 +130,7 @@ impl Tool for McpTool {
         self.definition.clone()
     }
 
-    fn searchable_group(&self) -> Option<String> {
+    fn searchable_category(&self) -> Option<String> {
         Some(format!("{} MCP", display_server_name(&self.server_name)))
     }
 

@@ -129,8 +129,7 @@ public_url = "https://stride.example.com"
 # the web UI. Updating this rolls out new subagent routing guidance to those
 # users without overwriting anyone who clicked Save in Settings → Models.
 [server.agent]
-# Number of standalone hidden tool names shown in the search_tools description.
-# MCP tools are summarized by server name instead.
+# Number of hidden tool categories shown in the search_tools description.
 searchable_tools_preview_limit = 20
 default_subagent_guidelines = """
 Use fast/cheap models for quick lookups, formatting, and narrow edits.
