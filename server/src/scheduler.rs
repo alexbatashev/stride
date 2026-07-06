@@ -612,6 +612,7 @@ mod tests {
         Arc::new(AgentConfig {
             model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 2,
+            observer: Arc::new(stride_agent::NoopAgentObserver),
         })
     }
 
@@ -640,6 +641,7 @@ mod tests {
             created: 1,
             model: "mock".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![
                 llm::CompletionChoice {
                     message: Some(llm::Message {

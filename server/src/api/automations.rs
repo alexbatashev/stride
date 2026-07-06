@@ -567,6 +567,7 @@ mod tests {
         let model_config = Arc::new(AgentConfig {
             model_registry: ModelRegistry::new(),
             max_iterations: 1,
+            observer: Arc::new(stride_agent::NoopAgentObserver),
         });
         let config = Config {
             providers: HashMap::new(),

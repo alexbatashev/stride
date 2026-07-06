@@ -70,6 +70,8 @@ pub struct StreamResponseChunk {
     pub model: String,
     pub system_fingerprint: Option<String>,
     pub choices: Vec<CompletionChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

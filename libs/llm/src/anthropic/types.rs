@@ -160,6 +160,7 @@ impl TryFrom<AnthropicStreamChunkWithModel> for StreamResponseChunk {
                 .as_secs(),
             model: value.model,
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: Some(text),

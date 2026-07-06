@@ -375,6 +375,7 @@ mod tests {
         Arc::new(AgentConfig {
             model_registry: registry,
             max_iterations: 50,
+            observer: Arc::new(stride_agent::NoopAgentObserver),
         })
     }
 
@@ -385,6 +386,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: None,
@@ -416,6 +418,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: Some(content.to_string()),

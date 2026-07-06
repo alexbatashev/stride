@@ -11,6 +11,21 @@ use serde_json::{Value, json};
 use stride_agent::{AgentConfig, Tool, ToolDesc, ToolRegistry};
 use tokio::sync::{mpsc, oneshot};
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ResourceUsage {
+    pub memory_bytes: Option<u64>,
+    pub cpu_time_millis: Option<u64>,
+}
+
+pub trait ResourceObserver: Send + Sync {
+    fn resource_usage(&self, _usage: ResourceUsage) {}
+}
+
+#[derive(Default)]
+pub struct NoopResourceObserver;
+
+impl ResourceObserver for NoopResourceObserver {}
+
 #[cfg(feature = "eryx")]
 pub use eryx::VolumeMount;
 
@@ -1889,6 +1904,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 json!({ "script": "print(1)" }),
             )
@@ -1940,6 +1956,7 @@ mod tests {
         Arc::new(AgentConfig {
             model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 1,
+            observer: Arc::new(stride_agent::NoopAgentObserver),
         })
     }
 
@@ -2052,6 +2069,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 json!({ "script": "print(2 + 2)" }),
             )
@@ -2132,6 +2150,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 json!({ "script": script }),
             )
@@ -2184,6 +2203,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 json!({ "script": script }),
             )
@@ -2235,6 +2255,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 json!({ "script": script }),
             )
@@ -2285,6 +2306,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
+                    observer: Arc::new(stride_agent::NoopAgentObserver),
                 }),
                 json!({ "script": script }),
             )

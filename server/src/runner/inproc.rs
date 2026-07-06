@@ -1017,6 +1017,7 @@ async fn ensure_runner(
     let config = Arc::new(AgentConfig {
         model_registry: merged_registry,
         max_iterations: config.max_iterations,
+        observer: Arc::new(stride_agent::NoopAgentObserver),
     });
     let vision = config.model_registry.get_or_default("default").vision;
     let mut mcp_tools = mcp_tools;
@@ -2450,6 +2451,7 @@ mod tests {
             config: Arc::new(AgentConfig {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 4,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             server_config: test_server_config(),
             cipher: SecretCipher::new("test-secret"),
@@ -2472,6 +2474,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: models,
                 max_iterations: 4,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             test_server_config(),
             SecretCipher::new("test-secret"),
@@ -2546,6 +2549,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 0,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             "System prompt".to_string(),
             Vec::new(),
@@ -2591,6 +2595,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 0,
+                observer: Arc::new(stride_agent::NoopAgentObserver),
             }),
             "System prompt".to_string(),
             Vec::new(),
@@ -3224,6 +3229,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: None,
@@ -3247,6 +3253,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: None,
@@ -3270,6 +3277,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: Some(llm::Message {
                     role: llm::Role::Assistant,
@@ -3294,6 +3302,7 @@ mod tests {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: None,

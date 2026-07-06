@@ -95,6 +95,22 @@ pub struct Server {
     /// models. When unset, images are sent inline as base64 instead.
     pub public_url: Option<String>,
     pub agent: Option<ServerAgent>,
+    pub prometheus: Option<Prometheus>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Prometheus {
+    pub enabled: Option<bool>,
+    pub port: Option<u16>,
+}
+
+impl Prometheus {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(9090)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -481,6 +497,7 @@ mod tests {
                 google: None,
                 public_url: None,
                 agent: None,
+                prometheus: None,
             }),
             tools: None,
             mcp: HashMap::new(),

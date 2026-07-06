@@ -259,6 +259,7 @@ mod tests {
         Arc::new(AgentConfig {
             model_registry: crate::ModelRegistry::new(),
             max_iterations: 1,
+            observer: Arc::new(stride_agent::NoopAgentObserver),
         })
     }
 

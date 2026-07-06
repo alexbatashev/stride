@@ -95,6 +95,7 @@ impl Mock {
             created: 0,
             model: "mock-model".to_string(),
             system_fingerprint: None,
+            usage: None,
             choices: vec![CompletionChoice {
                 message: None,
                 text: Some("Partial mock stream response.".to_string()),
