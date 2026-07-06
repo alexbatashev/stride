@@ -151,6 +151,7 @@ fn create_model_registry(config: &Config) -> ModelRegistry {
             config::Kind::OpenRouter => OpenAI::openrouter(&p.url).into(),
             config::Kind::Anthropic => Anthropic::new(&p.url).into(),
             config::Kind::Ollama => Ollama::new(&p.url).into(),
+            config::Kind::OllamaCloud => Ollama::cloud(&p.url).into(),
         };
         let entry = ModelRegEntry {
             api,

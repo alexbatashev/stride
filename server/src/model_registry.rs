@@ -555,6 +555,7 @@ fn entry_from_provider(
         Kind::OpenRouter => OpenAI::openrouter(url).into(),
         Kind::Anthropic => Anthropic::new(url).into(),
         Kind::Ollama => Ollama::new(url).into(),
+        Kind::OllamaCloud => Ollama::cloud(url).into(),
     };
     ModelRegEntry {
         api,
@@ -571,6 +572,7 @@ fn parse_kind(value: &str) -> Option<Kind> {
         "openrouter" => Some(Kind::OpenRouter),
         "anthropic" => Some(Kind::Anthropic),
         "ollama" => Some(Kind::Ollama),
+        "ollamacloud" | "ollama_cloud" | "ollama-cloud" => Some(Kind::OllamaCloud),
         _ => None,
     }
 }
