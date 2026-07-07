@@ -1546,8 +1546,10 @@ async fn run_agent_turn(
         };
     agent.set_model(resolved_model);
 
-    let mut stream = agent.make_turn(content, images).await;
     let format = thread_message_format(&state, thread_id).unwrap_or(MessageFormat::Markdown);
+    let mut stream = agent
+        .make_turn(with_format_reminder(content, format), images)
+        .await;
     let mut assistant = AssistantMessageState {
         id: None,
         seq: None,
@@ -1977,6 +1979,20 @@ async fn ensure_assistant_message(
     assistant.output_sanitizer = output_sanitizer(assistant.format, state);
 
     Ok(())
+}
+
+fn with_format_reminder(content: String, format: MessageFormat) -> String {
+    let reminder = match format {
+        MessageFormat::Html => {
+            "Reply in safe HTML only (p, ul/ol/li, table, h1-h6, strong, em, code, pre, blockquote, a, br, hr). \
+             Markdown is NOT rendered on this surface: never write **bold**, [link](url), # headings, - bullets, \
+             | tables |, or ``` fences. If you drafted Markdown, rewrite it as HTML before answering."
+        }
+        MessageFormat::Markdown => {
+            "Reply in plain Telegram-friendly Markdown. Do not use HTML tags."
+        }
+    };
+    format!("{content}\n\n<system-reminder>{reminder}</system-reminder>")
 }
 
 fn output_sanitizer(
