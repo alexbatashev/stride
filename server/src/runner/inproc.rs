@@ -131,6 +131,7 @@ Output formatting:
 
 Output formatting:
 - Use safe HTML for user-facing assistant messages. DO NOT use Markdown.
+- Do not write Markdown syntax such as `[file](url)`, `**bold**`, `*italic*`, headings, bullets, or tables in user-facing messages.
 - Use only these tags: h1-h6, p, strong, b, em, i, u, s, del, code, pre, blockquote, ul, ol, li, table, thead, tbody, tfoot, tr, th, td, a, br, hr, img, video, audio, iframe.
 - Use img, video, audio, and iframe only when their src starts with the configured public URL. If no configured public URL is provided, do not use media tags.
 - Do not include style, class, id, event-handler, script, SVG, or form markup.
@@ -2713,8 +2714,7 @@ mod tests {
             .unwrap();
 
         let default_mock = llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("default")]]);
-        let selected_mock =
-            llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("selected")]]);
+        let selected_mock = llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("selected")]]);
         let mut models = ModelRegistry::new();
         models.add_model(
             DEFAULT_MODEL,

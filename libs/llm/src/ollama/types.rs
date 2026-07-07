@@ -202,6 +202,7 @@ impl From<OllamaMessageResponse> for StreamResponseChunk {
             }
         };
         let message = val.message.into_message();
+        let content = (!message.content.is_empty()).then_some(message.content);
         StreamResponseChunk {
             id: Uuid::now_v7().into(),
             object: "completion".to_string(),
@@ -210,13 +211,13 @@ impl From<OllamaMessageResponse> for StreamResponseChunk {
             system_fingerprint: None,
             usage,
             choices: vec![CompletionChoice {
-                message: Some(message.clone()),
+                message: None,
                 text: None,
                 index: 0,
                 delta: Some(Delta {
-                    content: (!message.content.is_empty()).then_some(message.content.clone()),
-                    thinking: message.thinking.clone(),
-                    tool_calls: message.tool_calls.clone(),
+                    content,
+                    thinking: message.thinking,
+                    tool_calls: message.tool_calls,
                 }),
                 logprobs: None,
                 tool_calls: None,
@@ -488,6 +489,31 @@ mod tests {
         assert_eq!(
             body["messages"][0]["tool_calls"][0]["function"]["arguments"]["path"],
             "Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn stream_response_uses_delta_without_duplicate_message() {
+        let body = br#"{
+            "model": "qwen3",
+            "message": {
+                "role": "assistant",
+                "content": "Hello"
+            },
+            "done": false
+        }"#;
+
+        let response: super::OllamaMessageResponse = serde_json::from_slice(body).unwrap();
+        let chunk = super::StreamResponseChunk::from(response);
+        let choice = &chunk.choices[0];
+
+        assert!(choice.message.is_none());
+        assert_eq!(
+            choice
+                .delta
+                .as_ref()
+                .and_then(|delta| delta.content.as_deref()),
+            Some("Hello")
         );
     }
 }
