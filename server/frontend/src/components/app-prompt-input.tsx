@@ -272,7 +272,8 @@ function submitPrompt(host: HTMLElement, textarea: HTMLTextAreaElement): void {
   if (!value || textarea.disabled) return;
   textarea.value = "";
   textarea.style.height = "";
-  const model = host.getAttribute("data-selected-model") ?? "";
+  const picker = host.shadowRoot?.querySelector<HTMLSelectElement>("select.model-picker");
+  const model = picker?.value ?? host.getAttribute("data-selected-model") ?? "";
   host.dispatchEvent(
     new CustomEvent("prompt-submit", {
       bubbles: true,
@@ -295,14 +296,34 @@ function syncModelSelect(
   blocked: boolean,
 ): void {
   select.disabled = blocked;
-  select.innerHTML = models
-    .map((model) => `<option value="${model.value}">${model.label}</option>`)
-    .join("");
+  select.replaceChildren(
+    ...models.map((model) => {
+      const option = document.createElement("option");
+      option.value = model.value;
+      option.textContent = model.label;
+      return option;
+    }),
+  );
   if (selectedModel && models.some((model) => model.value === selectedModel)) {
     select.value = selectedModel;
   } else if (models.length > 0) {
     select.value = models[0]!.value;
   }
+}
+
+function emitModelChange(host: HTMLElement, value: string): void {
+  if (value) {
+    host.setAttribute("data-selected-model", value);
+  } else {
+    host.removeAttribute("data-selected-model");
+  }
+  host.dispatchEvent(
+    new CustomEvent("model-change", {
+      bubbles: true,
+      composed: true,
+      detail: { value },
+    }),
+  );
 }
 
 // MediaRecorder state lives outside the component body because the SSR pass
@@ -359,19 +380,7 @@ export function AppPromptInput({
     const onModelChange = (event: Event) => {
       const select = (event.target as HTMLSelectElement | null);
       if (!select?.matches("select.model-picker")) return;
-      const value = select.value;
-      if (value) {
-        this.setAttribute("data-selected-model", value);
-      } else {
-        this.removeAttribute("data-selected-model");
-      }
-      this.dispatchEvent(
-        new CustomEvent("model-change", {
-          bubbles: true,
-          composed: true,
-          detail: { value },
-        }),
-      );
+      emitModelChange(this, select.value);
     };
     this.addEventListener("change", onModelChange);
     return () => this.removeEventListener("change", onModelChange);
@@ -449,7 +458,12 @@ export function AppPromptInput({
               <IconSettingsHorizontal />
             </button>
             <div class="model-select">
-              <select class="model-picker"></select>
+              <select
+                class="model-picker"
+                onChange={(event: Event) =>
+                  emitModelChange(this, (event.currentTarget as HTMLSelectElement).value)
+                }
+              ></select>
             </div>
             <button
               ref={micButton}

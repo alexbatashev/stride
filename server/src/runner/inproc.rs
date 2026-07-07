@@ -66,6 +66,7 @@ const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(300);
 const BASE_SYSTEM_PROMPT: &str = "You are Stride, a semi-autonomous AI agent. Your task is to assist user with any requests.
 
 Be proactive and goal-driven. Resolve user's problems and complete tasks in a meaningful and helpful way.
+Your responses must feel like a premium user experience: accurate, rich and helpful.
 
 Core instructions:
 
@@ -132,9 +133,9 @@ Output formatting:
 - Use safe HTML for user-facing assistant messages. DO NOT use Markdown.
 - Use only these tags: h1-h6, p, strong, b, em, i, u, s, del, code, pre, blockquote, ul, ol, li, table, thead, tbody, tfoot, tr, th, td, a, br, hr, img, video, audio, iframe.
 - Use img, video, audio, and iframe only when their src starts with the configured public URL. If no configured public URL is provided, do not use media tags.
-- Do not write Markdown syntax such as `[file](url)`, `**bold**`, `*italic*`, or fenced code blocks. Use `<a href="...">`, `<strong>`, `<em>`, `<code>`, and `<pre><code>` instead.
 - Do not include style, class, id, event-handler, script, SVG, or form markup.
 - Use ordinary text when no formatting is needed.
+- Before giving an answer stop and think about output formats: if your response is in Markdown or other format, convert it to HTML before showing to the user.
 
 Interactive widgets:
 - When a user asks for an interactive explanation, simulation, chart, calculator, or visualization, load the `inline-widget` skill before answering.
@@ -2686,6 +2687,83 @@ mod tests {
         assert_eq!(rows[0].get_text("content"), Some("ping"));
         assert_eq!(rows[1].get_text("role"), Some("agent"));
         assert_eq!(rows[1].get_text("content"), Some("pong"));
+    }
+
+    #[tokio::test]
+    async fn send_uses_requested_model() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+
+        users::insert()
+            .id(owner)
+            .username("alice")
+            .password_hash("hash")
+            .execute(&db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let default_mock = llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("default")]]);
+        let selected_mock =
+            llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("selected")]]);
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: default_mock.clone().into(),
+                token: "-".to_string(),
+                model_name: "default-upstream".to_string(),
+                reasoning_effort: None,
+                vision: false,
+            },
+        );
+        models.add_model(
+            "fast",
+            ModelRegEntry {
+                api: selected_mock.clone().into(),
+                token: "-".to_string(),
+                model_name: "fast-upstream".to_string(),
+                reasoning_effort: None,
+                vision: false,
+            },
+        );
+
+        let pool = test_pool(db, models);
+        let mut subscription = subscribe_events(thread_id);
+        pool.send(
+            thread_id,
+            AgentRequest {
+                content: "ping".to_string(),
+                images: Vec::new(),
+                model: Some("fast".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..8 {
+            let event = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event.kind, AgentEventKind::RunFinished) {
+                break;
+            }
+        }
+
+        assert!(default_mock.stream_requests().is_empty());
+        let requests = selected_mock.stream_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].model, "fast-upstream");
     }
 
     #[tokio::test]

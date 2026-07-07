@@ -222,6 +222,40 @@ test('app-prompt-input populates model picker when models prop updates', () => {
   assert.equal(select().disabled, false);
 });
 
+test('app-prompt-input submits the selected model', () => {
+  const el = mount('app-prompt-input', {
+    models: [
+      { value: 'default', label: 'Default' },
+      { value: 'fast-model', label: 'Fast Model' },
+    ],
+    selectedModel: 'default',
+  });
+  const submitted = lastEvent(el, 'prompt-submit');
+  const changed = lastEvent(el, 'model-change');
+  const select = el.shadowRoot.querySelector('select.model-picker');
+  const textarea = el.shadowRoot.querySelector('textarea');
+
+  select.value = 'fast-model';
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  textarea.value = 'use fast model';
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+  assert.equal(changed.detail.value, 'fast-model');
+  assert.equal(submitted.detail.model, 'fast-model');
+});
+
+test('app-prompt-input escapes model option values and labels', () => {
+  const el = mount('app-prompt-input', {
+    models: [{ value: 'model"quoted', label: '<strong>Quoted</strong>' }],
+    selectedModel: 'model"quoted',
+  });
+  const select = el.shadowRoot.querySelector('select.model-picker');
+
+  assert.equal(select.value, 'model"quoted');
+  assert.equal(select.options[0].textContent, '<strong>Quoted</strong>');
+  assert.equal(select.options[0].querySelector('strong'), null);
+});
+
 test('app-prompt-input swaps send for stop while running', () => {
   const el = mount('app-prompt-input');
   assert.ok(el.shadowRoot.querySelector('button[type="submit"]'));
