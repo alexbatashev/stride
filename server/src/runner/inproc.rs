@@ -970,7 +970,7 @@ async fn ensure_runner(
     let config = Arc::new(AgentConfig {
         model_registry: merged_registry,
         max_iterations: config.max_iterations,
-        observer: Arc::new(stride_agent::NoopAgentObserver),
+        observer: config.observer.clone(),
     });
     let vision = config.model_registry.get_or_default("default").vision;
     let mut mcp_tools = mcp_tools;
@@ -1544,6 +1544,7 @@ async fn run_agent_turn(
                 return;
             }
         };
+    persist_thread_model(&state, thread_id, &resolved_model).await;
     agent.set_model(resolved_model);
 
     let format = thread_message_format(&state, thread_id).unwrap_or(MessageFormat::Markdown);
@@ -1702,6 +1703,18 @@ async fn run_agent_turn(
     emit(&state, thread_id, Some(run_id), AgentEventKind::RunFinished).await;
     restore_agent(&state, thread_id, agent);
     drain_queue(&state, thread_id).await;
+}
+
+async fn persist_thread_model(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, model: &str) {
+    let db = state.borrow().init.db.clone();
+    if let Err(error) = threads::update()
+        .last_model(Some(model))
+        .where_(threads::id.eq(thread_id))
+        .execute(&db)
+        .await
+    {
+        tracing::warn!(%thread_id, %model, %error, "failed to persist thread model");
+    }
 }
 
 async fn handle_agent_chunk(
@@ -2753,7 +2766,7 @@ mod tests {
             },
         );
 
-        let pool = test_pool(db, models);
+        let pool = test_pool(db.clone(), models);
         let mut subscription = subscribe_events(thread_id);
         pool.send(
             thread_id,
@@ -2780,6 +2793,16 @@ mod tests {
         let requests = selected_mock.stream_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].model, "fast-upstream");
+
+        let stored = threads::select_cols((threads::last_model,))
+            .where_(threads::id.eq(thread_id))
+            .all(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .and_then(|(model,)| model);
+        assert_eq!(stored.as_deref(), Some("fast"));
     }
 
     #[tokio::test]

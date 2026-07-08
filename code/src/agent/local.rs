@@ -160,7 +160,7 @@ fn create_model_registry(config: &Config) -> ModelRegistry {
             reasoning_effort: m.reasoning_effort(),
             vision: m.vision.unwrap_or(false),
         };
-        model_registry.add_model(name, entry);
+        model_registry.add_model_with_provider(name, entry, m.provider.as_str());
     }
 
     model_registry

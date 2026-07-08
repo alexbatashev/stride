@@ -32,10 +32,12 @@ pub const TRANSCRIPTION_MODEL: &str = "transcription";
 
 pub struct BaseAgent(Rc<RefCell<BaseAgentInner>>);
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub model: String,
+    pub provider: String,
 }
 
 pub trait AgentObserver: Send + Sync {
@@ -100,6 +102,7 @@ pub struct AgentConfig {
 #[derive(Clone, Debug, Default)]
 pub struct ModelRegistry {
     models: HashMap<String, ModelRegEntry>,
+    providers: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -130,6 +133,15 @@ impl ModelRegEntry {
     }
 }
 
+fn provider_label(entry: &ModelRegEntry) -> &'static str {
+    match &entry.api {
+        API::OpenAI(_) => "openai",
+        API::Anthropic(_) => "anthropic",
+        API::Ollama(_) => "ollama",
+        API::Mock(_) => "mock",
+    }
+}
+
 struct BaseAgentInner {
     tool_registry: ToolRegistry,
     thread: Vec<Message>,
@@ -154,7 +166,18 @@ impl ModelRegistry {
     }
 
     pub fn add_model(&mut self, name: &str, entry: ModelRegEntry) {
+        let provider = provider_label(&entry);
+        self.add_model_with_provider(name, entry, provider);
+    }
+
+    pub fn add_model_with_provider(
+        &mut self,
+        name: &str,
+        entry: ModelRegEntry,
+        provider: impl Into<String>,
+    ) {
         self.models.insert(name.to_string(), entry);
+        self.providers.insert(name.to_string(), provider.into());
     }
 
     pub fn get_or_default(&self, name: &str) -> &ModelRegEntry {
@@ -169,6 +192,10 @@ impl ModelRegistry {
 
     pub fn get(&self, name: &str) -> Option<&ModelRegEntry> {
         self.models.get(name)
+    }
+
+    pub fn provider(&self, name: &str) -> Option<&str> {
+        self.providers.get(name).map(String::as_str)
     }
 
     pub fn entries(&self) -> impl Iterator<Item = (&str, &ModelRegEntry)> {
@@ -302,15 +329,26 @@ impl BaseAgent {
         request: String,
         images: Vec<ImageSource>,
     ) -> AgentResponseStream {
-        let (config, model, max_iterations) = {
+        let (config, model, model_key, provider, max_iterations) = {
             let lock = self.0.borrow();
-            let model_name = &lock.model;
+            let requested = lock.model.clone();
+            let model_key = if lock.config.model_registry.get(&requested).is_some() {
+                requested
+            } else {
+                DEFAULT_MODEL.to_string()
+            };
             (
                 lock.config.clone(),
                 lock.config
                     .model_registry
-                    .get_or_default(model_name)
+                    .get_or_default(&model_key)
                     .clone(),
+                model_key.clone(),
+                lock.config
+                    .model_registry
+                    .provider(&model_key)
+                    .unwrap_or("unknown")
+                    .to_string(),
                 lock.config.max_iterations,
             )
         };
@@ -368,6 +406,8 @@ impl BaseAgent {
                             config.observer.token_usage(TokenUsage {
                                 input_tokens: usage.prompt_tokens as u64,
                                 output_tokens: usage.completion_tokens as u64,
+                                model: model_key.clone(),
+                                provider: provider.clone(),
                             });
                         }
                         append_chunk(&agent, chunk, &mut tool_calls);

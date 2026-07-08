@@ -13,6 +13,7 @@ import {
 	resolveApproval,
 	sendMessage,
 	stageUploads,
+	updateThreadModel,
 } from "../api/threads.js";
 import { bindSidebar } from "./sidebar.js";
 import { openThreadMenu, type ThreadMutation } from "./thread-actions.js";
@@ -76,6 +77,7 @@ class ThreadsPageHydrator {
 	private attachedFiles: { name: string; id: string }[] = [];
 	private modelOptions: { value: string; label: string }[] = [];
 	private selectedModel = "";
+	private modelPersistSeq = 0;
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
@@ -98,6 +100,7 @@ class ThreadsPageHydrator {
 
 	constructor(private readonly root: HTMLElement) {
 		this.threadId = root.dataset.threadId ?? "";
+		this.selectedModel = root.dataset.selectedModel ?? "";
 		this.running = root.dataset.running === "true";
 		this.messagesEl = this.mustQuery("[data-messages]");
 		this.scrollEl = this.messagesEl.closest<HTMLElement>(".content") ?? this.messagesEl;
@@ -186,8 +189,13 @@ class ThreadsPageHydrator {
 			this.onPromptSubmit(event as CustomEvent<{ value: string; model: string | null }>),
 		);
 		this.promptEl.addEventListener("model-change", (event) => {
-			this.selectedModel = (event as CustomEvent<{ value: string }>).detail.value;
+			const model = (event as CustomEvent<{ value: string }>).detail.value;
+			if (model === this.selectedModel) {
+				return;
+			}
+			this.selectedModel = model;
 			this.syncComposer();
+			void this.persistSelectedModel();
 		});
 		this.promptEl.addEventListener("prompt-stop", () => void this.onStop());
 		this.promptEl.addEventListener("prompt-error", (event) =>
@@ -466,6 +474,23 @@ class ThreadsPageHydrator {
 		} catch {
 			this.modelOptions = [];
 			this.syncComposer();
+		}
+	}
+
+	private async persistSelectedModel() {
+		if (!this.threadId) {
+			return;
+		}
+
+		const seq = ++this.modelPersistSeq;
+		const threadId = this.threadId;
+		const model = this.selectedModel || null;
+		try {
+			await updateThreadModel(threadId, model);
+		} catch {
+			if (seq === this.modelPersistSeq && threadId === this.threadId) {
+				this.setError("Model selection was not saved.");
+			}
 		}
 	}
 
