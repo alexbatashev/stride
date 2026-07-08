@@ -158,9 +158,7 @@ export function AppArchivedThreads({
   const rows = threads.map((thread) => ({
     id: thread.id,
     title: escapeHtml(thread.title || "Untitled"),
-    meta: escapeHtml(
-      `Last active ${formatDate(thread.last_activity_at)} · Archived ${formatDate(thread.archived_at)}`,
-    ),
+    meta: `Last active ${formatDate(thread.last_activity_at)} · Archived ${formatDate(thread.archived_at)}`,
   }));
 
   return (

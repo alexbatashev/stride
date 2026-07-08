@@ -97,16 +97,6 @@ function fileActions(host: VersionHost): FileActions {
   };
 }
 
-// Text bindings insert markup verbatim, so the displayed name is escaped here.
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function toFileItem(entry: {
   name: string;
   path: string;
@@ -116,7 +106,7 @@ function toFileItem(entry: {
   mime_type?: string | null;
 }): FileItem {
   return {
-    name: escapeHtml(entry.name),
+    name: entry.name,
     path: entry.path,
     kind: entry.kind,
     sizeLabel: entry.kind === "directory" ? "" : formatSize(entry.size),

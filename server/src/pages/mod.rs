@@ -31,6 +31,53 @@ fn html_escape(value: &str) -> String {
     out
 }
 
+fn html_unescape_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        if let Some(semi) = after.find(';') {
+            let entity = &after[..semi];
+            if entity.len() <= 12
+                && let Some(decoded) = decode_html_entity(entity)
+            {
+                out.push(decoded);
+                rest = &after[semi + 1..];
+                continue;
+            }
+        }
+        out.push('&');
+        rest = &rest[amp + 1..];
+    }
+
+    out.push_str(rest);
+    out
+}
+
+fn decode_html_entity(entity: &str) -> Option<char> {
+    match entity {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" | "#39" => Some('\''),
+        _ => {
+            let hex = entity
+                .strip_prefix("#x")
+                .or_else(|| entity.strip_prefix("#X"));
+            if let Some(hex) = hex {
+                return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+            }
+            entity
+                .strip_prefix('#')
+                .and_then(|dec| dec.parse::<u32>().ok())
+                .and_then(char::from_u32)
+        }
+    }
+}
+
 // Adds page-specific host attributes (class, data-*) to a rendered component.
 // Argon escapes '>' inside attribute values, so the first '>' closes the host tag.
 fn with_attrs(rendered: &str, attrs: &str) -> String {
@@ -120,19 +167,19 @@ fn render_sidebar(
 ) -> String {
     let projects = data.projects.iter().map(|project| SidebarProject {
         id: project.id.clone(),
-        title: html_escape(&project.title),
+        title: project.title.clone(),
         threads: project
             .threads
             .iter()
             .map(|thread| SidebarThread {
                 id: thread.id.clone(),
-                title: html_escape(&thread.title),
+                title: thread.title.clone(),
             })
             .collect(),
     });
     let ungrouped = data.ungrouped_threads.iter().map(|thread| SidebarThread {
         id: thread.id.clone(),
-        title: html_escape(&thread.title),
+        title: thread.title.clone(),
     });
     let sidebar = AppSidebar::new(
         projects,
@@ -158,11 +205,16 @@ fn render_messages(data: &ThreadPageData) -> String {
     data.messages
         .iter()
         .map(|message| {
-            let content = if message.message_type == "agent" && message.format == "html" {
-                message.content.clone()
+            let content = if message.format == "markdown" {
+                html_unescape_text(&message.content)
             } else {
-                html_escape(&message.content)
+                message.content.clone()
             };
+            let thinking = message
+                .thinking
+                .as_deref()
+                .map(html_unescape_text)
+                .unwrap_or_default();
             AppMessage::new(
                 &message.id,
                 message.seq as f64,
@@ -170,16 +222,8 @@ fn render_messages(data: &ThreadPageData) -> String {
                 message.message_type,
                 message.format,
                 content,
-                message
-                    .thinking
-                    .as_deref()
-                    .map(html_escape)
-                    .unwrap_or_default(),
-                message
-                    .tool_name
-                    .as_deref()
-                    .map(html_escape)
-                    .unwrap_or_default(),
+                thinking,
+                message.tool_name.as_deref().unwrap_or_default().to_string(),
             )
             .render()
         })
@@ -568,6 +612,17 @@ mod tests {
                     thinking: None,
                     has_thinking: false,
                 },
+                MessageTemplateData {
+                    id: "message-3".to_string(),
+                    seq: 3,
+                    role: "agent",
+                    format: "markdown",
+                    message_type: "agent",
+                    tool_name: None,
+                    content: "Here&#39;s Research &amp; Web".to_string(),
+                    thinking: Some("A &amp; B".to_string()),
+                    has_thinking: true,
+                },
             ],
         }
     }
@@ -593,6 +648,11 @@ mod tests {
         assert!(html.contains(r#"data-kind="tool_output""#));
         assert!(html.contains(r#"data-message-id="message-2""#));
         assert!(html.contains("hello &amp; &lt;world&gt;"));
+        assert!(html.contains(r#"data-message-id="message-3""#));
+        assert!(html.contains("Here's Research &amp; Web"));
+        assert!(html.contains("A &amp; B"));
+        assert!(!html.contains("Here&amp;#39;s"));
+        assert!(!html.contains("&amp;amp; Web"));
         // Composer state mirrors the running flag.
         assert!(html.contains(r#"data-running="true""#));
         assert!(html.contains(r#"data-prompt"#));

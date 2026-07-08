@@ -24,6 +24,10 @@ const styles = css`
     display: none;
   }
 
+  [hidden] {
+    display: none !important;
+  }
+
   form {
     background: var(--prompt-bg, #212121);
     border: 1px solid var(--prompt-border, #333333);
@@ -283,19 +287,11 @@ function submitPrompt(host: HTMLElement, textarea: HTMLTextAreaElement): void {
   );
 }
 
-function syncSendButton(root: ShadowRoot): void {
-  const textarea = root.querySelector<HTMLTextAreaElement>("textarea");
-  const send = root.querySelector<HTMLButtonElement>('button[type="submit"]');
-  if (send && textarea) send.disabled = textarea.disabled || !textarea.value.trim();
-}
-
 function syncModelSelect(
   select: HTMLSelectElement,
   models: { value: string; label: string }[],
   selectedModel: string,
-  blocked: boolean,
 ): void {
-  select.disabled = blocked;
   select.replaceChildren(
     ...models.map((model) => {
       const option = document.createElement("option");
@@ -347,15 +343,15 @@ function emitPromptError(host: HTMLElement, message: string): void {
   );
 }
 
-function insertTranscript(root: ShadowRoot, text: string): void {
+function insertTranscript(root: ShadowRoot, text: string): string {
   const textarea = root.querySelector<HTMLTextAreaElement>("textarea");
-  if (!textarea || !text) return;
+  if (!textarea || !text) return textarea?.value ?? "";
   const existing = textarea.value.trim();
   textarea.value = existing ? `${existing} ${text}` : text;
   textarea.style.height = "";
   textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
-  syncSendButton(root);
   textarea.focus();
+  return textarea.value;
 }
 
 export function AppPromptInput({
@@ -372,9 +368,11 @@ export function AppPromptInput({
   selectedModel?: string;
 }): Component {
   const input = ref<HTMLTextAreaElement>();
-  const micButton = ref<HTMLButtonElement>();
   let recording = state(false);
   let transcribing = state(false);
+  let draft = state("");
+  const blocked = disabled || running || transcribing;
+  const micDisabled = transcribing || (!recording && (disabled || running));
 
   onMount(() => {
     const onModelChange = (event: Event) => {
@@ -387,22 +385,15 @@ export function AppPromptInput({
   });
 
   effect(() => {
-    const blocked = disabled || running || transcribing;
     if (selectedModel) {
       this.setAttribute("data-selected-model", selectedModel);
     } else {
       this.removeAttribute("data-selected-model");
     }
-    const mic = micButton.current;
-    if (mic) mic.disabled = transcribing;
     const modelSelect = this.shadowRoot?.querySelector<HTMLSelectElement>("select.model-picker");
     if (modelSelect) {
-      syncModelSelect(modelSelect, models, selectedModel, blocked);
+      syncModelSelect(modelSelect, models, selectedModel);
     }
-    const textarea = input.current;
-    if (!textarea) return;
-    textarea.disabled = blocked;
-    syncSendButton(this.shadowRoot!);
   });
 
   return (
@@ -412,6 +403,7 @@ export function AppPromptInput({
         onSubmit={(event: SubmitEvent) => {
           event.preventDefault();
           submitPrompt(this, root.querySelector("textarea")!);
+          draft = "";
         }}
       >
         <input
@@ -431,17 +423,19 @@ export function AppPromptInput({
         <textarea
           ref={input}
           placeholder={placeholder}
+          disabled={blocked}
           rows="2"
           onInput={(event: Event) => {
             const textarea = event.currentTarget as HTMLTextAreaElement;
+            draft = textarea.value;
             textarea.style.height = "";
             textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
-            syncSendButton(root as ShadowRoot);
           }}
           onKeyDown={(event: KeyboardEvent) => {
             if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
             event.preventDefault();
             submitPrompt(this, event.currentTarget as HTMLTextAreaElement);
+            draft = "";
           }}
         ></textarea>
         <div class="toolbar">
@@ -460,15 +454,16 @@ export function AppPromptInput({
             <div class="model-select">
               <select
                 class="model-picker"
+                disabled={blocked}
                 onChange={(event: Event) =>
                   emitModelChange(this, (event.currentTarget as HTMLSelectElement).value)
                 }
               ></select>
             </div>
             <button
-              ref={micButton}
               class={`tool-button icon${recording ? " recording" : ""}`}
               type="button"
+              disabled={micDisabled}
               aria-label={recording ? "Stop recording" : "Record voice message"}
               aria-pressed={recording ? "true" : "false"}
               onClick={() => {
@@ -514,7 +509,9 @@ export function AppPromptInput({
                     transcribing = true;
                     const ext = type.includes("ogg") ? "ogg" : "webm";
                     void transcribeAudio(blob, `voice.${ext}`)
-                      .then((text) => insertTranscript(root as ShadowRoot, text))
+                      .then((text) => {
+                        draft = insertTranscript(root as ShadowRoot, text);
+                      })
                       .catch((error) =>
                         emitPromptError(
                           this,
@@ -542,17 +539,14 @@ export function AppPromptInput({
               this.dispatchEvent(new CustomEvent("prompt-stop", { bubbles: true, composed: true }));
             }}
           >
-            {running ? (
-              <button class="send stop" type="button">
-                <IconStop />
-                <span class="sr-only">Stop</span>
-              </button>
-            ) : (
-              <button class="send" type="submit" disabled>
-                <IconArrowUp />
-                <span class="sr-only">Send message</span>
-              </button>
-            )}
+            <button class="send stop" type="button" hidden={!running}>
+              <IconStop />
+              <span class="sr-only">Stop</span>
+            </button>
+            <button class="send" type="submit" hidden={running} disabled={blocked || draft.trim() === ""}>
+              <IconArrowUp />
+              <span class="sr-only">Send message</span>
+            </button>
           </div>
         </div>
       </form>

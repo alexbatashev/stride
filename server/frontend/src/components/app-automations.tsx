@@ -92,16 +92,30 @@ function toAutomationItem(item: Automation, accounts: EmailAccount[]): Automatio
     kindLabel: titleCase(item.kind),
     nameLabel: escapeHtml(item.name),
     notifyLabel: item.notify_kind !== "none" ? `• Notify ${titleCase(item.notify_kind)}` : "",
-    triggerLabel: describeTrigger(item, accounts),
+    triggerLabel: escapeHtml(describeTrigger(item, accounts)),
     lastRunLabel: describeLastRun(item),
   };
+}
+
+function emailAccountList(accounts: EmailAccount[] | unknown): EmailAccount[] {
+  return Array.isArray(accounts) ? accounts : [];
+}
+
+function automationItemFor(host: AutomationsHost, id: string): AutomationItem | undefined {
+  const item = host.items.find((candidate) => candidate.id === id);
+  if (!item) return undefined;
+  return item.nameLabel === undefined ? toAutomationItem(item, emailAccountList(host.emailAccounts)) : item;
+}
+
+function reportRunError(host: AutomationsHost, error: unknown): void {
+  host.error = error instanceof Error ? error.message : "Failed to start run.";
 }
 
 async function load(host: AutomationsHost): Promise<void> {
   host.loading = true;
   host.error = "";
   try {
-    host.items = (await listAutomations()).map((item) => toAutomationItem(item, host.emailAccounts));
+    host.items = (await listAutomations()).map((item) => toAutomationItem(item, emailAccountList(host.emailAccounts)));
     if (!host.selectedId && host.items.length > 0) {
       await selectAutomation(host, host.items[0]);
     } else if (host.selectedId && !host.items.some((item) => item.id === host.selectedId)) {
@@ -620,8 +634,16 @@ export function AppAutomations({
       .then(() => load(this));
   });
 
-  const activeCount = items.filter((item) => item.enabled).length;
-  const lastRunCount = items.filter((item) => item.last_run).length;
+  const safeEmailAccounts = emailAccountList(emailAccounts);
+  const viewItems = items.map((item) =>
+    item.nameLabel === undefined ? toAutomationItem(item, safeEmailAccounts) : item,
+  );
+  const emailAccountViews = safeEmailAccounts.map((account) => ({
+    id: account.id,
+    label: escapeHtml(`${account.name} — ${account.email}`),
+  }));
+  const activeCount = viewItems.filter((item) => item.enabled).length;
+  const lastRunCount = viewItems.filter((item) => item.last_run).length;
 
   return (
     <>
@@ -652,16 +674,14 @@ export function AppAutomations({
               this.webhookOpen = false;
               return;
           }
-          const item = (this.items as AutomationItem[]).find((it) => it.id === target.dataset.id);
+          const item = automationItemFor(this, target.dataset.id ?? "");
           if (!item) return;
           switch (target.dataset.action) {
             case "select":
               void selectAutomation(this, item);
               break;
             case "run":
-              void runAndRefresh(this, item).catch(() => {
-                this.error = "Failed to start run.";
-              });
+              void runAndRefresh(this, item).catch((error) => reportRunError(this, error));
               break;
             case "toggle":
               void setAutomationEnabled(item.id, !item.enabled)
@@ -747,7 +767,7 @@ export function AppAutomations({
           </header>
 
           <section class="stats" aria-label="Automation summary">
-            <div class="stat"><span>Total</span><strong>{items.length}</strong></div>
+            <div class="stat"><span>Total</span><strong>{viewItems.length}</strong></div>
             <div class="stat"><span>Enabled</span><strong>{activeCount}</strong></div>
             <div class="stat"><span>With runs</span><strong>{lastRunCount}</strong></div>
           </section>
@@ -756,18 +776,18 @@ export function AppAutomations({
             <section class="panel">
               <div class="panel-head">
                 <h2>Automations</h2>
-                <span class="badge">{loading ? "Loading" : `${items.length} total`}</span>
+                <span class="badge">{loading ? "Loading" : `${viewItems.length} total`}</span>
               </div>
               <div class="panel-body">
-                {items.length === 0 ? (
+                {viewItems.length === 0 ? (
                   <div class="empty">
                     <strong>{loading ? "Loading automations…" : "No automations yet"}</strong>
                     <span>Create one to run tasks on a schedule, webhook, file change, or manually.</span>
                   </div>
                 ) : (
                   <div class="automation-list">
-                    {items.map((item) => (
-                      <div class={`automation-card ${item.id === selectedId ? "selected" : ""}`} key={item.id}>
+                    {viewItems.map((item) => (
+                      <div class={`automation-card ${item.id === selectedId ? "selected" : ""}`} data-notify-kind={item.notify_kind} key={item.id}>
                         <button class="ghost" type="button" data-action="select" data-id={item.id}>
                           <div>
                             <div class="name-row">
@@ -846,7 +866,7 @@ export function AppAutomations({
                 <label>Name<input name="name" required placeholder="Daily report" /></label>
                 <label>Trigger<select name="trigger"><option value="cron">Cron schedule</option><option value="email">Incoming email</option><option value="gmail">Incoming Gmail</option><option value="webhook">Webhook (HTTP)</option><option value="vfs_change">File change</option><option value="manual">Manual only</option></select></label>
                 {createTrigger === "cron" ? <label>Schedule<input name="schedule" required placeholder="*/30 * * * *" /><span class="hint">Standard five-field cron expression in UTC.</span></label> : <input name="schedule" type="hidden" value="" />}
-                {createTrigger === "email" ? <label>Inbox<select name="email_account" required><option value="">Choose an inbox</option>{emailAccounts.map((account) => <option value={account.id}>{account.name} — {account.email}</option>).join("")}</select><span class="hint">Add IMAP accounts in Settings. Existing mail is ignored when the automation is created.</span></label> : ""}
+                {createTrigger === "email" ? <label>Inbox<select name="email_account" required><option value="">Choose an inbox</option>{emailAccountViews.map((account) => <option value={account.id}>{account.label}</option>).join("")}</select><span class="hint">Add IMAP accounts in Settings. Existing mail is ignored when the automation is created.</span></label> : ""}
                 {createTrigger === "gmail" ? <span class="hint">Fires when new mail arrives in your connected Gmail inbox. Connect Google in Settings first. Existing mail is ignored when the automation is created.</span> : ""}
                 {createTrigger === "vfs_change" ? <label>Watch path<input name="watch_path" placeholder="reports/ (empty means all files)" /><span class="hint">Leave empty to watch all files.</span></label> : ""}
                 <label>Type<select name="kind"><option value="agent">Agent prompt</option><option value="python">Python script</option></select></label>

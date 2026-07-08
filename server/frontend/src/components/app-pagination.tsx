@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, unsafeHtml } from "@frontiers-labs/argon";
 import { IconChevronLeft } from "./icons/chevron-left.js";
 import { IconChevronRight } from "./icons/chevron-right.js";
 
@@ -98,6 +98,15 @@ function emitPageChange(host: HTMLElement, totalAttr: string, pageAttr: string, 
 export function AppPagination({ total = "1", page = "1" }: { total?: string; page?: string }): Component {
   const totalPages = Math.max(1, Number(total) || 1);
   const current = Math.min(totalPages, Math.max(1, Number(page) || 1));
+  const pageButtons = pageList(totalPages, current)
+    .map((entry) => (
+      entry === "..."
+        ? '<span class="ellipsis">&hellip;</span>'
+        : `<button type="button" data-page="${entry}" aria-current="${
+            entry === current ? "page" : "false"
+          }">${entry}</button>`
+    ))
+    .join("");
   return (
     <>
       <style>{styles}</style>
@@ -120,15 +129,7 @@ export function AppPagination({ total = "1", page = "1" }: { total?: string; pag
             <IconChevronLeft />
           </span>
         </button>
-        {pageList(totalPages, current)
-          .map((entry) =>
-            entry === "..."
-              ? '<span class="ellipsis">&hellip;</span>'
-              : `<button type="button" data-page="${entry}"${
-                  entry === current ? ' aria-current="page"' : ""
-                }>${entry}</button>`,
-          )
-          .join("")}
+        {unsafeHtml(pageButtons)}
         <button
           type="button"
           class="next"

@@ -104,14 +104,18 @@ export function AppRadioGroup({
         }}
       >
         {options
-          .map(
-            (option) =>
-              `<div class="option" role="radio" tabindex="0" data-value="${option.value}" aria-checked="${
-                value === option.value
-              }"><span class="radio" aria-hidden="true"><span class="dot"></span></span><span>${
-                option.label
-              }</span></div>`,
-          )
+          .map((option) => (
+            <div
+              class="option"
+              role="radio"
+              tabindex="0"
+              data-value={option.value}
+              aria-checked={value === option.value ? "true" : "false"}
+            >
+              <span class="radio" aria-hidden="true"><span class="dot"></span></span>
+              <span>{option.label}</span>
+            </div>
+          ))
           .join("")}
       </div>
     </>

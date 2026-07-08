@@ -3,15 +3,13 @@
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
 import { Component, css, onMount, state } from "@frontiers-labs/argon";
+import { IconCheck } from "./icons/check.js";
 import { IconChevronDown } from "./icons/chevron-down.js";
 
 interface SelectOption {
   value: string;
   label: string;
 }
-
-const checkIcon =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 
 const styles = css`
   :host {
@@ -147,7 +145,7 @@ export function AppSelect({
           this.toggleAttribute("open", open);
         }}
       >
-        {current ? <span>{current.label}</span> : <span class="placeholder">{placeholder}</span>}
+        <span class={current ? "" : "placeholder"}>{current ? current.label : placeholder}</span>
         <span class="chevron" aria-hidden="true">
           <IconChevronDown />
         </span>
@@ -167,12 +165,17 @@ export function AppSelect({
         }}
       >
         {options
-          .map(
-            (option) =>
-              `<div class="option" role="option" data-value="${option.value}" aria-selected="${
-                value === option.value
-              }"><span>${option.label}</span><span class="check" aria-hidden="true">${checkIcon}</span></div>`,
-          )
+          .map((option) => (
+            <div
+              class="option"
+              role="option"
+              data-value={option.value}
+              aria-selected={value === option.value ? "true" : "false"}
+            >
+              <span>{option.label}</span>
+              <span class="check" aria-hidden="true"><IconCheck /></span>
+            </div>
+          ))
           .join("")}
       </div>
     </>

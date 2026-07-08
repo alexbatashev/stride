@@ -55,17 +55,6 @@ type ApprovalEl = HTMLElement & { message: string };
 type QuizEl = HTMLElement & { question: string; options: string[] };
 type FileManagerEl = HTMLElement & { threadId: string; open: boolean };
 
-// Argon text bindings insert markup verbatim; everything user-authored is
-// escaped before it is handed to a component prop.
-function esc(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#39;");
-}
-
 const root = document.querySelector<HTMLElement>("#threads-page");
 
 class ThreadsPageHydrator {
@@ -575,14 +564,14 @@ class ThreadsPageHydrator {
 	private renderSidebar() {
 		this.sidebarEl.projects = this.projects.map((project) => ({
 			id: project.id,
-			title: esc(project.title),
+			title: project.title,
 			threads: this.threads
 				.filter((thread) => thread.project_id === project.id)
-				.map(({ id, title }) => ({ id, title: esc(title) })),
+				.map(({ id, title }) => ({ id, title })),
 		}));
 		this.sidebarEl.threads = this.threads
 			.filter((thread) => !thread.project_id || !this.projects.some((p) => p.id === thread.project_id))
-			.map(({ id, title }) => ({ id, title: esc(title) }));
+			.map(({ id, title }) => ({ id, title }));
 		this.sidebarEl.activeThread = this.threadId;
 	}
 
@@ -633,8 +622,8 @@ class ThreadsPageHydrator {
 		element.role = message.role;
 		element.kind = messageType.type;
 		element.format = message.format;
-		element.toolName = esc(messageType.toolName ?? "");
-		element.thinking = message.thinking ? esc(message.thinking) : "";
+		element.toolName = messageType.toolName ?? "";
+		element.thinking = message.thinking ? message.thinking : "";
 		element.text = message.content
 			? this.messageText(message, messageType.type)
 			: message.pending ? "Thinking..." : "";
@@ -687,9 +676,7 @@ class ThreadsPageHydrator {
 	}
 
 	private messageText(message: ThreadMessage, messageType: string): string {
-		return messageType === "agent" && message.format === "html"
-			? message.content
-			: esc(message.content);
+		return message.content;
 	}
 
 	private createEmptyElement() {
@@ -735,12 +722,12 @@ class ThreadsPageHydrator {
 		const hasQuiz = this.pendingQuiz !== null;
 		this.promptEl.hidden = hasApproval || hasQuiz;
 		this.approvalEl.hidden = !hasApproval;
-		this.approvalEl.message = esc(this.pendingApproval?.message ?? "");
+		this.approvalEl.message = this.pendingApproval?.message ?? "";
 		this.quizEl.hidden = !hasQuiz;
 		const quiz = this.pendingQuiz;
 		const question = quiz ? quiz.questions[quiz.index] : undefined;
-		this.quizEl.question = esc(question?.question ?? "");
-		this.quizEl.options = (question?.options ?? []).map(esc);
+		this.quizEl.question = question?.question ?? "";
+		this.quizEl.options = question?.options ?? [];
 		this.errorEl.textContent = this.error;
 		this.fileManagerEl.threadId = this.threadId;
 		this.syncMenuButton();

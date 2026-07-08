@@ -3,15 +3,13 @@
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
 import { Component, css } from "@frontiers-labs/argon";
+import { IconChevronDown } from "./icons/chevron-down.js";
 
 interface AccordionItem {
   value: string;
   title: string;
   content: string;
 }
-
-const chevron =
-  '<svg class="chevron" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
 
 const styles = css`
   :host {
@@ -99,11 +97,13 @@ export function AppAccordion({
           .map((item) => {
             const expanded = value.includes(item.value);
             return (
-              `<div class="item" data-value="${item.value}">` +
-              `<button class="trigger" type="button" data-value="${item.value}" aria-expanded="${expanded}">` +
-              `<span>${item.title}</span>${chevron}</button>` +
-              (expanded ? `<div class="content">${item.content}</div>` : "") +
-              `</div>`
+              <div class="item" data-value={item.value}>
+                <button class="trigger" type="button" data-value={item.value} aria-expanded={expanded ? "true" : "false"}>
+                  <span>{item.title}</span>
+                  <span class="chevron" aria-hidden="true"><IconChevronDown /></span>
+                </button>
+                {expanded ? <div class="content">{item.content}</div> : ""}
+              </div>
             );
           })
           .join("")}

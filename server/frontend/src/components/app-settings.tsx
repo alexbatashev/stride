@@ -1420,10 +1420,6 @@ export function AppSettings({
   const subagentModelViews = availableModels.map((model) =>
     subagentModelView(model, agentSettings.subagent_allowed_models),
   );
-  const providerOptions = providers
-    .map((provider) => `<option value="${provider.id}">${escapeHtml(provider.name)}</option>`)
-    .join("");
-  const providerSelectHtml = `<option value="">Select provider</option>${providerOptions}`;
   const skillViews = skills.map(skillView);
   const writableDirViews = writableDirs.map(writableDirView);
   const query = memoryQuery.trim().toLowerCase();
@@ -1440,9 +1436,9 @@ export function AppSettings({
   const editing = editingSkill
     ? {
         id: editingSkill.id,
-        title: escapeHtml(editingSkill.title),
-        description: escapeHtml(editingSkill.description),
-        content: escapeHtml(editingSkill.content),
+        title: editingSkill.title,
+        description: editingSkill.description,
+        content: editingSkill.content,
       }
     : null;
 
@@ -2107,7 +2103,10 @@ export function AppSettings({
                       <label>Display name<input name="display_name" placeholder="Claude Sonnet" autocomplete="off" /></label>
                       <label class="full">Description<textarea name="description" placeholder="When to use this model." rows="2"></textarea></label>
                       <label>Model slug<input name="slug" required placeholder="claude-sonnet-4-20250514" autocomplete="off" /></label>
-                      <label>Provider<select name="provider_id" required innerHTML={providerSelectHtml}></select></label>
+                      <label>Provider<select name="provider_id" required>
+                        <option value="">Select provider</option>
+                        {providerViews.map((provider) => <option value={provider.id}>{provider.name}</option>).join("")}
+                      </select></label>
                       <label>Reasoning effort<select name="reasoning_effort">
                         <option value="">Disabled</option>
                         <option value="low">Low</option>
@@ -2135,7 +2134,7 @@ export function AppSettings({
                     <textarea
                       name="subagent-guidelines"
                       placeholder="Describe when to use faster vs stronger models, cost constraints, or task-specific preferences."
-                    >{escapeHtml(agentSettings.subagent_guidelines)}</textarea>
+                    >{agentSettings.subagent_guidelines}</textarea>
                   </label>
                   {agentSettings.using_server_defaults
                     ? <p class="muted">Showing the server default from config. Save to keep your own copy; your settings will not change when admins update config.</p>

@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, unsafeHtml } from "@frontiers-labs/argon";
 
 interface Crumb {
   label: string;
@@ -44,22 +44,35 @@ const styles = css`
   }
 `;
 
+function escapeText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeAttr(value: string): string {
+  return escapeText(value).replace(/"/g, "&quot;");
+}
+
 export function AppBreadcrumb({ items = [] }: { items?: Crumb[] }): Component {
+  const content = items
+    .map((item, index) => {
+      const isLast = index === items.length - 1;
+      const node =
+        item.href && !isLast
+          ? `<a href="${escapeAttr(item.href)}">${escapeText(item.label)}</a>`
+          : `<span class="current" aria-current="page">${escapeText(item.label)}</span>`;
+      const sep = isLast ? "" : '<span class="sep" aria-hidden="true">/</span>';
+      return node + sep;
+    })
+    .join("");
+
   return (
     <>
       <style>{styles}</style>
       <nav aria-label="Breadcrumb">
-        {items
-          .map((item, index) => {
-            const isLast = index === items.length - 1;
-            const node =
-              item.href && !isLast
-                ? `<a href="${item.href}">${item.label}</a>`
-                : `<span class="current" aria-current="page">${item.label}</span>`;
-            const sep = isLast ? "" : '<span class="sep" aria-hidden="true">/</span>';
-            return node + sep;
-          })
-          .join("")}
+        {unsafeHtml(content)}
       </nav>
     </>
   );

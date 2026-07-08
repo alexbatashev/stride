@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@frontiers-labs/argon':
-        specifier: 0.3.0
-        version: 0.3.0
+        specifier: 0.4.0
+        version: 0.4.0
       '@happy-dom/global-registrator':
         specifier: ^20.10.2
         version: 20.10.2
@@ -191,8 +191,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@frontiers-labs/argon@0.3.0':
-    resolution: {integrity: sha512-uVVjcSc8VP4pPrp+ytkNOrVF2r0UfrkufPuPX3FGFsg/lTJuvTCrHDuak9e82OApZXroaEVi3TYGK2U62KWuOQ==}
+  '@frontiers-labs/argon@0.4.0':
+    resolution: {integrity: sha512-hWw/TpkGzma95gfkGTufz4JcFHIg+IXhk26WEnTq4xvdNGeDzf33maRfFJpvj4Ed+xswMMWy9a+IFbyZnd3dJQ==}
     engines: {node: '>=18.0.0'}
     hasBin: true
 
@@ -511,7 +511,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.0':
     optional: true
 
-  '@frontiers-labs/argon@0.3.0':
+  '@frontiers-labs/argon@0.4.0':
     dependencies:
       typescript: 5.9.3
 

@@ -75,21 +75,28 @@ export function AppTabs({ tabs = [], value = "" }: { tabs?: Tab[]; value?: strin
         }}
       >
         {tabs
-          .map(
-            (tab) =>
-              `<button class="trigger" type="button" role="tab" data-value="${tab.value}" aria-selected="${
-                active === tab.value
-              }">${tab.label}</button>`,
-          )
+          .map((tab) => (
+            <button
+              class="trigger"
+              type="button"
+              role="tab"
+              data-value={tab.value}
+              aria-selected={active === tab.value ? "true" : "false"}
+            >
+              {tab.label}
+            </button>
+          ))
           .join("")}
       </div>
       <div class="panels">
         {tabs
-          .map((tab) =>
-            active === tab.value
-              ? `<slot name="${tab.value}"></slot>`
-              : `<slot name="${tab.value}" hidden style="display:none"></slot>`,
-          )
+          .map((tab) => (
+            <slot
+              name={tab.value}
+              hidden={active !== tab.value}
+              style={active === tab.value ? "" : "display:none"}
+            ></slot>
+          ))
           .join("")}
       </div>
     </>

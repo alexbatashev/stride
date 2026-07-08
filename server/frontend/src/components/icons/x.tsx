@@ -4,8 +4,8 @@ const styles = css`
   :host {
     display: inline-flex;
     align-items: center;
-    width: 24px;
-    height: 24px;
+    width: 1em;
+    height: 1em;
   }
   svg {
     width: 100%;
