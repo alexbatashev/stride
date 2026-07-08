@@ -1,11 +1,12 @@
 use std::{
+    collections::HashMap,
     fmt::Write,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use minisql::ConnectionPool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use stride_agent::{AgentObserver, TokenUsage};
 
 #[derive(Default)]
@@ -15,6 +16,14 @@ pub(crate) struct Observability {
     agent_messages: AtomicU64,
     input_tokens: AtomicU64,
     output_tokens: AtomicU64,
+    model_tokens: Mutex<HashMap<String, TokenTotals>>,
+    provider_tokens: Mutex<HashMap<String, TokenTotals>>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TokenTotals {
+    input: u64,
+    output: u64,
 }
 
 impl Observability {
@@ -30,6 +39,25 @@ impl Observability {
                 observability: self,
             })
     }
+
+    fn model_token_snapshot(&self) -> Vec<(String, TokenTotals)> {
+        token_snapshot(&self.model_tokens)
+    }
+
+    fn provider_token_snapshot(&self) -> Vec<(String, TokenTotals)> {
+        token_snapshot(&self.provider_tokens)
+    }
+}
+
+fn token_snapshot(totals: &Mutex<HashMap<String, TokenTotals>>) -> Vec<(String, TokenTotals)> {
+    let mut rows: Vec<_> = totals
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(label, totals)| (label.clone(), *totals))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
 }
 
 impl AgentObserver for Observability {
@@ -47,6 +75,25 @@ impl AgentObserver for Observability {
             .fetch_add(usage.input_tokens, Ordering::Relaxed);
         self.output_tokens
             .fetch_add(usage.output_tokens, Ordering::Relaxed);
+        record_usage(&self.model_tokens, &usage.model, &usage);
+        record_usage(&self.provider_tokens, &usage.provider, &usage);
+    }
+}
+
+fn record_usage(totals: &Mutex<HashMap<String, TokenTotals>>, label: &str, usage: &TokenUsage) {
+    let label = normalized_label(label);
+    let mut totals = totals.lock().unwrap();
+    let entry = totals.entry(label).or_default();
+    entry.input = entry.input.saturating_add(usage.input_tokens);
+    entry.output = entry.output.saturating_add(usage.output_tokens);
+}
+
+fn normalized_label(label: &str) -> String {
+    let label = label.trim();
+    if label.is_empty() {
+        "unknown".to_string()
+    } else {
+        label.to_string()
     }
 }
 
@@ -105,14 +152,64 @@ async fn metrics(State(state): State<MetricsState>) -> impl IntoResponse {
     metric(
         &mut out,
         "stride_process_input_tokens_total",
-        "Input tokens reported by streaming model providers since this server process started.",
+        "Input tokens reported by model providers since this server process started.",
         obs.input_tokens.load(Ordering::Relaxed),
     );
     metric(
         &mut out,
         "stride_process_output_tokens_total",
-        "Output tokens reported by streaming model providers since this server process started.",
+        "Output tokens reported by model providers since this server process started.",
         obs.output_tokens.load(Ordering::Relaxed),
+    );
+    let model_tokens = obs.model_token_snapshot();
+    let provider_tokens = obs.provider_token_snapshot();
+    labeled_token_metric(
+        &mut out,
+        "stride_process_model_input_tokens_total",
+        "Input tokens reported by model since this server process started.",
+        "model",
+        &model_tokens,
+        |totals| totals.input,
+    );
+    labeled_token_metric(
+        &mut out,
+        "stride_process_model_output_tokens_total",
+        "Output tokens reported by model since this server process started.",
+        "model",
+        &model_tokens,
+        |totals| totals.output,
+    );
+    labeled_token_metric(
+        &mut out,
+        "stride_process_model_tokens_total",
+        "Total tokens reported by model since this server process started.",
+        "model",
+        &model_tokens,
+        |totals| totals.input.saturating_add(totals.output),
+    );
+    labeled_token_metric(
+        &mut out,
+        "stride_process_provider_input_tokens_total",
+        "Input tokens reported by provider since this server process started.",
+        "provider",
+        &provider_tokens,
+        |totals| totals.input,
+    );
+    labeled_token_metric(
+        &mut out,
+        "stride_process_provider_output_tokens_total",
+        "Output tokens reported by provider since this server process started.",
+        "provider",
+        &provider_tokens,
+        |totals| totals.output,
+    );
+    labeled_token_metric(
+        &mut out,
+        "stride_process_provider_tokens_total",
+        "Total tokens reported by provider since this server process started.",
+        "provider",
+        &provider_tokens,
+        |totals| totals.input.saturating_add(totals.output),
     );
     (
         [(
@@ -127,6 +224,33 @@ fn metric(out: &mut String, name: &str, help: &str, value: u64) {
     let _ = writeln!(out, "# HELP {name} {help}");
     let _ = writeln!(out, "# TYPE {name} counter");
     let _ = writeln!(out, "{name} {value}");
+}
+
+fn labeled_token_metric(
+    out: &mut String,
+    name: &str,
+    help: &str,
+    label_name: &str,
+    rows: &[(String, TokenTotals)],
+    value: impl Fn(TokenTotals) -> u64,
+) {
+    let _ = writeln!(out, "# HELP {name} {help}");
+    let _ = writeln!(out, "# TYPE {name} counter");
+    for (label, totals) in rows {
+        let label = prometheus_label_value(label);
+        let _ = writeln!(
+            out,
+            r#"{name}{{{label_name}="{label}"}} {}"#,
+            value(*totals)
+        );
+    }
+}
+
+fn prometheus_label_value(value: &str) -> String {
+    value
+        .replace('\\', r"\\")
+        .replace('\n', r"\n")
+        .replace('"', r#"\""#)
 }
 
 #[derive(Default)]

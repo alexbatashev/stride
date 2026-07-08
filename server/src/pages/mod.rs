@@ -280,7 +280,14 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
         "Message S.T.R.I.D.E."
     };
     let prompt = with_attrs(
-        &AppPromptInput::new(false, data.running, placeholder, Vec::<Models>::new(), "").render(),
+        &AppPromptInput::new(
+            false,
+            data.running,
+            placeholder,
+            Vec::<Models>::new(),
+            &data.selected_model,
+        )
+        .render(),
         r#"style="margin: auto" data-prompt"#,
     );
     let approval = with_attrs(
@@ -293,6 +300,7 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
     );
     let current_title = html_escape(&data.current_title);
     let thread_id = html_escape(&data.thread_id);
+    let selected_model = html_escape(&data.selected_model);
 
     let body = format!(
         r#"{THREADS_STYLE}
@@ -320,7 +328,7 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
     );
 
     let body_attrs = format!(
-        r#"id="threads-page" data-thread-id="{thread_id}" data-running="{running}""#,
+        r#"id="threads-page" data-thread-id="{thread_id}" data-selected-model="{selected_model}" data-running="{running}""#,
         running = data.running,
     );
     render_page("S.T.R.I.D.E.", &agent::page_script(), &body_attrs, &body)
@@ -519,6 +527,7 @@ mod tests {
         ThreadPageData {
             thread_id: "thread-1".to_string(),
             current_title: "Current thread".to_string(),
+            selected_model: "fast".to_string(),
             running: true,
             projects: vec![ProjectTemplateData {
                 id: "project-1".to_string(),
@@ -569,7 +578,7 @@ mod tests {
 
         assert!(
             html.contains(
-                r#"<body id="threads-page" data-thread-id="thread-1" data-running="true">"#
+                r#"<body id="threads-page" data-thread-id="thread-1" data-selected-model="fast" data-running="true">"#
             )
         );
         // Server-side shadow DOM for the chrome that should paint before JS.

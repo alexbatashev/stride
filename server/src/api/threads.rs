@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use llm::{CompletionRequest, Message as LlmMessage, Role as LlmRole};
-use stride_agent::DEFAULT_MODEL;
+use stride_agent::{DEFAULT_MODEL, TokenUsage};
 
 use crate::{
     ServerState,
@@ -23,6 +23,7 @@ use crate::{
         projects::ProjectResponse,
     },
     db::{MessageFormat, Role, messages, projects, threads, user_models},
+    model_registry,
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
         ThreadStatus, thread_events_topic,
@@ -58,6 +59,7 @@ pub struct MessageResponse {
 pub struct ThreadPageData {
     pub thread_id: String,
     pub current_title: String,
+    pub selected_model: String,
     pub running: bool,
     pub projects: Vec<ProjectTemplateData>,
     pub ungrouped_threads: Vec<ThreadTemplateData>,
@@ -248,6 +250,11 @@ pub struct RenameThreadRequest {
     title: String,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateThreadModelRequest {
+    model: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct ArchivedThreadResponse {
     id: String,
@@ -295,6 +302,26 @@ pub async fn rename_thread(
         title,
         project_id,
     }))
+}
+
+pub async fn update_thread_model(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+    Json(request): Json<UpdateThreadModelRequest>,
+) -> Result<StatusCode, ThreadApiError> {
+    let owner = auth::authenticated_user(&state, &headers).await?;
+    require_thread_owner_for_user(&state, owner, thread_id).await?;
+
+    let model = validate_chat_model(&state, owner, request.model.as_deref()).await?;
+    threads::update()
+        .last_model(model.as_deref())
+        .where_(threads::id.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Archives a thread: it disappears from the sidebar but keeps all messages and
@@ -459,7 +486,7 @@ pub async fn thread_page_data(
         })
         .unwrap_or_else(|| "New thread".to_string());
 
-    let (messages, running) = if let Some(thread_id) = thread_id {
+    let (messages, running, selected_model) = if let Some(thread_id) = thread_id {
         require_thread_owner_for_user(state, owner, thread_id).await?;
         (
             thread_messages(state, thread_id).await?,
@@ -467,9 +494,10 @@ pub async fn thread_page_data(
                 state.runner.status(thread_id).await.map_err(pool_error)?,
                 ThreadStatus::Running { .. }
             ),
+            thread_selected_model(state, thread_id).await?,
         )
     } else {
-        (Vec::new(), false)
+        (Vec::new(), false, String::new())
     };
 
     let thread_template_data: Vec<ThreadTemplateData> = all_threads
@@ -505,6 +533,7 @@ pub async fn thread_page_data(
     Ok(ThreadPageData {
         thread_id: thread_id.map(|id| id.to_string()).unwrap_or_default(),
         current_title,
+        selected_model,
         running,
         projects,
         ungrouped_threads,
@@ -561,6 +590,21 @@ async fn thread_summaries(
     Ok(threads)
 }
 
+async fn thread_selected_model(
+    state: &ServerState,
+    thread_id: Uuid,
+) -> Result<String, ThreadApiError> {
+    Ok(threads::select_cols((threads::last_model,))
+        .where_(threads::id.eq(thread_id))
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?
+        .into_iter()
+        .next()
+        .and_then(|(model,)| model)
+        .unwrap_or_default())
+}
+
 async fn project_summaries(
     state: &ServerState,
     owner: Uuid,
@@ -587,6 +631,7 @@ pub async fn create_thread(
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
+    let model = validate_chat_model(&state, owner, request.model.as_deref()).await?;
     let project_id = request.project_id;
     let thread_id = Uuid::now_v7();
 
@@ -614,14 +659,13 @@ pub async fn create_thread(
         owner,
         request.content,
         file_paths,
-        request.model.as_deref(),
+        model.as_deref(),
     )
     .await?;
     let content = normalize_content(content)?;
 
     let run_id =
-        send_to_runner_with_images(&state, thread_id, content.clone(), images, request.model)
-            .await?;
+        send_to_runner_with_images(&state, thread_id, content.clone(), images, model).await?;
 
     spawn_title_generation(state.clone(), thread_id, content, None);
 
@@ -699,10 +743,26 @@ async fn generate_title(
     config: &Arc<stride_agent::AgentConfig>,
     content: &str,
 ) -> Result<(String, bool), llm::Error> {
-    let model = config.model_registry.get_or_default(TITLE_GENERATOR_MODEL);
+    let model_key = if config.model_registry.get(TITLE_GENERATOR_MODEL).is_some() {
+        TITLE_GENERATOR_MODEL
+    } else {
+        DEFAULT_MODEL
+    };
+    let model = config.model_registry.get_or_default(model_key);
+    let provider = config
+        .model_registry
+        .provider(model_key)
+        .unwrap_or("unknown")
+        .to_string();
     let request = title_generation_request(&model.model_name, content);
 
     let completion = model.api.get_completion(&model.token, request).await?;
+    config.observer.token_usage(TokenUsage {
+        input_tokens: completion.usage.prompt_tokens as u64,
+        output_tokens: completion.usage.completion_tokens as u64,
+        model: model_key.to_string(),
+        provider,
+    });
 
     if let Some(title) = title_from_completion(completion) {
         return Ok((title, false));
@@ -821,6 +881,7 @@ pub async fn send_message(
 ) -> Result<Json<SendMessageResponse>, ThreadApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
     require_thread_owner_for_user(&state, owner, thread_id).await?;
+    let model = effective_request_model(&state, owner, thread_id, request.model.as_deref()).await?;
 
     let mut file_paths = request.file_paths;
     let staged =
@@ -833,12 +894,11 @@ pub async fn send_message(
         owner,
         request.content,
         file_paths,
-        request.model.as_deref(),
+        model.as_deref(),
     )
     .await?;
     let content = normalize_content(content)?;
-    let run_id =
-        send_to_runner_with_images(&state, thread_id, content, images, request.model).await?;
+    let run_id = send_to_runner_with_images(&state, thread_id, content, images, model).await?;
 
     Ok(Json(SendMessageResponse {
         thread_id: thread_id.to_string(),
@@ -997,6 +1057,53 @@ async fn send_to_runner_with_images(
         )
         .await
         .map_err(pool_error)
+}
+
+async fn validate_chat_model(
+    state: &ServerState,
+    owner: Uuid,
+    model: Option<&str>,
+) -> Result<Option<String>, ThreadApiError> {
+    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let available = model_registry::list_available_models(&state.config, &state.db, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+    if available
+        .iter()
+        .any(|available| available.key.as_str() == model)
+    {
+        Ok(Some(model.to_string()))
+    } else {
+        Err(ThreadApiError::BadRequest)
+    }
+}
+
+async fn effective_request_model(
+    state: &ServerState,
+    owner: Uuid,
+    thread_id: Uuid,
+    requested: Option<&str>,
+) -> Result<Option<String>, ThreadApiError> {
+    if requested
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return validate_chat_model(state, owner, requested).await;
+    }
+
+    let saved = thread_selected_model(state, thread_id).await?;
+    if saved.is_empty() {
+        return Ok(None);
+    }
+    let available = model_registry::list_available_models(&state.config, &state.db, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+    Ok(available
+        .iter()
+        .any(|model| model.key.as_str() == saved)
+        .then_some(saved))
 }
 
 fn vision_enabled(state: &ServerState, model: Option<&str>) -> bool {

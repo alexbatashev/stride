@@ -515,6 +515,14 @@ migrations! {
             add description: Option<String>;
         }
     }
+
+    thread_last_model {
+        // Last chat model selected/used for this thread. NULL means the UI and
+        // runner fall back to the default chat model.
+        alter table threads {
+            add last_model: Option<String>;
+        }
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

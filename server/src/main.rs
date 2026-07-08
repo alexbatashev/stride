@@ -628,6 +628,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             post(api::threads::unarchive_thread),
         )
         .route(
+            "/api/threads/{id}/model",
+            patch(api::threads::update_thread_model),
+        )
+        .route(
             "/api/threads/{id}/messages",
             get(api::threads::list_messages).post(api::threads::send_message),
         )
@@ -771,7 +775,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
             config::Kind::Ollama => Ollama::new(&provider.url).into(),
             config::Kind::OllamaCloud => Ollama::cloud(&provider.url).into(),
         };
-        registry.add_model(
+        registry.add_model_with_provider(
             name,
             ModelRegEntry {
                 api,
@@ -782,6 +786,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
                 reasoning_effort: model.reasoning_effort(),
                 vision: model.vision.unwrap_or(false),
             },
+            model.provider.as_str(),
         );
     }
 
@@ -796,7 +801,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
             config::Kind::Ollama => Ollama::new(&provider.url).into(),
             config::Kind::OllamaCloud => Ollama::cloud(&provider.url).into(),
         };
-        registry.add_model(
+        registry.add_model_with_provider(
             DEFAULT_MODEL,
             ModelRegEntry {
                 api,
@@ -807,6 +812,7 @@ fn create_model_registry(config: &config::Config) -> ModelRegistry {
                 reasoning_effort: model.reasoning_effort(),
                 vision: model.vision.unwrap_or(false),
             },
+            model.provider.as_str(),
         );
     }
 

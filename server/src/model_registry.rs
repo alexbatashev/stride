@@ -207,7 +207,7 @@ pub async fn build_user_registry(
         let Some(kind) = parse_kind(&provider.kind) else {
             continue;
         };
-        registry.add_model(
+        registry.add_model_with_provider(
             &model.name,
             entry_from_provider(
                 kind,
@@ -217,6 +217,7 @@ pub async fn build_user_registry(
                 &model.reasoning_effort,
                 model.vision,
             ),
+            provider.name.as_str(),
         );
     }
 

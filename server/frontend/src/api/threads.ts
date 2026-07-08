@@ -141,6 +141,13 @@ export async function deleteThread(threadId: string): Promise<void> {
 	await request(`/api/threads/${threadId}`, {method: 'DELETE'});
 }
 
+export async function updateThreadModel(threadId: string, model: string | null): Promise<void> {
+	await request(`/api/threads/${threadId}/model`, {
+		method: 'PATCH',
+		body: JSON.stringify({model})
+	});
+}
+
 export async function listMessages(threadId: string): Promise<ThreadMessage[]> {
 	return request(`/api/threads/${threadId}/messages`);
 }
