@@ -5,6 +5,7 @@ use std::process::Command;
 
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
+    println!("cargo:rerun-if-changed=build.rs");
 
     // Offline / Nix builds: the frontend (including the Argon-generated SSR
     // modules) is produced by a separate derivation that has the JS toolchain

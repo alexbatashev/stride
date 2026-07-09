@@ -105,10 +105,7 @@ fn split_segments(s: &str) -> Option<Vec<String>> {
                         }
                         Some('\\') => {
                             cur.push('\\');
-                            match chars.next() {
-                                Some(n) => cur.push(n),
-                                None => return None,
-                            }
+                            cur.push(chars.next()?);
                         }
                         Some(ch) => cur.push(ch),
                         None => return None,
@@ -117,10 +114,7 @@ fn split_segments(s: &str) -> Option<Vec<String>> {
             }
             '\\' => {
                 cur.push(c);
-                match chars.next() {
-                    Some(n) => cur.push(n),
-                    None => return None,
-                }
+                cur.push(chars.next()?);
             }
             ';' | '\n' | '|' | '&' => segments.push(std::mem::take(&mut cur)),
             _ => cur.push(c),

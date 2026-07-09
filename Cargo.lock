@@ -4851,12 +4851,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustls-aws-lc-rs"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ad3ff0cfb63615590452bdfaced1720120b611c0161a024b725bf29142847b5"
-
-[[package]]
 name = "rustls-native-certs"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5814,7 +5808,7 @@ dependencies = [
 
 [[package]]
 name = "tinynet"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -5823,13 +5817,20 @@ dependencies = [
  "futures",
  "http-body-util",
  "hyper",
- "mio",
  "rcgen",
  "rustls",
- "rustls-aws-lc-rs",
  "thiserror 2.0.18",
+ "tinynet-core",
  "tokio",
- "webpki-roots 1.0.8",
+]
+
+[[package]]
+name = "tinynet-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustls",
+ "rustls-native-certs",
 ]
 
 [[package]]

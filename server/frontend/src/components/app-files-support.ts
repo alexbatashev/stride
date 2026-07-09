@@ -10,7 +10,7 @@ import {
   listWorkspaceFiles,
   restoreWorkspaceFileVersion,
 } from "../api/threads.js";
-import { files } from "../stores/files.js";
+import { files } from "../stores/file-state.js";
 
 export interface FileItem {
   name: string;

@@ -1,0 +1,20 @@
+[package]
+name = "tinynet-core"
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/frontiers-labs/tinynet"
+
+[package.metadata]
+source-rev = "9f4c2d7c78ef8c2abd8c5d8c5bac8e406b69c5a8"
+
+[dependencies]
+libc = "0.2"
+rustls = { version = "0.23.40", optional = true }
+rustls-native-certs = { version = "0.8.3", optional = true }
+
+[features]
+default = []
+http1 = []
+http2 = []
+client = ["http1"]
+rustls = ["dep:rustls", "dep:rustls-native-certs"]
