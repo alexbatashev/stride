@@ -1,3 +1,4 @@
 [workspace]
 resolver = "3"
 members = ["code", "libs/agent", "libs/agent-macro", "libs/llm", "libs/minisql", "libs/minisql-macros", "libs/pubsub", "libs/tinynet", "server", "libs/execenv", "libs/operator"]
+exclude = ["libs/tinynet-core"]
