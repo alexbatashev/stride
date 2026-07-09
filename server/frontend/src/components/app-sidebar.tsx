@@ -3,7 +3,8 @@
  * shadcn/ui — MIT License — Copyright (c) 2023 shadcn
  * https://ui.shadcn.com/docs/components/sidebar
  */
-import { Component, css, onMount, state } from "@frontiers-labs/argon";
+import { Component, css, emit, onMount } from "@frontiers-labs/argon";
+import { sidebar } from "../stores/ui.js";
 import { AppButton } from "./app-button.js";
 import { IconArchive } from "./icons/archive.js";
 import { IconBotMessageSquare } from "./icons/bot-message-square.js";
@@ -14,6 +15,10 @@ import { IconPanelLeftClose } from "./icons/panel-left-close.js";
 import { IconPanelLeftOpen } from "./icons/panel-left-open.js";
 import { IconSettingsHorizontal } from "./icons/settings-horizontal.js";
 import { IconWorkflow } from "./icons/workflow.js";
+
+const styles = css`:host{--sidebar-width:260px;--sidebar-width-icon:48px;--sidebar-menu-button-size:32px;display:block;height:100%;width:fit-content;}.root{background:var(--sidebar-bg,var(--secondary));border-right:1px solid var(--sidebar-border,var(--border));box-sizing:border-box;display:flex;flex-direction:column;align-items:stretch;height:100%;overflow:hidden;position:relative;transition:width 200ms linear;width:var(--sidebar-width);}.root.collapsed{width:var(--sidebar-width-icon);}.root.hidden{display:none;}.scrim{border:0;display:none;padding:0;}.header{flex:0 0 auto;width:100%;}.brand{align-items:center;display:flex;gap:8px;padding:8px;}.mark{align-items:center;background:var(--primary);border-radius:8px;color:var(--primary-foreground);display:inline-flex;flex:0 0 auto;font-size:13px;font-weight:700;height:32px;justify-content:center;width:32px;}.brand strong{color:var(--foreground);flex:1;font-size:14px;font-weight:600;min-width:0;}.root.collapsed .brand{padding:8px;}.root.collapsed .brand .mark,.root.collapsed .brand strong{display:none;}.main{flex:1;overflow:auto;padding:8px 0;width:100%;}.root.collapsed .main{overflow:hidden;}.footer{display:flex;flex:0 0 auto;flex-direction:column;gap:4px;padding:8px;width:100%;box-sizing:border-box;}.footer app-button{width:100%;}.root.collapsed .footer,.root.collapsed .groups{display:none;}.nav-item{box-sizing:border-box;display:block;padding:0 8px;width:100%;}.nav-item a{align-items:center;border-radius:6px;box-sizing:border-box;color:var(--sidebar-fg,var(--foreground));display:flex;font-size:14px;font-weight:400;gap:8px;height:32px;line-height:20px;outline:none;overflow:hidden;padding:0 8px;text-align:left;text-decoration:none;transition:background-color 140ms ease,color 140ms ease,width 200ms linear;user-select:none;white-space:nowrap;width:100%;}.nav-item a:hover,.nav-item a[aria-current="page"]{background:var(--sidebar-accent,var(--accent));color:var(--sidebar-accent-fg,var(--accent-foreground));}.nav-item a[aria-current="page"]{font-weight:500;}.nav-item a:focus-visible{box-shadow:0 0 0 2px var(--ring-shadow,rgb(24 24 27 / 12%));}.nav-item .icon{align-items:center;display:inline-flex;flex:0 0 16px;height:16px;justify-content:center;width:16px;}.nav-item .icon>*{height:16px;width:16px;}.nav-item .label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;}.root.collapsed .nav-item{padding:0 8px;}.root.collapsed .nav-item a{height:32px;padding:0 8px;width:var(--sidebar-menu-button-size);}.root.collapsed .nav-item .label{display:none;}.group{width:100%;padding:8px 0;}.group-toggle{align-items:center;background:transparent;border:0;border-radius:6px;box-sizing:border-box;color:var(--muted-foreground);cursor:pointer;display:flex;font:inherit;font-size:12px;font-weight:500;gap:8px;height:28px;line-height:16px;margin:0 8px;outline:none;padding:0 8px;text-align:left;transition:background-color 140ms ease,color 140ms ease;user-select:none;width:calc(100% - 16px);}.group-toggle:hover{background:var(--sidebar-accent,var(--accent));color:var(--sidebar-accent-fg,var(--accent-foreground));}.group-toggle:focus-visible{box-shadow:0 0 0 2px var(--ring-shadow,rgb(24 24 27 / 12%));}.group-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.chevron{align-items:center;color:var(--muted-foreground);display:inline-flex;flex:0 0 16px;height:16px;justify-content:center;opacity:0;transition:opacity 140ms ease;width:16px;}.group-toggle:hover .chevron,.group-toggle:focus-visible .chevron{opacity:1;}.chevron>*{align-items:center;display:inline-flex;height:16px;justify-content:center;width:16px;}.chevron>*>*{height:16px;width:16px;}.chevron .closed-mark,.group.closed .chevron .open-mark{display:none;}.group.closed .chevron .closed-mark{display:inline-flex;}.project-actions{display:none;gap:2px;margin-left:auto;}.group-toggle:hover .project-actions,.group-toggle:focus-within .project-actions{display:inline-flex;}.project-actions span{background:transparent;border:0;border-radius:4px;color:var(--muted-foreground);cursor:pointer;font-size:12px;height:20px;line-height:20px;padding:0 4px;}.project-actions span:hover{background:var(--accent);color:var(--accent-foreground);}.group ul{border-left:1px solid var(--sidebar-border,var(--border));box-sizing:border-box;display:flex;flex-direction:column;gap:2px;list-style-type:none;margin:4px 8px 0 16px;padding:0 0 0 10px;}.group.closed ul{display:none;}.group ul a{align-items:center;border-radius:6px;box-sizing:border-box;color:var(--sidebar-fg,var(--foreground));display:flex;font-size:14px;font-weight:400;height:28px;line-height:20px;outline:none;overflow:hidden;padding:0 8px;text-align:left;text-decoration:none;transition:background-color 140ms ease,color 140ms ease;user-select:none;white-space:nowrap;width:100%;}.group ul a:hover,.group ul a[aria-current="page"]{background:var(--sidebar-accent,var(--accent));color:var(--sidebar-accent-fg,var(--accent-foreground));}.group ul a[aria-current="page"]{font-weight:500;}.group ul a:focus-visible{box-shadow:0 0 0 2px var(--ring-shadow,rgb(24 24 27 / 12%));}.thread-label{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.group ul li{position:relative;}.thread-menu{align-items:center;background:var(--sidebar-bg,var(--secondary));border-radius:4px;color:var(--muted-foreground);cursor:pointer;display:none;font-size:16px;height:22px;justify-content:center;line-height:1;position:absolute;right:4px;top:50%;transform:translateY(-50%);user-select:none;width:22px;}.group ul li:hover .thread-menu,.thread-menu[aria-expanded="true"]{display:inline-flex;}.thread-menu:hover{background:var(--accent);color:var(--accent-foreground);}.group ul li:hover a{padding-right:28px;}@media(max-width:767px){.root{display:none;}:host([hydrated]) .root.open{box-shadow:0 18px 48px rgb(0 0 0 / 22%);display:flex;inset:0 auto 0 0;max-width:320px;position:fixed;width:min(84vw,320px);z-index:50;}.scrim{background:rgb(0 0 0 / 36%);display:block;inset:0;position:fixed;z-index:-1;}.nav-item a,.group-toggle,.group ul a{font-size:16px;height:44px;padding:0 12px;}.nav-item .icon{flex-basis:20px;height:20px;width:20px;}.nav-item .icon>*{height:20px;width:20px;}.group ul{padding-left:8px;}.thread-menu{display:inline-flex;height:28px;width:28px;}.group ul li a{padding-right:32px;}}@media(prefers-reduced-motion:reduce){.root,.nav-item a{transition:none;}}`;
+
+const toggleStyles = css`:host{display:inline-flex;}icon-panel-left-open,icon-panel-left-close{height:16px;width:16px;}.brand-mark{align-items:center;background:var(--primary);border-radius:8px;color:var(--primary-foreground);display:inline-flex;font-size:13px;font-weight:700;height:32px;justify-content:center;width:32px;}.hover-icon{display:none;}.with-brand:hover .brand-mark,.with-brand:focus-within .brand-mark{display:none;}.with-brand:hover .hover-icon,.with-brand:focus-within .hover-icon{align-items:center;display:inline-flex;height:16px;justify-content:center;width:16px;}`;
 
 interface SidebarThread {
   id: string;
@@ -28,532 +33,42 @@ interface SidebarProject {
 
 const MOBILE_QUERY = "(max-width: 767px)";
 
-function announce(status: string): void {
-  window.dispatchEvent(new CustomEvent("app-sidebar-state", { detail: { status } }));
+function toggleSidebar(): void {
+  const mobile = window.matchMedia(MOBILE_QUERY).matches;
+  if (mobile) {
+    sidebar.status = sidebar.status === "open" ? "hidden" : "open";
+  } else {
+    sidebar.status = sidebar.status === "collapsed" ? "open" : "collapsed";
+  }
 }
-
-const styles = css`
-  :host {
-    --sidebar-width: 260px;
-    --sidebar-width-icon: 48px;
-    --sidebar-menu-button-size: 32px;
-
-    display: block;
-    height: 100%;
-    width: fit-content;
-  }
-
-  .root {
-    background: var(--sidebar-bg, var(--secondary));
-    border-right: 1px solid var(--sidebar-border, var(--border));
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    height: 100%;
-    overflow: hidden;
-    position: relative;
-    transition: width 200ms linear;
-    width: var(--sidebar-width);
-  }
-
-  .root.collapsed {
-    width: var(--sidebar-width-icon);
-  }
-
-  .root.hidden {
-    display: none;
-  }
-
-  .scrim {
-    border: 0;
-    display: none;
-    padding: 0;
-  }
-
-  .header {
-    flex: 0 0 auto;
-    width: 100%;
-  }
-
-  .brand {
-    align-items: center;
-    display: flex;
-    gap: 8px;
-    padding: 8px;
-  }
-
-  .mark {
-    align-items: center;
-    background: var(--primary);
-    border-radius: 8px;
-    color: var(--primary-foreground);
-    display: inline-flex;
-    flex: 0 0 auto;
-    font-size: 13px;
-    font-weight: 700;
-    height: 32px;
-    justify-content: center;
-    width: 32px;
-  }
-
-  .brand strong {
-    color: var(--foreground);
-    flex: 1;
-    font-size: 14px;
-    font-weight: 600;
-    min-width: 0;
-  }
-
-  .root.collapsed .brand {
-    padding: 8px;
-  }
-
-  .root.collapsed .brand .mark,
-  .root.collapsed .brand strong {
-    display: none;
-  }
-
-  .main {
-    flex: 1;
-    overflow: auto;
-    padding: 8px 0;
-    width: 100%;
-  }
-
-  .root.collapsed .main {
-    overflow: hidden;
-  }
-
-  .footer {
-    display: flex;
-    flex: 0 0 auto;
-    flex-direction: column;
-    gap: 4px;
-    padding: 8px;
-    width: 100%;
-    box-sizing: border-box;
-  }
-
-  .footer app-button {
-    width: 100%;
-  }
-
-  .root.collapsed .footer,
-  .root.collapsed .groups {
-    display: none;
-  }
-
-  .nav-item {
-    box-sizing: border-box;
-    display: block;
-    padding: 0 8px;
-    width: 100%;
-  }
-
-  .nav-item a {
-    align-items: center;
-    border-radius: 6px;
-    box-sizing: border-box;
-    color: var(--sidebar-fg, var(--foreground));
-    display: flex;
-    font-size: 14px;
-    font-weight: 400;
-    gap: 8px;
-    height: 32px;
-    line-height: 20px;
-    outline: none;
-    overflow: hidden;
-    padding: 0 8px;
-    text-align: left;
-    text-decoration: none;
-    transition:
-      background-color 140ms ease,
-      color 140ms ease,
-      width 200ms linear;
-    user-select: none;
-    white-space: nowrap;
-    width: 100%;
-  }
-
-  .nav-item a:hover,
-  .nav-item a[aria-current="page"] {
-    background: var(--sidebar-accent, var(--accent));
-    color: var(--sidebar-accent-fg, var(--accent-foreground));
-  }
-
-  .nav-item a[aria-current="page"] {
-    font-weight: 500;
-  }
-
-  .nav-item a:focus-visible {
-    box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%));
-  }
-
-  .nav-item .icon {
-    align-items: center;
-    display: inline-flex;
-    flex: 0 0 16px;
-    height: 16px;
-    justify-content: center;
-    width: 16px;
-  }
-
-  .nav-item .icon > * {
-    height: 16px;
-    width: 16px;
-  }
-
-  .nav-item .label {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .root.collapsed .nav-item {
-    padding: 0 8px;
-  }
-
-  .root.collapsed .nav-item a {
-    height: 32px;
-    padding: 0 8px;
-    width: var(--sidebar-menu-button-size);
-  }
-
-  .root.collapsed .nav-item .label {
-    display: none;
-  }
-
-  .group {
-    width: 100%;
-    padding: 8px 0;
-  }
-
-  .group-toggle {
-    align-items: center;
-    background: transparent;
-    border: 0;
-    border-radius: 6px;
-    box-sizing: border-box;
-    color: var(--muted-foreground);
-    cursor: pointer;
-    display: flex;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    gap: 8px;
-    height: 28px;
-    line-height: 16px;
-    margin: 0 8px;
-    outline: none;
-    padding: 0 8px;
-    text-align: left;
-    transition:
-      background-color 140ms ease,
-      color 140ms ease;
-    user-select: none;
-    width: calc(100% - 16px);
-  }
-
-  .group-toggle:hover {
-    background: var(--sidebar-accent, var(--accent));
-    color: var(--sidebar-accent-fg, var(--accent-foreground));
-  }
-
-  .group-toggle:focus-visible {
-    box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%));
-  }
-
-  .group-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .chevron {
-    align-items: center;
-    color: var(--muted-foreground);
-    display: inline-flex;
-    flex: 0 0 16px;
-    height: 16px;
-    justify-content: center;
-    opacity: 0;
-    transition: opacity 140ms ease;
-    width: 16px;
-  }
-
-  .group-toggle:hover .chevron,
-  .group-toggle:focus-visible .chevron {
-    opacity: 1;
-  }
-
-  .chevron > * {
-    align-items: center;
-    display: inline-flex;
-    height: 16px;
-    justify-content: center;
-    width: 16px;
-  }
-
-  .chevron > * > * {
-    height: 16px;
-    width: 16px;
-  }
-
-  .chevron .closed-mark,
-  .group.closed .chevron .open-mark {
-    display: none;
-  }
-
-  .group.closed .chevron .closed-mark {
-    display: inline-flex;
-  }
-
-  .project-actions {
-    display: none;
-    gap: 2px;
-    margin-left: auto;
-  }
-
-  .group-toggle:hover .project-actions,
-  .group-toggle:focus-within .project-actions {
-    display: inline-flex;
-  }
-
-  .project-actions span {
-    background: transparent;
-    border: 0;
-    border-radius: 4px;
-    color: var(--muted-foreground);
-    cursor: pointer;
-    font-size: 12px;
-    height: 20px;
-    line-height: 20px;
-    padding: 0 4px;
-  }
-
-  .project-actions span:hover {
-    background: var(--accent);
-    color: var(--accent-foreground);
-  }
-
-  .group ul {
-    border-left: 1px solid var(--sidebar-border, var(--border));
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    list-style-type: none;
-    margin: 4px 8px 0 16px;
-    padding: 0 0 0 10px;
-  }
-
-  .group.closed ul {
-    display: none;
-  }
-
-  .group ul a {
-    align-items: center;
-    border-radius: 6px;
-    box-sizing: border-box;
-    color: var(--sidebar-fg, var(--foreground));
-    display: flex;
-    font-size: 14px;
-    font-weight: 400;
-    height: 28px;
-    line-height: 20px;
-    outline: none;
-    overflow: hidden;
-    padding: 0 8px;
-    text-align: left;
-    text-decoration: none;
-    transition:
-      background-color 140ms ease,
-      color 140ms ease;
-    user-select: none;
-    white-space: nowrap;
-    width: 100%;
-  }
-
-  .group ul a:hover,
-  .group ul a[aria-current="page"] {
-    background: var(--sidebar-accent, var(--accent));
-    color: var(--sidebar-accent-fg, var(--accent-foreground));
-  }
-
-  .group ul a[aria-current="page"] {
-    font-weight: 500;
-  }
-
-  .group ul a:focus-visible {
-    box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%));
-  }
-
-  .thread-label {
-    display: block;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .group ul li {
-    position: relative;
-  }
-
-  .thread-menu {
-    align-items: center;
-    background: var(--sidebar-bg, var(--secondary));
-    border-radius: 4px;
-    color: var(--muted-foreground);
-    cursor: pointer;
-    display: none;
-    font-size: 16px;
-    height: 22px;
-    justify-content: center;
-    line-height: 1;
-    position: absolute;
-    right: 4px;
-    top: 50%;
-    transform: translateY(-50%);
-    user-select: none;
-    width: 22px;
-  }
-
-  .group ul li:hover .thread-menu,
-  .thread-menu[aria-expanded="true"] {
-    display: inline-flex;
-  }
-
-  .thread-menu:hover {
-    background: var(--accent);
-    color: var(--accent-foreground);
-  }
-
-  .group ul li:hover a {
-    padding-right: 28px;
-  }
-
-  @media (max-width: 767px) {
-    .root {
-      display: none;
-    }
-
-    :host([hydrated]) .root.open {
-      box-shadow: 0 18px 48px rgb(0 0 0 / 22%);
-      display: flex;
-      inset: 0 auto 0 0;
-      max-width: 320px;
-      position: fixed;
-      width: min(84vw, 320px);
-      z-index: 50;
-    }
-
-    .scrim {
-      background: rgb(0 0 0 / 36%);
-      display: block;
-      inset: 0;
-      position: fixed;
-      z-index: -1;
-    }
-
-    .nav-item a,
-    .group-toggle,
-    .group ul a {
-      font-size: 16px;
-      height: 44px;
-      padding: 0 12px;
-    }
-
-    .nav-item .icon {
-      flex-basis: 20px;
-      height: 20px;
-      width: 20px;
-    }
-
-    .nav-item .icon > * {
-      height: 20px;
-      width: 20px;
-    }
-
-    .group ul {
-      padding-left: 8px;
-    }
-
-    .thread-menu {
-      display: inline-flex;
-      height: 28px;
-      width: 28px;
-    }
-
-    .group ul li a {
-      padding-right: 32px;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .root,
-    .nav-item a {
-      transition: none;
-    }
-  }
-`;
 
 export function AppSidebar({
   projects = [],
   threads = [],
-  activeThread = "",
-  filesActive = false,
-  automationsActive = false,
-  settingsActive = false,
-  archivedActive = false,
 }: {
   projects?: SidebarProject[];
   threads?: SidebarThread[];
-  activeThread?: string;
-  filesActive?: boolean;
-  automationsActive?: boolean;
-  settingsActive?: boolean;
-  archivedActive?: boolean;
 }): Component {
-  let status = state("open");
-
   onMount(() => {
     const mq = window.matchMedia(MOBILE_QUERY);
     const sync = () => {
-      status = mq.matches ? "hidden" : "open";
-      announce(status);
-    };
-    const toggle = () => {
-      if (mq.matches) {
-        status = status === "open" ? "hidden" : "open";
-      } else {
-        status = status === "collapsed" ? "open" : "collapsed";
-      }
-      announce(status);
+      sidebar.status = mq.matches ? "hidden" : "open";
     };
     sync();
     mq.addEventListener("change", sync);
-    window.addEventListener("app-sidebar-toggle", toggle);
-    return () => {
-      mq.removeEventListener("change", sync);
-      window.removeEventListener("app-sidebar-toggle", toggle);
-    };
+    return () => mq.removeEventListener("change", sync);
   });
 
   return (
     <>
       <style>{styles}</style>
-      <div class={`root ${status}`}>
+      <div class={`root ${sidebar.status}`}>
         <button
           class="scrim"
           type="button"
           aria-label="Close sidebar"
           onClick={() => {
-            status = "hidden";
-            announce(status);
+            sidebar.status = "hidden";
           }}
         ></button>
         <div class="header">
@@ -581,7 +96,7 @@ export function AppSidebar({
                 title: action.dataset.threadTitle ?? action.dataset.projectTitle ?? "",
                 anchor: action,
               };
-              this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true, detail }));
+              emit(this, name, detail);
               return;
             }
             const toggle = target.closest(".group-toggle");
@@ -597,25 +112,25 @@ export function AppSidebar({
             </a>
           </span>
           <span class="nav-item">
-            <a href="/files" aria-current={filesActive ? "page" : "false"}>
+            <a href="/files" aria-current={sidebar.activePage === "files" ? "page" : "false"}>
               <span class="icon"><IconFiles /></span>
               <span class="label">Files</span>
             </a>
           </span>
           <span class="nav-item">
-            <a href="/automations" aria-current={automationsActive ? "page" : "false"}>
+            <a href="/automations" aria-current={sidebar.activePage === "automations" ? "page" : "false"}>
               <span class="icon"><IconWorkflow /></span>
               <span class="label">Automations</span>
             </a>
           </span>
           <span class="nav-item">
-            <a href="/archived" aria-current={archivedActive ? "page" : "false"}>
+            <a href="/archived" aria-current={sidebar.activePage === "archived" ? "page" : "false"}>
               <span class="icon"><IconArchive /></span>
               <span class="label">Archived</span>
             </a>
           </span>
           <span class="nav-item">
-            <a href="/settings" aria-current={settingsActive ? "page" : "false"}>
+            <a href="/settings" aria-current={sidebar.activePage === "settings" ? "page" : "false"}>
               <span class="icon"><IconSettingsHorizontal /></span>
               <span class="label">Settings</span>
             </a>
@@ -658,7 +173,7 @@ export function AppSidebar({
                       <a
                         href={`/threads/${thread.id}`}
                         data-thread-id={thread.id}
-                        aria-current={thread.id === activeThread ? "page" : "false"}
+                        aria-current={thread.id === sidebar.activeThread ? "page" : "false"}
                       >
                         <span class="thread-label">{thread.title}</span>
                       </a>
@@ -690,7 +205,7 @@ export function AppSidebar({
                       <a
                         href={`/threads/${thread.id}`}
                         data-thread-id={thread.id}
-                        aria-current={thread.id === activeThread ? "page" : "false"}
+                        aria-current={thread.id === sidebar.activeThread ? "page" : "false"}
                       >
                         <span class="thread-label">{thread.title}</span>
                       </a>
@@ -714,9 +229,7 @@ export function AppSidebar({
           onClick={(event: Event) => {
             const button = (event.target as Element).closest<HTMLElement>("[data-action]");
             if (!button) return;
-            this.dispatchEvent(
-              new CustomEvent(button.dataset.action!, { bubbles: true, composed: true }),
-            );
+            emit(this, button.dataset.action!);
           }}
         >
           <AppButton variant="ghost" data-action="new-project">+ New project</AppButton>
@@ -727,60 +240,8 @@ export function AppSidebar({
   );
 }
 
-const toggleStyles = css`
-  :host {
-    display: inline-flex;
-  }
-
-  icon-panel-left-open,
-  icon-panel-left-close {
-    height: 16px;
-    width: 16px;
-  }
-
-  .brand-mark {
-    align-items: center;
-    background: var(--primary);
-    border-radius: 8px;
-    color: var(--primary-foreground);
-    display: inline-flex;
-    font-size: 13px;
-    font-weight: 700;
-    height: 32px;
-    justify-content: center;
-    width: 32px;
-  }
-
-  .hover-icon {
-    display: none;
-  }
-
-  .with-brand:hover .brand-mark,
-  .with-brand:focus-within .brand-mark {
-    display: none;
-  }
-
-  .with-brand:hover .hover-icon,
-  .with-brand:focus-within .hover-icon {
-    align-items: center;
-    display: inline-flex;
-    height: 16px;
-    justify-content: center;
-    width: 16px;
-  }
-`;
-
 export function AppSidebarToggle({ brand = "" }: { brand?: string }): Component {
-  let closed = state(false);
-
-  onMount(() => {
-    closed = window.matchMedia(MOBILE_QUERY).matches;
-    const onState = (event: Event) => {
-      closed = (event as CustomEvent<{ status: string }>).detail.status !== "open";
-    };
-    window.addEventListener("app-sidebar-state", onState);
-    return () => window.removeEventListener("app-sidebar-state", onState);
-  });
+  const closed = sidebar.status !== "open";
 
   return (
     <>
@@ -790,7 +251,7 @@ export function AppSidebarToggle({ brand = "" }: { brand?: string }): Component 
         size={brand !== "" ? "icon" : "icon-xs"}
         title={closed ? "Open sidebar" : "Close sidebar"}
         class={brand !== "" ? "with-brand" : ""}
-        onClick={() => window.dispatchEvent(new CustomEvent("app-sidebar-toggle"))}
+        onClick={() => toggleSidebar()}
       >
         {brand !== "" && closed ? (
           <span class="with-brand">

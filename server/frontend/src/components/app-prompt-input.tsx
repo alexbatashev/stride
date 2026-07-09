@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, effect, onMount, ref, state } from "@frontiers-labs/argon";
+import { Component, css, effect, emit, ref, state } from "@frontiers-labs/argon";
 import { transcribeAudio } from "../api/threads.js";
 import { IconArrowUp } from "./icons/arrow-up.js";
 import { IconMic } from "./icons/mic.js";
@@ -322,21 +322,6 @@ function emitModelChange(host: HTMLElement, value: string): void {
   );
 }
 
-// MediaRecorder state lives outside the component body because the SSR pass
-// cannot evaluate `null`/MediaRecorder initializers; keying by host keeps it
-// alive across re-renders.
-type RecordingState = { recorder: MediaRecorder | null; chunks: Blob[] };
-const recordingStates = new WeakMap<EventTarget, RecordingState>();
-
-function recordingStateFor(host: EventTarget): RecordingState {
-  let entry = recordingStates.get(host);
-  if (!entry) {
-    entry = { recorder: null, chunks: [] };
-    recordingStates.set(host, entry);
-  }
-  return entry;
-}
-
 function emitPromptError(host: HTMLElement, message: string): void {
   host.dispatchEvent(
     new CustomEvent("prompt-error", { bubbles: true, composed: true, detail: { message } }),
@@ -371,18 +356,10 @@ export function AppPromptInput({
   let recording = state(false);
   let transcribing = state(false);
   let draft = state("");
+  let recorder: MediaRecorder | false = false;
+  const chunks: Blob[] = [];
   const blocked = disabled || running || transcribing;
   const micDisabled = transcribing || (!recording && (disabled || running));
-
-  onMount(() => {
-    const onModelChange = (event: Event) => {
-      const select = (event.target as HTMLSelectElement | null);
-      if (!select?.matches("select.model-picker")) return;
-      emitModelChange(this, select.value);
-    };
-    this.addEventListener("change", onModelChange);
-    return () => this.removeEventListener("change", onModelChange);
-  });
 
   effect(() => {
     if (selectedModel) {
@@ -415,9 +392,7 @@ export function AppPromptInput({
             const files = Array.from(picker.files ?? []);
             picker.value = "";
             if (files.length === 0) return;
-            this.dispatchEvent(
-              new CustomEvent("files-attach", { bubbles: true, composed: true, detail: { files } }),
-            );
+            emit(this, "files-attach", { files });
           }}
         />
         <textarea
@@ -467,10 +442,9 @@ export function AppPromptInput({
               aria-label={recording ? "Stop recording" : "Record voice message"}
               aria-pressed={recording ? "true" : "false"}
               onClick={() => {
-                const rec = recordingStateFor(this);
                 if (transcribing) return;
                 if (recording) {
-                  rec.recorder?.stop();
+                  recorder?.stop();
                   return;
                 }
                 if (disabled || running) return;
@@ -489,22 +463,22 @@ export function AppPromptInput({
                     emitPromptError(this, "Microphone access was denied.");
                     return;
                   }
-                  rec.chunks.length = 0;
+                  chunks.length = 0;
                   const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
-                  const recorder = mime
+                  const nextRecorder = mime
                     ? new MediaRecorder(stream, { mimeType: mime })
                     : new MediaRecorder(stream);
-                  rec.recorder = recorder;
-                  recorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) rec.chunks.push(event.data);
+                  recorder = nextRecorder;
+                  nextRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) chunks.push(event.data);
                   };
-                  recorder.onstop = () => {
+                  nextRecorder.onstop = () => {
                     recording = false;
                     for (const track of stream.getTracks()) track.stop();
-                    const type = recorder.mimeType || "audio/webm";
-                    rec.recorder = null;
-                    const blob = new Blob(rec.chunks, { type });
-                    rec.chunks.length = 0;
+                    const type = nextRecorder.mimeType || "audio/webm";
+                    recorder = false;
+                    const blob = new Blob(chunks, { type });
+                    chunks.length = 0;
                     if (blob.size === 0) return;
                     transcribing = true;
                     const ext = type.includes("ogg") ? "ogg" : "webm";
@@ -524,7 +498,7 @@ export function AppPromptInput({
                         transcribing = false;
                       });
                   };
-                  recorder.start();
+                  nextRecorder.start();
                   recording = true;
                 })();
               }}
@@ -536,7 +510,7 @@ export function AppPromptInput({
             class="right-actions"
             onClick={(event: Event) => {
               if (!(event.target as Element).closest(".stop")) return;
-              this.dispatchEvent(new CustomEvent("prompt-stop", { bubbles: true, composed: true }));
+              emit(this, "prompt-stop");
             }}
           >
             <button class="send stop" type="button" hidden={!running}>

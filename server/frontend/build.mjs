@@ -7,6 +7,7 @@ import { join, relative } from 'node:path';
 // dist/components.js — the shared, cacheable script every page loads.
 const componentsDir = 'src/components';
 const iconsDir = join(componentsDir, 'icons');
+const storesDir = 'src/stores';
 const argonOut = 'dist/argon';
 const vendorDir = 'dist/vendor';
 mkdirSync('dist', { recursive: true });
@@ -19,7 +20,17 @@ const tsxIn = (dir) =>
     .filter((f) => f.endsWith('.tsx'))
     .sort()
     .map((f) => join(dir, f));
+const tsIn = (dir) =>
+  readdirSync(dir)
+    .filter((f) => f.endsWith('.ts'))
+    .sort()
+    .map((f) => join(dir, f));
 const componentFiles = [...tsxIn(componentsDir), ...tsxIn(iconsDir)];
+const componentSupportFiles = [...tsIn(componentsDir), ...tsIn(iconsDir)];
+const storeFiles = readdirSync(storesDir)
+  .filter((f) => f.endsWith('.ts'))
+  .sort()
+  .map((f) => join(storesDir, f));
 const apiFiles = readdirSync('src/api')
   .filter((f) => f.endsWith('.ts'))
   .sort()
@@ -27,7 +38,7 @@ const apiFiles = readdirSync('src/api')
 
 const result = spawnSync(
   './node_modules/.bin/argon',
-  ['compile', ...componentFiles, '--js', '--out-dir', argonOut, '--root', 'src'],
+  ['compile', ...storeFiles, ...componentFiles, '--js', '--out-dir', argonOut, '--root', 'src'],
   { stdio: 'inherit' },
 );
 if (result.status !== 0) throw new Error('argon --js failed');
@@ -35,8 +46,8 @@ if (result.status !== 0) throw new Error('argon --js failed');
 const entry = join(argonOut, 'components-entry.js');
 writeFileSync(
   entry,
-  componentFiles
-    .map((file) => relative('src', file).replace(/\.tsx$/, '.js'))
+  [...storeFiles, ...componentFiles]
+    .map((file) => relative('src', file).replace(/\.tsx?$/, '.js'))
     .sort()
     .map((file) => `import './${file}';`)
     .join('\n'),
@@ -48,6 +59,16 @@ await esbuild.build({
   format: 'esm',
   outdir: join(argonOut, 'api'),
 });
+
+if (componentSupportFiles.length > 0) {
+  await esbuild.build({
+    entryPoints: componentSupportFiles,
+    bundle: false,
+    format: 'esm',
+    outbase: 'src',
+    outdir: argonOut,
+  });
+}
 
 const vendorBuilds = [
   ['d3', 'd3'],

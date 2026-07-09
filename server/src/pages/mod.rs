@@ -12,9 +12,27 @@ use crate::components::{
     app_message::AppMessage,
     app_prompt_input::{AppPromptInput, Models},
     app_quiz_bar::AppQuizBar,
-    app_sidebar::{AppSidebar, AppSidebarToggle, SidebarProject, SidebarThread},
+    app_sidebar::{
+        AppSidebar, AppSidebarToggle, RenderStores as SidebarRenderStores, SidebarProject,
+        SidebarThread,
+    },
     auth_form::AuthForm,
+    ui::Stores as UiStores,
 };
+
+fn ui_stores_for(data: &ThreadPageData, active_page: &str) -> UiStores {
+    let mut stores = UiStores::default();
+    stores.sidebar.active_thread = data.thread_id.clone();
+    stores.sidebar.active_project = data
+        .projects
+        .iter()
+        .flat_map(|project| project.threads.iter())
+        .find(|thread| thread.id == data.thread_id)
+        .and_then(|thread| thread.project_id.clone())
+        .unwrap_or_default();
+    stores.sidebar.active_page = active_page.to_string();
+    stores
+}
 
 fn html_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -99,11 +117,36 @@ pub(super) fn module_script(rel: &str) -> String {
     )
 }
 
+fn json_script_escape(value: &str) -> String {
+    value
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+}
+
 pub fn render_page(title: &str, page_script: &str, body_attrs: &str, body: &str) -> String {
+    render_page_with_store_payload(title, page_script, body_attrs, body, "")
+}
+
+fn render_page_with_store_payload(
+    title: &str,
+    page_script: &str,
+    body_attrs: &str,
+    body: &str,
+    store_payload: &str,
+) -> String {
     let attrs = if body_attrs.is_empty() {
         String::new()
     } else {
         format!(" {body_attrs}")
+    };
+    let store_script = if store_payload.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<script type="application/json" data-argon-stores>{}</script>"#,
+            json_script_escape(store_payload)
+        )
     };
     let common_css = crate::assets::url("common.css");
     let components_js = crate::assets::url("components.js");
@@ -117,6 +160,7 @@ pub fn render_page(title: &str, page_script: &str, body_attrs: &str, body: &str)
         <title>{title}</title>
         <link rel="stylesheet" href="{common_css}" />
         <link rel="modulepreload" href="{components_js}">
+        {store_script}
         <script type="module" src="{components_js}"></script>
         <script type="module" src="{api_js}"></script>
         {page_script}
@@ -158,13 +202,7 @@ pub fn render_auth_page(mode: &str) -> String {
     render_page(title, "", r#"id="auth-page""#, &body)
 }
 
-fn render_sidebar(
-    data: &ThreadPageData,
-    files_active: bool,
-    automations_active: bool,
-    settings_active: bool,
-    archived_active: bool,
-) -> String {
+fn render_sidebar(data: &ThreadPageData, ui_stores: &UiStores) -> String {
     let projects = data.projects.iter().map(|project| SidebarProject {
         id: project.id.clone(),
         title: project.title.clone(),
@@ -181,16 +219,9 @@ fn render_sidebar(
         id: thread.id.clone(),
         title: thread.title.clone(),
     });
-    let sidebar = AppSidebar::new(
-        projects,
-        ungrouped,
-        &data.thread_id,
-        files_active,
-        automations_active,
-        settings_active,
-        archived_active,
-    );
-    format!("<nav>{sidebar}</nav>")
+    let sidebar = AppSidebar::new(projects, ungrouped);
+    let stores = SidebarRenderStores { ui: ui_stores };
+    format!("<nav>{}</nav>", sidebar.render(&stores))
 }
 
 fn render_messages(data: &ThreadPageData) -> String {
@@ -304,8 +335,10 @@ const THREADS_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_threads_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, false, false, false);
-    let toggle = AppSidebarToggle::new("").render();
+    let ui_stores = ui_stores_for(data, "");
+    let sidebar = render_sidebar(data, &ui_stores);
+    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
+    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
     let files_button = with_attrs(
         &AppButton::new().render(),
         r#"variant="ghost" size="sm" class="files-button" data-action="files""#,
@@ -375,7 +408,13 @@ pub fn render_threads_page(data: &ThreadPageData) -> String {
         r#"id="threads-page" data-thread-id="{thread_id}" data-selected-model="{selected_model}" data-running="{running}""#,
         running = data.running,
     );
-    render_page("S.T.R.I.D.E.", &agent::page_script(), &body_attrs, &body)
+    render_page_with_store_payload(
+        "S.T.R.I.D.E.",
+        &agent::page_script(),
+        &body_attrs,
+        &body,
+        &ui_stores.snapshot_json(),
+    )
 }
 
 const FILES_STYLE: &str = r#"<style>
@@ -405,8 +444,10 @@ const FILES_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_files_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, true, false, false, false);
-    let toggle = AppSidebarToggle::new("").render();
+    let ui_stores = ui_stores_for(data, "files");
+    let sidebar = render_sidebar(data, &ui_stores);
+    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
+    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
     let body = format!(
         r#"{FILES_STYLE}
 {sidebar}
@@ -416,11 +457,12 @@ pub fn render_files_page(data: &ThreadPageData) -> String {
 </main>
 {NAVIGATE_SCRIPT}"#,
     );
-    render_page(
+    render_page_with_store_payload(
         "Files - S.T.R.I.D.E.",
         &files::page_script(),
         r#"id="files-page""#,
         &body,
+        &ui_stores.snapshot_json(),
     )
 }
 
@@ -451,8 +493,10 @@ const AUTOMATIONS_STYLE: &str = r#"<style>
 </style>"#;
 
 pub fn render_automations_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, true, false, false);
-    let toggle = AppSidebarToggle::new("").render();
+    let ui_stores = ui_stores_for(data, "automations");
+    let sidebar = render_sidebar(data, &ui_stores);
+    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
+    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
     let body = format!(
         r#"{AUTOMATIONS_STYLE}
 {sidebar}
@@ -462,17 +506,20 @@ pub fn render_automations_page(data: &ThreadPageData) -> String {
 </main>
 {NAVIGATE_SCRIPT}"#,
     );
-    render_page(
+    render_page_with_store_payload(
         "Automations - S.T.R.I.D.E.",
         &automations::page_script(),
         r#"id="automations-page""#,
         &body,
+        &ui_stores.snapshot_json(),
     )
 }
 
 pub fn render_archived_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, false, false, true);
-    let toggle = AppSidebarToggle::new("").render();
+    let ui_stores = ui_stores_for(data, "archived");
+    let sidebar = render_sidebar(data, &ui_stores);
+    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
+    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
     let body = format!(
         r#"<style>
     #archived-page > main {{
@@ -507,17 +554,20 @@ pub fn render_archived_page(data: &ThreadPageData) -> String {
 {NAVIGATE_SCRIPT}"#,
     );
 
-    render_page(
+    render_page_with_store_payload(
         "Archived - S.T.R.I.D.E.",
         &archived::page_script(),
         r#"id="archived-page""#,
         &body,
+        &ui_stores.snapshot_json(),
     )
 }
 
 pub fn render_settings_page(data: &ThreadPageData) -> String {
-    let sidebar = render_sidebar(data, false, false, true, false);
-    let toggle = AppSidebarToggle::new("").render();
+    let ui_stores = ui_stores_for(data, "settings");
+    let sidebar = render_sidebar(data, &ui_stores);
+    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
+    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
 
     let body = format!(
         r#"<style>
@@ -553,11 +603,12 @@ pub fn render_settings_page(data: &ThreadPageData) -> String {
 {NAVIGATE_SCRIPT}"#,
     );
 
-    render_page(
+    render_page_with_store_payload(
         "Settings - S.T.R.I.D.E.",
         &settings::page_script(),
         r#"id="settings-page""#,
         &body,
+        &ui_stores.snapshot_json(),
     )
 }
 
@@ -580,14 +631,12 @@ mod tests {
                     id: "thread-1".to_string(),
                     title: "Current thread".to_string(),
                     project_id: Some("project-1".to_string()),
-                    active: true,
                 }],
             }],
             ungrouped_threads: vec![ThreadTemplateData {
                 id: "thread-2".to_string(),
                 title: "Loose thread".to_string(),
                 project_id: None,
-                active: false,
             }],
             messages: vec![
                 MessageTemplateData {
@@ -639,6 +688,8 @@ mod tests {
         // Server-side shadow DOM for the chrome that should paint before JS.
         assert!(html.contains("<nav><app-sidebar"));
         assert!(html.contains(r#"<template shadowrootmode="open">"#));
+        assert!(html.contains(r#""activeThread":"thread-1""#));
+        assert!(html.contains(r#""activeProject":"project-1""#));
         assert!(html.contains("My &lt;Project&gt;"));
         assert!(html.contains("Loose thread"));
         // Messages arrive as hydrated app-message components. Tool output is
@@ -682,6 +733,7 @@ mod tests {
         assert!(html.contains(r#"<app-file-browser></app-file-browser>"#));
         // The Files nav item is marked active inside the SSR shadow DOM.
         assert!(html.contains(r#"href="/files" aria-current="page""#));
+        assert!(html.contains(r#""activePage":"files""#));
         assert!(html.contains("/static/pages/files-page.js"));
     }
 
@@ -713,6 +765,7 @@ mod tests {
         // The settings UI is a single client-hydrated Argon component.
         assert!(html.contains("<app-settings></app-settings>"));
         assert!(html.contains(r#"href="/settings" aria-current="page""#));
+        assert!(html.contains(r#""activePage":"settings""#));
         assert!(html.contains("/static/pages/settings-page.js"));
     }
 

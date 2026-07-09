@@ -21,6 +21,9 @@ argon_module!(app_spoiler);
 argon_module!(app_text_input);
 argon_module!(auth_form);
 argon_module!(auto_markdown);
+argon_module!(file_state);
+argon_module!(settings);
+argon_module!(ui);
 
 argon_module!(archive);
 argon_module!(arrow_up);

@@ -78,7 +78,6 @@ pub struct ThreadTemplateData {
     pub id: String,
     pub title: String,
     pub project_id: Option<String>,
-    pub active: bool,
 }
 
 #[derive(Serialize)]
@@ -503,9 +502,6 @@ pub async fn thread_page_data(
     let thread_template_data: Vec<ThreadTemplateData> = all_threads
         .iter()
         .map(|thread| ThreadTemplateData {
-            active: thread_id
-                .map(|id| thread.id == id.to_string())
-                .unwrap_or(false),
             id: thread.id.clone(),
             title: thread.title.clone(),
             project_id: thread.project_id.clone(),

@@ -1,7 +1,12 @@
 # Components compiled to Rust for SSR. One path per line, relative to this
-# frontend directory. app-files.tsx is client-only (it drives the REST API from
-# the browser), so it stays out of this list. Read by both server/build.rs and
-# the Nix frontend derivation so the two never drift.
+# frontend directory. Read by both server/build.rs and the Nix frontend
+# derivation so the two never drift.
+#
+# CSR-only page roots with explicit reasons:
+# - app-files.tsx: browser-owned REST file management and upload state.
+# - app-automations.tsx: browser-owned REST automation editor/run controls.
+# - app-settings.tsx: browser-owned integration/account settings forms.
+# - app-archived-threads.tsx: browser-owned archived-thread list mutations.
 src/components/app-approval-bar.tsx
 src/components/app-button.tsx
 src/components/app-message.tsx

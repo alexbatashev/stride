@@ -71,12 +71,12 @@ export function AppMessage({
     <>
       <style>{styles}</style>
       {kind === "tool_output" ? (
-        <AppSpoiler title={toolName !== "" ? toolName : "Tool output"} content={text} />
+        <AppSpoiler key="tool-output" title={toolName !== "" ? toolName : "Tool output"} content={text} />
       ) : (
         <div class={kind === "user" ? "bubble user" : "bubble"}>
-          {thinking !== "" && <AppSpoiler title="Thinking" content={thinking} />}
+          {thinking !== "" && <AppSpoiler key="thinking" title="Thinking" content={thinking} />}
           {kind === "agent" ? (
-            <AutoMarkdown text={text} format={format} />
+            <AutoMarkdown key="body" text={text} format={format} />
           ) : (
             <div class="plain">{text}</div>
           )}

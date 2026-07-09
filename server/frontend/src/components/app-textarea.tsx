@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, effect, ref } from "@frontiers-labs/argon";
+import { Component, css, effect, emit, ref } from "@frontiers-labs/argon";
 
 const styles = css`
   :host {
@@ -84,13 +84,7 @@ export function AppTextarea({
         rows={rows}
         onInput={(event: Event) => {
           this.value = (event.target as HTMLTextAreaElement).value;
-          this.dispatchEvent(
-            new CustomEvent("value-change", {
-              bubbles: true,
-              composed: true,
-              detail: { value: this.value },
-            }),
-          );
+          emit(this, "value-change", { value: this.value });
         }}
       >
         {value}

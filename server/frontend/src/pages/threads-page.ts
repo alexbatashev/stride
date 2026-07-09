@@ -15,6 +15,7 @@ import {
 	stageUploads,
 	updateThreadModel,
 } from "../api/threads.js";
+import { sidebar } from "../stores/ui.js";
 import { bindSidebar } from "./sidebar.js";
 import { openThreadMenu, type ThreadMutation } from "./thread-actions.js";
 
@@ -29,7 +30,6 @@ type PendingQuiz = {
 type SidebarEl = HTMLElement & {
 	projects: { id: string; title: string; threads: { id: string; title: string }[] }[];
 	threads: { id: string; title: string }[];
-	activeThread: string;
 };
 
 type MessageEl = HTMLElement & {
@@ -559,8 +559,8 @@ class ThreadsPageHydrator {
 		}
 	}
 
-	// Reactive sidebar props: the component reconciles its keyed lists, so
-	// unchanged projects and threads keep their DOM.
+	// Reactive sidebar lists: the component reconciles keyed rows, so unchanged
+	// projects and threads keep their DOM. Active selection lives in stores/ui.
 	private renderSidebar() {
 		this.sidebarEl.projects = this.projects.map((project) => ({
 			id: project.id,
@@ -572,7 +572,8 @@ class ThreadsPageHydrator {
 		this.sidebarEl.threads = this.threads
 			.filter((thread) => !thread.project_id || !this.projects.some((p) => p.id === thread.project_id))
 			.map(({ id, title }) => ({ id, title }));
-		this.sidebarEl.activeThread = this.threadId;
+		sidebar.activeThread = this.threadId;
+		sidebar.activeProject = this.threads.find((thread) => thread.id === this.threadId)?.project_id ?? "";
 	}
 
 	private renderMessages() {

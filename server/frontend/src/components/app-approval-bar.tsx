@@ -1,4 +1,4 @@
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, emit } from "@frontiers-labs/argon";
 
 const styles = css`
   :host {
@@ -107,13 +107,7 @@ export function AppApprovalBar({ message = "" }: { message?: string }): Componen
           onClick={(event: Event) => {
             const button = (event.target as Element).closest("button");
             if (!button) return;
-            this.dispatchEvent(
-              new CustomEvent("approval-response", {
-                bubbles: true,
-                composed: true,
-                detail: { approved: button.classList.contains("yes") },
-              }),
-            );
+            emit(this, "approval-response", { approved: button.classList.contains("yes") });
           }}
         >
           <button class="yes" type="button">Yes</button>

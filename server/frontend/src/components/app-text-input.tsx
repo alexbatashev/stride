@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, effect, ref } from "@frontiers-labs/argon";
+import { Component, css, effect, emit, onMount, ref } from "@frontiers-labs/argon";
 
 const styles = css`
   :host {
@@ -80,6 +80,11 @@ export function AppTextInput({
   value?: string;
 }): Component {
   const input = ref<HTMLInputElement>();
+  onMount(() => {
+    (this as HTMLElement & { focusControl: () => void }).focusControl = () => {
+      input.current?.focus();
+    };
+  });
   effect(() => {
     const el = input.current;
     if (!el) return;
@@ -100,19 +105,13 @@ export function AppTextInput({
           value={value}
           onInput={(event: Event) => {
             this.value = (event.target as HTMLInputElement).value;
-            this.dispatchEvent(
-              new CustomEvent("value-change", {
-                bubbles: true,
-                composed: true,
-                detail: { value: this.value },
-              }),
-            );
+            emit(this, "value-change", { value: this.value });
           }}
           onKeyDown={(event: KeyboardEvent) => {
             if (event.key !== "Enter") {
               return;
             }
-            this.dispatchEvent(new CustomEvent("commit", { bubbles: true, composed: true }));
+            emit(this, "commit");
           }}
         />
       </label>

@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, effect } from "@frontiers-labs/argon";
+import { Component, css, effect, emit } from "@frontiers-labs/argon";
 
 export type MenuItem = { label: string; action: string; variant?: string };
 
@@ -119,13 +119,7 @@ export function AppDropdownMenu({
           const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-menu-item]");
           const action = button?.dataset.action;
           if (!action) return;
-          this.dispatchEvent(
-            new CustomEvent("select", {
-              bubbles: true,
-              composed: true,
-              detail: { action },
-            }),
-          );
+          emit(this, "select", { action });
         }}
       />
     </>

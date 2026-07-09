@@ -8,6 +8,11 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 GlobalRegistrator.register();
 
 before(async () => {
+  const stores = document.createElement('script');
+  stores.type = 'application/json';
+  stores.dataset.argonStores = '';
+  stores.textContent = JSON.stringify({ sidebar: { activeThread: 't1' } });
+  document.head.appendChild(stores);
   await import('../dist/components.js');
 });
 
@@ -35,6 +40,10 @@ function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
 
+function buttonWithText(root, text) {
+  return Array.from(root.querySelectorAll('button')).find((button) => button.textContent.trim() === text);
+}
+
 test('all custom elements register', () => {
   for (const tag of [
     'app-button', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
@@ -46,7 +55,7 @@ test('all custom elements register', () => {
     'app-switch', 'app-toggle', 'app-textarea', 'app-radio-group', 'app-slider',
     'app-breadcrumb', 'app-tabs', 'app-accordion', 'app-pagination', 'app-dialog',
     'app-alert-dialog', 'app-sheet', 'app-tooltip', 'app-popover', 'app-hover-card',
-    'app-select', 'icon-check',
+    'app-select', 'app-settings-memory', 'app-settings-models', 'icon-check',
   ]) {
     assert.ok(customElements.get(tag), `${tag} is not registered`);
   }
@@ -56,7 +65,6 @@ test('app-sidebar renders projects and threads as links', () => {
   const el = mount('app-sidebar', {
     projects: [{ id: 'p1', title: 'Project One', threads: [{ id: 't1', title: 'Thread One' }] }],
     threads: [{ id: 't2', title: 'Loose' }],
-    activeThread: 't1',
   });
   const html = el.shadowRoot.innerHTML;
   assert.match(html, /Project One/);
@@ -90,16 +98,16 @@ test('app-sidebar collapse keeps rail icons left aligned during width transition
   const el = mount('app-sidebar');
   await Promise.resolve();
 
-  window.dispatchEvent(new CustomEvent('app-sidebar-toggle'));
+  el.shadowRoot.querySelector('app-sidebar-toggle').shadowRoot.querySelector('app-button').click();
   await Promise.resolve();
 
   const root = el.shadowRoot.querySelector('.root');
   assert.match(root.getAttribute('class'), /collapsed/);
 
   const css = el.shadowRoot.querySelector('style').textContent;
-  assert.match(css, /\.root\.collapsed \.nav-item a\s*{[^}]*width: var\(--sidebar-menu-button-size\)/s);
-  assert.match(css, /\.root\.collapsed \.nav-item a\s*{[^}]*padding: 0 8px/s);
-  assert.doesNotMatch(css, /\.root\.collapsed \.nav-item a\s*{[^}]*justify-content: center/s);
+  assert.match(css, /\.root\.collapsed\s+\.nav-item\s+a\s*{[^}]*width:\s*var\(--sidebar-menu-button-size\)/s);
+  assert.match(css, /\.root\.collapsed\s+\.nav-item\s+a\s*{[^}]*padding:\s*0 8px/s);
+  assert.doesNotMatch(css, /\.root\.collapsed\s+\.nav-item\s+a\s*{[^}]*justify-content:\s*center/s);
 });
 
 test('app-message renders html for agent text', () => {
@@ -195,6 +203,35 @@ test('app-message tool output folds into a spoiler', () => {
   assert.doesNotMatch(spoiler.shadowRoot.innerHTML, /output/);
   spoiler.shadowRoot.querySelector('button').click();
   assert.match(spoiler.shadowRoot.innerHTML, /output/);
+
+  el.text = 'streamed output';
+  const updated = el.shadowRoot.querySelector('app-spoiler');
+  assert.equal(updated, spoiler);
+  assert.match(updated.shadowRoot.innerHTML, /streamed output/);
+});
+
+test('app-message keeps thinking spoiler open through streamed updates', async () => {
+  const el = mount('app-message', {
+    kind: 'agent',
+    text: 'initial',
+    thinking: 'token 0',
+  });
+  const spoiler = el.shadowRoot.querySelector('app-spoiler');
+  assert.ok(spoiler);
+  spoiler.shadowRoot.querySelector('button').click();
+  assert.equal(spoiler.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'true');
+
+  for (let i = 1; i <= 20; i += 1) {
+    el.text = `streamed body ${i}`;
+    el.thinking = `token ${i}`;
+    await tick();
+    const current = el.shadowRoot.querySelector('app-spoiler');
+    assert.equal(current, spoiler);
+    assert.equal(current.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'true');
+  }
+
+  assert.match(spoiler.shadowRoot.innerHTML, /token 20/);
+  assert.match(el.shadowRoot.querySelector('auto-markdown').shadowRoot.textContent, /streamed body 20/);
 });
 
 test('app-prompt-input submits on Enter and clears', () => {
@@ -274,6 +311,11 @@ test('app-prompt-input exposes a voice record button', () => {
   assert.ok(mic);
   assert.equal(mic.getAttribute('aria-pressed'), 'false');
   assert.equal(mic.disabled, false);
+});
+
+test('app-text-input exposes a focus control for page controllers', () => {
+  const el = mount('app-text-input');
+  assert.equal(typeof el.focusControl, 'function');
 });
 
 test('app-approval-bar answers yes and no', () => {
@@ -433,56 +475,188 @@ test('app-file-manager closes version dialog from close button', async () => {
 });
 
 test('app-settings switches sections and lists integrations', () => {
-  const el = mount('app-settings', {
-    emails: [{ id: 'm1', name: 'Work', email: 'you@example.com', host: 'imap.example.com', port: 993, username: 'you', inbox_mailbox: 'INBOX', sent_mailbox: 'Sent', drafts_mailbox: 'Drafts', created_at: 1 }],
-    emailLoaded: true,
-    mcps: [{ id: 's1', name: 'deepwiki', url: 'https://mcp.example.com/mcp', enabled: true, created_at: 1, header_names: [], has_authorization: false }],
-    mcpLoaded: true,
-  });
+  const el = mount('app-settings');
   assert.match(el.shadowRoot.innerHTML, /Settings/);
 
   const layout = el.shadowRoot.querySelector('.layout');
   assert.equal(layout.getAttribute('data-active'), 'connections');
-  assert.match(el.shadowRoot.innerHTML, /GitHub/);
+  const github = el.shadowRoot.querySelector('app-settings-github');
+  assert.ok(github, 'GitHub settings component missing');
+  assert.match(github.shadowRoot.innerHTML, /GitHub/);
   assert.ok(el.shadowRoot.querySelector('[data-section="email"]'), 'email tab missing');
 
   el.shadowRoot.querySelector('[data-section="email"]').click();
   assert.equal(layout.getAttribute('data-active'), 'email');
-  assert.match(el.shadowRoot.innerHTML, /Work/);
+  assert.ok(el.shadowRoot.querySelector('app-settings-email'), 'email settings component missing');
 
   el.shadowRoot.querySelector('[data-section="mcp"]').click();
   assert.equal(layout.getAttribute('data-active'), 'mcp');
-  assert.match(el.shadowRoot.innerHTML, /deepwiki/);
+  assert.ok(el.shadowRoot.querySelector('app-settings-mcp'), 'MCP settings component missing');
+
+  el.shadowRoot.querySelector('[data-section="memories"]').click();
+  assert.equal(layout.getAttribute('data-active'), 'memories');
+  assert.ok(el.shadowRoot.querySelector('app-settings-memory'), 'memory settings component missing');
+
+  el.shadowRoot.querySelector('[data-section="models"]').click();
+  assert.equal(layout.getAttribute('data-active'), 'models');
+  assert.ok(el.shadowRoot.querySelector('app-settings-models'), 'model settings component missing');
 });
 
-test('app-settings renders memory palace management', () => {
-  const el = mount('app-settings', {
-    activeSection: 'memories',
-    memoryLoaded: true,
-    memoryWings: [{ id: 'w1', name: 'stride-project', description: 'Project memory', rooms: 1, memories: 1, created_at: 1 }],
-    memoryRooms: [{ id: 'r1', wing: 'stride-project', name: 'settings', description: 'Settings work', memories: 1, created_at: 1 }],
-    memories: [{ id: 'd1', wing: 'stride-project', room: 'settings', title: 'Memory UI direction', summary: 'Use a ledger and palace map.', content: 'Full stored memory text.', source: 'thread', keywords: 'settings memory', created_at: 1 }],
-  });
-
-  assert.match(el.shadowRoot.innerHTML, /Memory palace/);
-  assert.match(el.shadowRoot.innerHTML, /stride-project/);
-  assert.match(el.shadowRoot.innerHTML, /Memory UI direction/);
-  assert.ok(el.shadowRoot.querySelector('[data-action="del-memory"][data-id="d1"]'), 'remove memory button missing');
-
-  const search = el.shadowRoot.querySelector('input[name="memory-query"]');
-  search.value = 'missing';
-  search.dispatchEvent(new Event('input', { bubbles: true }));
-  assert.match(el.shadowRoot.innerHTML, /No memories match this search/);
+test('app-settings-email lists accounts and escapes names', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input) === '/api/settings/email') {
+      return Response.json([{ id: 'm1', name: '<script>x</script>', email: 'a@b.c', host: 'h', port: 1, username: 'u', inbox_mailbox: 'INBOX', sent_mailbox: 'Sent', drafts_mailbox: 'Drafts', created_at: 1 }]);
+    }
+    return Response.json({});
+  };
+  try {
+    const el = mount('app-settings-email');
+    await tick();
+    assert.doesNotMatch(el.shadowRoot.innerHTML, /<script>x<\/script>/);
+    assert.match(el.shadowRoot.innerHTML, /&lt;script&gt;/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
-test('app-settings escapes account names', () => {
-  const el = mount('app-settings', {
-    activeSection: 'email',
-    emails: [{ id: 'm1', name: '<script>x</script>', email: 'a@b.c', host: 'h', port: 1, username: 'u', inbox_mailbox: 'INBOX', sent_mailbox: 'Sent', drafts_mailbox: 'Drafts', created_at: 1 }],
-    emailLoaded: true,
-  });
-  assert.doesNotMatch(el.shadowRoot.innerHTML, /<script>x<\/script>/);
-  assert.match(el.shadowRoot.innerHTML, /&lt;script&gt;/);
+test('app-settings-mcp lists servers', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input) === '/api/settings/mcp') {
+      return Response.json([{ id: 's1', name: 'deepwiki', url: 'https://mcp.example.com/mcp', enabled: true, created_at: 1, header_names: [], has_authorization: false }]);
+    }
+    return Response.json({});
+  };
+  try {
+    const el = mount('app-settings-mcp');
+    await tick();
+    assert.match(el.shadowRoot.innerHTML, /deepwiki/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('app-settings-files lists writable folders', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input) === '/api/settings/writable-dirs') {
+      return Response.json([{ id: 'd1', path: 'Documents/Notes', created_at: 1 }]);
+    }
+    return Response.json({});
+  };
+  try {
+    const el = mount('app-settings-files');
+    await tick();
+    assert.match(el.shadowRoot.innerHTML, /Documents\/Notes/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('app-settings-threads renders retention settings', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input) === '/api/settings/thread-retention') {
+      return Response.json({ archive_after_days: 7, remove_after_days: null });
+    }
+    return Response.json({});
+  };
+  try {
+    const el = mount('app-settings-threads');
+    await tick();
+    assert.match(el.shadowRoot.innerHTML, /Archive inactive threads/);
+    assert.equal(el.shadowRoot.querySelector('input[name="archive-days"]').getAttribute('value'), '7');
+    assert.equal(el.shadowRoot.querySelector('input[name="remove-days"]').getAttribute('value'), '90');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('app-settings-skills lists skills and escapes titles', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input) === '/api/settings/skills') {
+      return Response.json([{ id: 'sk1', name: 'debug', title: '<b>Debug</b>', description: 'Trace failures', content: 'Steps' }]);
+    }
+    return Response.json({});
+  };
+  try {
+    const el = mount('app-settings-skills');
+    await tick();
+    assert.doesNotMatch(el.shadowRoot.innerHTML, /<b>Debug<\/b>/);
+    assert.match(el.shadowRoot.innerHTML, /&lt;b&gt;Debug&lt;\/b&gt;/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('app-settings-memory renders memory palace management', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input) === '/api/settings/memories') {
+      return Response.json({
+        wings: [{ id: 'w1', name: 'stride-project', description: 'Project memory', rooms: 1, memories: 1, created_at: 1 }],
+        rooms: [{ id: 'r1', wing: 'stride-project', name: 'settings', description: 'Settings work', memories: 1, created_at: 1 }],
+        memories: [{ id: 'd1', wing: 'stride-project', room: 'settings', title: 'Memory UI direction', summary: 'Use a ledger and palace map.', content: 'Full stored memory text.', source: 'thread', keywords: 'settings memory', created_at: 1 }],
+      });
+    }
+    return Response.json({});
+  };
+  try {
+    const el = mount('app-settings-memory');
+    await tick();
+
+    assert.match(el.shadowRoot.innerHTML, /Memory palace/);
+    assert.match(el.shadowRoot.innerHTML, /stride-project/);
+    assert.match(el.shadowRoot.innerHTML, /Memory UI direction/);
+    assert.match(el.shadowRoot.innerHTML, /Remove/);
+
+    const search = el.shadowRoot.querySelector('input[name="memory-query"]');
+    search.value = 'missing';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await tick();
+    assert.match(el.shadowRoot.innerHTML, /No memories match this search/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('app-settings-models renders model settings', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    switch (String(input)) {
+      case '/api/models':
+        return Response.json([
+          { key: 'main', slug: 'gpt-5', display_name: 'Main Model', description: 'Default chat model', source: 'config', provider: 'openai', vision: true, reasoning_effort: null },
+          { key: 'helper', slug: 'gpt-5-mini', display_name: 'Helper Model', description: '', source: 'config', provider: 'openai', vision: false, reasoning_effort: null },
+        ]);
+      case '/api/settings/providers':
+        return Response.json([{ id: 'p1', name: 'openai-main', kind: 'openai', url: 'https://api.openai.com/v1', created_at: 1 }]);
+      case '/api/settings/user-models':
+        return Response.json([{ id: 'u1', name: 'custom-sonnet', slug: 'claude-sonnet', display_name: 'Custom Sonnet', description: 'Coding helper', provider_id: 'p1', provider_name: 'anthropic', vision: false, reasoning_effort: null, created_at: 1 }]);
+      case '/api/settings/agent':
+        return Response.json({ subagent_allowed_models: ['helper'], subagent_guidelines: 'Prefer helper for quick scans.', using_server_defaults: false, server_default_guidelines: '' });
+      default:
+        return Response.json({});
+    }
+  };
+  try {
+    const el = mount('app-settings-models');
+    await tick();
+
+    assert.match(el.shadowRoot.innerHTML, /Server models/);
+    assert.match(el.shadowRoot.innerHTML, /Main Model/);
+    assert.match(el.shadowRoot.innerHTML, /openai-main/);
+    assert.match(el.shadowRoot.innerHTML, /Custom Sonnet/);
+    assert.match(el.shadowRoot.innerHTML, /Prefer helper for quick scans/);
+    assert.equal(
+      el.shadowRoot.querySelector('app-checkbox[data-model="helper"]').getAttribute('checked'),
+      'true',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('auth-form switches mode via a plain link', () => {
@@ -497,22 +671,23 @@ test('app-automations renders and opens the create modal on click', () => {
   const el = mount('app-automations', { items: [], loading: false });
   // Inline handlers must wire up without throwing (regression: onClick ref).
   assert.match(el.shadowRoot.innerHTML, /Automations/);
-  const newButton = el.shadowRoot.querySelector('[data-action="open-create"]');
+  const newButton = buttonWithText(el.shadowRoot, 'New automation');
   assert.ok(newButton, 'New automation button is missing');
   newButton.click();
   assert.match(el.shadowRoot.innerHTML, /New automation/);
   assert.ok(el.shadowRoot.querySelector('input[name="schedule"]'), 'create form did not open');
 });
 
-test('app-automations lists tasks and toggles enable through delegation', () => {
+test('app-automations lists tasks and renders row controls', () => {
   const el = mount('app-automations', {
     items: [{ id: 'a1', name: 'Daily', schedule: '0 9 * * *', kind: 'agent', payload: 'x', enabled: true, created_at: 1, last_run: null, trigger_kind: 'cron', notify_kind: 'telegram' }],
   });
   assert.match(el.shadowRoot.innerHTML, /Daily/);
   assert.match(el.shadowRoot.innerHTML, /0 9 \* \* \*/);
   assert.match(el.shadowRoot.innerHTML, /telegram/);
-  assert.ok(el.shadowRoot.querySelector('[data-action="run"][data-id="a1"]'), 'run button is missing');
-  const toggle = el.shadowRoot.querySelector('[data-action="toggle"][data-id="a1"]');
+  assert.ok(buttonWithText(el.shadowRoot, 'Run'), 'run button is missing');
+  const toggle = buttonWithText(el.shadowRoot, 'On');
+  assert.ok(toggle, 'toggle button is missing');
   assert.equal(toggle.textContent.trim(), 'On');
 });
 
@@ -554,7 +729,7 @@ test('app-automations run button posts and renders returned output', async () =>
     const el = mount('app-automations', {
       items: [{ id: 'a1', name: 'Daily', schedule: '0 9 * * *', kind: 'agent', payload: 'x', enabled: true, created_at: 1, last_run: null, trigger_kind: 'cron', notify_kind: 'none' }],
     });
-    el.shadowRoot.querySelector('[data-action="run"][data-id="a1"]').click();
+    buttonWithText(el.shadowRoot, 'Run').click();
     for (let i = 0; i < 8; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }

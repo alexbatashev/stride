@@ -10,7 +10,7 @@
   pnpm_10,
   # sha256 of the offline pnpm store. Regenerate with `lib.fakeHash` and read
   # the expected value from the build error after bumping pnpm-lock.yaml.
-  pnpmDepsHash ? "sha256-PEYRqk733Y9uK+MK9i6JFZgsqAy4KgEmDvBATOD4poY=",
+  pnpmDepsHash ? "sha256-TLbJb4K15ClVIJbQYu8W3r0ixhaZdHF8CZC6nAkbV8Y=",
 }:
 let
   pnpm = pnpm_10;
@@ -41,10 +41,11 @@ stdenv.mkDerivation (finalAttrs: {
 
     pnpm run build
 
+    stores=(src/stores/*.ts)
     mapfile -t ssr < <(grep -vE '^[[:space:]]*(#|$)' ssr-components.txt)
     icons=(src/components/icons/*.tsx)
-    node_modules/.bin/argon compile "''${ssr[@]}" "''${icons[@]}" \
-      --rust --out-dir ssr-out
+    node_modules/.bin/argon compile "''${stores[@]}" "''${ssr[@]}" "''${icons[@]}" \
+      --rust --out-dir ssr-out --flat
 
     runHook postBuild
   '';
@@ -54,7 +55,7 @@ stdenv.mkDerivation (finalAttrs: {
 
     mkdir -p "$out/dist" "$out/ssr"
     cp -r dist/. "$out/dist/"
-    cp ssr-out/*.rs ssr-out/icons/*.rs "$out/ssr/"
+    cp ssr-out/*.rs "$out/ssr/"
 
     runHook postInstall
   '';

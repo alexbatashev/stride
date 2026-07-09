@@ -3,10 +3,12 @@
     "build": "node build.mjs",
     "check": "tsc --noEmit",
     "showcase": "node dev.mjs",
-    "test": "node build.mjs && node --test test/components.test.mjs"
+    "test": "node build.mjs && node --test test/components.test.mjs && playwright test",
+    "test:browser": "node build.mjs && playwright test"
   },
   "devDependencies": {
-    "@frontiers-labs/argon": "0.4.0",
+    "@playwright/test": "^1.61.1",
+    "@frontiers-labs/argon": "0.5.4",
     "@happy-dom/global-registrator": "^20.10.2",
     "@observablehq/plot": "^0.6.17",
     "d3": "^7.9.0",

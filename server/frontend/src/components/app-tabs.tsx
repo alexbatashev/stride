@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, emit } from "@frontiers-labs/argon";
 
 interface Tab {
   value: string;
@@ -69,9 +69,7 @@ export function AppTabs({ tabs = [], value = "" }: { tabs?: Tab[]; value?: strin
           const next = trigger.getAttribute("data-value") ?? "";
           const current = value || (tabs[0]?.value ?? "");
           if (current === next) return;
-          this.dispatchEvent(
-            new CustomEvent("tab-change", { bubbles: true, composed: true, detail: { value: next } }),
-          );
+          emit(this, "tab-change", { value: next });
         }}
       >
         {tabs

@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, emit } from "@frontiers-labs/argon";
 
 const styles = css`
   :host {
@@ -73,13 +73,7 @@ export function AppSwitch({
         data-name={name}
         onClick={() => {
           if (disabled) return;
-          this.dispatchEvent(
-            new CustomEvent("change", {
-              bubbles: true,
-              composed: true,
-              detail: { checked: !checked },
-            }),
-          );
+          emit(this, "change", { checked: !checked });
         }}
       >
         <span class="thumb" aria-hidden="true"></span>

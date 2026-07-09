@@ -1,4 +1,4 @@
-import { Component, css, effect, onMount, ref, state } from "@frontiers-labs/argon";
+import { Component, css, effect, ref, state } from "@frontiers-labs/argon";
 import { AuthMode, authenticate } from "../api/auth.js";
 import { AppTextInput } from "./app-text-input.js";
 import { AppButton } from "./app-button.js";
@@ -115,14 +115,6 @@ export function AuthForm({
   effect(() => {
     submitButton.current?.toggleAttribute("loading", loading);
   });
-  onMount(() => {
-    // Enter inside a shadow-DOM input cannot submit this form natively;
-    // app-text-input surfaces it as a composed "commit" event instead.
-    const onCommit = () => void submit(this, this.shadowRoot!);
-    this.shadowRoot!.addEventListener("commit", onCommit);
-    return () => this.shadowRoot!.removeEventListener("commit", onCommit);
-  });
-
   return (
     <>
       <style>{styles}</style>
@@ -138,7 +130,14 @@ export function AuthForm({
           }}
         >
           {error !== "" && <p class="error">{error}</p>}
-          <AppTextInput label="Username" name="username" autocomplete="username" disabled={loading} required={true} />
+          <AppTextInput
+            label="Username"
+            name="username"
+            autocomplete="username"
+            disabled={loading}
+            required={true}
+            on:commit={() => void submit(this, this.shadowRoot!)}
+          />
           <AppTextInput
             label="Password"
             name="password"
@@ -146,6 +145,7 @@ export function AuthForm({
             autocomplete={isLogin ? "current-password" : "new-password"}
             disabled={loading}
             required={true}
+            on:commit={() => void submit(this, this.shadowRoot!)}
           />
           <AppButton
             class="submit"

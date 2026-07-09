@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, emit } from "@frontiers-labs/argon";
 import { IconCheck } from "./icons/check.js";
 
 const styles = css`
@@ -80,13 +80,7 @@ export function AppCheckbox({
         data-value={value}
         onClick={() => {
           if (disabled) return;
-          this.dispatchEvent(
-            new CustomEvent("change", {
-              bubbles: true,
-              composed: true,
-              detail: { checked: !checked, value: value },
-            }),
-          );
+          emit(this, "change", { checked: !checked, value: value });
         }}
       >
         <span class="check" aria-hidden="true">

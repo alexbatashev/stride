@@ -67,21 +67,35 @@ fn build_frontend(out_dir: &str) {
     compile_ssr_modules(&frontend, out_dir);
 }
 
-// Runs `argon compile --rust` over the curated SSR component list plus every
-// icon, writing the generated modules into OUT_DIR.
+// Runs `argon compile --rust` over the store modules, curated SSR component
+// list, and every icon, writing the generated modules into OUT_DIR.
 fn compile_ssr_modules(frontend: &Path, out_dir: &str) {
+    let stores = read_store_modules(frontend);
     let ssr = read_ssr_components(frontend);
     let icons = read_icon_components(frontend);
 
     let status = Command::new("pnpm")
         .current_dir(frontend)
         .args(["exec", "argon", "compile"])
+        .args(&stores)
         .args(&ssr)
         .args(&icons)
-        .args(["--rust", "--out-dir", out_dir])
+        .args(["--rust", "--out-dir", out_dir, "--flat"])
         .status()
         .expect("argon compile failed");
     assert!(status.success(), "argon --rust failed");
+}
+
+fn read_store_modules(frontend: &Path) -> Vec<String> {
+    let stores_dir = frontend.join("src/stores");
+    let mut stores: Vec<String> = fs::read_dir(&stores_dir)
+        .expect("failed to read stores dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ts"))
+        .map(|e| format!("src/stores/{}", e.file_name().to_str().unwrap()))
+        .collect();
+    stores.sort();
+    stores
 }
 
 fn read_ssr_components(frontend: &Path) -> Vec<String> {

@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, effect, ref } from "@frontiers-labs/argon";
+import { Component, css, effect, emit, ref } from "@frontiers-labs/argon";
 
 const styles = css`
   :host {
@@ -89,13 +89,7 @@ export function AppSlider({
         value={value}
         onInput={(event: Event) => {
           const next = (event.target as HTMLInputElement).value;
-          this.dispatchEvent(
-            new CustomEvent("value-change", {
-              bubbles: true,
-              composed: true,
-              detail: { value: Number(next) },
-            }),
-          );
+          emit(this, "value-change", { value: Number(next) });
         }}
       />
     </>

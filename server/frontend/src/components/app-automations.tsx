@@ -1,4 +1,4 @@
-import { Component, css, onMount } from "@frontiers-labs/argon";
+import { Component, onMount } from "@frontiers-labs/argon";
 import {
   type Automation,
   type AutomationRun,
@@ -10,6 +10,7 @@ import {
   setAutomationEnabled,
 } from "../api/automations.js";
 import { listEmailAccounts, type EmailAccount } from "../api/settings.js";
+import { automationStyles } from "./app-automations-styles.js";
 
 type RunView = {
   id: string;
@@ -99,12 +100,6 @@ function toAutomationItem(item: Automation, accounts: EmailAccount[]): Automatio
 
 function emailAccountList(accounts: EmailAccount[] | unknown): EmailAccount[] {
   return Array.isArray(accounts) ? accounts : [];
-}
-
-function automationItemFor(host: AutomationsHost, id: string): AutomationItem | undefined {
-  const item = host.items.find((candidate) => candidate.id === id);
-  if (!item) return undefined;
-  return item.nameLabel === undefined ? toAutomationItem(item, emailAccountList(host.emailAccounts)) : item;
 }
 
 function reportRunError(host: AutomationsHost, error: unknown): void {
@@ -207,394 +202,52 @@ async function runAndRefresh(host: AutomationsHost, item: Automation): Promise<v
   await selectAutomation(host, item, false);
 }
 
-const styles = css`
-  :host {
-    display: block;
-    height: 100%;
-    min-height: 0;
-    overflow: auto;
-  }
+function triggerKindFromForm(value: string): Automation["trigger_kind"] {
+  if (value === "webhook") return "webhook";
+  if (value === "manual") return "manual";
+  if (value === "vfs_change") return "vfs_change";
+  if (value === "email") return "email";
+  if (value === "gmail") return "gmail";
+  return "cron";
+}
 
-  .root {
-    box-sizing: border-box;
-    min-height: 100%;
-    padding: 32px;
-  }
-
-  .content {
-    display: grid;
-    gap: 20px;
-    margin: 0 auto;
-    max-width: 1180px;
-    width: 100%;
-  }
-
-  .hero {
-    align-items: flex-start;
-    display: flex;
-    gap: 16px;
-    justify-content: space-between;
-  }
-
-  .eyebrow {
-    color: var(--muted-foreground);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    margin: 0 0 8px;
-    text-transform: uppercase;
-  }
-
-  h1, h2, h3, p {
-    margin: 0;
-  }
-
-  h1 {
-    color: var(--foreground);
-    font-size: 32px;
-    letter-spacing: -0.03em;
-    line-height: 1.1;
-  }
-
-  .muted {
-    color: var(--muted-foreground);
-    font-size: 14px;
-    line-height: 1.6;
-    margin-top: 10px;
-    max-width: 720px;
-  }
-
-  .stats {
-    display: grid;
-    gap: 12px;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .stat, .panel, .modal-card {
-    background: color-mix(in srgb, var(--card, var(--background)) 92%, transparent);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
-  }
-
-  .stat {
-    padding: 16px;
-  }
-
-  .stat span {
-    color: var(--muted-foreground);
-    display: block;
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  .stat strong {
-    color: var(--foreground);
-    display: block;
-    font-size: 24px;
-    margin-top: 6px;
-  }
-
-  .workspace {
-    display: grid;
-    gap: 20px;
-    grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.05fr);
-    min-height: 520px;
-  }
-
-  .panel {
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .panel-head {
-    align-items: center;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    justify-content: space-between;
-    padding: 16px 18px;
-  }
-
-  .panel-head h2 {
-    color: var(--foreground);
-    font-size: 16px;
-  }
-
-  .panel-body {
-    padding: 10px;
-  }
-
-  button, .button {
-    align-items: center;
-    background: var(--secondary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--foreground);
-    cursor: pointer;
-    display: inline-flex;
-    font: inherit;
-    font-size: 14px;
-    font-weight: 500;
-    gap: 6px;
-    height: 36px;
-    justify-content: center;
-    padding: 0 12px;
-    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
-    white-space: nowrap;
-  }
-
-  button:hover { background: var(--accent); }
-  button.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
-  button.primary:hover { opacity: 0.9; }
-  button.ghost { background: transparent; border-color: transparent; }
-  button.danger { color: var(--destructive); }
-
-  .automation-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .automation-card {
-    align-items: stretch;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 12px;
-    box-sizing: border-box;
-    display: grid;
-    gap: 12px;
-    grid-template-columns: 1fr auto;
-    height: auto;
-    justify-content: stretch;
-    padding: 14px;
-    text-align: left;
-    width: 100%;
-  }
-
-  .automation-card:hover, .automation-card.selected {
-    background: var(--accent);
-    border-color: var(--border);
-  }
-
-  .automation-card > button.ghost {
-    align-items: flex-start;
-    display: block;
-    height: auto;
-    justify-content: flex-start;
-    min-width: 0;
-    padding: 0;
-    text-align: left;
-    white-space: normal;
-  }
-
-  .name-row {
-    align-items: center;
-    display: flex;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .name {
-    color: var(--foreground);
-    font-size: 15px;
-    font-weight: 650;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .badge {
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    color: var(--muted-foreground);
-    flex: 0 0 auto;
-    font-size: 11px;
-    font-weight: 600;
-    line-height: 1;
-    padding: 4px 7px;
-  }
-
-  .badge.on { color: #22c55e; }
-  .badge.off { color: var(--muted-foreground); }
-  .badge.failed { color: var(--destructive); }
-  .badge.running { color: #f59e0b; }
-
-  .meta {
-    color: var(--muted-foreground);
-    display: flex;
-    flex-wrap: wrap;
-    font-size: 13px;
-    gap: 8px;
-    margin-top: 8px;
-  }
-
-  .row-actions {
-    align-items: center;
-    display: flex;
-    gap: 6px;
-  }
-
-  .empty {
-    align-items: center;
-    color: var(--muted-foreground);
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    min-height: 280px;
-    justify-content: center;
-    padding: 24px;
-    text-align: center;
-  }
-
-  .run-list {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .run {
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-  }
-
-  .run summary {
-    align-items: center;
-    cursor: pointer;
-    display: flex;
-    gap: 10px;
-    list-style: none;
-    padding: 12px 14px;
-  }
-
-  .run summary::-webkit-details-marker { display: none; }
-
-  .run-meta {
-    color: var(--muted-foreground);
-    font-size: 12px;
-    margin-left: auto;
-  }
-
-  pre {
-    background: var(--muted);
-    border-top: 1px solid var(--border);
-    color: var(--foreground);
-    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
-    margin: 0;
-    max-height: 360px;
-    overflow: auto;
-    padding: 14px;
-    white-space: pre-wrap;
-  }
-
-  .error {
-    color: var(--destructive);
-    font-size: 13px;
-    min-height: 18px;
-  }
-
-  .error:empty { display: none; }
-
-  .modal {
-    align-items: center;
-    background: rgb(0 0 0 / 58%);
-    display: flex;
-    inset: 0;
-    justify-content: center;
-    padding: 24px;
-    position: fixed;
-    z-index: 50;
-  }
-
-  .modal-card {
-    box-sizing: border-box;
-    max-height: min(860px, 90vh);
-    max-width: 720px;
-    overflow: auto;
-    padding: 24px;
-    width: 100%;
-  }
-
-  .modal-title {
-    align-items: flex-start;
-    display: flex;
-    gap: 16px;
-    justify-content: space-between;
-    margin-bottom: 20px;
-  }
-
-  .form-grid {
-    display: grid;
-    gap: 14px;
-  }
-
-  label {
-    color: var(--foreground);
-    display: flex;
-    flex-direction: column;
-    font-size: 13px;
-    font-weight: 500;
-    gap: 7px;
-  }
-
-  label.inline {
-    align-items: center;
-    flex-direction: row;
-  }
-
-  input, select, textarea {
-    background: var(--background);
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    box-sizing: border-box;
-    color: var(--foreground);
-    font: inherit;
-    min-height: 38px;
-    padding: 8px 10px;
-    width: 100%;
-  }
-
-  textarea {
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    min-height: 140px;
-    resize: vertical;
-  }
-
-  input[type="checkbox"] {
-    accent-color: var(--primary);
-    min-height: 0;
-    width: auto;
-  }
-
-  .hint {
-    color: var(--muted-foreground);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.4;
-  }
-
-  .actions {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    margin-top: 18px;
-  }
-
-  code, .secret {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-
-  code {
-    background: var(--muted);
-    border-radius: 5px;
-    padding: 2px 5px;
-  }
-
-  @media (max-width: 980px) {
-    .root { padding: 20px; }
-    .hero { flex-direction: column; }
-    .stats, .workspace { grid-template-columns: 1fr; }
-  }
-`;
+function submitCreateAutomation(host: AutomationsHost, event: Event): void {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget as HTMLFormElement);
+  host.formError = "";
+  const triggerKind = triggerKindFromForm(String(data.get("trigger") ?? "cron"));
+  const notify = String(data.get("notify") ?? "none");
+  void createAutomation({
+    name: String(data.get("name") ?? "").trim(),
+    schedule: String(data.get("schedule") ?? "").trim(),
+    kind: data.get("kind") === "python" ? "python" : "agent",
+    payload: String(data.get("payload") ?? ""),
+    enabled: data.get("enabled") !== null,
+    trigger_kind: triggerKind,
+    notify_kind: notify === "telegram" ? "telegram" : "none",
+    ...(triggerKind === "vfs_change"
+      ? { trigger_config: { path: String(data.get("watch_path") ?? "").trim() } }
+      : triggerKind === "email"
+        ? { trigger_config: { account_id: String(data.get("email_account") ?? "") } }
+        : {}),
+  })
+    .then(async (created) => {
+      host.creating = false;
+      if (created.webhook_secret) {
+        host.webhookUrl = `${location.origin}/api/automations/${created.id}/webhook`;
+        host.webhookSecret = created.webhook_secret;
+        host.webhookOpen = true;
+      }
+      await load(host);
+      await selectAutomation(host, created);
+    })
+    .catch((err: unknown) => {
+      host.formError =
+        err instanceof Error && err.message === "400"
+          ? "Check the name, cron schedule, and task."
+          : "Failed to create automation.";
+    });
+}
 
 export function AppAutomations({
   items = [],
@@ -647,113 +300,8 @@ export function AppAutomations({
 
   return (
     <>
-      <style>{styles}</style>
-      <div
-        class="root"
-        onClick={(event: Event) => {
-          const node = event.target as HTMLElement;
-          if (node.dataset.backdrop === "create") {
-            this.creating = false;
-            return;
-          }
-          if (node.dataset.backdrop === "webhook") {
-            this.webhookOpen = false;
-            return;
-          }
-          const target = node.closest<HTMLElement>("[data-action]");
-          if (!target) return;
-          switch (target.dataset.action) {
-            case "open-create":
-              this.createTrigger = "cron";
-              this.creating = true;
-              return;
-            case "close-create":
-              this.creating = false;
-              return;
-            case "close-webhook":
-              this.webhookOpen = false;
-              return;
-          }
-          const item = automationItemFor(this, target.dataset.id ?? "");
-          if (!item) return;
-          switch (target.dataset.action) {
-            case "select":
-              void selectAutomation(this, item);
-              break;
-            case "run":
-              void runAndRefresh(this, item).catch((error) => reportRunError(this, error));
-              break;
-            case "toggle":
-              void setAutomationEnabled(item.id, !item.enabled)
-                .then(() => load(this))
-                .catch(() => {
-                  this.error = "Failed to update automation.";
-                });
-              break;
-            case "delete":
-              if (!window.confirm(`Delete automation "${item.name}"?`)) return;
-              void deleteAutomation(item.id)
-                .then(() => load(this))
-                .catch(() => {
-                  this.error = "Failed to delete automation.";
-                });
-              break;
-          }
-        }}
-        onChange={(event: Event) => {
-          const target = event.target as HTMLSelectElement;
-          if (target.name === "trigger") this.createTrigger = target.value;
-        }}
-        onSubmit={(event: Event) => {
-          event.preventDefault();
-          const data = new FormData(event.target as HTMLFormElement);
-          this.formError = "";
-          const trigger = String(data.get("trigger") ?? "cron");
-          const notify = String(data.get("notify") ?? "none");
-          const triggerKind =
-            trigger === "webhook"
-              ? "webhook"
-              : trigger === "manual"
-                ? "manual"
-                : trigger === "vfs_change"
-                  ? "vfs_change"
-                  : trigger === "email"
-                    ? "email"
-                    : trigger === "gmail"
-                      ? "gmail"
-                  : "cron";
-          void createAutomation({
-            name: String(data.get("name") ?? "").trim(),
-            schedule: String(data.get("schedule") ?? "").trim(),
-            kind: data.get("kind") === "python" ? "python" : "agent",
-            payload: String(data.get("payload") ?? ""),
-            enabled: data.get("enabled") !== null,
-            trigger_kind: triggerKind,
-            notify_kind: notify === "telegram" ? "telegram" : "none",
-            ...(triggerKind === "vfs_change"
-              ? { trigger_config: { path: String(data.get("watch_path") ?? "").trim() } }
-              : triggerKind === "email"
-                ? { trigger_config: { account_id: String(data.get("email_account") ?? "") } }
-              : {}),
-          })
-            .then(async (created) => {
-              this.creating = false;
-              if (created.webhook_secret) {
-                this.webhookUrl = `${location.origin}/api/automations/${created.id}/webhook`;
-                this.webhookSecret = created.webhook_secret;
-                this.webhookOpen = true;
-              }
-              await load(this);
-              await selectAutomation(this, created);
-            })
-            .catch((err: unknown) => {
-              this.formError =
-                err instanceof Error && err.message === "400"
-                  ? "Check the name, cron schedule, and task."
-                  : "Failed to create automation.";
-            });
-        }}
-      >
+      <style>{automationStyles}</style>
+      <div class="root">
         <div class="content">
           <header class="hero">
             <div>
@@ -763,7 +311,16 @@ export function AppAutomations({
                 Schedule recurring work, expose webhook tasks, react to file changes, and inspect every run output in one place.
               </p>
             </div>
-            <button class="primary" type="button" data-action="open-create">New automation</button>
+            <button
+              class="primary"
+              type="button"
+              onClick={() => {
+                this.createTrigger = "cron";
+                this.creating = true;
+              }}
+            >
+              New automation
+            </button>
           </header>
 
           <section class="stats" aria-label="Automation summary">
@@ -788,7 +345,12 @@ export function AppAutomations({
                   <div class="automation-list">
                     {viewItems.map((item) => (
                       <div class={`automation-card ${item.id === selectedId ? "selected" : ""}`} data-notify-kind={item.notify_kind} key={item.id}>
-                        <button class="ghost" type="button" data-action="select" data-id={item.id}>
+                        <button
+                          class="ghost"
+                          type="button"
+                          aria-label={`Select ${item.name}`}
+                          onClick={() => { void selectAutomation(this, item); }}
+                        >
                           <div>
                             <div class="name-row">
                               <span class="name">{item.nameLabel || item.name}</span>
@@ -805,9 +367,41 @@ export function AppAutomations({
                           </div>
                         </button>
                         <div class="row-actions">
-                          <button type="button" data-action="run" data-id={item.id}>Run</button>
-                          <button type="button" data-action="toggle" data-id={item.id}>{item.enabled ? "On" : "Off"}</button>
-                          <button class="danger" type="button" data-action="delete" data-id={item.id}>Delete</button>
+                          <button
+                            type="button"
+                            aria-label={`Run ${item.name}`}
+                            onClick={() => { void runAndRefresh(this, item).catch((runError) => reportRunError(this, runError)); }}
+                          >
+                            Run
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`${item.enabled ? "Pause" : "Enable"} ${item.name}`}
+                            onClick={() => {
+                              void setAutomationEnabled(item.id, !item.enabled)
+                                .then(() => load(this))
+                                .catch(() => {
+                                  this.error = "Failed to update automation.";
+                                });
+                            }}
+                          >
+                            {item.enabled ? "On" : "Off"}
+                          </button>
+                          <button
+                            class="danger"
+                            type="button"
+                            aria-label={`Delete ${item.name}`}
+                            onClick={() => {
+                              if (!window.confirm(`Delete automation "${item.name}"?`)) return;
+                              void deleteAutomation(item.id)
+                                .then(() => load(this))
+                                .catch(() => {
+                                  this.error = "Failed to delete automation.";
+                                });
+                            }}
+                          >
+                            Delete
+                          </button>
                         </div>
                       </div>
                     )).join("")}
@@ -853,18 +447,23 @@ export function AppAutomations({
         </div>
 
         {creating ? (
-          <div class="modal" data-backdrop="create">
-            <form class="modal-card">
+          <div
+            class="modal"
+            onClick={(event: Event) => {
+              if (event.target === event.currentTarget) this.creating = false;
+            }}
+          >
+            <form class="modal-card" onSubmit={(event: Event) => { submitCreateAutomation(this, event); }}>
               <div class="modal-title">
                 <div>
                   <h2>New automation</h2>
                   <p class="muted">Define when it runs, what it does, and where notifications go.</p>
                 </div>
-                <button type="button" data-action="close-create">Close</button>
+                <button type="button" onClick={() => { this.creating = false; }}>Close</button>
               </div>
               <div class="form-grid">
                 <label>Name<input name="name" required placeholder="Daily report" /></label>
-                <label>Trigger<select name="trigger"><option value="cron">Cron schedule</option><option value="email">Incoming email</option><option value="gmail">Incoming Gmail</option><option value="webhook">Webhook (HTTP)</option><option value="vfs_change">File change</option><option value="manual">Manual only</option></select></label>
+                <label>Trigger<select name="trigger" onChange={(event: Event) => { this.createTrigger = (event.target as HTMLSelectElement).value; }}><option value="cron">Cron schedule</option><option value="email">Incoming email</option><option value="gmail">Incoming Gmail</option><option value="webhook">Webhook (HTTP)</option><option value="vfs_change">File change</option><option value="manual">Manual only</option></select></label>
                 {createTrigger === "cron" ? <label>Schedule<input name="schedule" required placeholder="*/30 * * * *" /><span class="hint">Standard five-field cron expression in UTC.</span></label> : <input name="schedule" type="hidden" value="" />}
                 {createTrigger === "email" ? <label>Inbox<select name="email_account" required><option value="">Choose an inbox</option>{emailAccountViews.map((account) => <option value={account.id}>{account.label}</option>).join("")}</select><span class="hint">Add IMAP accounts in Settings. Existing mail is ignored when the automation is created.</span></label> : ""}
                 {createTrigger === "gmail" ? <span class="hint">Fires when new mail arrives in your connected Gmail inbox. Connect Google in Settings first. Existing mail is ignored when the automation is created.</span> : ""}
@@ -875,7 +474,7 @@ export function AppAutomations({
                 <label class="inline"><input type="checkbox" name="enabled" checked /> Enabled</label>
               </div>
               <div class="actions">
-                <button type="button" data-action="close-create">Cancel</button>
+                <button type="button" onClick={() => { this.creating = false; }}>Cancel</button>
                 <button class="primary" type="submit">Create automation</button>
               </div>
               <div class="error">{formError}</div>
@@ -884,14 +483,19 @@ export function AppAutomations({
         ) : ""}
 
         {webhookOpen ? (
-          <div class="modal" data-backdrop="webhook">
+          <div
+            class="modal"
+            onClick={(event: Event) => {
+              if (event.target === event.currentTarget) this.webhookOpen = false;
+            }}
+          >
             <div class="modal-card">
               <div class="modal-title">
                 <div>
                   <h2>Webhook created</h2>
                   <p class="muted">Copy the secret now. It is shown only once.</p>
                 </div>
-                <button type="button" data-action="close-webhook">Close</button>
+                <button type="button" onClick={() => { this.webhookOpen = false; }}>Close</button>
               </div>
               <div class="form-grid">
                 <label>URL<input class="secret" value={webhookUrl} readonly /></label>

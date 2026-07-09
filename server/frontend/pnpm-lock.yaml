@@ -9,14 +9,17 @@ importers:
   .:
     devDependencies:
       '@frontiers-labs/argon':
-        specifier: 0.4.0
-        version: 0.4.0
+        specifier: 0.5.4
+        version: 0.5.4
       '@happy-dom/global-registrator':
         specifier: ^20.10.2
         version: 20.10.2
       '@observablehq/plot':
         specifier: ^0.6.17
         version: 0.6.17
+      '@playwright/test':
+        specifier: ^1.61.1
+        version: 1.61.1
       d3:
         specifier: ^7.9.0
         version: 7.9.0
@@ -191,8 +194,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@frontiers-labs/argon@0.4.0':
-    resolution: {integrity: sha512-hWw/TpkGzma95gfkGTufz4JcFHIg+IXhk26WEnTq4xvdNGeDzf33maRfFJpvj4Ed+xswMMWy9a+IFbyZnd3dJQ==}
+  '@frontiers-labs/argon@0.5.4':
+    resolution: {integrity: sha512-Ne7i2vtRHyC30cg+t3fN3ZgS4Kvf60YE41wpBlOGEMgjMmMa0T0Nek9gJn40sCV5VQv1pbtMDAQV/JsddMrBsg==}
     engines: {node: '>=18.0.0'}
     hasBin: true
 
@@ -203,6 +206,11 @@ packages:
   '@observablehq/plot@0.6.17':
     resolution: {integrity: sha512-/qaXP/7mc4MUS0s4cPPFASDRjtsWp85/TbfsciqDgU1HwYixbSbbytNuInD8AcTYC3xaxACgVX06agdfQy9W+g==}
     engines: {node: '>=12'}
+
+  '@playwright/test@1.61.1':
+    resolution: {integrity: sha512-8nKv6+0RJSL9FE4jYOEGXnPeM/Hg12qZpmqzZjRh3qM0Y7c3z1mrOTfFLids72RDQYVh9WpLEfR5WdpNX4fkig==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   '@types/node@25.9.3':
     resolution: {integrity: sha512-603BddQMv3pUcr4U2dhujk83N2tTDVr/34wII2B6bJy6g+8WD6yUb11jszNs0gdi4PesVWl7ABt8nYMVpnLUcg==}
@@ -369,6 +377,11 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
+
   graphlib@2.1.8:
     resolution: {integrity: sha512-jcLLfkpoVGmH7/InMC/1hIvOPSUh38oJtGhvrOFGzioE1DZ+0YW16RgmOJhHiuWTvGiJQ9Z1Ik43JvkRPRvE+A==}
 
@@ -392,6 +405,16 @@ packages:
 
   lodash@4.18.1:
     resolution: {integrity: sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==}
+
+  playwright-core@1.61.1:
+    resolution: {integrity: sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.61.1:
+    resolution: {integrity: sha512-DWnY5o3YbLWK4GovuAVwpqL+1VwGNdUGrRr++8j8PtQQzvAVZUIMjKQ90fY689sEJZJBbZVw1rXaOKSTitkzPQ==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   robust-predicates@3.0.3:
     resolution: {integrity: sha512-NS3levdsRIUOmiJ8FZWCP7LG3QpJyrs/TE0Zpf1yvZu8cAJJ6QMW92H1c7kWpdIHo8RvmLxN/o2JXTKHp74lUA==}
@@ -511,7 +534,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.0':
     optional: true
 
-  '@frontiers-labs/argon@0.4.0':
+  '@frontiers-labs/argon@0.5.4':
     dependencies:
       typescript: 5.9.3
 
@@ -528,6 +551,10 @@ snapshots:
       d3: 7.9.0
       interval-tree-1d: 1.0.4
       isoformat: 0.2.1
+
+  '@playwright/test@1.61.1':
+    dependencies:
+      playwright: 1.61.1
 
   '@types/node@25.9.3':
     dependencies:
@@ -741,6 +768,9 @@ snapshots:
       '@esbuild/win32-ia32': 0.28.0
       '@esbuild/win32-x64': 0.28.0
 
+  fsevents@2.3.2:
+    optional: true
+
   graphlib@2.1.8:
     dependencies:
       lodash: 4.18.1
@@ -771,6 +801,14 @@ snapshots:
   isoformat@0.2.1: {}
 
   lodash@4.18.1: {}
+
+  playwright-core@1.61.1: {}
+
+  playwright@1.61.1:
+    dependencies:
+      playwright-core: 1.61.1
+    optionalDependencies:
+      fsevents: 2.3.2
 
   robust-predicates@3.0.3: {}
 

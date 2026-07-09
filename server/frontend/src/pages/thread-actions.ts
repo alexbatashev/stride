@@ -23,7 +23,7 @@ type AlertEl = HTMLElement & {
 	actionLabel: string;
 	variant: string;
 };
-type TextInputEl = HTMLElement & { value: string };
+type TextInputEl = HTMLElement & { value: string; focusControl?: () => void };
 
 let menu: MenuEl | null = null;
 let menuContext: { thread: ThreadRef; onMutated: OnMutated } | null = null;
@@ -182,7 +182,7 @@ function openRenameDialog(thread: ThreadRef, onMutated: OnMutated): void {
 	input.value = thread.title;
 	dialog.open = true;
 	requestAnimationFrame(() => {
-		input.shadowRoot?.querySelector("input")?.focus();
+		input.focusControl?.();
 	});
 }
 

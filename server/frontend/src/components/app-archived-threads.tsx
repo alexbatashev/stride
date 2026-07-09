@@ -1,4 +1,4 @@
-import { Component, css, onMount } from "@frontiers-labs/argon";
+import { Component, css, emit, onMount } from "@frontiers-labs/argon";
 import { listArchivedThreads, type ArchivedThread } from "../api/threads.js";
 
 type Host = HTMLElement & {
@@ -172,13 +172,7 @@ export function AppArchivedThreads({
           const id = trigger.dataset.threadId ?? "";
           const thread = threads.find((item) => item.id === id);
           if (!thread) return;
-          this.dispatchEvent(
-            new CustomEvent("thread-menu", {
-              bubbles: true,
-              composed: true,
-              detail: { id, title: thread.title, archived: true, anchor: trigger },
-            }),
-          );
+          emit(this, "thread-menu", { id, title: thread.title, archived: true, anchor: trigger });
         }}
       >
         <div class="shell">

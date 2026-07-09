@@ -41,6 +41,25 @@ For JavaScript/TypeScript projects use pnpm instead of npm.
 
 Web frontend is developed with Argon library. See existing code for usage examples.
 
+Argon frontend rules:
+
+- Form or transient state belongs in component `state()`; shared state belongs in
+  `server/frontend/src/stores/`. Do not use window events, WeakMaps, host-property
+  blobs, or module-level mutable state for app state.
+- Use `key` on `.map()` output that renders composed components. Treat key warnings
+  as review blockers.
+- HTML is escaped by default. Use `unsafeHtml` only directly below a visible
+  sanitizer call.
+- Use `emit()` and `on:event-name` bindings for component events. Window listeners are
+  only for real window concerns or third-party contracts.
+- Do not cross shadow boundaries from parent/page code. Set child props or store
+  fields instead.
+- Components on first-paint paths should be SSR by default. CSR-only components need
+  an explicit reason.
+- Do not hand-patch generated Argon output. If the compiler cannot express a needed
+  UI, file it upstream and mark any temporary workaround as
+  `ARGON-WORKAROUND(<issue>)`.
+
 Skip pleasantries and filler words (I'm going to..., apologies, etc). Instead be direct:
 Done, fixed, understood. Use simpler words.
 

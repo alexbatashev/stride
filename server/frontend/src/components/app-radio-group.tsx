@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, emit } from "@frontiers-labs/argon";
 
 interface RadioOption {
   value: string;
@@ -98,9 +98,7 @@ export function AppRadioGroup({
           if (!option) return;
           const next = option.getAttribute("data-value") ?? "";
           if (next === value) return;
-          this.dispatchEvent(
-            new CustomEvent("value-change", { bubbles: true, composed: true, detail: { value: next } }),
-          );
+          emit(this, "value-change", { value: next });
         }}
       >
         {options

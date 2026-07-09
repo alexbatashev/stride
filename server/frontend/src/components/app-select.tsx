@@ -2,7 +2,7 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css, onMount, state } from "@frontiers-labs/argon";
+import { Component, css, emit, onMount, state } from "@frontiers-labs/argon";
 import { IconCheck } from "./icons/check.js";
 import { IconChevronDown } from "./icons/chevron-down.js";
 
@@ -159,9 +159,7 @@ export function AppSelect({
           const next = option.getAttribute("data-value") ?? "";
           open = false;
           this.removeAttribute("open");
-          this.dispatchEvent(
-            new CustomEvent("value-change", { bubbles: true, composed: true, detail: { value: next } }),
-          );
+          emit(this, "value-change", { value: next });
         }}
       >
         {options
