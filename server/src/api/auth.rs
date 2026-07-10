@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
@@ -86,7 +83,7 @@ pub async fn register(
         return Err(AuthError::Conflict);
     }
 
-    let user_id = Uuid::now_v7();
+    let user_id = state.id_gen.new_uuid_v7();
     let password_hash = hash_password(&request.password)?;
 
     users::insert()
@@ -174,7 +171,7 @@ async fn ldap_login(
     let user_id = if let Some(id) = existing_id {
         id
     } else {
-        let id = Uuid::now_v7();
+        let id = state.id_gen.new_uuid_v7();
         users::insert()
             .id(id)
             .username(request.username.as_str())
@@ -239,8 +236,8 @@ fn verify_password(password: &str, password_hash: &str) -> bool {
 }
 
 async fn create_session(state: &ServerState, user_id: Uuid) -> Result<AuthResponse, AuthError> {
-    let session_id = Uuid::now_v7();
-    let expires_at = now() + SESSION_TTL_SECONDS;
+    let session_id = state.id_gen.new_uuid_v7();
+    let expires_at = state.clock.now_unix_secs() as u64 + SESSION_TTL_SECONDS;
 
     sessions::insert()
         .id(session_id)
@@ -283,7 +280,7 @@ pub(crate) async fn authenticated_user(
             vec![
                 Value::Uuid(session_id),
                 Value::Uuid(user_id),
-                Value::Integer(now() as i64),
+                Value::Integer(state.clock.now_unix_secs()),
             ],
         )
         .await
@@ -339,13 +336,6 @@ fn auth_token(headers: &HeaderMap) -> Result<&str, AuthError> {
                 .find_map(|part| part.trim().strip_prefix("token="))
         })
         .ok_or(AuthError::Unauthorized)
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_secs()
 }
 
 #[cfg(test)]
@@ -523,6 +513,7 @@ mod tests {
             model_registry: mock_model_registry(),
             max_iterations: 2,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            ..Default::default()
         });
         let runner = Arc::new(InProcessAgentPool::new(
             db.clone(),
@@ -538,6 +529,8 @@ mod tests {
                 jwt_secret: "test-secret".to_string(),
                 runner,
                 model_config,
+                clock: Arc::new(stride_agent::SystemClock),
+                id_gen: Arc::new(stride_agent::SystemIdGen),
                 vfs: None,
                 telegram_interactions: Arc::new(std::sync::Mutex::new(
                     crate::api::telegram::Interactions::default(),

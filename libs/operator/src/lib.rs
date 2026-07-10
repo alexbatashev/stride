@@ -84,6 +84,7 @@ impl Operator {
                 model_registry,
                 max_iterations: config.max_iterations,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
             model: DEFAULT_MODEL.to_string(),
             working_directory: config.working_directory,

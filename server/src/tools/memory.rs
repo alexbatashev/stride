@@ -26,14 +26,6 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 const DEFAULT_RECALL_LIMIT: i64 = 5;
 const MAX_RECALL_LIMIT: i64 = 20;
 
-fn now_secs() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default()
-}
-
 /// Embed text with the registry's designated embedding model. Returns `None`
 /// when no embedding model is configured or the provider call fails, so callers
 /// can fall back to keyword search.
@@ -68,6 +60,7 @@ async fn scalar_uuid(
 }
 
 async fn ensure_wing(
+    config: &AgentConfig,
     db: &ConnectionPool,
     owner: Uuid,
     name: &str,
@@ -82,7 +75,7 @@ async fn ensure_wing(
     {
         return Ok(id);
     }
-    let id = Uuid::now_v7();
+    let id = config.id_gen.new_uuid_v7();
     db.query_with_params(
         "INSERT INTO memory_wings (id, owner, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
         vec![
@@ -90,7 +83,7 @@ async fn ensure_wing(
             Value::Uuid(owner),
             Value::Text(name.to_string()),
             Value::Text(description.to_string()),
-            Value::Integer(now_secs()),
+            Value::Integer(config.clock.now_unix_secs()),
         ],
     )
     .await?;
@@ -98,6 +91,7 @@ async fn ensure_wing(
 }
 
 async fn ensure_room(
+    config: &AgentConfig,
     db: &ConnectionPool,
     owner: Uuid,
     wing: Uuid,
@@ -117,7 +111,7 @@ async fn ensure_room(
     {
         return Ok(id);
     }
-    let id = Uuid::now_v7();
+    let id = config.id_gen.new_uuid_v7();
     db.query_with_params(
         "INSERT INTO memory_rooms (id, owner, wing, name, description, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         vec![
@@ -126,7 +120,7 @@ async fn ensure_room(
             Value::Uuid(wing),
             Value::Text(name.to_string()),
             Value::Text(description.to_string()),
-            Value::Integer(now_secs()),
+            Value::Integer(config.clock.now_unix_secs()),
         ],
     )
     .await?;
@@ -134,6 +128,7 @@ async fn ensure_room(
 }
 
 async fn ensure_hall(
+    config: &AgentConfig,
     db: &ConnectionPool,
     owner: Uuid,
     wing: Uuid,
@@ -152,7 +147,7 @@ async fn ensure_hall(
     {
         return Ok(id);
     }
-    let id = Uuid::now_v7();
+    let id = config.id_gen.new_uuid_v7();
     db.query_with_params(
         "INSERT INTO memory_halls (id, owner, wing, name, description, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         vec![
@@ -161,7 +156,7 @@ async fn ensure_hall(
             Value::Uuid(wing),
             Value::Text(name.to_string()),
             Value::Text(String::new()),
-            Value::Integer(now_secs()),
+            Value::Integer(config.clock.now_unix_secs()),
         ],
     )
     .await?;
@@ -331,10 +326,10 @@ impl RememberTool {
             .filter(|w| !w.is_empty())
             .or_else(|| self.default_wing.clone())
             .ok_or("a wing is required: name a subject to file this memory under")?;
-        let wing_id = ensure_wing(&self.db, owner, &wing, "").await?;
-        let room_id = ensure_room(&self.db, owner, wing_id, &params.room, "").await?;
+        let wing_id = ensure_wing(config, &self.db, owner, &wing, "").await?;
+        let room_id = ensure_room(config, &self.db, owner, wing_id, &params.room, "").await?;
         let hall_id = match params.hall.as_deref().filter(|h| !h.is_empty()) {
-            Some(hall) => Some(ensure_hall(&self.db, owner, wing_id, hall).await?),
+            Some(hall) => Some(ensure_hall(config, &self.db, owner, wing_id, hall).await?),
             None => None,
         };
 
@@ -343,7 +338,7 @@ impl RememberTool {
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| truncate(&params.summary, 80));
 
-        let drawer_id = Uuid::now_v7();
+        let drawer_id = config.id_gen.new_uuid_v7();
         self.db
             .query_with_params(
                 "INSERT INTO memory_drawers (id, owner, room, title, content, source, created_at) \
@@ -355,7 +350,7 @@ impl RememberTool {
                     Value::Text(title.clone()),
                     Value::Text(params.content.clone()),
                     Value::Null,
-                    Value::Integer(now_secs()),
+                    Value::Integer(config.clock.now_unix_secs()),
                 ],
             )
             .await?;
@@ -365,7 +360,7 @@ impl RememberTool {
         let embedding = embed(config, index_text.trim()).await;
         let embedded = embedding.is_some();
 
-        let closet_id = Uuid::now_v7();
+        let closet_id = config.id_gen.new_uuid_v7();
         memory_closets::insert()
             .id(closet_id)
             .owner(owner)
@@ -375,7 +370,7 @@ impl RememberTool {
             .summary(params.summary.clone())
             .keywords(keywords)
             .embedding(embedding)
-            .created_at(now_secs())
+            .created_at(config.clock.now_unix_secs())
             .execute(&self.db)
             .await?;
 
@@ -792,7 +787,11 @@ impl Tool for ExplorePalaceTool {
 }
 
 impl ConnectMemoriesTool {
-    async fn connect(&self, params: ConnectParams) -> Result<JsonValue, DynError> {
+    async fn connect(
+        &self,
+        config: &AgentConfig,
+        params: ConnectParams,
+    ) -> Result<JsonValue, DynError> {
         let Some(from_id) =
             find_room(&self.db, self.user_id, &params.from_wing, &params.from_room).await?
         else {
@@ -813,12 +812,12 @@ impl ConnectMemoriesTool {
                 "INSERT INTO memory_doors (id, owner, from_room, to_room, relation, created_at) \
                  VALUES (?, ?, ?, ?, ?, ?)",
                 vec![
-                    Value::Uuid(Uuid::now_v7()),
+                    Value::Uuid(config.id_gen.new_uuid_v7()),
                     Value::Uuid(self.user_id),
                     Value::Uuid(from_id),
                     Value::Uuid(to_id),
                     Value::Text(params.relation.clone()),
-                    Value::Integer(now_secs()),
+                    Value::Integer(config.clock.now_unix_secs()),
                 ],
             )
             .await?;
@@ -850,12 +849,12 @@ impl Tool for ConnectMemoriesTool {
         }
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+    async fn execute(&self, config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
         let params = match ConnectParams::decode(args) {
             Ok(p) => p,
             Err(e) => return json!({"error": e}),
         };
-        match self.connect(params).await {
+        match self.connect(&config, params).await {
             Ok(value) => value,
             Err(e) => json!({"error": e.to_string()}),
         }
@@ -897,6 +896,7 @@ mod tests {
             model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 0,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            ..Default::default()
         })
     }
 
@@ -1061,8 +1061,11 @@ mod tests {
     #[tokio::test]
     async fn vector_search_orders_by_cosine_distance() {
         let (db, user) = setup().await;
-        let wing = ensure_wing(&db, user, "stride", "").await.unwrap();
-        let room = ensure_room(&db, user, wing, "vectors", "").await.unwrap();
+        let config = config();
+        let wing = ensure_wing(&config, &db, user, "stride", "").await.unwrap();
+        let room = ensure_room(&config, &db, user, wing, "vectors", "")
+            .await
+            .unwrap();
 
         // Two memories pointing in different directions; the query leans toward
         // the first, so sqlite-vec must rank it ahead of the second.
@@ -1082,7 +1085,7 @@ mod tests {
                     Value::Text(summary.to_string()),
                     Value::Text(content.to_string()),
                     Value::Null,
-                    Value::Integer(now_secs()),
+                    Value::Integer(config.clock.now_unix_secs()),
                 ],
             )
             .await
@@ -1099,7 +1102,7 @@ mod tests {
                     Value::Text(summary.to_string()),
                     Value::Text(String::new()),
                     Embedding::from_floats(&vector).into(),
-                    Value::Integer(now_secs()),
+                    Value::Integer(config.clock.now_unix_secs()),
                 ],
             )
             .await

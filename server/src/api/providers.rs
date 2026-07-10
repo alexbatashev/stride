@@ -67,10 +67,17 @@ pub async fn create(
     Json(request): Json<ProviderInput>,
 ) -> Result<(StatusCode, Json<ProviderSummary>), ProvidersApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
-    model_registry::create_provider(&state.db, &state.cipher, owner, request)
-        .await
-        .map(|provider| (StatusCode::CREATED, Json(provider)))
-        .map_err(map_error)
+    model_registry::create_provider(
+        &state.db,
+        &state.cipher,
+        state.clock.as_ref(),
+        state.id_gen.as_ref(),
+        owner,
+        request,
+    )
+    .await
+    .map(|provider| (StatusCode::CREATED, Json(provider)))
+    .map_err(map_error)
 }
 
 pub async fn delete(

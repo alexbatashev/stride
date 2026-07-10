@@ -111,6 +111,7 @@ async fn connects_lists_and_calls_mcp_tools() {
         model_registry: ModelRegistry::new(),
         max_iterations: 0,
         observer: Arc::new(stride_agent::NoopAgentObserver),
+        ..Default::default()
     });
     let result = stride_agent::Tool::execute(tool, config, json!({ "text": "hello" })).await;
 

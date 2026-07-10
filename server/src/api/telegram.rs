@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -131,7 +131,7 @@ pub async fn login(
         .get("auth_date")
         .and_then(Value::as_i64)
         .ok_or(TelegramApiError::Unauthorized)?;
-    if (now() - auth_date).abs() > LOGIN_MAX_AGE_SECONDS {
+    if (state.clock.now_unix_secs() - auth_date).abs() > LOGIN_MAX_AGE_SECONDS {
         return Err(TelegramApiError::Unauthorized);
     }
 
@@ -154,14 +154,14 @@ pub async fn login(
         .map_err(|_| TelegramApiError::Internal)?;
 
     telegram_connections::insert()
-        .id(Uuid::now_v7())
+        .id(state.id_gen.new_uuid_v7())
         .user_id(user_id)
         .telegram_user_id(telegram_user_id)
         .chat_id(telegram_user_id)
         .username(username)
         .first_name(first_name)
         .last_name(last_name)
-        .connected_at(now())
+        .connected_at(state.clock.now_unix_secs())
         .execute(&state.db)
         .await
         .map_err(|_| TelegramApiError::Internal)?;
@@ -660,7 +660,7 @@ async fn ensure_telegram_mapping_for_message(
 
     let topic_id = message.storage_topic_id();
     match telegram_threads::insert()
-        .id(Uuid::now_v7())
+        .id(state.id_gen.new_uuid_v7())
         .user_id(user_id)
         .chat_id(message.chat.id)
         .topic_id(topic_id)
@@ -734,7 +734,7 @@ impl TelegramSubscriber {
                 content: String::new(),
                 thinking: String::new(),
                 last_draft_text: String::new(),
-                last_draft: Instant::now(),
+                last_draft: self.state.clock.now_instant(),
                 finalized: false,
             });
             if let Some(active) = self.active.as_mut() {
@@ -762,7 +762,7 @@ impl TelegramSubscriber {
                     if draft != active.last_draft_text
                         && active.last_draft.elapsed() >= DRAFT_INTERVAL
                     {
-                        active.last_draft = Instant::now();
+                        active.last_draft = self.state.clock.now_instant();
                         active.last_draft_text = draft.clone();
                         Some((active.chat_id, active.topic_id, active.draft_id, draft))
                     } else {
@@ -790,7 +790,7 @@ impl TelegramSubscriber {
                     if draft != active.last_draft_text
                         && (first_real_thinking || active.last_draft.elapsed() >= DRAFT_INTERVAL)
                     {
-                        active.last_draft = Instant::now();
+                        active.last_draft = self.state.clock.now_instant();
                         active.last_draft_text = draft.clone();
                         Some((active.chat_id, active.topic_id, active.draft_id, draft))
                     } else {
@@ -1749,7 +1749,7 @@ async fn ensure_telegram_thread(
         }
     }
 
-    let thread_id = Uuid::now_v7();
+    let thread_id = state.id_gen.new_uuid_v7();
     threads::insert()
         .id(thread_id)
         .owner(user_id)
@@ -1759,7 +1759,7 @@ async fn ensure_telegram_thread(
         .map_err(|_| TelegramApiError::Internal)?;
 
     telegram_threads::insert()
-        .id(Uuid::now_v7())
+        .id(state.id_gen.new_uuid_v7())
         .user_id(user_id)
         .chat_id(message.chat.id)
         .topic_id(topic_id)
@@ -2110,7 +2110,7 @@ pub(crate) async fn link_telegram_message(
         .await;
 
     telegram_message_links::insert()
-        .id(Uuid::now_v7())
+        .id(state.id_gen.new_uuid_v7())
         .user_id(user_id)
         .chat_id(chat_id)
         .message_id(message_id)
@@ -2272,13 +2272,6 @@ fn configured_bot_username(state: &ServerState) -> Option<String> {
         .and_then(|t| t.read_bot_username())
         .map(|username| username.trim_start_matches('@').to_string())
         .filter(|username| !username.is_empty())
-}
-
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_secs() as i64
 }
 
 pub(crate) async fn edit_forum_topic(
@@ -2948,7 +2941,10 @@ mod tests {
                 model_registry: stride_agent::ModelRegistry::default(),
                 max_iterations: 1,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
+            clock: Arc::new(stride_agent::SystemClock),
+            id_gen: Arc::new(stride_agent::SystemIdGen),
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
             executor: crate::scheduler::ExecutorHandle::channel().0,
@@ -3132,7 +3128,10 @@ mod tests {
                 model_registry: stride_agent::ModelRegistry::default(),
                 max_iterations: 1,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
+            clock: Arc::new(stride_agent::SystemClock),
+            id_gen: Arc::new(stride_agent::SystemIdGen),
             vfs: None,
             telegram_interactions: Arc::new(Mutex::new(Interactions::default())),
             executor: crate::scheduler::ExecutorHandle::channel().0,

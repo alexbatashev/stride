@@ -21,7 +21,7 @@ hyper = { version = "1.9.0", features = ["client"] }
 http-body-util = "0.1.3"
 tracing = "0.1"
 minisql = { path = "../minisql", package = "stride-minisql", default-features = false, features = ["sqlite"] }
-uuid = { version = "1.23.1", features = ["v7"] }
+uuid = { version = "1.23.1", features = ["v4", "v7"] }
 
 [dev-dependencies]
 futures = { version = "0.3.32", features = ["executor"] }

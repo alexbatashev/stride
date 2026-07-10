@@ -63,7 +63,7 @@ impl Tool for SendTelegramMessageTool {
         format!("Send Telegram notification: {message}")
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+    async fn execute(&self, config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
         let params = match SendTelegramMessageParams::decode(args) {
             Ok(params) => params,
             Err(error) => return json!({"success": false, "error": error}),
@@ -84,6 +84,7 @@ impl Tool for SendTelegramMessageTool {
         };
 
         let result = link_message(
+            config.id_gen.as_ref(),
             &self.db,
             self.user_id,
             sent.chat_id,
@@ -148,7 +149,7 @@ impl Tool for SendTelegramFileTool {
         }
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+    async fn execute(&self, config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
         let params = match SendTelegramFileParams::decode(args) {
             Ok(params) => params,
             Err(error) => return json!({"success": false, "error": error}),
@@ -181,6 +182,7 @@ impl Tool for SendTelegramFileTool {
             mime_type: mime.as_deref(),
             data: &bytes,
             caption,
+            id_gen: config.id_gen.as_ref(),
         })
         .await
         else {
@@ -188,6 +190,7 @@ impl Tool for SendTelegramFileTool {
         };
 
         match link_message(
+            config.id_gen.as_ref(),
             &self.db,
             self.user_id,
             sent.chat_id,
@@ -256,6 +259,7 @@ struct SendDocumentRequest<'a> {
     mime_type: Option<&'a str>,
     data: &'a [u8],
     caption: Option<&'a str>,
+    id_gen: &'a dyn stride_agent::IdGen,
 }
 
 async fn send_document(request: SendDocumentRequest<'_>) -> Option<TelegramSentMessage> {
@@ -271,7 +275,7 @@ async fn send_document(request: SendDocumentRequest<'_>) -> Option<TelegramSentM
         fields.push(("caption", caption.chars().take(1024).collect()));
     }
 
-    let boundary = format!("stride{}", Uuid::now_v7().as_simple());
+    let boundary = format!("stride{}", request.id_gen.new_uuid_v7().as_simple());
     let mime = request.mime_type.unwrap_or("application/octet-stream");
     let body = multipart_body(
         &boundary,
@@ -370,6 +374,7 @@ pub(crate) async fn connected_chat(
 }
 
 async fn link_message(
+    id_gen: &dyn stride_agent::IdGen,
     db: &ConnectionPool,
     user_id: Uuid,
     chat_id: i64,
@@ -387,7 +392,7 @@ async fn link_message(
         .await;
 
     telegram_message_links::insert()
-        .id(Uuid::now_v7())
+        .id(id_gen.new_uuid_v7())
         .user_id(user_id)
         .chat_id(chat_id)
         .message_id(message_id)

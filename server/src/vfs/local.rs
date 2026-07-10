@@ -1,26 +1,27 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context;
-use uuid::Uuid;
+use stride_agent::IdGen;
 
 use super::FileProvider;
 
 /// Local filesystem storage backend.
 pub struct LocalFileProvider {
     base: PathBuf,
+    id_gen: Arc<dyn IdGen>,
 }
 
 impl LocalFileProvider {
-    pub fn new(base: PathBuf) -> anyhow::Result<Self> {
+    pub fn with_id_gen(base: PathBuf, id_gen: Arc<dyn IdGen>) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&base)
             .with_context(|| format!("create VFS base dir {:?}", base))?;
-        Ok(Self { base })
+        Ok(Self { base, id_gen })
     }
 }
 
 impl FileProvider for LocalFileProvider {
     async fn store(&self, content: &[u8]) -> anyhow::Result<String> {
-        let key = Uuid::now_v7().as_simple().to_string();
+        let key = self.id_gen.new_uuid_v7().as_simple().to_string();
         tokio::fs::write(self.base.join(&key), content)
             .await
             .with_context(|| format!("write object {key}"))?;

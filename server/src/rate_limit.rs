@@ -11,6 +11,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use stride_agent::{Clock, SystemClock};
 
 const MAX_REQUESTS: u32 = 10;
 const WINDOW: Duration = Duration::from_secs(60);
@@ -23,17 +24,23 @@ struct Window {
 
 pub struct RateLimiter {
     windows: Mutex<HashMap<String, Window>>,
+    clock: Arc<dyn Clock>,
 }
 
 impl RateLimiter {
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(SystemClock))
+    }
+
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
             windows: Mutex::new(HashMap::new()),
+            clock,
         }
     }
 
     fn check(&self, key: &str) -> bool {
-        let now = Instant::now();
+        let now = self.clock.now_instant();
         let mut windows = self.windows.lock().unwrap();
         let window = windows.entry(key.to_string()).or_insert(Window {
             count: 0,

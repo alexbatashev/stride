@@ -98,6 +98,7 @@ fn quiz_yields_questions_and_returns_answers() {
                 model_registry: registry(&mock),
                 max_iterations: 50,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
             String::new(),
             vec![],

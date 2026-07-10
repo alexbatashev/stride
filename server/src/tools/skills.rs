@@ -268,7 +268,7 @@ impl Tool for CreateSkillTool {
         format!("Create skill '{name}': {title}")
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+    async fn execute(&self, config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
         let params = match CreateSkillParams::decode(args) {
             Ok(p) => p,
             Err(e) => return json!({"success": false, "error": e}),
@@ -281,7 +281,7 @@ impl Tool for CreateSkillTool {
             });
         }
 
-        let id = Uuid::now_v7();
+        let id = config.id_gen.new_uuid_v7();
         let result = self
             .db
             .query_with_params(
@@ -333,6 +333,7 @@ mod tests {
             model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 0,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            ..Default::default()
         })
     }
 

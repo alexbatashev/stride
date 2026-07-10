@@ -1905,6 +1905,7 @@ mod tests {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 json!({ "script": "print(1)" }),
             )
@@ -1957,6 +1958,7 @@ mod tests {
             model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 1,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            ..Default::default()
         })
     }
 
@@ -2070,6 +2072,7 @@ mod tests {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 json!({ "script": "print(2 + 2)" }),
             )
@@ -2151,6 +2154,7 @@ mod tests {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 json!({ "script": script }),
             )
@@ -2204,6 +2208,7 @@ mod tests {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 json!({ "script": script }),
             )
@@ -2256,6 +2261,7 @@ mod tests {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 json!({ "script": script }),
             )
@@ -2307,6 +2313,7 @@ mod tests {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 json!({ "script": script }),
             )

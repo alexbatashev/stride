@@ -67,10 +67,16 @@ pub async fn create(
     Json(request): Json<UserModelInput>,
 ) -> Result<(StatusCode, Json<UserModelSummary>), UserModelsApiError> {
     let owner = auth::authenticated_user(&state, &headers).await?;
-    model_registry::create_user_model(&state.db, owner, request)
-        .await
-        .map(|model| (StatusCode::CREATED, Json(model)))
-        .map_err(map_error)
+    model_registry::create_user_model(
+        &state.db,
+        state.clock.as_ref(),
+        state.id_gen.as_ref(),
+        owner,
+        request,
+    )
+    .await
+    .map(|model| (StatusCode::CREATED, Json(model)))
+    .map_err(map_error)
 }
 
 pub async fn delete(

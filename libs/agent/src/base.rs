@@ -14,6 +14,7 @@ use serde_json::Value;
 use serde_json::json;
 use thiserror::Error;
 
+use crate::determinism::{Clock, IdGen, SystemClock, SystemIdGen};
 use crate::tools::search::{SearchEntry, SearchTool};
 use crate::{QuizQuestion, Tool, ToolRegistry};
 
@@ -97,6 +98,20 @@ pub struct AgentConfig {
     pub model_registry: ModelRegistry,
     pub max_iterations: usize,
     pub observer: Arc<dyn AgentObserver>,
+    pub clock: Arc<dyn Clock>,
+    pub id_gen: Arc<dyn IdGen>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            model_registry: ModelRegistry::default(),
+            max_iterations: 0,
+            observer: Arc::new(NoopAgentObserver),
+            clock: Arc::new(SystemClock),
+            id_gen: Arc::new(SystemIdGen),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -797,6 +812,7 @@ mod tests {
                 model_registry: registry,
                 max_iterations: 50,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
             String::new(),
             vec![],
@@ -828,6 +844,7 @@ mod tests {
                     model_registry: registry(&mock),
                     max_iterations: 50,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 String::new(),
                 vec![],
@@ -864,6 +881,7 @@ mod tests {
                     model_registry: registry(&mock),
                     max_iterations: 50,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 "Use short answers.".to_string(),
                 vec![Message {
@@ -1180,6 +1198,7 @@ mod tests {
                 model_registry: registry(&mock),
                 max_iterations: 50,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
             String::new(),
             vec![],
@@ -1238,6 +1257,7 @@ mod tests {
                     model_registry: registry(&mock),
                     max_iterations: 50,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 String::new(),
                 vec![],
@@ -1286,6 +1306,7 @@ mod tests {
                     model_registry: registry(&mock),
                     max_iterations: 50,
                     observer: Arc::new(stride_agent::NoopAgentObserver),
+                    ..Default::default()
                 }),
                 String::new(),
                 vec![],

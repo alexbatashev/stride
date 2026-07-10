@@ -196,12 +196,14 @@ impl Tool for CalendarListTool {
         Some(GOOGLE_CATEGORY.to_string())
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: Value) -> Value {
+    async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value {
         let params = match CalendarListParams::decode(args) {
             Ok(params) => params,
             Err(error) => return tool_error(error),
         };
-        let time_min = params.time_min.unwrap_or_else(now_rfc3339);
+        let time_min = params
+            .time_min
+            .unwrap_or_else(|| format_rfc3339_utc(config.clock.now_unix_secs()));
         let max_results = params.max_results.unwrap_or(10).clamp(1, 100) as usize;
         match self
             .service
@@ -397,15 +399,6 @@ fn function_tool(name: &str, description: &str, parameters: llm::FunctionParamet
             parameters: Some(parameters),
         },
     }
-}
-
-fn now_rfc3339() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format_rfc3339_utc(secs as i64)
 }
 
 /// Format a unix timestamp as an RFC 3339 UTC string without pulling in a date

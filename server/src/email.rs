@@ -5,8 +5,9 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use futures::TryStreamExt;
 use mail_parser::{Address, Message, MessageParser};
 use minisql::ConnectionPool;
-use stride_agent::tools::email::{
-    EmailAccount, EmailDraft, EmailMailbox, EmailMessage, EmailProvider,
+use stride_agent::{
+    Clock, IdGen,
+    tools::email::{EmailAccount, EmailDraft, EmailMailbox, EmailMessage, EmailProvider},
 };
 use tokio::net::TcpStream;
 use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
@@ -24,6 +25,8 @@ type ImapSession = async_imap::Session<TlsStream<TcpStream>>;
 pub struct ImapService {
     db: ConnectionPool,
     cipher: SecretCipher,
+    clock: Arc<dyn Clock>,
+    id_gen: Arc<dyn IdGen>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,10 +52,17 @@ pub fn encryption_secret(fallback: &str) -> String {
 }
 
 impl ImapService {
-    pub fn new(db: ConnectionPool, encryption_secret: &str) -> Self {
+    pub fn with_clock(
+        db: ConnectionPool,
+        encryption_secret: &str,
+        clock: Arc<dyn Clock>,
+        id_gen: Arc<dyn IdGen>,
+    ) -> Self {
         Self {
             db,
             cipher: SecretCipher::new(encryption_secret),
+            clock,
+            id_gen,
         }
     }
 
@@ -245,7 +255,16 @@ impl ImapService {
                 return Err("source email has no reply recipients".to_string());
             }
             let subject = reply_subject(parsed.subject().unwrap_or(""));
-            let raw = build_draft(&connection, &parsed, &to, &cc, &subject, body);
+            let raw = build_draft(
+                self.clock.as_ref(),
+                self.id_gen.as_ref(),
+                &connection,
+                &parsed,
+                &to,
+                &cc,
+                &subject,
+                body,
+            );
             session
                 .append(
                     &connection.drafts_mailbox,
@@ -463,7 +482,10 @@ fn push_unique(target: &mut Vec<String>, seen: &mut HashSet<String>, values: Vec
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_draft(
+    clock: &dyn Clock,
+    id_gen: &dyn IdGen,
     connection: &EmailConnection,
     original: &Message<'_>,
     to: &[String],
@@ -481,7 +503,7 @@ fn build_draft(
     headers.push(format!("Subject: {}", encode_header(subject)));
     headers.push(format!(
         "Date: {}",
-        mail_parser::DateTime::from_timestamp(now()).to_rfc822()
+        mail_parser::DateTime::from_timestamp(clock.now_unix_secs()).to_rfc822()
     ));
     let message_domain: String = connection
         .host
@@ -490,7 +512,7 @@ fn build_draft(
         .collect();
     headers.push(format!(
         "Message-ID: <{}@{}>",
-        Uuid::now_v7(),
+        id_gen.new_uuid_v7(),
         if message_domain.is_empty() {
             "stride.invalid"
         } else {
@@ -578,13 +600,6 @@ fn validate_connection(connection: &EmailConnection) -> Result<(), String> {
     Ok(())
 }
 
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,6 +645,8 @@ mod tests {
             drafts_mailbox: "Drafts".to_string(),
         };
         let draft = build_draft(
+            &stride_agent::SystemClock,
+            &stride_agent::SystemIdGen,
             &connection,
             &message,
             &["sender@example.com".to_string()],

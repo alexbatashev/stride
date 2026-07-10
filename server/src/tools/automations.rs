@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use llm::{Function, Tool as LlmTool};
@@ -57,7 +56,7 @@ impl Tool for ScheduleAutomationTool {
         }
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+    async fn execute(&self, config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
         let params = match ScheduleAutomationParams::decode(args) {
             Ok(p) => p,
             Err(e) => return json!({"success": false, "error": e}),
@@ -89,7 +88,7 @@ impl Tool for ScheduleAutomationTool {
             TriggerKind::Webhook => Some(webhook::generate_secret()),
             _ => None,
         };
-        let id = Uuid::now_v7();
+        let id = config.id_gen.new_uuid_v7();
         let result = automations::insert()
             .id(id)
             .owner(self.user_id)
@@ -98,7 +97,7 @@ impl Tool for ScheduleAutomationTool {
             .kind(kind)
             .payload(params.task.as_str())
             .enabled(true)
-            .created_at(now())
+            .created_at(config.clock.now_unix_secs())
             .trigger_kind(Some(trigger.as_str()))
             .webhook_secret(webhook_secret.as_deref())
             .notify_kind(Some(notify.as_str()))
@@ -118,11 +117,4 @@ impl Tool for ScheduleAutomationTool {
             Err(e) => json!({"success": false, "error": e.to_string()}),
         }
     }
-}
-
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }

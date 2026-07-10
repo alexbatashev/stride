@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use llm::{Anthropic, Ollama, OpenAI, ReasoningEffort};
 use minisql::ConnectionPool;
 use stride_agent::{
-    DEFAULT_MODEL, EMBEDDING_MODEL, ModelRegEntry, ModelRegistry, TRANSCRIPTION_MODEL,
+    Clock, DEFAULT_MODEL, EMBEDDING_MODEL, IdGen, ModelRegEntry, ModelRegistry, TRANSCRIPTION_MODEL,
 };
 use uuid::Uuid;
 
@@ -290,6 +290,7 @@ async fn has_custom_agent_settings(db: &ConnectionPool, owner: Uuid) -> anyhow::
 
 pub async fn save_agent_settings(
     db: &ConnectionPool,
+    clock: &dyn Clock,
     owner: Uuid,
     settings: &AgentSettings,
 ) -> anyhow::Result<()> {
@@ -311,7 +312,7 @@ pub async fn save_agent_settings(
             } else {
                 minisql::Value::Text(guidelines.to_string())
             },
-            minisql::Value::Integer(now_secs()),
+            minisql::Value::Integer(clock.now_unix_secs()),
         ],
     )
     .await
@@ -345,6 +346,8 @@ pub async fn list_providers(
 pub async fn create_provider(
     db: &ConnectionPool,
     cipher: &SecretCipher,
+    clock: &dyn Clock,
+    id_gen: &dyn IdGen,
     owner: Uuid,
     input: ProviderInput,
 ) -> anyhow::Result<ProviderSummary> {
@@ -358,8 +361,8 @@ pub async fn create_provider(
 
     ensure_unique_provider_name(db, owner, &name).await?;
 
-    let id = Uuid::now_v7();
-    let created_at = now_secs();
+    let id = id_gen.new_uuid_v7();
+    let created_at = clock.now_unix_secs();
     let token_ciphertext = cipher
         .encrypt(id, token)
         .map_err(|error| anyhow::anyhow!(error))?;
@@ -455,6 +458,8 @@ pub async fn list_user_models(
 
 pub async fn create_user_model(
     db: &ConnectionPool,
+    clock: &dyn Clock,
+    id_gen: &dyn IdGen,
     owner: Uuid,
     input: UserModelInput,
 ) -> anyhow::Result<UserModelSummary> {
@@ -474,8 +479,8 @@ pub async fn create_user_model(
     let display_name = normalize_optional_string(input.display_name.as_deref());
     let description = normalize_optional_string(input.description.as_deref());
 
-    let id = Uuid::now_v7();
-    let created_at = now_secs();
+    let id = id_gen.new_uuid_v7();
+    let created_at = clock.now_unix_secs();
     user_models::insert()
         .id(id)
         .owner(owner)
@@ -720,13 +725,6 @@ async fn ensure_owned_provider(
         anyhow::bail!("provider not found");
     }
     Ok(())
-}
-
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 #[cfg(test)]

@@ -124,7 +124,7 @@ impl GoogleService {
         let self_email = self.linked_email(user).await.unwrap_or_default();
         let original = self.gmail_get(user, message_id).await?;
         let headers = self.gmail_reply_headers(user, message_id).await?;
-        let raw = mime::build_reply(&self_email, &original, &headers, body);
+        let raw = mime::build_reply(self.id_gen.as_ref(), &self_email, &original, &headers, body);
         let encoded = URL_SAFE_NO_PAD.encode(raw.as_bytes());
         let payload = json!({
             "message": { "threadId": original.thread_id, "raw": encoded }

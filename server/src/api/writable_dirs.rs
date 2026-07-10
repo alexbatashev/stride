@@ -137,8 +137,8 @@ pub async fn create(
         return Err(WritableDirApiError::Conflict);
     }
 
-    let id = Uuid::now_v7();
-    let created_at = now();
+    let id = state.id_gen.new_uuid_v7();
+    let created_at = state.clock.now_unix_secs();
     writable_dirs::insert()
         .id(id)
         .owner(owner)
@@ -191,13 +191,6 @@ pub async fn writable_prefixes(db: &ConnectionPool, owner: Uuid) -> Vec<String> 
         .await
         .map(|rows| rows.into_iter().map(|row| row.path).collect())
         .unwrap_or_default()
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 #[cfg(test)]

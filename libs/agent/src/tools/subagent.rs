@@ -376,6 +376,7 @@ mod tests {
             model_registry: registry,
             max_iterations: 50,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            ..Default::default()
         })
     }
 

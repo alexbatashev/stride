@@ -138,8 +138,16 @@ mod tests {
         .unwrap();
 
         let base = tempfile::tempdir().unwrap().keep();
-        let storage = AnyFileProvider::Local(LocalFileProvider::new(base).unwrap());
-        let vfs = Arc::new(Vfs::new(db, storage, 3));
+        let storage = AnyFileProvider::Local(
+            LocalFileProvider::with_id_gen(base, Arc::new(stride_agent::SystemIdGen)).unwrap(),
+        );
+        let vfs = Arc::new(Vfs::with_clock(
+            db,
+            storage,
+            3,
+            Arc::new(stride_agent::SystemClock),
+            Arc::new(stride_agent::SystemIdGen),
+        ));
         let ws = vfs
             .get_or_create_workspace(Uuid::now_v7(), None, owner)
             .await
