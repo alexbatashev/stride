@@ -10,7 +10,7 @@ import {
   deleteWorkspaceEntry,
   uploadFiles as uploadWorkspaceFiles,
 } from "../api/threads.js";
-import { files } from "../stores/file-state.js";
+import { files } from "../stores/files.js";
 import { AppDataTable } from "./app-data-table.js";
 import { bindMenuDismiss, browserLoad, closePreview, fileActions, fileName, handleFileDialogClose, handleFileMenuSelect, handleFileRowAction, handleSelectionChange, managerLoad, openMenu, restoreVersionAndReload, type FileItem, type FileMenuTarget, type FileVersionItem, type ManagerHost, type VersionHost } from "./app-files-support.js";
 import { browserStyles, fileManagementStyles, managerStyles } from "./app-files-styles.js";
