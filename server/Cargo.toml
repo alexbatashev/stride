@@ -24,7 +24,7 @@ jsonwebtoken = "9"
 ldap3 = { version = "0.11", features = ["tls-native"] }
 llm = { path = "../libs/llm" }
 mail-parser = { version = "0.11.3", features = ["full_encoding"] }
-minisql = { path = "../libs/minisql" }
+minisql = { path = "../libs/minisql", features = ["postgres"] }
 pubsub = { path = "../libs/pubsub" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }

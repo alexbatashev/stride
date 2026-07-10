@@ -1,3 +1,4 @@
+#[cfg(feature = "postgres")]
 use crate::postgres::PostgresBackend;
 use crate::query::{QueryResult, Transaction, Value};
 use crate::sql_builder::SQLBuilder;
@@ -14,6 +15,7 @@ pub struct ConnectionPool {
 
 #[derive(Clone)]
 pub enum Backend {
+    #[cfg(feature = "postgres")]
     Postgres(PostgresBackend),
     Sqlite(SqliteBackend),
 }
@@ -24,7 +26,18 @@ impl ConnectionPool {
             let sqlite_backend = SqliteBackend::new(path)?;
             Backend::Sqlite(sqlite_backend)
         } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
-            Backend::Postgres(PostgresBackend::new(url)?)
+            #[cfg(feature = "postgres")]
+            {
+                Backend::Postgres(PostgresBackend::new(url)?)
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                return Err(format!(
+                    "Postgres support is not enabled; rebuild with the \"postgres\" feature: {}",
+                    url
+                )
+                .into());
+            }
         } else {
             return Err(format!("Unsupported database URL format: {}", url).into());
         };
@@ -171,6 +184,7 @@ impl ConnectionPool {
     /// Execute a raw SQL query asynchronously
     pub async fn query(&self, query: &str) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
         match &*self.backend {
+            #[cfg(feature = "postgres")]
             Backend::Postgres(postgres) => postgres.query(query).await,
             Backend::Sqlite(sqlite) => sqlite.query(query).await,
         }
@@ -183,6 +197,7 @@ impl ConnectionPool {
         params: Vec<Value>,
     ) -> Result<QueryResult, Box<dyn StdError + Send + Sync>> {
         match &*self.backend {
+            #[cfg(feature = "postgres")]
             Backend::Postgres(postgres) => postgres.query_with_params(query, params).await,
             Backend::Sqlite(sqlite) => sqlite.query_with_params(query, params).await,
         }
@@ -209,6 +224,7 @@ impl ConnectionPool {
         validate_identifier(vector_column)?;
 
         match &*self.backend {
+            #[cfg(feature = "postgres")]
             Backend::Postgres(_) => {
                 self.repair_postgres_legacy_vector_column(table, id_column, vector_column)
                     .await?;
@@ -224,6 +240,7 @@ impl ConnectionPool {
         self.repair_migration_hash(schema, migration_id).await
     }
 
+    #[cfg(feature = "postgres")]
     async fn repair_postgres_legacy_vector_column(
         &self,
         table: &'static str,
@@ -340,6 +357,7 @@ impl ConnectionPool {
 
     pub async fn transaction(&self) -> Result<Transaction, Box<dyn StdError + Send + Sync>> {
         match &*self.backend {
+            #[cfg(feature = "postgres")]
             Backend::Postgres(postgres) => postgres
                 .begin_transaction()
                 .await
@@ -355,6 +373,7 @@ impl ConnectionPool {
 impl Backend {
     pub(crate) fn builder(&self) -> SQLBuilder {
         match self {
+            #[cfg(feature = "postgres")]
             Backend::Postgres(postgres) => postgres.builder(),
             Backend::Sqlite(sqlite) => sqlite.builder(),
         }
@@ -381,6 +400,7 @@ fn validate_identifier(identifier: &str) -> Result<(), Box<dyn StdError + Send +
     Ok(())
 }
 
+#[cfg(feature = "postgres")]
 fn legacy_float_vector(bytes: &[u8]) -> Result<Vec<f32>, Box<dyn StdError + Send + Sync>> {
     if !bytes.len().is_multiple_of(std::mem::size_of::<f32>()) {
         return Err("legacy vector blob length is not a multiple of 4".into());

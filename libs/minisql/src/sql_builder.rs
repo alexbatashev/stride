@@ -7,12 +7,14 @@ pub enum SQLError {
 }
 
 pub enum SQLBuilder {
+    #[cfg(feature = "postgres")]
     Postgres(crate::postgres::PostgresBuilder),
     Sqlite(crate::sqlite::SqliteBuilder),
 }
 impl SQLBuilder {
     pub fn build_table_setup(&self, table: &Table) -> Result<Vec<String>, SQLError> {
         match self {
+            #[cfg(feature = "postgres")]
             SQLBuilder::Postgres(b) => b.build_table_setup(table),
             SQLBuilder::Sqlite(b) => b.build_table_setup(table),
         }
@@ -20,6 +22,7 @@ impl SQLBuilder {
 
     pub fn build_table(&self, table: &Table) -> Result<String, SQLError> {
         match self {
+            #[cfg(feature = "postgres")]
             SQLBuilder::Postgres(b) => b.build_table(table),
             SQLBuilder::Sqlite(b) => b.build_table(table),
         }
@@ -27,6 +30,7 @@ impl SQLBuilder {
 
     pub fn build_alter_table(&self, alter: &AlterTable) -> Result<Vec<String>, SQLError> {
         match self {
+            #[cfg(feature = "postgres")]
             SQLBuilder::Postgres(b) => b.build_alter_table(alter),
             SQLBuilder::Sqlite(b) => b.build_alter_table(alter),
         }
@@ -37,6 +41,7 @@ impl SQLBuilder {
         search: &VectorSearch<Tab>,
     ) -> Result<(String, Vec<Value>), SQLError> {
         match self {
+            #[cfg(feature = "postgres")]
             SQLBuilder::Postgres(b) => b.build_vector_search(search),
             SQLBuilder::Sqlite(b) => b.build_vector_search(search),
         }

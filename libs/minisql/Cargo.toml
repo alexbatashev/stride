@@ -3,13 +3,18 @@ name = "minisql"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["sqlite"]
+sqlite = ["dep:sqlite", "dep:sqlite-vec"]
+postgres = ["dep:postgres"]
+
 [dependencies]
 bytes = "1"
 futures = "0.3.32"
-postgres = { version = "0.19.12", features = ["with-uuid-1"] }
+postgres = { version = "0.19.12", features = ["with-uuid-1"], optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
-sqlite = { version = "0.37.0", features = ["bundled"] }
-sqlite-vec = "0.1.9"
+sqlite = { version = "0.37.0", features = ["bundled"], optional = true }
+sqlite-vec = { version = "0.1.9", optional = true }
 sqlparser = "0.61.0"
 uuid = { version = "1.23.1", features = ["v4", "v7"] }
 minisql-macros = { path = "../minisql-macros" }
