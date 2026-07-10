@@ -9,7 +9,7 @@ readme = "README.md"
 authors = ["Alexander Batashev <alexbatashev@gmail.com>"]
 keywords = ["sql", "sqlite", "postgres", "query-builder", "migrations"]
 categories = ["database"]
-rust-version = "1.85"
+rust-version = "1.87"
 
 [lib]
 name = "minisql"

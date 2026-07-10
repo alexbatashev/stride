@@ -9,7 +9,7 @@ readme = "README.md"
 authors = ["Alexander Batashev <alexbatashev@gmail.com>"]
 keywords = ["llm", "openai", "anthropic", "ollama", "ai"]
 categories = ["api-bindings", "asynchronous"]
-rust-version = "1.85"
+rust-version = "1.87"
 
 [lib]
 name = "llm"

@@ -9,7 +9,7 @@ readme = "README.md"
 authors = ["Alexander Batashev <alexbatashev@gmail.com>"]
 keywords = ["http", "client", "async", "sse", "streaming"]
 categories = ["network-programming", "web-programming::http-client", "asynchronous"]
-rust-version = "1.85"
+rust-version = "1.87"
 
 [lib]
 name = "tinynet"
