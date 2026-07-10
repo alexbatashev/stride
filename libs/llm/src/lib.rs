@@ -166,12 +166,6 @@ pub enum Error {
     Unknown,
 }
 
-impl From<Error> for axum::Error {
-    fn from(val: Error) -> axum::Error {
-        axum::Error::new(val)
-    }
-}
-
 impl From<tinynet::Error> for Error {
     fn from(e: tinynet::Error) -> Self {
         match e {

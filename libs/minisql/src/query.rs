@@ -131,6 +131,7 @@ impl Transaction {
 
     pub async fn commit(&self) -> Result<(), Box<dyn Error + Sync + Send>> {
         match &*self.backend {
+            #[cfg(feature = "postgres")]
             Backend::Postgres(postgres) => postgres.commit_transaction().await,
             Backend::Sqlite(sqlite) => sqlite.commit_transaction().await,
         }
@@ -140,6 +141,7 @@ impl Transaction {
 impl Drop for Transaction {
     fn drop(&mut self) {
         match &*self.backend {
+            #[cfg(feature = "postgres")]
             Backend::Postgres(postgres) => postgres.rollback_transaction_fire_and_forget(),
             Backend::Sqlite(sqlite) => sqlite.rollback_transaction_fire_and_forget(),
         }

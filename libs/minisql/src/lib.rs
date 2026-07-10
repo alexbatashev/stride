@@ -1,6 +1,7 @@
 mod connection_pool;
 mod dsl;
 mod migration;
+#[cfg(feature = "postgres")]
 mod postgres;
 mod query;
 mod sql_builder;
