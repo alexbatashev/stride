@@ -1,7 +1,18 @@
 [package]
-name = "tinynet"
+name = "stride-tinynet"
 version = "0.1.0"
 edition = "2024"
+description = "Minimal runtime-free async HTTP/1 client (mio + rustls) with SSE/NDJSON streaming decoders"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/alexbatashev/stride"
+readme = "README.md"
+authors = ["Alexander Batashev <alexbatashev@gmail.com>"]
+keywords = ["http", "client", "async", "sse", "streaming"]
+categories = ["network-programming", "web-programming::http-client", "asynchronous"]
+rust-version = "1.87"
+
+[lib]
+name = "tinynet"
 
 [dependencies]
 async-stream = "0.3.6"

@@ -22,15 +22,15 @@ hyper = { version = "1.9.0", features = ["http1", "http2", "server"] }
 include_dir = "0.7"
 jsonwebtoken = "9"
 ldap3 = { version = "0.11", features = ["tls-native"] }
-llm = { path = "../libs/llm" }
+llm = { path = "../libs/llm", package = "stride-llm" }
 mail-parser = { version = "0.11.3", features = ["full_encoding"] }
-minisql = { path = "../libs/minisql", features = ["postgres"] }
+minisql = { path = "../libs/minisql", package = "stride-minisql", features = ["postgres"] }
 pubsub = { path = "../libs/pubsub" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tinynet = { path = "../libs/tinynet" }
+tinynet = { path = "../libs/tinynet", package = "stride-tinynet" }
 toml = "0.8"
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-native-tls = "0.3"

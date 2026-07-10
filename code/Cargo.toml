@@ -11,7 +11,7 @@ path = "main.rs"
 
 [dependencies]
 # Internal
-llm = { path = "../libs/llm" }
+llm = { path = "../libs/llm", package = "stride-llm" }
 stride-agent = { path = "../libs/agent" }
 
 # Async runtime
@@ -50,7 +50,7 @@ capnp-rpc = "0.20"
 
 # Daemon management
 tokio-util = { version = "0.7", features = ["compat"] }
-minisql = { path = "../libs/minisql" }
+minisql = { path = "../libs/minisql", package = "stride-minisql" }
 
 [build-dependencies]
 capnpc = "0.20"
