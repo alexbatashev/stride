@@ -350,7 +350,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{Config, Server},
-        runner::inproc::InProcessAgentPool,
+        runner::pool::InProcessAgentPool,
     };
     use minisql::ConnectionPool;
     use stride_agent::{AgentConfig, DEFAULT_MODEL, ModelRegEntry, ModelRegistry};

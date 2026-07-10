@@ -5,7 +5,14 @@ use uuid::Uuid;
 
 use crate::db::MessageFormat;
 
+pub(crate) mod bootstrap;
 pub mod inproc;
+pub mod pool;
+mod prompt;
+
+pub(crate) fn db_error(err: Box<dyn std::error::Error + Send + Sync>) -> AgentPoolError {
+    AgentPoolError::Internal(anyhow::anyhow!(err.to_string()))
+}
 
 pub type EventSeq = u64;
 

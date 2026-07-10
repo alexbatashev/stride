@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::api::threads::DEFAULT_THREAD_TITLE;
 use crate::db::{projects, threads};
 use crate::runner::AgentRequest;
-use crate::runner::inproc::PoolHandle;
+use crate::runner::pool::PoolHandle;
 use crate::vfs::Vfs;
 
 /// Longest thread title we derive from an opening message.

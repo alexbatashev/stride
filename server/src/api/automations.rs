@@ -556,7 +556,7 @@ mod tests {
             self, AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_runs, automations,
             users,
         },
-        runner::inproc::InProcessAgentPool,
+        runner::pool::InProcessAgentPool,
         scheduler::ExecutorHandle,
     };
 

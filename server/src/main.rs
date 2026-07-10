@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(python) = tools.python.as_ref()
         && python.enabled.unwrap_or(true)
     {
-        let python_config = runner::inproc::python_tool_config(python);
+        let python_config = runner::bootstrap::python_tool_config(python);
         if matches!(python_config.backend, execenv::BackendKind::Eryx) {
             execenv::prepare_eryx_runtime(python_config).await?;
         }
@@ -195,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let public_url = config.public_url();
-    let mut runner_builder = runner::inproc::InProcessAgentPool::builder(
+    let mut runner_builder = runner::pool::InProcessAgentPool::builder(
         db.clone(),
         model_config.clone(),
         config.clone(),
