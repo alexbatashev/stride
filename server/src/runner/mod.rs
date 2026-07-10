@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use stride_agent::QuizQuestion;
 use uuid::Uuid;
 
@@ -19,7 +20,7 @@ pub fn thread_events_topic(thread_id: Uuid) -> String {
 pub const RUNNER_LIFECYCLE_TOPIC: &str = "runner-lifecycle";
 
 /// Lifecycle of a thread runner, published on [`RUNNER_LIFECYCLE_TOPIC`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RunnerLifecycle {
     Activated { thread_id: Uuid },
     Deactivated { thread_id: Uuid },
@@ -61,7 +62,7 @@ pub struct AgentRequest {
     pub model: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct RunId(pub Uuid);
 
 #[derive(Clone, Debug)]
@@ -100,7 +101,7 @@ pub struct PendingQuiz {
     pub questions: Vec<QuizQuestion>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentEvent {
     pub seq: EventSeq,
     pub thread_id: Uuid,
@@ -108,7 +109,7 @@ pub struct AgentEvent {
     pub kind: AgentEventKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AgentEventKind {
     RunStarted,
     UserMessageCommitted {
