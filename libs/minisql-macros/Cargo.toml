@@ -1,9 +1,18 @@
 [package]
-name = "minisql-macros"
+name = "stride-minisql-macros"
 version = "0.1.0"
 edition = "2024"
+description = "Procedural macros for stride-minisql: declarative, type-safe migration schemas"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/alexbatashev/stride"
+readme = "README.md"
+authors = ["Alexander Batashev <alexbatashev@gmail.com>"]
+keywords = ["sql", "macro", "migrations", "database"]
+categories = ["database", "development-tools::procedural-macro-helpers"]
+rust-version = "1.85"
 
 [lib]
+name = "minisql_macros"
 proc-macro = true
 
 [dependencies]

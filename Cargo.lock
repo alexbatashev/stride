@@ -1074,11 +1074,11 @@ dependencies = [
  "crossterm 0.28.1",
  "dirs 5.0.1",
  "futures",
- "llm",
- "minisql",
  "serde",
  "serde_json",
  "stride-agent",
+ "stride-llm",
+ "stride-minisql",
  "termimad",
  "thiserror 2.0.18",
  "tokio",
@@ -2055,10 +2055,10 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
- "llm",
  "serde",
  "serde_json",
  "stride-agent",
+ "stride-llm",
  "tar",
  "tempfile",
  "tokio",
@@ -3519,26 +3519,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
-name = "llm"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "axum",
- "base64",
- "bytes",
- "futures",
- "http-body-util",
- "hyper",
- "insta",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tinynet",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3678,31 +3658,6 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
-name = "minisql"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures",
- "minisql-macros",
- "postgres",
- "serde",
- "sqlite",
- "sqlite-vec",
- "sqlparser",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "minisql-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "miniz_oxide"
@@ -5164,17 +5119,17 @@ dependencies = [
  "include_dir",
  "jsonwebtoken",
  "ldap3",
- "llm",
  "mail-parser",
- "minisql",
  "pubsub",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "stride-agent",
+ "stride-llm",
+ "stride-minisql",
+ "stride-tinynet",
  "tempfile",
- "tinynet",
  "tokio",
  "tokio-native-tls",
  "toml 0.8.23",
@@ -5482,15 +5437,60 @@ dependencies = [
  "glob",
  "http-body-util",
  "hyper",
- "llm",
- "minisql",
  "patch",
  "serde",
  "serde_json",
+ "stride-llm",
+ "stride-minisql",
+ "stride-tinynet",
  "thiserror 2.0.18",
- "tinynet",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "stride-llm"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "axum",
+ "base64",
+ "bytes",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "insta",
+ "serde",
+ "serde_json",
+ "stride-tinynet",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "stride-minisql"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "postgres",
+ "serde",
+ "sqlite",
+ "sqlite-vec",
+ "sqlparser",
+ "stride-minisql-macros",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "stride-minisql-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -5501,6 +5501,26 @@ dependencies = [
  "stride-agent",
  "tokio",
  "uniffi",
+]
+
+[[package]]
+name = "stride-tinynet"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "axum",
+ "axum-server",
+ "bytes",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "mio",
+ "rcgen",
+ "rustls",
+ "rustls-aws-lc-rs",
+ "thiserror 2.0.18",
+ "tokio",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -5807,26 +5827,6 @@ dependencies = [
  "arrayref",
  "bytemuck",
  "strict-num",
-]
-
-[[package]]
-name = "tinynet"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "axum",
- "axum-server",
- "bytes",
- "futures",
- "http-body-util",
- "hyper",
- "mio",
- "rcgen",
- "rustls",
- "rustls-aws-lc-rs",
- "thiserror 2.0.18",
- "tokio",
- "webpki-roots 1.0.8",
 ]
 
 [[package]]
