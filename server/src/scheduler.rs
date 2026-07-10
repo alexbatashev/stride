@@ -26,7 +26,7 @@ use crate::db::{AutomationKind, NotifyKind, RunStatus, TriggerKind, automation_r
 use crate::email::ImapService;
 use crate::google::GoogleService;
 use crate::notify::{self, RunResult};
-use crate::runner::inproc::{
+use crate::runner::bootstrap::{
     ScriptableToolRegistryContext, python_tool_config, scriptable_tool_registry,
 };
 use crate::triggers;
