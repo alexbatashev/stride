@@ -999,7 +999,7 @@ async fn handle_ws(
                             break;
                         }
                     }
-                    Err(pubsub::RecvError::Lagged(_)) => {}
+                    Err(pubsub::RecvError::Lagged(_)) | Err(pubsub::RecvError::Decode(_)) => {}
                     Err(pubsub::RecvError::Closed) => break,
                 }
             }

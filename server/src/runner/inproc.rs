@@ -1269,8 +1269,8 @@ async fn ensure_runner(
 
     // Announce the new runner so the Telegram supervisor can bind a subscriber task to its
     // lifetime. Published for every thread; the supervisor filters to Telegram-mapped ones.
-    pubsub::topic::<RunnerLifecycle>(RUNNER_LIFECYCLE_TOPIC)
-        .publish(RunnerLifecycle::Activated { thread_id });
+    let _ = pubsub::topic::<RunnerLifecycle>(RUNNER_LIFECYCLE_TOPIC)
+        .publish(&RunnerLifecycle::Activated { thread_id });
 
     Ok(())
 }
@@ -2167,7 +2167,7 @@ async fn emit(
         }
     };
 
-    pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(event);
+    let _ = pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(&event);
 }
 
 fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
@@ -2194,9 +2194,9 @@ fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
 /// Tears down a thread's pub/sub presence: drops its event topic (so subscribers observe
 /// `Closed`) and announces `Deactivated` so the Telegram supervisor aborts its subscriber task.
 fn deactivate_thread(thread_id: Uuid) {
-    pubsub::remove::<AgentEvent>(&thread_events_topic(thread_id));
-    pubsub::topic::<RunnerLifecycle>(RUNNER_LIFECYCLE_TOPIC)
-        .publish(RunnerLifecycle::Deactivated { thread_id });
+    pubsub::remove(&thread_events_topic(thread_id));
+    let _ = pubsub::topic::<RunnerLifecycle>(RUNNER_LIFECYCLE_TOPIC)
+        .publish(&RunnerLifecycle::Deactivated { thread_id });
 }
 
 async fn thread_project_id(

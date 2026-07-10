@@ -12,7 +12,7 @@ pub enum Role {
     Tool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MessageFormat {
     Markdown,
     Html,

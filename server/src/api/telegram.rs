@@ -948,7 +948,7 @@ async fn run_telegram_subscriber(state: Arc<ServerState>, thread_id: Uuid) {
     loop {
         match events.recv().await {
             Ok(event) => subscriber.handle_event(&event).await,
-            Err(pubsub::RecvError::Lagged(_)) => {}
+            Err(pubsub::RecvError::Lagged(_)) | Err(pubsub::RecvError::Decode(_)) => {}
             Err(pubsub::RecvError::Closed) => break,
         }
     }
@@ -964,7 +964,7 @@ pub(crate) async fn supervise(state: Arc<ServerState>) {
     loop {
         let event = match lifecycle.recv().await {
             Ok(event) => event,
-            Err(pubsub::RecvError::Lagged(_)) => continue,
+            Err(pubsub::RecvError::Lagged(_)) | Err(pubsub::RecvError::Decode(_)) => continue,
             Err(pubsub::RecvError::Closed) => break,
         };
 
@@ -3043,18 +3043,20 @@ mod tests {
         ) -> Result<RunId, AgentPoolError> {
             self.received.lock().unwrap().push(request.content);
             let run_id = RunId(Uuid::now_v7());
-            pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(AgentEvent {
-                seq: 1,
-                thread_id,
-                run_id: Some(run_id),
-                kind: AgentEventKind::RunStarted,
-            });
-            pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(AgentEvent {
-                seq: 2,
-                thread_id,
-                run_id: Some(run_id),
-                kind: AgentEventKind::RunFinished,
-            });
+            let _ =
+                pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(&AgentEvent {
+                    seq: 1,
+                    thread_id,
+                    run_id: Some(run_id),
+                    kind: AgentEventKind::RunStarted,
+                });
+            let _ =
+                pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(&AgentEvent {
+                    seq: 2,
+                    thread_id,
+                    run_id: Some(run_id),
+                    kind: AgentEventKind::RunFinished,
+                });
             Ok(run_id)
         }
 
