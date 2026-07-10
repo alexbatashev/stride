@@ -206,6 +206,9 @@ pub(crate) async fn ensure_runner(
     system_prompt
         .push_str(&crate::tools::memory::palace_map(&db, user_id, project_title.as_deref()).await);
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
+    // Resume the per-thread event counter from the journal so seq never resets on
+    // runner recreation; a fresh thread with no journaled events starts at 0.
+    let last_event_seq = super::inproc::load_last_event_seq(&db, thread_id).await;
     let agent = BaseAgent::new(
         stride_agent::DEFAULT_MODEL.to_string(),
         config.clone(),
@@ -412,7 +415,7 @@ pub(crate) async fn ensure_runner(
             pending_approvals: HashMap::new(),
             pending_quizzes: HashMap::new(),
             queued: std::collections::VecDeque::new(),
-            last_event_seq: 0,
+            last_event_seq,
             next_message_seq,
             status: crate::runner::ThreadStatus::Idle,
             in_progress: None,

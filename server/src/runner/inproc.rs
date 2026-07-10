@@ -1,6 +1,7 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use futures::StreamExt;
+use minisql::{ConnectionPool, Value};
 use stride_agent::{
     AgentResponseChunk,
     sanitizer::{HtmlFormattingSanitizer, StreamingMessageSanitizer},
@@ -12,11 +13,16 @@ use crate::{
     db::{MessageFormat, Role, messages, threads},
     model_registry,
     runner::{
-        AgentEventKind, AgentPoolError, PartialAgentMessage, RunId, db_error,
+        AgentEvent, AgentEventKind, AgentPoolError, PartialAgentMessage, RunId, db_error,
         pool::{PendingApprovalState, PendingQuizState, WorkerState, drain_queue, with_runner},
         thread_events_topic,
     },
 };
+
+/// Number of most-recent runs whose structural events are retained in the
+/// journal. Older runs are pruned when a run completes; the journal exists for
+/// reconnect replay and event attachment, not audit, so it stays small.
+const JOURNAL_RETAINED_RUNS: usize = 5;
 
 struct AssistantMessageState {
     id: Option<Uuid>,
@@ -672,22 +678,189 @@ pub(crate) async fn emit(
     run_id: Option<RunId>,
     kind: AgentEventKind,
 ) {
-    let event = {
+    let (event, db, event_id) = {
         let mut state = state.borrow_mut();
-        let Some(runner) = state.threads.get_mut(&thread_id) else {
-            return;
+        let seq = {
+            let Some(runner) = state.threads.get_mut(&thread_id) else {
+                return;
+            };
+            runner.last_event_seq += 1;
+            runner.last_event_seq
         };
-        runner.last_event_seq += 1;
-        crate::runner::AgentEvent {
-            seq: runner.last_event_seq,
+        let event_id = state.init.config.id_gen.new_uuid_v7();
+        let db = state.init.db.clone();
+        let event = AgentEvent {
+            seq,
             thread_id,
             run_id,
             kind,
+        };
+        (event, db, event_id)
+    };
+
+    let _ = pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(&event);
+    journal_event(&db, event_id, &event).await;
+}
+
+/// Per-kind journal metadata: `(kind tag, message_id, terminal)`. Returns `None`
+/// for deltas, which are never journaled — the committed message row holds the
+/// final text and the snapshot carries in-flight partials.
+fn journal_metadata(kind: &AgentEventKind) -> Option<(&'static str, Option<Uuid>, bool)> {
+    match kind {
+        AgentEventKind::RunStarted => Some(("run_started", None, false)),
+        AgentEventKind::UserMessageCommitted { message_id, .. } => {
+            Some(("user_message_committed", Some(*message_id), false))
+        }
+        AgentEventKind::AgentMessageCommitted { message_id, .. } => {
+            Some(("agent_message_committed", Some(*message_id), false))
+        }
+        AgentEventKind::ToolStarted { .. } => Some(("tool_started", None, false)),
+        AgentEventKind::ToolFinished { .. } => Some(("tool_finished", None, false)),
+        AgentEventKind::WaitingForApproval { .. } => Some(("waiting_for_approval", None, false)),
+        AgentEventKind::ApprovalResolved { .. } => Some(("approval_resolved", None, false)),
+        AgentEventKind::WaitingForQuiz { .. } => Some(("waiting_for_quiz", None, false)),
+        AgentEventKind::QuizAnswered { .. } => Some(("quiz_answered", None, false)),
+        AgentEventKind::RunFinished => Some(("run_finished", None, true)),
+        AgentEventKind::RunFailed { .. } => Some(("run_failed", None, true)),
+        AgentEventKind::RunCancelled => Some(("run_cancelled", None, true)),
+        AgentEventKind::AgentDelta { .. } | AgentEventKind::ThinkingDelta { .. } => None,
+    }
+}
+
+/// Writes a structural event to the durable journal and prunes old runs once a
+/// terminal event lands. Delta events and events without a run are skipped.
+async fn journal_event(db: &ConnectionPool, event_id: Uuid, event: &AgentEvent) {
+    let Some((kind_tag, message_id, terminal)) = journal_metadata(&event.kind) else {
+        return;
+    };
+    let Some(run_id) = event.run_id else {
+        return;
+    };
+
+    let payload = serde_json::to_string(&event.kind).ok();
+    let result = db
+        .query_with_params(
+            "INSERT INTO thread_events \
+             (id, thread_id, run_id, seq, agent_path, kind, message_id, tool_call_id, payload) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                Value::Uuid(event_id),
+                Value::Uuid(event.thread_id),
+                Value::Uuid(run_id.0),
+                Value::Integer(event.seq as i64),
+                Value::Null,
+                Value::Text(kind_tag.to_string()),
+                message_id.map(Value::Uuid).unwrap_or(Value::Null),
+                Value::Null,
+                payload.map(Value::Text).unwrap_or(Value::Null),
+            ],
+        )
+        .await;
+
+    if let Err(error) = result {
+        tracing::warn!(thread_id = %event.thread_id, %error, "failed to journal thread event");
+        return;
+    }
+
+    if terminal {
+        prune_journal(db, event.thread_id).await;
+    }
+}
+
+/// Keeps only the most recent [`JOURNAL_RETAINED_RUNS`] runs' events for a thread.
+async fn prune_journal(db: &ConnectionPool, thread_id: Uuid) {
+    let result = db
+        .query_with_params(
+            "DELETE FROM thread_events WHERE thread_id = ? AND run_id NOT IN ( \
+               SELECT run_id FROM thread_events WHERE thread_id = ? \
+               GROUP BY run_id ORDER BY MAX(seq) DESC LIMIT ?)",
+            vec![
+                Value::Uuid(thread_id),
+                Value::Uuid(thread_id),
+                Value::Integer(JOURNAL_RETAINED_RUNS as i64),
+            ],
+        )
+        .await;
+    if let Err(error) = result {
+        tracing::warn!(%thread_id, %error, "failed to prune thread event journal");
+    }
+}
+
+/// Highest journaled `seq` for a thread, or 0 when the journal is empty. Used to
+/// (re)initialize a worker's per-thread counter so it never resets across runner
+/// recreation — every structural event, including the terminal one of each run,
+/// is journaled, so at rest this equals the last emitted seq.
+pub(crate) async fn load_last_event_seq(db: &ConnectionPool, thread_id: Uuid) -> u64 {
+    let result = db
+        .query_with_params(
+            "SELECT MAX(seq) AS max_seq FROM thread_events WHERE thread_id = ?",
+            vec![Value::Uuid(thread_id)],
+        )
+        .await;
+    match result {
+        Ok(rows) => rows
+            .rows()
+            .first()
+            .and_then(|row| row.get_int("max_seq"))
+            .and_then(|seq| u64::try_from(seq).ok())
+            .unwrap_or(0),
+        Err(error) => {
+            tracing::warn!(%thread_id, %error, "failed to load last event seq; starting at 0");
+            0
+        }
+    }
+}
+
+/// Reads journaled structural events with `seq` greater than `after`, in seq
+/// order, reconstructing [`AgentEvent`]s from the stored payload so a
+/// reconnecting consumer replays identical frames.
+pub(crate) async fn journal_events_after(
+    db: &ConnectionPool,
+    thread_id: Uuid,
+    after: u64,
+) -> Vec<AgentEvent> {
+    let result = db
+        .query_with_params(
+            "SELECT seq, run_id, payload FROM thread_events \
+             WHERE thread_id = ? AND seq > ? ORDER BY seq ASC",
+            vec![Value::Uuid(thread_id), Value::Integer(after as i64)],
+        )
+        .await;
+    let rows = match result {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(%thread_id, %error, "failed to read thread event journal");
+            return Vec::new();
         }
     };
 
-    let _ =
-        pubsub::topic::<crate::runner::AgentEvent>(&thread_events_topic(thread_id)).publish(&event);
+    let mut events = Vec::new();
+    for row in rows.rows() {
+        let Some(seq) = row.get_int("seq").and_then(|seq| u64::try_from(seq).ok()) else {
+            continue;
+        };
+        let run_id = match row.get("run_id") {
+            Some(Value::Uuid(id)) => Some(RunId(*id)),
+            Some(Value::Blob(bytes)) if bytes.len() == 16 => {
+                Uuid::from_slice(bytes).ok().map(RunId)
+            }
+            Some(Value::Text(text)) => Uuid::parse_str(text).ok().map(RunId),
+            _ => None,
+        };
+        let Some(payload) = row.get_text("payload") else {
+            continue;
+        };
+        let Ok(kind) = serde_json::from_str::<AgentEventKind>(payload) else {
+            continue;
+        };
+        events.push(AgentEvent {
+            seq,
+            thread_id,
+            run_id,
+            kind,
+        });
+    }
+    events
 }
 
 async fn update_message(
@@ -755,6 +928,77 @@ mod tests {
         .system_prompt("System prompt")
         .idle_ttl(Duration::from_secs(60))
         .build()
+    }
+
+    /// Pool with deterministic clock and id generator so event ids and timestamps
+    /// are reproducible; seq assertions stay stable regardless.
+    fn deterministic_pool(db: ConnectionPool, models: ModelRegistry) -> InProcessAgentPool {
+        use stride_agent::determinism::{SeededIdGen, TestClock};
+        InProcessAgentPool::builder(
+            db,
+            std::sync::Arc::new(AgentConfig {
+                model_registry: models,
+                max_iterations: 4,
+                observer: std::sync::Arc::new(stride_agent::NoopAgentObserver),
+                clock: std::sync::Arc::new(TestClock::new(1_700_000_000_000)),
+                id_gen: std::sync::Arc::new(SeededIdGen::new(7)),
+            }),
+            test_server_config(),
+            SecretCipher::new("test-secret"),
+        )
+        .system_prompt("System prompt")
+        .idle_ttl(Duration::from_secs(60))
+        .build()
+    }
+
+    async fn seed_owner_and_thread(db: &ConnectionPool, owner: Uuid, thread_id: Uuid) {
+        users::insert()
+            .id(owner)
+            .username(format!("u-{}", owner.as_simple()).as_str())
+            .password_hash("hash")
+            .execute(db)
+            .await
+            .unwrap();
+        threads::insert()
+            .id(thread_id)
+            .owner(owner)
+            .title("Test")
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    fn single_reply_registry(text: &str) -> ModelRegistry {
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![vec![text_chunk(text)]])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                reasoning_effort: None,
+                vision: false,
+            },
+        );
+        models
+    }
+
+    async fn run_to_completion(pool: &InProcessAgentPool, thread_id: Uuid, content: &str) {
+        pool.send(
+            thread_id,
+            AgentRequest {
+                content: content.to_string(),
+                images: Vec::new(),
+                model: None,
+            },
+        )
+        .await
+        .unwrap();
+        while pool.status(thread_id).await.unwrap() != ThreadStatus::Idle {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]
@@ -1769,5 +2013,222 @@ mod tests {
         assert!(saw_started, "subscriber must receive RunStarted");
         assert!(saw_delta, "subscriber must receive AgentDelta");
         assert!(saw_finished, "subscriber must receive RunFinished");
+    }
+
+    fn count_run_finished(events: &[AgentEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e.kind, AgentEventKind::RunFinished))
+            .count()
+    }
+
+    async fn wait_for_finished_runs(db: &ConnectionPool, thread_id: Uuid, want: usize) {
+        for _ in 0..200 {
+            let events = super::journal_events_after(db, thread_id, 0).await;
+            if count_run_finished(&events) >= want {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("journal never reached {want} finished runs");
+    }
+
+    // R1 regression: after the runner is evicted and recreated, the per-thread seq must keep
+    // climbing from the journal's max, not reset to 0 (which the client would silently drop).
+    #[tokio::test]
+    async fn seq_is_monotonic_across_runner_recreation() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        seed_owner_and_thread(&db, owner, thread_id).await;
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![vec![text_chunk("one")], vec![text_chunk("two")]])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                reasoning_effort: None,
+                vision: false,
+            },
+        );
+        let pool = deterministic_pool(db.clone(), models);
+
+        run_to_completion(&pool, thread_id, "first").await;
+        wait_for_finished_runs(&db, thread_id, 1).await;
+        let first = super::journal_events_after(&db, thread_id, 0).await;
+        let max_after_first = first.iter().map(|e| e.seq).max().unwrap();
+        assert!(max_after_first > 0);
+        assert_eq!(
+            super::load_last_event_seq(&db, thread_id).await,
+            max_after_first
+        );
+
+        // Evict the runner; the next request recreates it from scratch.
+        pool.shutdown_thread(thread_id).await.unwrap();
+
+        run_to_completion(&pool, thread_id, "second").await;
+        wait_for_finished_runs(&db, thread_id, 2).await;
+        let all = super::journal_events_after(&db, thread_id, 0).await;
+
+        let seqs: Vec<u64> = all.iter().map(|e| e.seq).collect();
+        assert!(
+            seqs.windows(2).all(|w| w[0] < w[1]),
+            "journal seqs must be strictly increasing: {seqs:?}"
+        );
+        let second_min = all
+            .iter()
+            .map(|e| e.seq)
+            .filter(|seq| *seq > max_after_first)
+            .min()
+            .unwrap();
+        assert_eq!(
+            second_min,
+            max_after_first + 1,
+            "recreated runner must continue seq from the journal, not reset"
+        );
+    }
+
+    // 5b: only structural events are journaled (no deltas) and they round-trip through the DB.
+    #[tokio::test]
+    async fn journal_round_trip_stores_structural_events_only() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        seed_owner_and_thread(&db, owner, thread_id).await;
+
+        let pool = deterministic_pool(db.clone(), single_reply_registry("pong"));
+        run_to_completion(&pool, thread_id, "ping").await;
+        wait_for_finished_runs(&db, thread_id, 1).await;
+
+        let events = super::journal_events_after(&db, thread_id, 0).await;
+        assert!(
+            events.iter().all(|e| !matches!(
+                e.kind,
+                AgentEventKind::AgentDelta { .. } | AgentEventKind::ThinkingDelta { .. }
+            )),
+            "deltas must not be journaled"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.kind, AgentEventKind::RunStarted))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.kind, AgentEventKind::UserMessageCommitted { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.kind, AgentEventKind::AgentMessageCommitted { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.kind, AgentEventKind::RunFinished))
+        );
+
+        let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(
+            super::load_last_event_seq(&db, thread_id).await,
+            *seqs.last().unwrap()
+        );
+    }
+
+    // 5c: `?after=` replay returns exactly the journaled events past the cursor, in order — the
+    // same set a reconnecting client or a `Lagged` resync recovers.
+    #[tokio::test]
+    async fn journal_replay_after_cursor_is_exact() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        seed_owner_and_thread(&db, owner, thread_id).await;
+
+        let pool = deterministic_pool(db.clone(), single_reply_registry("pong"));
+        run_to_completion(&pool, thread_id, "ping").await;
+        wait_for_finished_runs(&db, thread_id, 1).await;
+
+        let all = super::journal_events_after(&db, thread_id, 0).await;
+        assert!(all.len() >= 3, "need several events to split on a cursor");
+        let cursor = all[all.len() / 2].seq;
+
+        let tail = super::journal_events_after(&db, thread_id, cursor).await;
+        assert!(
+            tail.iter().all(|e| e.seq > cursor),
+            "replay must exclude events at or below the cursor"
+        );
+        let expected: Vec<u64> = all
+            .iter()
+            .map(|e| e.seq)
+            .filter(|seq| *seq > cursor)
+            .collect();
+        let got: Vec<u64> = tail.iter().map(|e| e.seq).collect();
+        assert_eq!(got, expected, "replay must be exact and ordered");
+    }
+
+    // R3/5c: a consumer that fell behind past a tool call recovers the missed structural tool
+    // events from the journal — the data path the WS/Telegram `Lagged` resync replays.
+    #[tokio::test]
+    async fn resync_recovers_tool_events_past_cursor() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        seed_owner_and_thread(&db, owner, thread_id).await;
+
+        let mut models = ModelRegistry::new();
+        models.add_model(
+            DEFAULT_MODEL,
+            ModelRegEntry {
+                api: llm::Mock::new()
+                    .with_stream_chunks(vec![
+                        vec![tool_call_chunk("call-1", "missing_tool", r#"{"value":1}"#)],
+                        vec![text_chunk("done")],
+                    ])
+                    .into(),
+                token: "-".to_string(),
+                model_name: "mock-model".to_string(),
+                reasoning_effort: None,
+                vision: false,
+            },
+        );
+        let pool = deterministic_pool(db.clone(), models);
+        run_to_completion(&pool, thread_id, "run tool").await;
+        wait_for_finished_runs(&db, thread_id, 1).await;
+
+        let all = super::journal_events_after(&db, thread_id, 0).await;
+        // Cursor just before the first tool event, as if the consumer lagged from there.
+        let tool_started = all
+            .iter()
+            .find(|e| matches!(e.kind, AgentEventKind::ToolStarted { .. }))
+            .expect("tool run must journal ToolStarted");
+        let cursor = tool_started.seq - 1;
+
+        let recovered = super::journal_events_after(&db, thread_id, cursor).await;
+        assert!(
+            recovered
+                .iter()
+                .any(|e| matches!(e.kind, AgentEventKind::ToolStarted { .. })),
+            "resync must recover ToolStarted"
+        );
+        assert!(
+            recovered
+                .iter()
+                .any(|e| matches!(e.kind, AgentEventKind::ToolFinished { .. })),
+            "resync must recover ToolFinished"
+        );
     }
 }
