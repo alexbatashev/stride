@@ -35,14 +35,11 @@ pub async fn publish_image(
     };
 
     let location = vfs.store_blob(bytes).await?;
-    let token = Uuid::now_v7().as_simple().to_string();
-    let created_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default();
+    let token = vfs.id_gen.new_uuid_v7().as_simple().to_string();
+    let created_at = vfs.clock.now_unix_secs();
 
     public_images::insert()
-        .id(Uuid::now_v7())
+        .id(vfs.id_gen.new_uuid_v7())
         .token(token.as_str())
         .owner(owner)
         .location(location.as_str())

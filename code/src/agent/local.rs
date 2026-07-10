@@ -4,7 +4,8 @@ use futures::{Stream, StreamExt, stream};
 use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::ConnectionPool;
 use stride_agent::{
-    AgentConfig, AgentError, AgentResponseChunk, BaseAgent, ModelRegEntry, ModelRegistry, Tool,
+    AgentConfig, AgentError, AgentResponseChunk, BaseAgent, IdGen, ModelRegEntry, ModelRegistry,
+    SystemIdGen, Tool,
     tools::{explorer::make_explorer, file::ReadFileTool, glob::GlobTool, patch::PatchTool},
 };
 use uuid::Uuid;
@@ -20,6 +21,7 @@ pub struct LocalAgent {
     workdir: PathBuf,
     agent: stride_agent::BaseAgent,
     thread: Rc<RefCell<ThreadState>>,
+    id_gen: Arc<dyn IdGen>,
 }
 
 #[derive(Default)]
@@ -42,10 +44,13 @@ impl LocalAgent {
     pub fn new(config: &Config, db: ConnectionPool, workdir: PathBuf) -> Self {
         let model_registry = create_model_registry(config);
 
+        let id_gen: Arc<dyn IdGen> = Arc::new(SystemIdGen);
         let base_config = Arc::new(AgentConfig {
             model_registry,
             max_iterations: 90,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            id_gen: id_gen.clone(),
+            ..Default::default()
         });
 
         let mut agent = BaseAgent::new(
@@ -62,6 +67,7 @@ impl LocalAgent {
             workdir,
             agent,
             thread: Rc::new(RefCell::new(ThreadState::default())),
+            id_gen,
         }
     }
 
@@ -75,7 +81,7 @@ impl LocalAgent {
             return Ok(id);
         }
 
-        let id = Uuid::now_v7();
+        let id = self.id_gen.new_uuid_v7();
         let base_dir = self.workdir.to_string_lossy().to_string();
 
         threads::insert()
@@ -97,7 +103,7 @@ impl LocalAgent {
         content: &str,
         thinking: Option<&str>,
     ) -> Result<Uuid, AgentError> {
-        let id = Uuid::now_v7();
+        let id = self.id_gen.new_uuid_v7();
         let seq = {
             let mut thread = self.thread.borrow_mut();
             let seq = thread.next_seq;
@@ -199,17 +205,19 @@ impl CodeAgent for LocalAgent {
         let stream = self.agent.make_turn(message.to_string(), Vec::new()).await;
         let db = self.db.clone();
         let thread_state = self.thread.clone();
+        let id_gen = self.id_gen.clone();
         let assistant_state = Rc::new(RefCell::new(AssistantMessageState::default()));
 
         Box::pin(stream.then(move |item| {
             let db = db.clone();
             let thread_state = thread_state.clone();
+            let id_gen = id_gen.clone();
             let assistant_state = assistant_state.clone();
 
             async move {
                 if let Ok(AgentResponseChunk::Chunk(chunk)) = &item {
                     if assistant_state.borrow().id.is_none() {
-                        let id = Uuid::now_v7();
+                        let id = id_gen.new_uuid_v7();
                         let seq = {
                             let mut thread = thread_state.borrow_mut();
                             let seq = thread.next_seq;

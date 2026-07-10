@@ -334,7 +334,7 @@ pub async fn archive_thread(
     require_thread_owner_for_user(&state, owner, thread_id).await?;
 
     threads::update()
-        .archived_at(Some(now_ms()))
+        .archived_at(Some(state.clock.now_unix_millis()))
         .where_(threads::id.eq(thread_id))
         .execute(&state.db)
         .await
@@ -355,7 +355,7 @@ pub async fn unarchive_thread(
 
     threads::update()
         .archived_at(Option::<i64>::None)
-        .last_activity_at(Some(now_ms()))
+        .last_activity_at(Some(state.clock.now_unix_millis()))
         .where_(threads::id.eq(thread_id))
         .execute(&state.db)
         .await
@@ -629,13 +629,13 @@ pub async fn create_thread(
     let owner = auth::authenticated_user(&state, &headers).await?;
     let model = validate_chat_model(&state, owner, request.model.as_deref()).await?;
     let project_id = request.project_id;
-    let thread_id = Uuid::now_v7();
+    let thread_id = state.id_gen.new_uuid_v7();
 
     let mut insert = threads::insert()
         .id(thread_id)
         .owner(owner)
         .title(DEFAULT_THREAD_TITLE)
-        .last_activity_at(Some(now_ms()));
+        .last_activity_at(Some(state.clock.now_unix_millis()));
     if let Some(pid) = project_id {
         insert = insert.project_id(pid);
     }
@@ -1244,13 +1244,6 @@ fn tool_call_name(tool_calls: Option<&str>) -> Option<String> {
         .first()
         .and_then(|call| call.function.as_ref())
         .and_then(|function| function.name.clone())
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 /// The millisecond timestamp packed into a UUIDv7's leading 48 bits. Used as a
@@ -1869,6 +1862,13 @@ mod tests {
         let value = Value::Blob(id.as_bytes().to_vec());
 
         assert_eq!(uuid_value(Some(&value)).unwrap(), id);
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64
     }
 
     #[test]

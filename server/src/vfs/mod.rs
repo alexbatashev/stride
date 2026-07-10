@@ -4,10 +4,11 @@ mod mounted;
 pub use local::LocalFileProvider;
 pub use mounted::{MountedVfs, WORKSPACE_MOUNT, WritableArea};
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use minisql::{ConnectionPool, Value};
+use stride_agent::{Clock, IdGen};
 use uuid::Uuid;
 
 use crate::db::{vfs_nodes, vfs_objects};
@@ -121,14 +122,24 @@ pub struct Vfs {
     db: ConnectionPool,
     storage: AnyFileProvider,
     keep_versions: usize,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) id_gen: Arc<dyn IdGen>,
 }
 
 impl Vfs {
-    pub fn new(db: ConnectionPool, storage: AnyFileProvider, keep_versions: usize) -> Self {
+    pub fn with_clock(
+        db: ConnectionPool,
+        storage: AnyFileProvider,
+        keep_versions: usize,
+        clock: Arc<dyn Clock>,
+        id_gen: Arc<dyn IdGen>,
+    ) -> Self {
         Self {
             db,
             storage,
             keep_versions,
+            clock,
+            id_gen,
         }
     }
 
@@ -153,7 +164,7 @@ impl Vfs {
         content: &[u8],
     ) -> anyhow::Result<StagedUpload> {
         let location = self.storage.store(content).await?;
-        let id = Uuid::now_v7();
+        let id = self.id_gen.new_uuid_v7();
         let size = content.len() as i64;
         if let Err(error) = self
             .db
@@ -168,7 +179,7 @@ impl Vfs {
                         .unwrap_or(Value::Null),
                     Value::Text(location.clone()),
                     Value::Integer(size),
-                    Value::Integer(now_ms()),
+                    Value::Integer(self.clock.now_unix_millis()),
                 ],
             )
             .await
@@ -931,10 +942,10 @@ impl Vfs {
             .query_with_params(
                 "INSERT INTO vfs_objects (id, version, location, created_at, node, size) VALUES (?, ?, ?, ?, ?, ?)",
                 vec![
-                    Value::Uuid(Uuid::now_v7()),
+                    Value::Uuid(self.id_gen.new_uuid_v7()),
                     Value::Integer(next),
                     Value::Text(location),
-                    Value::Integer(now_ms()),
+                    Value::Integer(self.clock.now_unix_millis()),
                     Value::Uuid(node_id),
                     Value::Integer(size),
                 ],
@@ -1042,10 +1053,10 @@ impl Vfs {
             .query_with_params(
                 "INSERT INTO vfs_objects (id, version, location, created_at, node, size) VALUES (?, ?, ?, ?, ?, ?)",
                 vec![
-                    Value::Uuid(Uuid::now_v7()),
+                    Value::Uuid(self.id_gen.new_uuid_v7()),
                     Value::Integer(version),
                     Value::Text(location),
-                    Value::Integer(now_ms()),
+                    Value::Integer(self.clock.now_unix_millis()),
                     Value::Uuid(node_id),
                     Value::Integer(content.len() as i64),
                 ],
@@ -1086,7 +1097,7 @@ impl Vfs {
         project_id: Option<Uuid>,
         owner: Uuid,
     ) -> anyhow::Result<Uuid> {
-        let workspace_id = Uuid::now_v7();
+        let workspace_id = self.id_gen.new_uuid_v7();
         self.db
             .query_with_params(
                 "INSERT INTO vfs_workspaces (id, parent_thread, parent_project) VALUES (?, ?, ?)",
@@ -1103,13 +1114,13 @@ impl Vfs {
             .query_with_params(
                 "INSERT INTO vfs_nodes (id, name, kind, parent_node, parent_workspace, owner, created_at, mime_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 vec![
-                    Value::Uuid(Uuid::now_v7()),
+                    Value::Uuid(self.id_gen.new_uuid_v7()),
                     Value::Text("".to_string()),
                     Value::Text("dir".to_string()),
                     Value::Null,
                     Value::Uuid(workspace_id),
                     Value::Uuid(owner),
-                    Value::Integer(now_ms()),
+                    Value::Integer(self.clock.now_unix_millis()),
                     Value::Null,
                 ],
             )
@@ -1242,7 +1253,7 @@ impl Vfs {
         mime_type: Option<&str>,
         owner: Uuid,
     ) -> anyhow::Result<Uuid> {
-        let id = Uuid::now_v7();
+        let id = self.id_gen.new_uuid_v7();
         self.db
             .query_with_params(
                 "INSERT INTO vfs_nodes (id, name, kind, parent_node, parent_workspace, owner, created_at, mime_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1253,7 +1264,7 @@ impl Vfs {
                     parent.map(Value::Uuid).unwrap_or(Value::Null),
                     scope.parent_workspace(),
                     Value::Uuid(owner),
-                    Value::Integer(now_ms()),
+                    Value::Integer(self.clock.now_unix_millis()),
                     mime_type.map(|s| Value::Text(s.to_string())).unwrap_or(Value::Null),
                 ],
             )
@@ -1364,13 +1375,6 @@ fn join_under(prefix: &str, rel: &str) -> String {
     }
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
 fn opt_uuid(id: Option<Uuid>) -> Value {
     id.map(Value::Uuid).unwrap_or(Value::Null)
 }
@@ -1408,8 +1412,16 @@ mod tests {
         .unwrap();
 
         let base = tempfile::tempdir().unwrap().keep();
-        let storage = AnyFileProvider::Local(LocalFileProvider::new(base).unwrap());
-        let vfs = Vfs::new(db, storage, 3);
+        let storage = AnyFileProvider::Local(
+            LocalFileProvider::with_id_gen(base, Arc::new(stride_agent::SystemIdGen)).unwrap(),
+        );
+        let vfs = Vfs::with_clock(
+            db,
+            storage,
+            3,
+            Arc::new(stride_agent::SystemClock),
+            Arc::new(stride_agent::SystemIdGen),
+        );
         (vfs, owner)
     }
 

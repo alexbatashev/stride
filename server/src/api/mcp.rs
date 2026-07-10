@@ -97,8 +97,8 @@ pub async fn create(
         return Err(McpApiError::Conflict);
     }
 
-    let id = Uuid::now_v7();
-    let created_at = now();
+    let id = state.id_gen.new_uuid_v7();
+    let created_at = state.clock.now_unix_secs();
     let enabled = request.enabled.unwrap_or(true);
     mcp_servers::insert()
         .id(id)
@@ -149,11 +149,4 @@ pub async fn delete(
         .await
         .map_err(|_| McpApiError::Internal)?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }

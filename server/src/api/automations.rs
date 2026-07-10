@@ -221,10 +221,15 @@ pub async fn create(
         TriggerKind::Email => {
             let account_id =
                 resolve_email_account(&state, owner, request.trigger_config.as_ref()).await?;
-            let cursor = ImapService::new(state.db.clone(), &encryption_secret(&state.jwt_secret))
-                .current_inbox_uid(owner, account_id)
-                .await
-                .map_err(|_| AutomationApiError::BadRequest)?;
+            let cursor = ImapService::with_clock(
+                state.db.clone(),
+                &encryption_secret(&state.jwt_secret),
+                state.clock.clone(),
+                state.id_gen.clone(),
+            )
+            .current_inbox_uid(owner, account_id)
+            .await
+            .map_err(|_| AutomationApiError::BadRequest)?;
             (
                 Some(serde_json::json!({"account_id": account_id}).to_string()),
                 Some(cursor.to_string()),
@@ -252,9 +257,9 @@ pub async fn create(
         TriggerKind::Webhook => Some(webhook::generate_secret()),
         _ => None,
     };
-    let id = Uuid::now_v7();
+    let id = state.id_gen.new_uuid_v7();
     let enabled = request.enabled.unwrap_or(true);
-    let created_at = now();
+    let created_at = state.clock.now_unix_secs();
     let last_run = match trigger_kind {
         TriggerKind::VfsChange | TriggerKind::Email | TriggerKind::Gmail => Some(created_at),
         _ => None,
@@ -530,14 +535,6 @@ async fn require_owner(
     }
 }
 
-fn now() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
@@ -568,6 +565,7 @@ mod tests {
             model_registry: ModelRegistry::new(),
             max_iterations: 1,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            ..Default::default()
         });
         let config = Config {
             providers: HashMap::new(),
@@ -588,6 +586,8 @@ mod tests {
             jwt_secret: String::new(),
             runner,
             model_config,
+            clock: Arc::new(stride_agent::SystemClock),
+            id_gen: Arc::new(stride_agent::SystemIdGen),
             vfs: None,
             telegram_interactions: Arc::new(std::sync::Mutex::new(
                 crate::api::telegram::Interactions::default(),

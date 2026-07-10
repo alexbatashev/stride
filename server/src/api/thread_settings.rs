@@ -86,7 +86,7 @@ pub async fn update(
                 Value::Uuid(owner),
                 opt_int(archive),
                 opt_int(remove),
-                Value::Integer(now_ms()),
+                Value::Integer(state.clock.now_unix_millis()),
             ],
         )
         .await
@@ -134,11 +134,4 @@ fn sanitize(value: Option<i64>) -> Result<Option<i64>, SettingsApiError> {
 
 fn opt_int(value: Option<i64>) -> Value {
     value.map(Value::Integer).unwrap_or(Value::Null)
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }

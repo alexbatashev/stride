@@ -12,10 +12,7 @@
 //! GitHub MCP server (see [`crate::github`]), which accepts it as a bearer
 //! credential regardless of how it was obtained.
 
-use std::{
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json,
@@ -159,7 +156,7 @@ pub async fn authorize(
     github_oauth_states::insert()
         .state(token.as_str())
         .user_id(user_id)
-        .expires_at(now() + STATE_TTL_SECONDS)
+        .expires_at(state.clock.now_unix_secs() + STATE_TTL_SECONDS)
         .execute(&state.db)
         .await
         .map_err(|_| GitHubApiError::Internal)?;
@@ -273,7 +270,7 @@ async fn store_connection(
     token: &str,
     scope: Option<&str>,
 ) -> Result<(), String> {
-    let id = Uuid::now_v7();
+    let id = state.id_gen.new_uuid_v7();
     let access_ciphertext = state.cipher.encrypt(id, token)?;
 
     // A user may relink, and a GitHub account may move between users; clear both
@@ -294,7 +291,7 @@ async fn store_connection(
         .login(login)
         .access_token(access_ciphertext.as_str())
         .scope(scope)
-        .connected_at(now())
+        .connected_at(state.clock.now_unix_secs())
         .execute(&state.db)
         .await
         .map_err(|error| error.to_string())?;
@@ -318,7 +315,7 @@ async fn consume_state(state: &ServerState, token: &str) -> Result<Uuid, String>
         .execute(&state.db)
         .await
         .map_err(|error| error.to_string())?;
-    if row.expires_at < now() {
+    if row.expires_at < state.clock.now_unix_secs() {
         return Err("OAuth state expired".to_string());
     }
     Ok(row.user_id)
@@ -425,13 +422,6 @@ fn encode(value: &str) -> String {
         }
     }
     out
-}
-
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_secs() as i64
 }
 
 #[cfg(test)]

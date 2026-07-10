@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use futures::{StreamExt, channel::oneshot as futures_oneshot};
 use minisql::{ConnectionPool, Value};
 use stride_agent::{
-    AgentConfig, AgentResponseChunk, BaseAgent, QuizQuestion, Tool, ToolRegistry, build_prompt,
+    AgentConfig, AgentResponseChunk, BaseAgent, Clock, QuizQuestion, Tool, ToolRegistry,
+    build_prompt,
     mcp::McpTool,
     sanitizer::{HtmlFormattingSanitizer, StreamingMessageSanitizer},
     tools::{
@@ -83,6 +84,7 @@ Core instructions:
 10. Provide the final response in the same language as user promt unless explicitly instructed otherwise.
 ";
 
+#[allow(clippy::too_many_arguments)]
 fn build_system_prompt(
     base: &str,
     personality: Option<&str>,
@@ -91,8 +93,9 @@ fn build_system_prompt(
     writable_extra: &[String],
     telegram: bool,
     public_url: Option<&str>,
+    clock: &dyn Clock,
 ) -> String {
-    let date = current_date();
+    let date = current_date(clock.now_unix_secs());
     let public_url = public_url.map(|url| url.trim_end_matches('/'));
     let base_url = if telegram {
         public_url.unwrap_or("")
@@ -155,13 +158,8 @@ This conversation happens over Telegram. The user can send you files; they are d
     )
 }
 
-fn current_date() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let days = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        / 86400;
+fn current_date(now_unix_secs: i64) -> String {
+    let days = (now_unix_secs.max(0) as u64) / 86400;
     let days = days as u32;
     // Hinnant's civil_from_days algorithm
     let z = days + 719468;
@@ -649,11 +647,19 @@ async fn handle_send(
 ) -> Result<RunId, AgentPoolError> {
     ensure_runner(state.clone(), thread_id).await?;
 
-    let run_id = RunId(Uuid::now_v7());
+    let (db, clock, id_gen) = {
+        let state = state.borrow();
+        (
+            state.init.db.clone(),
+            state.init.config.clock.clone(),
+            state.init.config.id_gen.clone(),
+        )
+    };
+
+    let run_id = RunId(id_gen.new_uuid_v7());
 
     let user_message_seq = next_message_seq(&state, thread_id)?;
-    let user_message_id = Uuid::now_v7();
-    let db = state.borrow().init.db.clone();
+    let user_message_id = id_gen.new_uuid_v7();
 
     let images_json = (!request.images.is_empty())
         .then(|| serde_json::to_string(&request.images))
@@ -677,10 +683,7 @@ async fn handle_send(
 
     // Every inbound message (web, Telegram, tools) funnels through here, so this
     // is the single place a thread's last activity is stamped for retention.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now_ms = clock.now_unix_millis();
     if let Err(error) = threads::update()
         .last_activity_at(Some(now_ms))
         .where_(threads::id.eq(thread_id))
@@ -708,7 +711,7 @@ async fn handle_send(
             .threads
             .get_mut(&thread_id)
             .ok_or(AgentPoolError::ThreadNotFound)?;
-        runner.last_used = Instant::now();
+        runner.last_used = clock.now_instant();
         matches!(runner.status, ThreadStatus::Idle)
     };
 
@@ -743,6 +746,7 @@ async fn start_run(
     images: Vec<llm::ImageSource>,
     model: Option<String>,
 ) {
+    let clock = state.borrow().init.config.clock.clone();
     let cancel_rx = {
         let mut state = state.borrow_mut();
         let Some(runner) = state.threads.get_mut(&thread_id) else {
@@ -751,7 +755,7 @@ async fn start_run(
         let (cancel_tx, cancel_rx) = watch::channel(false);
         runner.cancel_tx = Some(cancel_tx);
         runner.status = ThreadStatus::Running { run_id };
-        runner.last_used = Instant::now();
+        runner.last_used = clock.now_instant();
         cancel_rx
     };
 
@@ -791,13 +795,14 @@ async fn handle_snapshot(
 ) -> Result<ThreadSnapshot, AgentPoolError> {
     ensure_runner(state.clone(), thread_id).await?;
 
+    let clock = state.borrow().init.config.clock.clone();
     let mut state = state.borrow_mut();
     let runner = state
         .threads
         .get_mut(&thread_id)
         .ok_or(AgentPoolError::ThreadNotFound)?;
 
-    runner.last_used = Instant::now();
+    runner.last_used = clock.now_instant();
     Ok(ThreadSnapshot {
         thread_id,
         last_event_seq: runner.last_event_seq,
@@ -901,12 +906,13 @@ async fn handle_status(
 ) -> Result<ThreadStatus, AgentPoolError> {
     ensure_runner(state.clone(), thread_id).await?;
 
+    let clock = state.borrow().init.config.clock.clone();
     let mut state = state.borrow_mut();
     let runner = state
         .threads
         .get_mut(&thread_id)
         .ok_or(AgentPoolError::ThreadNotFound)?;
-    runner.last_used = Instant::now();
+    runner.last_used = clock.now_instant();
     Ok(runner.status.clone())
 }
 
@@ -971,6 +977,8 @@ async fn ensure_runner(
         model_registry: merged_registry,
         max_iterations: config.max_iterations,
         observer: config.observer.clone(),
+        clock: config.clock.clone(),
+        id_gen: config.id_gen.clone(),
     });
     let vision = config.model_registry.get_or_default("default").vision;
     let mut mcp_tools = mcp_tools;
@@ -1028,6 +1036,7 @@ async fn ensure_runner(
         &writable_extra,
         telegram_chat.is_some(),
         public_url.as_deref(),
+        config.clock.as_ref(),
     );
     let excluded_static_skills = if telegram_chat.is_some() {
         vec!["inline-widget".to_string()]
@@ -1254,7 +1263,7 @@ async fn ensure_runner(
             status: ThreadStatus::Idle,
             in_progress: None,
             message_format,
-            last_used: Instant::now(),
+            last_used: config.clock.now_instant(),
         },
     );
 
@@ -1617,7 +1626,7 @@ async fn run_agent_turn(
                     Ok(AgentResponseChunk::Approval {
                         message, approved, ..
                     }) => {
-                        let approval_id = Uuid::now_v7();
+                        let approval_id = state.borrow().init.config.id_gen.new_uuid_v7();
                         tracing::info!(
                             %thread_id,
                             run_id = %run_id.0,
@@ -1662,7 +1671,7 @@ async fn run_agent_turn(
                             let _ = answered.send(Vec::new());
                             continue;
                         }
-                        let quiz_id = Uuid::now_v7();
+                        let quiz_id = state.borrow().init.config.id_gen.new_uuid_v7();
                         with_runner(&state, thread_id, |runner| {
                             runner.pending_quizzes.insert(
                                 quiz_id,
@@ -1692,13 +1701,14 @@ async fn run_agent_turn(
         }
     }
 
+    let clock = state.borrow().init.config.clock.clone();
     with_runner(&state, thread_id, |runner| {
         runner.cancel_tx = None;
         runner.pending_approvals.clear();
         runner.pending_quizzes.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
-        runner.last_used = Instant::now();
+        runner.last_used = clock.now_instant();
     });
     emit(&state, thread_id, Some(run_id), AgentEventKind::RunFinished).await;
     restore_agent(&state, thread_id, agent);
@@ -1965,9 +1975,14 @@ async fn ensure_assistant_message(
         return Ok(());
     }
 
-    let id = Uuid::now_v7();
+    let (db, id) = {
+        let state = state.borrow();
+        (
+            state.init.db.clone(),
+            state.init.config.id_gen.new_uuid_v7(),
+        )
+    };
     let seq = next_message_seq(state, thread_id)?;
-    let db = state.borrow().init.db.clone();
 
     messages::insert()
         .id(id)
@@ -2037,9 +2052,14 @@ async fn persist_tool_message(
     tool_call_id: &str,
     content: &str,
 ) -> Result<(), AgentPoolError> {
-    let id = Uuid::now_v7();
+    let (db, id) = {
+        let state = state.borrow();
+        (
+            state.init.db.clone(),
+            state.init.config.id_gen.new_uuid_v7(),
+        )
+    };
     let seq = next_message_seq(state, thread_id)?;
-    let db = state.borrow().init.db.clone();
 
     messages::insert()
         .id(id)
@@ -2084,20 +2104,22 @@ fn with_runner(
 }
 
 fn restore_agent(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, agent: BaseAgent) {
+    let clock = state.borrow().init.config.clock.clone();
     with_runner(state, thread_id, |runner| {
         runner.agent = Some(agent);
-        runner.last_used = Instant::now();
+        runner.last_used = clock.now_instant();
     });
 }
 
 async fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId, error: String) {
+    let clock = state.borrow().init.config.clock.clone();
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
         runner.pending_approvals.clear();
         runner.pending_quizzes.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
-        runner.last_used = Instant::now();
+        runner.last_used = clock.now_instant();
     });
     emit(
         state,
@@ -2109,13 +2131,14 @@ async fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: Run
 }
 
 async fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: RunId) {
+    let clock = state.borrow().init.config.clock.clone();
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
         runner.pending_approvals.clear();
         runner.pending_quizzes.clear();
         runner.status = ThreadStatus::Idle;
         runner.in_progress = None;
-        runner.last_used = Instant::now();
+        runner.last_used = clock.now_instant();
     });
     emit(state, thread_id, Some(run_id), AgentEventKind::RunCancelled).await;
 }
@@ -2148,7 +2171,7 @@ async fn emit(
 }
 
 fn evict_idle_threads(state: &Rc<RefCell<WorkerState>>) {
-    let now = Instant::now();
+    let now = state.borrow().init.config.clock.now_instant();
     let mut state = state.borrow_mut();
     let idle_ttl = state.init.idle_ttl;
 
@@ -2434,6 +2457,7 @@ mod tests {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 4,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
             server_config: test_server_config(),
             cipher: SecretCipher::new("test-secret"),
@@ -2457,6 +2481,7 @@ mod tests {
                 model_registry: models,
                 max_iterations: 4,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
             test_server_config(),
             SecretCipher::new("test-secret"),
@@ -2477,6 +2502,7 @@ mod tests {
             &[],
             true,
             Some("https://stride.example.com"),
+            &stride_agent::SystemClock,
         );
         assert!(prompt.contains("https://stride.example.com/api/threads/"));
         assert!(prompt.contains("send_telegram_file"));
@@ -2499,6 +2525,7 @@ mod tests {
             &[],
             false,
             Some("https://stride.example.com"),
+            &stride_agent::SystemClock,
         );
         assert!(prompt.contains("`/api/threads/"));
         assert!(prompt.contains(
@@ -2532,6 +2559,7 @@ mod tests {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 0,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
             "System prompt".to_string(),
             Vec::new(),
@@ -2578,6 +2606,7 @@ mod tests {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 0,
                 observer: Arc::new(stride_agent::NoopAgentObserver),
+                ..Default::default()
             }),
             "System prompt".to_string(),
             Vec::new(),

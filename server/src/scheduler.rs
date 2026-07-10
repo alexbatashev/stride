@@ -5,7 +5,7 @@
 //! [`ExecutorHandle`]. Each request runs the same [`run_automation`] pipeline.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -127,7 +127,7 @@ async fn run(ctx: ExecutorConfig, mut rx: UnboundedReceiver<FireRequest>) {
 
 /// Evaluate polled triggers (cron, vfs change) and fire the due ones.
 async fn poll_due(ctx: &ExecutorConfig) {
-    let now = unix_now();
+    let now = ctx.model_config.clock.now_unix_secs();
     let rows = match automations::select()
         .where_(automations::enabled.eq(true))
         .all(&ctx.db)
@@ -225,7 +225,7 @@ async fn poll_email(ctx: &ExecutorConfig, automation: crate::db::automations::Ro
         return;
     }
     if let Err(error) = automations::update()
-        .last_run(Some(unix_now()))
+        .last_run(Some(ctx.model_config.clock.now_unix_secs()))
         .trigger_cursor(Some(batch.cursor.to_string().as_str()))
         .where_(automations::id.eq(automation.id))
         .execute(&ctx.db)
@@ -275,7 +275,7 @@ async fn poll_gmail(ctx: &ExecutorConfig, automation: crate::db::automations::Ro
         return;
     }
     if let Err(error) = automations::update()
-        .last_run(Some(unix_now()))
+        .last_run(Some(ctx.model_config.clock.now_unix_secs()))
         .trigger_cursor(Some(batch.cursor.to_string().as_str()))
         .where_(automations::id.eq(automation.id))
         .execute(&ctx.db)
@@ -322,8 +322,8 @@ async fn run_automation(ctx: ExecutorConfig, request: FireRequest) {
         return;
     }
 
-    let run_id = Uuid::now_v7();
-    let started_at = unix_now();
+    let run_id = ctx.model_config.id_gen.new_uuid_v7();
+    let started_at = ctx.model_config.clock.now_unix_secs();
     if let Err(error) = automation_runs::insert()
         .id(run_id)
         .automation_id(automation.id)
@@ -383,7 +383,7 @@ async fn run_automation(ctx: ExecutorConfig, request: FireRequest) {
     };
 
     if let Err(error) = automation_runs::update()
-        .finished_at(Some(unix_now()))
+        .finished_at(Some(ctx.model_config.clock.now_unix_secs()))
         .status(status)
         .output(output.as_str())
         .where_(automation_runs::id.eq(run_id))
@@ -455,10 +455,13 @@ async fn run_python(
         return Err("python execution is disabled".to_string());
     };
     let config = python_tool_config(python);
-    let dir = config
-        .cache_dir
-        .join("automations")
-        .join(Uuid::now_v7().as_simple().to_string());
+    let dir = config.cache_dir.join("automations").join(
+        ctx.model_config
+            .id_gen
+            .new_uuid_v7()
+            .as_simple()
+            .to_string(),
+    );
     let fs = execenv::DirectOsFileSystem::new(dir).map_err(|e| e.to_string())?;
     // Same tool surface as the interactive agent loop, so scripts that work
     // there work here too.
@@ -567,13 +570,6 @@ fn collect_agent_output(chunk: &StreamResponseChunk, output: &mut String) {
     }
 }
 
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,6 +609,7 @@ mod tests {
             model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 2,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            ..Default::default()
         })
     }
 
@@ -711,7 +708,12 @@ mod tests {
                     tools: python_tools(),
                     searchable_tools_preview_limit: 20,
                     telegram_bot_token: None,
-                    email_service: ImapService::new(db.clone(), "test-secret"),
+                    email_service: ImapService::with_clock(
+                        db.clone(),
+                        "test-secret",
+                        std::sync::Arc::new(stride_agent::SystemClock),
+                        std::sync::Arc::new(stride_agent::SystemIdGen),
+                    ),
                     mcp_tools: Vec::new(),
                     google_service: None,
                 };

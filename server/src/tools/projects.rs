@@ -55,7 +55,7 @@ impl Tool for CreateProjectTool {
         }
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+    async fn execute(&self, config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
         let params = match CreateProjectParams::decode(args) {
             Ok(p) => p,
             Err(e) => return json!({"success": false, "error": e}),
@@ -65,7 +65,7 @@ impl Tool for CreateProjectTool {
             return json!({"success": false, "error": "title must not be empty"});
         }
 
-        let id = Uuid::now_v7();
+        let id = config.id_gen.new_uuid_v7();
         if let Err(e) = projects::insert()
             .id(id)
             .owner(self.user_id)
@@ -176,7 +176,7 @@ impl Tool for StartThreadTool {
         }
     }
 
-    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
+    async fn execute(&self, config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
         let params = match StartThreadParams::decode(args) {
             Ok(p) => p,
             Err(e) => return json!({"success": false, "error": e}),
@@ -203,7 +203,7 @@ impl Tool for StartThreadTool {
             .map(str::to_string)
             .unwrap_or_else(|| derive_title(&message));
 
-        let thread_id = Uuid::now_v7();
+        let thread_id = config.id_gen.new_uuid_v7();
         let mut insert = threads::insert()
             .id(thread_id)
             .owner(self.user_id)

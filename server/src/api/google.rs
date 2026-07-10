@@ -5,10 +5,7 @@
 //! Identity comes from the OIDC `id_token`. The signed-in user is recovered from
 //! the `state` parameter because Google redirects back without the session cookie.
 
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 use axum::{
     Json,
@@ -119,7 +116,7 @@ pub async fn authorize(
     google_oauth_states::insert()
         .state(token.as_str())
         .user_id(user_id)
-        .expires_at(now() + STATE_TTL_SECONDS)
+        .expires_at(state.clock.now_unix_secs() + STATE_TTL_SECONDS)
         .execute(&state.db)
         .await
         .map_err(|_| GoogleApiError::Internal)?;
@@ -194,7 +191,7 @@ async fn consume_state(state: &ServerState, token: &str) -> Result<Uuid, String>
         .execute(&state.db)
         .await
         .map_err(|error| error.to_string())?;
-    if row.expires_at < now() {
+    if row.expires_at < state.clock.now_unix_secs() {
         return Err("OAuth state expired".to_string());
     }
     Ok(row.user_id)
@@ -223,28 +220,25 @@ fn redirect_uri(state: &ServerState) -> Option<String> {
         .map(|base| format!("{base}/api/settings/google/callback"))
 }
 
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_secs() as i64
-}
-
 /// Build the server's [`GoogleService`] when OAuth credentials are configured.
 pub fn build_service(
     config: &crate::config::Config,
     db: &minisql::ConnectionPool,
     cipher: &crate::crypto::SecretCipher,
+    clock: std::sync::Arc<dyn stride_agent::Clock>,
+    id_gen: std::sync::Arc<dyn stride_agent::IdGen>,
 ) -> Option<GoogleService> {
     let google = config
         .server
         .as_ref()
         .and_then(|server| server.google.as_ref())
         .filter(|google| google.is_configured())?;
-    Some(GoogleService::new(
+    Some(GoogleService::with_clock(
         db.clone(),
         cipher.clone(),
         google.read_client_id()?,
         google.read_client_secret()?,
+        clock,
+        id_gen,
     ))
 }

@@ -23,7 +23,7 @@ mod vfs;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use axum::{
@@ -72,6 +72,8 @@ struct ServerState {
     pub(crate) jwt_secret: String,
     pub(crate) runner: Arc<dyn AgentPool>,
     pub(crate) model_config: Arc<AgentConfig>,
+    pub(crate) clock: Arc<dyn stride_agent::Clock>,
+    pub(crate) id_gen: Arc<dyn stride_agent::IdGen>,
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
     pub(crate) telegram_interactions: Arc<Mutex<api::telegram::Interactions>>,
     pub(crate) executor: scheduler::ExecutorHandle,
@@ -112,14 +114,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let observability = observability::Observability::new();
+    let clock: Arc<dyn stride_agent::Clock> = Arc::new(stride_agent::SystemClock);
+    let id_gen: Arc<dyn stride_agent::IdGen> = Arc::new(stride_agent::SystemIdGen);
     let model_config = Arc::new(AgentConfig {
         model_registry: create_model_registry(&config),
         max_iterations: 90,
         observer: observability.clone(),
+        clock: clock.clone(),
+        id_gen: id_gen.clone(),
     });
     let encryption_secret = email::encryption_secret(&jwt_secret);
     let cipher = crypto::SecretCipher::new(&encryption_secret);
-    let email_service = email::ImapService::new(db.clone(), &encryption_secret);
+    let email_service = email::ImapService::with_clock(
+        db.clone(),
+        &encryption_secret,
+        clock.clone(),
+        id_gen.clone(),
+    );
     let mcp_tools = connect_mcp_servers(&config).await;
     let telegram_bot_token = config
         .server
@@ -143,7 +154,8 @@ async fn main() -> anyhow::Result<()> {
     });
     // Google account linking and native Gmail/Calendar/Drive tools, active once
     // OAuth credentials are present.
-    let google_service = api::google::build_service(&config, &db, &cipher);
+    let google_service =
+        api::google::build_service(&config, &db, &cipher, clock.clone(), id_gen.clone());
     let vfs_provider = config
         .server
         .as_ref()
@@ -157,11 +169,14 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|s| s.files.as_ref())
                 .and_then(|f| f.keep_versions)
                 .unwrap_or(10);
-            let storage = vfs::LocalFileProvider::new(l.base.clone().into())?;
-            Ok(vfs::Vfs::new(
+            let storage =
+                vfs::LocalFileProvider::with_id_gen(l.base.clone().into(), id_gen.clone())?;
+            Ok(vfs::Vfs::with_clock(
                 db.clone(),
                 vfs::AnyFileProvider::Local(storage),
                 keep,
+                clock.clone(),
+                id_gen.clone(),
             ))
         })
         .transpose()
@@ -206,6 +221,8 @@ async fn main() -> anyhow::Result<()> {
         jwt_secret,
         runner,
         model_config,
+        clock,
+        id_gen,
         vfs: vfs_provider,
         telegram_interactions: Arc::new(Mutex::new(api::telegram::Interactions::default())),
         executor,
@@ -298,10 +315,7 @@ async fn sweep_staged_uploads(state: Arc<ServerState>) {
     let mut interval = tokio::time::interval(STAGED_UPLOAD_SWEEP);
     loop {
         interval.tick().await;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+        let now = state.clock.now_unix_millis();
         let cutoff = now - STAGED_UPLOAD_TTL.as_millis() as i64;
         match vfs.cleanup_staged_uploads(cutoff).await {
             Ok(removed) if removed > 0 => {
@@ -326,10 +340,7 @@ async fn sweep_thread_retention(state: Arc<ServerState>) {
 async fn run_thread_retention(state: &ServerState) -> anyhow::Result<()> {
     use std::collections::{HashMap, HashSet};
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now = state.clock.now_unix_millis();
 
     // (thread id, owner, effective last-activity ms) for every active thread.
     let active: Vec<(uuid::Uuid, uuid::Uuid, i64)> = state
@@ -477,7 +488,7 @@ fn load_jwt_secret() -> anyhow::Result<String> {
 
 fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
     assets::init(&static_dir);
-    let limiter = Arc::new(RateLimiter::new());
+    let limiter = Arc::new(RateLimiter::with_clock(state.clock.clone()));
 
     let auth_routes = Router::new()
         .route("/api/register", post(api::auth::register))

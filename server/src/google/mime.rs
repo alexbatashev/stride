@@ -4,7 +4,7 @@
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde_json::Value;
-use uuid::Uuid;
+use stride_agent::IdGen;
 
 use super::api::GmailMessage;
 
@@ -47,6 +47,7 @@ fn header_value(value: &Value, name: &str) -> Option<String> {
 
 /// Build the raw RFC 822 message for a reply draft.
 pub fn build_reply(
+    id_gen: &dyn IdGen,
     self_email: &str,
     original: &GmailMessage,
     headers: &ReplyHeaders,
@@ -62,7 +63,7 @@ pub fn build_reply(
         encode_header(&reply_subject(&original.subject))
     ));
     if let Some(message_id) = &headers.message_id {
-        let message_id = format_message_id(message_id);
+        let message_id = format_message_id(id_gen, message_id);
         lines.push(format!("In-Reply-To: {message_id}"));
         let mut references = headers
             .references
@@ -102,11 +103,11 @@ fn safe(value: &str) -> String {
     value.replace(['\r', '\n'], " ")
 }
 
-fn format_message_id(value: &str) -> String {
+fn format_message_id(id_gen: &dyn IdGen, value: &str) -> String {
     let value = safe(value);
     let value = value.trim().trim_matches(['<', '>']);
     if value.is_empty() {
-        format!("<{}@stride.invalid>", Uuid::now_v7())
+        format!("<{}@stride.invalid>", id_gen.new_uuid_v7())
     } else {
         format!("<{value}>")
     }
@@ -144,7 +145,13 @@ mod tests {
             message_id: Some("<original@example.com>".to_string()),
             references: None,
         };
-        let raw = build_reply("me@example.com", &message("Hello"), &headers, "Hi there");
+        let raw = build_reply(
+            &stride_agent::SystemIdGen,
+            "me@example.com",
+            &message("Hello"),
+            &headers,
+            "Hi there",
+        );
         assert!(raw.contains("To: sender@example.com"));
         assert!(raw.contains("Subject: Re: Hello"));
         assert!(raw.contains("In-Reply-To: <original@example.com>"));

@@ -82,5 +82,5 @@ pub async fn update(
 }
 
 async fn save(state: &ServerState, owner: Uuid, settings: &AgentSettings) -> anyhow::Result<()> {
-    model_registry::save_agent_settings(&state.db, owner, settings).await
+    model_registry::save_agent_settings(&state.db, state.clock.as_ref(), owner, settings).await
 }

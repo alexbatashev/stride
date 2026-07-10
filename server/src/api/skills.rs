@@ -124,7 +124,7 @@ pub async fn create(
         ));
     }
 
-    let id = Uuid::now_v7();
+    let id = state.id_gen.new_uuid_v7();
     skills::insert()
         .id(id)
         .name(name.as_str())

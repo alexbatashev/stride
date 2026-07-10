@@ -90,7 +90,7 @@ pub async fn create(
         return Err(ProjectApiError::BadRequest);
     }
 
-    let id = Uuid::now_v7();
+    let id = state.id_gen.new_uuid_v7();
     projects::insert()
         .id(id)
         .owner(owner)

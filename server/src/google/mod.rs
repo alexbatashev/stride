@@ -10,13 +10,14 @@
 mod api;
 mod mime;
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::Request;
 use minisql::ConnectionPool;
 use serde_json::{Value, json};
+use stride_agent::{Clock, IdGen};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -39,6 +40,8 @@ pub struct GoogleService {
     cipher: SecretCipher,
     client_id: String,
     client_secret: String,
+    clock: Arc<dyn Clock>,
+    id_gen: Arc<dyn IdGen>,
 }
 
 /// Identity returned by the OIDC `id_token` and the freshly minted tokens.
@@ -52,17 +55,21 @@ pub struct LinkedTokens {
 }
 
 impl GoogleService {
-    pub fn new(
+    pub fn with_clock(
         db: ConnectionPool,
         cipher: SecretCipher,
         client_id: String,
         client_secret: String,
+        clock: Arc<dyn Clock>,
+        id_gen: Arc<dyn IdGen>,
     ) -> Self {
         Self {
             db,
             cipher,
             client_id,
             client_secret,
+            clock,
+            id_gen,
         }
     }
 
@@ -109,7 +116,7 @@ impl GoogleService {
                 "token response missing refresh_token; re-consent with prompt=consent is required",
             )?
             .to_string();
-        let expires_at = now()
+        let expires_at = self.clock.now_unix_secs()
             + value
                 .get("expires_in")
                 .and_then(Value::as_i64)
@@ -138,7 +145,7 @@ impl GoogleService {
     /// of the unique constraints (the user may relink, or the Google account may
     /// move to another user).
     pub async fn store_connection(&self, user: Uuid, tokens: LinkedTokens) -> Result<(), String> {
-        let id = Uuid::now_v7();
+        let id = self.id_gen.new_uuid_v7();
         let access = self.cipher.encrypt(id, &tokens.access_token)?;
         let refresh = self.cipher.encrypt(id, &tokens.refresh_token)?;
 
@@ -160,7 +167,7 @@ impl GoogleService {
             .refresh_token(refresh.as_str())
             .scope(tokens.scope.as_deref())
             .expires_at(tokens.expires_at)
-            .connected_at(now())
+            .connected_at(self.clock.now_unix_secs())
             .execute(&self.db)
             .await
             .map_err(|error| error.to_string())?;
@@ -190,7 +197,7 @@ impl GoogleService {
             .next()
             .ok_or("Google account is not connected")?;
 
-        if row.expires_at > now() + REFRESH_SKEW_SECONDS {
+        if row.expires_at > self.clock.now_unix_secs() + REFRESH_SKEW_SECONDS {
             return self.cipher.decrypt(row.id, &row.access_token);
         }
 
@@ -207,7 +214,7 @@ impl GoogleService {
             .and_then(Value::as_str)
             .ok_or("token refresh response missing access_token")?
             .to_string();
-        let expires_at = now()
+        let expires_at = self.clock.now_unix_secs()
             + value
                 .get("expires_in")
                 .and_then(Value::as_i64)
@@ -295,13 +302,6 @@ pub fn percent_encode(value: &str) -> String {
         }
     }
     out
-}
-
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_secs() as i64
 }
 
 /// Tiny helper so other modules can build a JSON error the tools return verbatim.

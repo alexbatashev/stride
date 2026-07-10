@@ -140,14 +140,19 @@ pub async fn create(
         ));
     }
 
-    let service = ImapService::new(state.db.clone(), &encryption_secret(&state.jwt_secret));
+    let service = ImapService::with_clock(
+        state.db.clone(),
+        &encryption_secret(&state.jwt_secret),
+        state.clock.clone(),
+        state.id_gen.clone(),
+    );
     service
         .test_connection(&connection)
         .await
         .map_err(EmailApiError::BadRequest)?;
 
-    let id = Uuid::now_v7();
-    let created_at = now();
+    let id = state.id_gen.new_uuid_v7();
+    let created_at = state.clock.now_unix_secs();
     let password_ciphertext = service
         .encrypt_password(id, &connection.password)
         .map_err(|_| EmailApiError::Internal)?;
@@ -250,11 +255,4 @@ fn optional_default(value: Option<String>, default: &str) -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| default.to_string())
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }

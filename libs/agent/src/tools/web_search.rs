@@ -192,6 +192,7 @@ mod tests {
             model_registry: crate::ModelRegistry::new(),
             max_iterations: 0,
             observer: Arc::new(stride_agent::NoopAgentObserver),
+            ..Default::default()
         })
     }
 
