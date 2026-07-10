@@ -523,6 +523,30 @@ migrations! {
             add last_model: Option<String>;
         }
     }
+
+    thread_event_journal {
+        // Durable journal of a thread's structural events (run lifecycle, message
+        // committed, tool started/finished, approval/quiz lifecycle). Deltas are
+        // deliberately not journaled. `seq` is the per-thread monotonic counter
+        // owned by the thread's worker; `payload` holds the full event kind as
+        // JSON so a reconnecting client's replay reconstructs identical frames.
+        table thread_events {
+            id: Uuid [PrimaryKey],
+            thread_id: Uuid,
+            run_id: Uuid,
+            seq: u64,
+            agent_path: Option<String>,
+            kind: String,
+            message_id: Option<Uuid>,
+            tool_call_id: Option<String>,
+            payload: Option<String>,
+
+            foreign_key(thread_id -> threads.id);
+        }
+
+        raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_seq ON thread_events(thread_id, seq)";
+        raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_run ON thread_events(thread_id, run_id)";
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

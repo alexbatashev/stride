@@ -76,6 +76,7 @@ class ThreadsPageHydrator {
 	private pendingQuiz: PendingQuiz | null = null;
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
+	private reconnectAttempts = 0;
 	private readonly messagesEl: HTMLElement;
 	private readonly scrollEl: HTMLElement;
 	private readonly titleEl: HTMLElement;
@@ -210,6 +211,10 @@ class ThreadsPageHydrator {
 		const suffix = after != null ? `?after=${after}` : '';
 		const socket = new WebSocket(`${protocol}//${location.host}/api/threads/${threadId}/events${suffix}`);
 		this.events = socket;
+		socket.onopen = () => {
+			if (this.events !== socket) return;
+			this.reconnectAttempts = 0;
+		};
 		socket.onmessage = (event) => {
 			if (this.events !== socket) return;
 			this.applyEvent(JSON.parse(event.data as string) as ThreadEvent);
@@ -221,12 +226,23 @@ class ThreadsPageHydrator {
 		socket.onclose = () => {
 			if (this.events !== socket) return;
 			this.events = null;
+			const delay = this.reconnectDelay();
+			this.reconnectAttempts += 1;
 			setTimeout(() => {
 				if (this.threadId === threadId) {
 					this.openEvents(threadId, this.lastEventSeq > 0 ? this.lastEventSeq : undefined);
 				}
-			}, 2000);
+			}, delay);
 		};
+	}
+
+	// Exponential backoff with full jitter so many clients reconnecting after a
+	// server blip do not stampede: base 1s, doubling per attempt, capped at 30s.
+	private reconnectDelay(): number {
+		const base = 1000;
+		const cap = 30000;
+		const backoff = Math.min(cap, base * 2 ** this.reconnectAttempts);
+		return Math.random() * backoff;
 	}
 
 	private closeEvents() {

@@ -902,19 +902,27 @@ pub async fn send_message(
     }))
 }
 
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    /// Client's last applied event seq. When present, the handler replays
+    /// journaled events with `seq > after` before the snapshot so a reconnecting
+    /// client recovers everything it missed.
+    after: Option<u64>,
+}
+
 pub async fn events(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     Path(thread_id): Path<Uuid>,
+    Query(query): Query<EventsQuery>,
 ) -> Result<Response, ThreadApiError> {
     require_thread_owner(&state, &headers, thread_id).await?;
     // Subscribe to the live topic before reading the snapshot so no event emitted between the two
     // is lost; the snapshot's `last_event_seq` watermark then discards any backlog already covered.
     let events = pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe();
-    let snapshot = state.runner.snapshot(thread_id).await.map_err(pool_error)?;
 
-    Ok(ws.on_upgrade(move |socket| handle_ws(socket, snapshot, events)))
+    Ok(ws.on_upgrade(move |socket| handle_ws(socket, state, thread_id, query.after, events)))
 }
 
 pub async fn cancel(
@@ -963,16 +971,23 @@ pub async fn answer_quiz(
 
 async fn handle_ws(
     mut socket: WebSocket,
-    snapshot: ThreadSnapshot,
+    state: Arc<ServerState>,
+    thread_id: Uuid,
+    after: Option<u64>,
     mut events: pubsub::Subscriber<AgentEvent>,
 ) {
-    let watermark = snapshot.last_event_seq;
-    let snapshot_json = snapshot_event(&snapshot);
-    if socket
-        .send(Message::Text(snapshot_json.into()))
-        .await
-        .is_err()
+    // `last_sent` is the highest seq the client has been sent; live events at or
+    // below it are dropped as already covered by replay or snapshot.
+    let mut last_sent = after.unwrap_or(0);
+
+    // Only replay the journal when the client supplied a cursor: a fresh open has
+    // already loaded history over REST and just needs snapshot + live tail.
+    if after.is_some()
+        && !replay_journal(&mut socket, &state, thread_id, last_sent, &mut last_sent).await
     {
+        return;
+    }
+    if !send_snapshot(&mut socket, &state, thread_id, &mut last_sent).await {
         return;
     }
 
@@ -987,11 +1002,10 @@ async fn handle_ws(
             event = events.recv() => {
                 match event {
                     Ok(event) => {
-                        // The topic backlog replays events already reflected in the snapshot; the
-                        // watermark drops them so the client never applies an event twice.
-                        if event.seq <= watermark {
+                        if event.seq <= last_sent {
                             continue;
                         }
+                        last_sent = event.seq;
                         let Ok(data) = serde_json::to_string(&event_response(event)) else {
                             break;
                         };
@@ -999,12 +1013,63 @@ async fn handle_ws(
                             break;
                         }
                     }
-                    Err(pubsub::RecvError::Lagged(_)) | Err(pubsub::RecvError::Decode(_)) => {}
+                    // A slow consumer that overflowed the ring recovers from the durable journal
+                    // plus a fresh snapshot instead of silently dropping the skipped events.
+                    Err(pubsub::RecvError::Lagged(_)) => {
+                        if !replay_journal(&mut socket, &state, thread_id, last_sent, &mut last_sent).await {
+                            break;
+                        }
+                        if !send_snapshot(&mut socket, &state, thread_id, &mut last_sent).await {
+                            break;
+                        }
+                    }
+                    Err(pubsub::RecvError::Decode(_)) => {}
                     Err(pubsub::RecvError::Closed) => break,
                 }
             }
         }
     }
+}
+
+/// Streams journaled events with `seq > from`, advancing `last_sent`. Returns
+/// `false` if the socket closed mid-send.
+async fn replay_journal(
+    socket: &mut WebSocket,
+    state: &ServerState,
+    thread_id: Uuid,
+    from: u64,
+    last_sent: &mut u64,
+) -> bool {
+    for event in crate::runner::inproc::journal_events_after(&state.db, thread_id, from).await {
+        let seq = event.seq;
+        let Ok(data) = serde_json::to_string(&event_response(event)) else {
+            continue;
+        };
+        if socket.send(Message::Text(data.into())).await.is_err() {
+            return false;
+        }
+        *last_sent = (*last_sent).max(seq);
+    }
+    true
+}
+
+/// Sends a fresh snapshot frame and lifts `last_sent` to its watermark. Returns
+/// `false` if the snapshot is unavailable or the socket closed.
+async fn send_snapshot(
+    socket: &mut WebSocket,
+    state: &ServerState,
+    thread_id: Uuid,
+    last_sent: &mut u64,
+) -> bool {
+    let Ok(snapshot) = state.runner.snapshot(thread_id).await else {
+        return false;
+    };
+    let json = snapshot_event(&snapshot);
+    if socket.send(Message::Text(json.into())).await.is_err() {
+        return false;
+    }
+    *last_sent = (*last_sent).max(snapshot.last_event_seq);
+    true
 }
 
 async fn require_thread_owner(
