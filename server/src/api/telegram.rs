@@ -693,6 +693,9 @@ struct TelegramSubscriber {
     state: Arc<ServerState>,
     thread_id: Uuid,
     active: Option<ActiveRun>,
+    /// Highest event seq handled, so a resync after `Lagged` replays only the
+    /// structural events the subscriber actually missed.
+    last_seq: u64,
 }
 
 struct ActiveRun {
@@ -934,6 +937,19 @@ impl TelegramSubscriber {
         clear_interactions(&self.state, self.thread_id, chat_id, topic_id);
         self.active = None;
     }
+
+    /// Replays journaled structural events past `last_seq` after a `Lagged`, so
+    /// missed run/message/approval events still reach Telegram. Only events the
+    /// subscriber never saw are replayed, so no side effect fires twice.
+    async fn resync(&mut self) {
+        let db = self.state.db.clone();
+        let missed =
+            crate::runner::inproc::journal_events_after(&db, self.thread_id, self.last_seq).await;
+        for event in missed {
+            self.last_seq = self.last_seq.max(event.seq);
+            self.handle_event(&event).await;
+        }
+    }
 }
 
 /// Forwards a Telegram thread's events until its runner is evicted (the topic closes). Its lifetime
@@ -943,12 +959,19 @@ async fn run_telegram_subscriber(state: Arc<ServerState>, thread_id: Uuid) {
         state,
         thread_id,
         active: None,
+        last_seq: 0,
     };
     let mut events = pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe();
     loop {
         match events.recv().await {
-            Ok(event) => subscriber.handle_event(&event).await,
-            Err(pubsub::RecvError::Lagged(_)) | Err(pubsub::RecvError::Decode(_)) => {}
+            Ok(event) => {
+                subscriber.last_seq = subscriber.last_seq.max(event.seq);
+                subscriber.handle_event(&event).await;
+            }
+            // On overflow, recover the missed structural events from the durable journal instead
+            // of silently dropping them (which would leave a run unattached in Telegram).
+            Err(pubsub::RecvError::Lagged(_)) => subscriber.resync().await,
+            Err(pubsub::RecvError::Decode(_)) => {}
             Err(pubsub::RecvError::Closed) => break,
         }
     }
@@ -964,7 +987,15 @@ pub(crate) async fn supervise(state: Arc<ServerState>) {
     loop {
         let event = match lifecycle.recv().await {
             Ok(event) => event,
-            Err(pubsub::RecvError::Lagged(_)) | Err(pubsub::RecvError::Decode(_)) => continue,
+            // The lifecycle topic has no journal, so a missed Activated cannot be replayed; rescan
+            // the mapped threads instead and spawn a subscriber for any that lacks one. A missed
+            // Deactivated self-heals: its runner's topic is gone, so that subscriber already saw
+            // `Closed` and exited.
+            Err(pubsub::RecvError::Lagged(_)) => {
+                rescan_telegram_subscribers(&state, &mut tasks).await;
+                continue;
+            }
+            Err(pubsub::RecvError::Decode(_)) => continue,
             Err(pubsub::RecvError::Closed) => break,
         };
 
@@ -988,6 +1019,36 @@ pub(crate) async fn supervise(state: Arc<ServerState>) {
                 }
             }
         }
+    }
+}
+
+/// After a lifecycle `Lagged`, ensures every Telegram-mapped thread has a live
+/// subscriber. Tasks that already finished (e.g. from a missed Deactivated) are
+/// dropped; mapped threads with no live task get a fresh subscriber.
+async fn rescan_telegram_subscribers(
+    state: &Arc<ServerState>,
+    tasks: &mut HashMap<Uuid, tokio::task::AbortHandle>,
+) {
+    tasks.retain(|_, handle| !handle.is_finished());
+
+    let mapped = match telegram_threads::select_cols((telegram_threads::thread_id,))
+        .all(&state.db)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(%error, "failed to rescan Telegram threads after lifecycle lag");
+            return;
+        }
+    };
+
+    for (thread_id,) in mapped {
+        if tasks.contains_key(&thread_id) {
+            continue;
+        }
+        let handle = tokio::spawn(run_telegram_subscriber(state.clone(), thread_id));
+        tasks.insert(thread_id, handle.abort_handle());
+        tracing::info!(%thread_id, "resynced Telegram subscriber after lifecycle lag");
     }
 }
 
@@ -3406,6 +3467,7 @@ mod tests {
             state: state.clone(),
             thread_id,
             active: None,
+            last_seq: 0,
         };
         let run_id = RunId(Uuid::now_v7());
         let event = |kind| AgentEvent {
