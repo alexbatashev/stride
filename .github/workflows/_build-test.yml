@@ -56,6 +56,45 @@ jobs:
       - name: Build
         run: cargo build --release --workspace --all-targets
 
+      - name: Runtime-free architecture gate (agent/operator)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          banned_runtimes=(async-std smol async-executor)
+          banned_tokio_features=(rt rt-multi-thread net time macros process signal fs io-std)
+
+          fail=0
+
+          for crate in stride-agent stride-operator; do
+            for rt in "${banned_runtimes[@]}"; do
+              if cargo tree -p "$crate" -e no-dev -i "$rt" >/dev/null 2>&1; then
+                echo "::error::$crate pulls in banned async runtime '$rt' (non-dev dependency graph)"
+                fail=1
+              fi
+            done
+
+            tokio_line="$(cargo tree -p "$crate" -e no-dev -f '{p}|{f}' -i tokio 2>/dev/null | head -1 || true)"
+            if [ -n "$tokio_line" ]; then
+              features="${tokio_line#*|}"
+              for feat in "${banned_tokio_features[@]}"; do
+                case ",${features}," in
+                  *",${feat},"*)
+                    echo "::error::$crate resolves tokio with runtime feature '$feat' (full feature set: $features) -- runtime-free architecture violated, see stride-plans/01-runtime-free-architecture.md"
+                    fail=1
+                    ;;
+                esac
+              done
+            fi
+          done
+
+          exit "$fail"
+
+      - name: Build stride-operator (no default features)
+        if: runner.os == 'Linux'
+        run: cargo build -p stride-operator --no-default-features
+
       - name: Test
         run: cargo nextest run --release --workspace --profile ci
 
