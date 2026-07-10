@@ -1,18 +1,20 @@
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+mod stream;
+
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures::FutureExt;
 use futures::Stream;
+use futures::future::Either;
 use http_body_util::BodyExt;
 use hyper::Request;
 use hyper::body::Body;
-use hyper::header::{HeaderName, HeaderValue};
+use hyper::header::{HOST, HeaderValue};
 use thiserror::Error;
-use tinynet_core::client::{Client, ClientConfig};
-use tinynet_core::http::{Method, Request as CoreRequest, Response as CoreResponse};
+
+use stream::{AsyncTcpStream, AsyncTlsStream};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -26,110 +28,103 @@ pub enum Error {
     ServerError(u16, String),
 }
 
+/// Default overall request deadline (connect + handshake + transfer). Without
+/// this, a stalled host makes the busy-polling stream spin forever, which hung
+/// `web_search` academic lookups indefinitely with nothing in the logs.
+/// Override with `TINYNET_TIMEOUT_SECS`.
 const DEFAULT_TIMEOUT_SECS: u64 = 20;
-const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
-const MAX_IDLE_PER_KEY: usize = 8;
-const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn default_timeout() -> Duration {
-    timeout_from_env("TINYNET_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS)
+    std::env::var("TINYNET_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
 }
+
+/// Per-address TCP connect timeout. DNS often returns several addresses (and a
+/// mix of IPv4/IPv6); without a bound, the client commits to the first one and a
+/// single unreachable or tarpitting address hangs the whole request. With it, a
+/// stalled address fails fast and we try the next. Override with
+/// `TINYNET_CONNECT_TIMEOUT_SECS`.
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 fn connect_timeout() -> Duration {
-    timeout_from_env("TINYNET_CONNECT_TIMEOUT_SECS", DEFAULT_CONNECT_TIMEOUT_SECS)
-}
-
-fn timeout_from_env(name: &str, fallback: u64) -> Duration {
-    std::env::var(name)
+    std::env::var("TINYNET_CONNECT_TIMEOUT_SECS")
         .ok()
-        .and_then(|value| value.parse().ok())
+        .and_then(|v| v.parse::<u64>().ok())
         .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(fallback))
+        .unwrap_or(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
 }
 
-#[derive(Clone, Eq)]
-struct ClientKey {
-    scheme: String,
-    host: String,
-    request_timeout: Option<Duration>,
+/// Deadline for a single connect attempt: the connect timeout, but never past
+/// the overall transfer deadline when one is set.
+fn attempt_deadline(connect_timeout: Duration, transfer_deadline: Option<Instant>) -> Instant {
+    let by_connect = Instant::now() + connect_timeout;
+    match transfer_deadline {
+        Some(d) => by_connect.min(d),
+        None => by_connect,
+    }
+}
+
+async fn connect_first_tls(
+    addrs: &[SocketAddr],
+    host: &str,
     connect_timeout: Duration,
-}
-
-impl PartialEq for ClientKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.scheme == other.scheme
-            && self.host == other.host
-            && self.request_timeout == other.request_timeout
-            && self.connect_timeout == other.connect_timeout
-    }
-}
-
-impl Hash for ClientKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.scheme.hash(state);
-        self.host.hash(state);
-        self.request_timeout.hash(state);
-        self.connect_timeout.hash(state);
-    }
-}
-
-struct IdleClient {
-    client: Client,
-    since: Instant,
-}
-
-static CLIENTS: OnceLock<Mutex<HashMap<ClientKey, Vec<IdleClient>>>> = OnceLock::new();
-
-fn clients() -> &'static Mutex<HashMap<ClientKey, Vec<IdleClient>>> {
-    CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-async fn checkout_client(key: &ClientKey) -> Result<(Client, bool), Error> {
-    if let Some(idle) = clients().lock().unwrap().get_mut(key) {
-        idle.retain(|client| client.since.elapsed() < IDLE_TIMEOUT);
-        if let Some(client) = idle.pop() {
-            return Ok((client.client, true));
+    transfer_deadline: Option<Instant>,
+) -> Result<AsyncTlsStream, Error> {
+    let mut last_err = None;
+    for &addr in addrs {
+        match AsyncTlsStream::connect(addr, host, transfer_deadline) {
+            Ok(io) => match io
+                .wait_connected(attempt_deadline(connect_timeout, transfer_deadline))
+                .await
+            {
+                Ok(()) => return Ok(io),
+                Err(err) => last_err = Some(format!("{addr}: {err}")),
+            },
+            Err(err) => last_err = Some(format!("{addr}: {err}")),
         }
     }
-
-    Ok((new_client(key).await?, false))
+    Err(Error::RequestError(
+        last_err.unwrap_or_else(|| "failed to connect".to_string()),
+    ))
 }
 
-async fn new_client(key: &ClientKey) -> Result<Client, Error> {
-    let config = ClientConfig {
-        follow_redirects: false,
-        protocol_upgrades: false,
-        connect_timeout: Some(key.connect_timeout),
-        request_timeout: key.request_timeout,
-        ..ClientConfig::default()
-    };
-    Client::from_parts_with_config(&key.scheme, &key.host, config)
-        .await
-        .map_err(request_error)
-}
-
-fn checkin_client(key: ClientKey, client: Client) {
-    let mut clients = clients().lock().unwrap();
-    let idle = clients.entry(key).or_default();
-    if idle.len() < MAX_IDLE_PER_KEY {
-        idle.push(IdleClient {
-            client,
-            since: Instant::now(),
-        });
+async fn connect_first_tcp(
+    addrs: &[SocketAddr],
+    connect_timeout: Duration,
+    transfer_deadline: Option<Instant>,
+) -> Result<AsyncTcpStream, Error> {
+    let mut last_err = None;
+    for &addr in addrs {
+        match AsyncTcpStream::new(addr, transfer_deadline) {
+            Ok(io) => match io
+                .wait_connected(attempt_deadline(connect_timeout, transfer_deadline))
+                .await
+            {
+                Ok(()) => return Ok(io),
+                Err(err) => last_err = Some(format!("{addr}: {err}")),
+            },
+            Err(err) => last_err = Some(format!("{addr}: {err}")),
+        }
     }
+    Err(Error::RequestError(
+        last_err.unwrap_or_else(|| "failed to connect".to_string()),
+    ))
 }
 
-pub async fn send_request<T>(request: Request<T>) -> Result<(u16, Bytes), Error>
+pub async fn send_request<T>(req: Request<T>) -> Result<(u16, Bytes), Error>
 where
     T: Body + Send + 'static,
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    send_request_with_timeout(request, default_timeout()).await
+    send_request_with_timeout(req, default_timeout()).await
 }
 
 pub async fn send_request_with_timeout<T>(
-    request: Request<T>,
+    req: Request<T>,
     timeout: Duration,
 ) -> Result<(u16, Bytes), Error>
 where
@@ -137,23 +132,23 @@ where
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let (status, _, body) = send_request_with_headers_timeout(request, timeout).await?;
+    let (status, _headers, body) = send_request_with_headers_timeout(req, timeout).await?;
     Ok((status, body))
 }
 
 pub async fn send_request_with_headers<T>(
-    request: Request<T>,
+    req: Request<T>,
 ) -> Result<(u16, hyper::HeaderMap, Bytes), Error>
 where
     T: Body + Send + 'static,
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    send_request_with_headers_timeout(request, default_timeout()).await
+    send_request_with_headers_timeout(req, default_timeout()).await
 }
 
 pub async fn send_request_with_headers_timeout<T>(
-    request: Request<T>,
+    req: Request<T>,
     timeout: Duration,
 ) -> Result<(u16, hyper::HeaderMap, Bytes), Error>
 where
@@ -161,232 +156,431 @@ where
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let (request, key) = convert_request(request, Some(timeout)).await?;
-    let (mut client, reused) = checkout_client(&key).await?;
-    let response = match client.send(&request).await {
-        Ok(response) => response,
-        Err(_) if reused => {
-            client = new_client(&key).await?;
-            client.send(&request).await.map_err(request_error)?
-        }
-        Err(error) => return Err(request_error(error)),
-    };
-    let response = convert_response(response)?;
-    checkin_client(key, client);
-    Ok(response)
+    let (host, is_https, addrs, req) = prepare_request(req)?;
+    let transfer_deadline = Some(Instant::now() + timeout);
+    let connect_timeout = connect_timeout();
+
+    if is_https {
+        let io = connect_first_tls(&addrs, &host, connect_timeout, transfer_deadline).await?;
+        do_request(io, req).await
+    } else {
+        let io = connect_first_tcp(&addrs, connect_timeout, transfer_deadline).await?;
+        do_request(io, req).await
+    }
 }
 
 pub async fn stream_request<T>(
-    request: Request<T>,
+    req: Request<T>,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + 'static>>
 where
     T: Body + Send + 'static,
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let (request, key) = match convert_request(request, None).await {
-        Ok(converted) => converted,
-        Err(error) => return Box::pin(futures::stream::once(async move { Err(error) })),
-    };
-    let mut client = match checkout_client(&key).await {
-        Ok((client, _)) => client,
-        Err(error) => return Box::pin(futures::stream::once(async move { Err(error) })),
-    };
-
-    let stream = async_stream::stream! {
-        let response = match client.send_streaming(&request).await {
-            Ok(response) => response,
-            Err(error) => {
-                yield Err(request_error(error));
-                return;
-            }
-        };
-        let tinynet_core::http::body::StreamingResponse { head, body } = response;
-        let status = head.status;
-        if !(200..300).contains(&status) {
-            match body.collect().await {
-                Ok(body) => {
-                    let message = String::from_utf8_lossy(body.as_ref()).into_owned();
-                    yield Err(Error::ServerError(status, message));
-                }
-                Err(error) => yield Err(request_error(error)),
-            }
-            return;
+    let (host, is_https, addrs, req) = match prepare_request(req) {
+        Ok(v) => v,
+        Err(err) => {
+            return Box::pin(futures::stream::once(async move { Err(err) }));
         }
-
-        let mut body = body;
-        loop {
-            match body.chunk().await {
-                Ok(Some(chunk)) => yield Ok(Bytes::copy_from_slice(chunk.as_ref())),
-                Ok(None) => break,
-                Err(error) => {
-                    yield Err(request_error(error));
-                    return;
-                }
-            }
-        }
-        drop(body);
     };
-    Box::pin(stream)
+    // Streaming responses (e.g. LLM SSE) are long-lived; an overall deadline
+    // would truncate them. The connect phase is still bounded so an unreachable
+    // address can't hang setup. Stalls mid-stream surface through the caller's
+    // own stream handling instead.
+    let transfer_deadline = None;
+    let connect_timeout = connect_timeout();
+
+    if is_https {
+        match connect_first_tls(&addrs, &host, connect_timeout, transfer_deadline).await {
+            Ok(io) => do_stream_request(io, req).await,
+            Err(err) => Box::pin(futures::stream::once(async move { Err(err) })),
+        }
+    } else {
+        match connect_first_tcp(&addrs, connect_timeout, transfer_deadline).await {
+            Ok(io) => do_stream_request(io, req).await,
+            Err(err) => Box::pin(futures::stream::once(async move { Err(err) })),
+        }
+    }
 }
 
-async fn convert_request<T>(
-    request: Request<T>,
-    request_timeout: Option<Duration>,
-) -> Result<(CoreRequest<'static>, ClientKey), Error>
+async fn do_request<Io, T>(io: Io, req: Request<T>) -> Result<(u16, hyper::HeaderMap, Bytes), Error>
 where
+    Io: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
     T: Body + Send + 'static,
     T::Data: Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let (parts, body) = request.into_parts();
-    let scheme = parts
-        .uri
-        .scheme_str()
-        .ok_or_else(|| Error::InvalidRequest("missing URL scheme".into()))?
-        .to_owned();
-    let host = parts
-        .uri
-        .authority()
-        .ok_or_else(|| Error::InvalidRequest("missing host".into()))?
-        .as_str()
-        .to_owned();
-    let target = parts
-        .uri
-        .path_and_query()
-        .map_or("/", |value| value.as_str())
-        .to_owned();
-    let method = convert_method(parts.method);
-    let headers = parts
-        .headers
-        .iter()
-        .map(|(name, value)| {
-            Ok((
-                name.as_str().to_owned().into(),
-                value
-                    .to_str()
-                    .map_err(|error| Error::InvalidRequest(error.to_string()))?
-                    .to_owned()
-                    .into(),
-            ))
-        })
-        .collect::<Result<_, Error>>()?;
-    let body = body
-        .collect()
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await
-        .map_err(|error| {
-            let error: Box<dyn std::error::Error + Send + Sync> = error.into();
-            Error::RequestError(error.to_string())
-        })?
-        .to_bytes();
+        .map_err(|e| Error::RequestError(e.to_string()))?;
 
-    let key = ClientKey {
-        scheme: scheme.clone(),
-        host: host.clone(),
-        request_timeout,
-        connect_timeout: connect_timeout(),
+    let request_fut = async move {
+        let res = sender
+            .send_request(req)
+            .await
+            .map_err(|e| Error::RequestError(e.to_string()))?;
+
+        let status = res.status().as_u16();
+        let headers = res.headers().clone();
+        let bytes = res
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| Error::RequestError(e.to_string()))?
+            .to_bytes();
+
+        Ok((status, headers, bytes))
     };
-    Ok((
-        CoreRequest {
-            method,
-            scheme: scheme.into(),
-            host: host.into(),
-            target: target.into(),
-            headers,
-            body: (!body.is_empty()).then(|| body.to_vec().into()),
-        },
-        key,
-    ))
-}
 
-fn convert_method(method: hyper::Method) -> Method<'static> {
-    match method {
-        hyper::Method::GET => Method::GET,
-        hyper::Method::POST => Method::POST,
-        hyper::Method::PUT => Method::PUT,
-        hyper::Method::DELETE => Method::DELETE,
-        hyper::Method::PATCH => Method::PATCH,
-        hyper::Method::HEAD => Method::HEAD,
-        hyper::Method::OPTIONS => Method::OPTIONS,
-        hyper::Method::CONNECT => Method::CONNECT,
-        hyper::Method::TRACE => Method::TRACE,
-        method => Method::Custom(method.as_str().to_owned().into()),
+    futures::pin_mut!(request_fut);
+    futures::pin_mut!(conn);
+
+    let mut conn_closed = false;
+    loop {
+        if conn_closed {
+            return request_fut.await;
+        }
+
+        match futures::future::select(request_fut.as_mut(), conn.as_mut()).await {
+            Either::Left((req_res, _)) => return req_res,
+            Either::Right((conn_res, _)) => match conn_res {
+                Ok(()) => {
+                    conn_closed = true;
+                }
+                Err(err) => return Err(Error::RequestError(err.to_string())),
+            },
+        }
     }
 }
 
-fn convert_response(
-    response: CoreResponse<'static>,
-) -> Result<(u16, hyper::HeaderMap, Bytes), Error> {
-    let mut headers = hyper::HeaderMap::new();
-    for (name, value) in response.headers {
-        let name = HeaderName::from_bytes(name.as_ref().as_bytes())
-            .map_err(|error| Error::RequestError(error.to_string()))?;
-        let value = HeaderValue::from_bytes(value.as_ref().as_bytes())
-            .map_err(|error| Error::RequestError(error.to_string()))?;
-        headers.append(name, value);
+async fn do_stream_request<Io, T>(
+    io: Io,
+    req: Request<T>,
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + 'static>>
+where
+    Io: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+    T: Body + Send + 'static,
+    T::Data: Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
+        Ok(v) => v,
+        Err(e) => {
+            return Box::pin(futures::stream::once(async move {
+                Err(Error::RequestError(e.to_string()))
+            }));
+        }
+    };
+    let mut conn = Box::pin(conn);
+
+    let request_fut = async {
+        let res = sender
+            .send_request(req)
+            .await
+            .map_err(|e| Error::RequestError(e.to_string()))?;
+        Ok::<_, Error>(res)
+    };
+    futures::pin_mut!(request_fut);
+
+    let res = match futures::future::select(request_fut, conn.as_mut()).await {
+        Either::Left((Ok(res), _)) => res,
+        Either::Left((Err(err), _)) => {
+            return Box::pin(futures::stream::once(async move { Err(err) }));
+        }
+        Either::Right((Ok(()), _)) => {
+            return Box::pin(futures::stream::once(async {
+                Err(Error::RequestError(
+                    "connection closed before response completed".to_string(),
+                ))
+            }));
+        }
+        Either::Right((Err(err), _)) => {
+            return Box::pin(futures::stream::once(async move {
+                Err(Error::RequestError(err.to_string()))
+            }));
+        }
+    };
+
+    let status = res.status().as_u16();
+
+    if !(200..300).contains(&status) {
+        // Reading the error body still requires driving the connection future,
+        // exactly like the streaming path below. Awaiting `collect()` alone would
+        // deadlock on a chunked error response because nothing pumps the socket.
+        let collect_fut = res.into_body().collect();
+        futures::pin_mut!(collect_fut);
+        let collected = match futures::future::select(collect_fut.as_mut(), conn.as_mut()).await {
+            Either::Left((collected, _)) => collected,
+            Either::Right((Ok(()), _)) => collect_fut.await,
+            Either::Right((Err(err), _)) => {
+                return Box::pin(futures::stream::once(async move {
+                    Err(Error::RequestError(err.to_string()))
+                }));
+            }
+        };
+        let body_bytes = match collected {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) => {
+                return Box::pin(futures::stream::once(async move {
+                    Err(Error::RequestError(e.to_string()))
+                }));
+            }
+        };
+        let error_msg = String::from_utf8_lossy(&body_bytes).to_string();
+        return Box::pin(futures::stream::once(async move {
+            Err(Error::ServerError(status, error_msg))
+        }));
     }
-    let body = response
-        .body
-        .map_or_else(Bytes::new, |body| Bytes::copy_from_slice(body.as_ref()));
-    Ok((response.status, headers, body))
+
+    let mut body = res.into_body();
+    let mut conn = Some(conn);
+    let s = async_stream::stream! {
+        loop {
+            let next_frame_fut = body.frame().fuse();
+            futures::pin_mut!(next_frame_fut);
+
+            if let Some(conn_fut) = conn.as_mut() {
+                match futures::future::select(next_frame_fut, conn_fut.as_mut()).await {
+                    Either::Left((frame_opt, _)) => {
+                        match frame_opt {
+                            Some(Ok(frame)) => {
+                                if let Ok(data) = frame.into_data() {
+                                    yield Ok(data);
+                                }
+                            }
+                            Some(Err(err)) => {
+                                yield Err(Error::RequestError(err.to_string()));
+                                return;
+                            }
+                            None => return,
+                        }
+                    }
+                    Either::Right((conn_res, _)) => match conn_res {
+                        Ok(()) => {
+                            conn = None;
+                        }
+                        Err(err) => {
+                            yield Err(Error::RequestError(err.to_string()));
+                            return;
+                        }
+                    },
+                }
+            } else {
+                match next_frame_fut.await {
+                    Some(Ok(frame)) => {
+                        if let Ok(data) = frame.into_data() {
+                            yield Ok(data);
+                        }
+                    }
+                    Some(Err(err)) => {
+                        yield Err(Error::RequestError(err.to_string()));
+                        return;
+                    }
+                    None => return,
+                }
+            }
+        }
+    };
+
+    Box::pin(s)
 }
 
-fn request_error(error: std::io::Error) -> Error {
-    Error::RequestError(error.to_string())
+fn prepare_request<T>(
+    req: Request<T>,
+) -> Result<(String, bool, Vec<std::net::SocketAddr>, Request<T>), Error> {
+    let uri = req.uri().clone();
+
+    let host = uri
+        .host()
+        .ok_or_else(|| Error::InvalidRequest("missing host".into()))?
+        .to_string();
+
+    let is_https = uri.scheme_str() == Some("https");
+    let port = uri.port_u16().unwrap_or(if is_https { 443 } else { 80 });
+
+    let mut addrs = format!("{host}:{port}")
+        .to_socket_addrs()
+        .map_err(|e| Error::RequestError(e.to_string()))?
+        .collect::<Vec<_>>();
+    if addrs.is_empty() {
+        return Err(Error::RequestError("DNS resolution failed".into()));
+    }
+    addrs.sort_by_key(|addr| addr.is_ipv6());
+
+    let path_and_query = uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/")
+        .to_string();
+
+    let mut req = req;
+    *req.uri_mut() = path_and_query
+        .parse()
+        .map_err(|_| Error::InvalidRequest("invalid URI path".into()))?;
+
+    req.headers_mut()
+        .entry(HOST)
+        .or_insert_with(|| HeaderValue::from_str(&host).unwrap_or(HeaderValue::from_static("")));
+
+    Ok((host, is_https, addrs, req))
 }
 
-#[derive(Default)]
-pub struct SseDecoder(tinynet_core::codec::sse::SseDecoder);
+pub struct SseDecoder {
+    buf: Vec<u8>,
+}
 
 impl SseDecoder {
     pub fn new() -> Self {
-        Self::default()
+        Self { buf: Vec::new() }
     }
 
     pub fn push<E, F>(&mut self, chunk: &[u8], mut on_data: F) -> Result<bool, E>
     where
         F: FnMut(&[u8]) -> Result<(), E>,
     {
-        self.0.push(chunk);
-        for event in self.0.by_ref() {
-            if event.data == "[DONE]" {
-                return Ok(true);
+        self.buf.extend_from_slice(chunk);
+
+        let mut scan_from = 0usize;
+        let mut processed = 0usize;
+        while let Some(pos) = self.buf[scan_from..].windows(2).position(|w| w == b"\n\n") {
+            let event_end = scan_from + pos;
+            let event = &self.buf[scan_from..event_end];
+            for line in event.split(|b| *b == b'\n') {
+                let line = trim_ascii(line);
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(data) = line.strip_prefix(b"data: ") {
+                    if data == b"[DONE]" {
+                        return Ok(true);
+                    }
+                    on_data(data)?;
+                }
             }
-            on_data(event.data.as_bytes())?;
+            processed = event_end + 2;
+            scan_from = processed;
         }
+
+        if processed > 0 {
+            self.buf.drain(..processed);
+        }
+
         Ok(false)
     }
 }
 
-#[derive(Default)]
-pub struct NdjsonDecoder(tinynet_core::codec::ndjson::NdjsonDecoder);
+impl Default for SseDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct NdjsonDecoder {
+    buf: Vec<u8>,
+}
 
 impl NdjsonDecoder {
     pub fn new() -> Self {
-        Self::default()
+        Self { buf: Vec::new() }
     }
 
     pub fn push<E, F>(&mut self, chunk: &[u8], mut on_line: F) -> Result<(), E>
     where
         F: FnMut(&[u8]) -> Result<(), E>,
     {
-        self.0.push(chunk);
-        for line in self.0.by_ref() {
-            let line = trim_ascii(&line);
+        self.buf.extend_from_slice(chunk);
+
+        let mut scan_from = 0usize;
+        let mut processed = 0usize;
+        while let Some(pos) = self.buf[scan_from..].iter().position(|b| *b == b'\n') {
+            let line_end = scan_from + pos;
+            let line = trim_ascii(&self.buf[scan_from..line_end]);
             if !line.is_empty() {
                 on_line(line)?;
             }
+            processed = line_end + 1;
+            scan_from = processed;
         }
+
+        if processed > 0 {
+            self.buf.drain(..processed);
+        }
+
         Ok(())
     }
 }
 
-fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
-    while bytes.first().is_some_and(u8::is_ascii_whitespace) {
-        bytes = &bytes[1..];
+impl Default for NdjsonDecoder {
+    fn default() -> Self {
+        Self::new()
     }
-    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
-        bytes = &bytes[..bytes.len() - 1];
+}
+
+fn trim_ascii(mut s: &[u8]) -> &[u8] {
+    while let Some(first) = s.first() {
+        if !first.is_ascii_whitespace() {
+            break;
+        }
+        s = &s[1..];
     }
-    bytes
+    while let Some(last) = s.last() {
+        if !last.is_ascii_whitespace() {
+            break;
+        }
+        s = &s[..s.len() - 1];
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    // Bind and immediately release a port so connecting to it is refused.
+    fn refused_addr() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    }
+
+    #[tokio::test]
+    async fn connect_first_falls_back_to_reachable_address() {
+        let dead = refused_addr();
+        // Bound but never accept()ed: the kernel still completes the handshake.
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let live_addr = live.local_addr().unwrap();
+
+        let addrs = vec![dead, live_addr];
+        let start = Instant::now();
+        let result = connect_first_tcp(
+            &addrs,
+            Duration::from_secs(5),
+            Some(Instant::now() + Duration::from_secs(5)),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "should fall back from the refused address to the live one: {:?}",
+            result.err()
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "fallback should be fast, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_first_errors_when_all_addresses_unreachable() {
+        let result = connect_first_tcp(
+            &[refused_addr()],
+            Duration::from_secs(2),
+            Some(Instant::now() + Duration::from_secs(2)),
+        )
+        .await;
+        assert!(result.is_err());
+    }
 }
