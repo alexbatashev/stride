@@ -1,10 +1,12 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 
 use async_stream::stream;
-use futures::channel::oneshot;
+use futures::channel::{mpsc, oneshot};
+use futures::future::Either;
+use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt};
 use llm::{
     API, CompletionRequest, ImageSource, Message, OpenAI, ReasoningEffort, StreamResponseChunk,
@@ -15,6 +17,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::determinism::{Clock, IdGen, SystemClock, SystemIdGen};
+use crate::events::{EventKind, EventSink, MessageRole, ThreadEvent, ToolContext, TurnContext};
 use crate::tools::search::{SearchEntry, SearchTool};
 use crate::{QuizQuestion, Tool, ToolRegistry};
 
@@ -41,17 +44,14 @@ pub struct TokenUsage {
     pub provider: String,
 }
 
-pub trait AgentObserver: Send + Sync {
-    fn user_message_added(&self) {}
-    fn agent_message_started(&self) {}
-    fn tool_call_started(&self, _name: &str) {}
+pub trait UsageObserver: Send + Sync {
     fn token_usage(&self, _usage: TokenUsage) {}
 }
 
 #[derive(Default)]
-pub struct NoopAgentObserver;
+pub struct NoopUsageObserver;
 
-impl AgentObserver for NoopAgentObserver {}
+impl UsageObserver for NoopUsageObserver {}
 
 #[derive(Debug, Error)]
 pub enum AgentError {
@@ -67,7 +67,7 @@ impl From<llm::Error> for AgentError {
     }
 }
 
-pub enum AgentResponseChunk {
+enum AgentResponseChunk {
     Chunk(StreamResponseChunk),
     ToolStarted {
         tool_call_id: String,
@@ -80,26 +80,38 @@ pub enum AgentResponseChunk {
         result: String,
     },
     Approval {
-        tool_name: String,
         message: String,
         approved: oneshot::Sender<bool>,
     },
     Quiz {
-        tool_name: String,
         questions: Vec<QuizQuestion>,
         answered: oneshot::Sender<Vec<String>>,
     },
 }
 
-pub type AgentResponseStream =
+type AgentResponseStream =
     Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>>;
+pub type ThreadEventStream = Pin<Box<dyn Stream<Item = ThreadEvent> + 'static>>;
+
+struct TeeEventSink {
+    sink: Arc<dyn EventSink>,
+    sender: mpsc::UnboundedSender<ThreadEvent>,
+}
+
+impl EventSink for TeeEventSink {
+    fn emit(&self, event: ThreadEvent) {
+        self.sink.emit(event.clone());
+        let _ = self.sender.unbounded_send(event);
+    }
+}
 
 pub struct AgentConfig {
     pub model_registry: ModelRegistry,
     pub max_iterations: usize,
-    pub observer: Arc<dyn AgentObserver>,
+    pub usage_observer: Arc<dyn UsageObserver>,
     pub clock: Arc<dyn Clock>,
     pub id_gen: Arc<dyn IdGen>,
+    pub max_concurrent_tools: usize,
 }
 
 impl Default for AgentConfig {
@@ -107,9 +119,10 @@ impl Default for AgentConfig {
         Self {
             model_registry: ModelRegistry::default(),
             max_iterations: 0,
-            observer: Arc::new(NoopAgentObserver),
+            usage_observer: Arc::new(NoopUsageObserver),
             clock: Arc::new(SystemClock),
             id_gen: Arc::new(SystemIdGen),
+            max_concurrent_tools: 4,
         }
     }
 }
@@ -339,10 +352,20 @@ impl BaseAgent {
         self.0.borrow().tool_registry.definitions()
     }
 
-    pub async fn make_turn(
+    #[cfg(test)]
+    async fn make_inner_turn(
         &self,
         request: String,
         images: Vec<ImageSource>,
+    ) -> AgentResponseStream {
+        self.make_turn_with_context(request, images, None).await
+    }
+
+    async fn make_turn_with_context(
+        &self,
+        request: String,
+        images: Vec<ImageSource>,
+        turn_context: Option<TurnContext>,
     ) -> AgentResponseStream {
         let (config, model, model_key, provider, max_iterations) = {
             let lock = self.0.borrow();
@@ -368,8 +391,6 @@ impl BaseAgent {
             )
         };
 
-        config.observer.user_message_added();
-
         self.0.borrow_mut().thread.push(Message {
             role: llm::Role::User,
             content: request,
@@ -390,7 +411,6 @@ impl BaseAgent {
                 };
 
                 {
-                    config.observer.agent_message_started();
                     agent.borrow_mut().thread.push(Message {
                         role: llm::Role::Assistant,
                         content: String::new(),
@@ -418,7 +438,7 @@ impl BaseAgent {
                     let is_err = chunk.is_err();
                     if let Ok(ref chunk) = chunk {
                         if let Some(usage) = &chunk.usage {
-                            config.observer.token_usage(TokenUsage {
+                            config.usage_observer.token_usage(TokenUsage {
                                 input_tokens: usage.prompt_tokens as u64,
                                 output_tokens: usage.completion_tokens as u64,
                                 model: model_key.clone(),
@@ -441,15 +461,17 @@ impl BaseAgent {
                     return;
                 }
 
-                let mut pending_images: Vec<ImageSource> = Vec::new();
-
-                for (id, name, arguments) in tool_calls {
-                    config.observer.tool_call_started(&name);
+                let mut pending_calls = VecDeque::new();
+                for (index, (id, name, arguments)) in tool_calls.into_iter().enumerate() {
                     tracing::info!(tool = %name, arguments = %arguments, "tool call requested");
 
-                    let tool = {
+                    let (tool, needs_approval) = {
                         let lock = agent.borrow();
-                        lock.tool_registry.get(&name)
+                        let tool = lock.tool_registry.get(&name);
+                        let needs_approval = serde_json::from_str::<Value>(&arguments)
+                            .ok()
+                            .is_some_and(|args| lock.tool_registry.needs_approval(&name, &args));
+                        (tool, needs_approval)
                     };
                     let readable_name = tool
                         .as_ref()
@@ -458,91 +480,61 @@ impl BaseAgent {
 
                     yield Ok(AgentResponseChunk::ToolStarted {
                         tool_call_id: id.clone(),
-                        name: readable_name.clone(),
+                        name: name.clone(),
                         arguments: arguments.clone(),
                     });
-
-                    let args = match serde_json::from_str::<Value>(&arguments) {
-                        Ok(args) => args,
-                        Err(err) => {
-                            let result = json!({ "error": err.to_string() });
-                            log_tool_error(&name, &result);
-                            let content = append_tool_result(&agent, id.clone(), result, "tool error".to_string(), &mut pending_images);
-                            yield Ok(AgentResponseChunk::ToolFinished {
-                                tool_call_id: id,
-                                name: readable_name,
-                                result: content,
-                            });
-                            continue;
-                        }
-                    };
-
-                    let (result, readable_name) = match tool {
-                        Some(tool) => {
-                            let readable_name = tool.readable_name().to_string();
-
-                            if let Some(questions) = tool.quiz_questions(&args) {
-                                let (answered, response) = oneshot::channel();
-                                yield Ok(AgentResponseChunk::Quiz {
-                                    tool_name: readable_name.clone(),
-                                    questions: questions.clone(),
-                                    answered,
-                                });
-                                let answers = response.await.unwrap_or_default();
-                                let result = json!({
-                                    "answers": questions.iter().zip(answers.iter()).map(|(q, a)| {
-                                        json!({ "question": q.question, "answer": a })
-                                    }).collect::<Vec<_>>()
-                                });
-                                log_tool_result(&name, &result);
-                                let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
-                                yield Ok(AgentResponseChunk::ToolFinished {
-                                    tool_call_id: id,
-                                    name: readable_name,
-                                    result: content,
-                                });
-                                continue;
-                            }
-
-                            let needs_approval = {
-                                let lock = agent.borrow();
-                                lock.tool_registry.needs_approval(&name, &args)
-                            };
-
-                            if needs_approval {
-                                let message = tool.confirmation_prompt(&args);
-                                let (approved, response) = oneshot::channel();
-                                yield Ok(AgentResponseChunk::Approval { tool_name: readable_name.clone(), message, approved });
-
-                                if !response.await.unwrap_or(false) {
-                                    let result = json!({ "error": "tool execution denied by user" });
-                                    log_tool_error(&name, &result);
-                                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
-                                    yield Ok(AgentResponseChunk::ToolFinished {
-                                        tool_call_id: id,
-                                        name: readable_name,
-                                        result: content,
-                                    });
-                                    continue;
-                                }
-                            }
-
-                            let result = tool.execute(config.clone(), args).await;
-                            (result, readable_name)
-                        }
-                        None => (
-                            json!({ "error": format!("unknown tool: {}", name) }),
-                            name.clone(),
-                        ),
-                    };
-
-                    log_tool_result(&name, &result);
-                    let content = append_tool_result(&agent, id.clone(), result, readable_name.clone(), &mut pending_images);
-                    yield Ok(AgentResponseChunk::ToolFinished {
-                        tool_call_id: id,
-                        name: readable_name,
-                        result: content,
+                    let context = turn_context.clone().map(|context| {
+                        ToolContext::new(context, id.clone(), config.id_gen.clone())
                     });
+                    pending_calls.push_back(ToolExecutionRequest {
+                        index,
+                        id,
+                        name,
+                        arguments,
+                        readable_name,
+                        tool,
+                        needs_approval,
+                        context,
+                    });
+                }
+
+                let (interaction_tx, mut interaction_rx) = mpsc::unbounded();
+                let mut executions = FuturesUnordered::new();
+                let concurrency = config.max_concurrent_tools.max(1);
+                for _ in 0..concurrency {
+                    if let Some(call) = pending_calls.pop_front() {
+                        executions.push(execute_tool_call(config.clone(), call, interaction_tx.clone()));
+                    }
+                }
+                let mut completed = Vec::new();
+                while !executions.is_empty() {
+                    match futures::future::select(executions.next(), interaction_rx.next()).await {
+                        Either::Left((Some(execution), _)) => {
+                            yield Ok(AgentResponseChunk::ToolFinished {
+                                tool_call_id: execution.id.clone(),
+                                name: execution.name.clone(),
+                                result: execution.content.clone(),
+                            });
+                            completed.push(execution);
+                            if let Some(call) = pending_calls.pop_front() {
+                                executions.push(execute_tool_call(config.clone(), call, interaction_tx.clone()));
+                            }
+                        }
+                        Either::Right((Some(interaction), _)) => yield Ok(interaction),
+                        _ => break,
+                    }
+                }
+
+                completed.sort_by_key(|execution| execution.index);
+                let mut pending_images = Vec::new();
+                for execution in completed {
+                    pending_images.extend(execution.images);
+                    append_tool_content(
+                        &agent,
+                        execution.id,
+                        execution.content,
+                        execution.readable_name,
+                    );
                 }
 
                 // Images produced by tools this turn are surfaced as a single
@@ -562,6 +554,277 @@ impl BaseAgent {
                 "reached maximum tool iteration limit ({max_iterations})"
             )));
         })
+    }
+
+    pub async fn make_turn(
+        &self,
+        request: String,
+        images: Vec<ImageSource>,
+        context: TurnContext,
+    ) -> ThreadEventStream {
+        let id_gen = self.0.borrow().config.id_gen.clone();
+        let user_message_id = id_gen.new_uuid_v7();
+        let (contextual_tx, mut contextual_rx) = mpsc::unbounded();
+        let inner_context = context.clone().with_sink(Arc::new(TeeEventSink {
+            sink: context.sink.clone(),
+            sender: contextual_tx,
+        }));
+        let mut source = self
+            .make_turn_with_context(request, images, Some(inner_context))
+            .await;
+
+        Box::pin(stream! {
+            macro_rules! emit {
+                ($kind:expr) => {{
+                    let event = ThreadEvent {
+                        id: id_gen.new_uuid_v7(),
+                        run_id: context.run_id,
+                        agent_path: context.agent_path.clone(),
+                        kind: $kind,
+                    };
+                    context.sink.emit(event.clone());
+                    yield event;
+                }};
+            }
+
+            emit!(EventKind::RunStarted);
+            if context.emit_user_message_events {
+                emit!(EventKind::MessageStarted {
+                    message_id: user_message_id,
+                    role: MessageRole::User,
+                });
+                emit!(EventKind::MessageCommitted {
+                    message_id: user_message_id,
+                });
+            }
+            let mut current_tool_call_id = String::new();
+            let mut assistant_message_id = None;
+            loop {
+                let item = match futures::future::select(source.next(), contextual_rx.next()).await {
+                    Either::Left((Some(item), _)) => item,
+                    Either::Right((Some(event), _)) => {
+                        yield event;
+                        continue;
+                    }
+                    _ => break,
+                };
+                match item {
+                    Ok(AgentResponseChunk::Chunk(chunk)) => {
+                        let message_id = match assistant_message_id {
+                            Some(message_id) => message_id,
+                            None => {
+                                let message_id = id_gen.new_uuid_v7();
+                                assistant_message_id = Some(message_id);
+                                emit!(EventKind::MessageStarted {
+                                    message_id,
+                                    role: MessageRole::Assistant,
+                                });
+                                message_id
+                            }
+                        };
+                        let finishes_message = chunk
+                            .choices
+                            .iter()
+                            .any(|choice| choice.finish_reason.is_some());
+                        for choice in chunk.choices {
+                            if let Some(delta) = choice.delta {
+                                if let Some(content) = delta.content.filter(|content| !content.is_empty()) {
+                                    emit!(EventKind::TextDelta {
+                                        message_id,
+                                        delta: content,
+                                    });
+                                }
+                                if let Some(thinking) = delta.thinking.filter(|thinking| !thinking.is_empty()) {
+                                    emit!(EventKind::ThinkingDelta {
+                                        message_id,
+                                        delta: thinking,
+                                    });
+                                }
+                            } else if let Some(message) = choice.message {
+                                if !message.content.is_empty() {
+                                    emit!(EventKind::TextDelta {
+                                        message_id,
+                                        delta: message.content,
+                                    });
+                                }
+                                if let Some(thinking) = message.thinking.filter(|thinking| !thinking.is_empty()) {
+                                    emit!(EventKind::ThinkingDelta {
+                                        message_id,
+                                        delta: thinking,
+                                    });
+                                }
+                            } else if let Some(text) = choice.text.filter(|text| !text.is_empty()) {
+                                emit!(EventKind::TextDelta {
+                                    message_id,
+                                    delta: text,
+                                });
+                            }
+                        }
+                        if finishes_message {
+                            emit!(EventKind::MessageCommitted { message_id });
+                            assistant_message_id = None;
+                        }
+                    }
+                    Ok(AgentResponseChunk::ToolStarted {
+                        tool_call_id,
+                        name,
+                        arguments,
+                        ..
+                    }) => {
+                        current_tool_call_id.clone_from(&tool_call_id);
+                        emit!(EventKind::ToolCallStarted {
+                            tool_call_id,
+                            name,
+                            arguments,
+                        });
+                    }
+                    Ok(AgentResponseChunk::ToolFinished {
+                        tool_call_id,
+                        name,
+                        result,
+                        ..
+                    }) => {
+                        let is_error = serde_json::from_str::<Value>(&result)
+                            .is_ok_and(|value| value.get("error").is_some());
+                        emit!(EventKind::ToolCallFinished {
+                            tool_call_id,
+                            name,
+                            result,
+                            is_error,
+                        });
+                    }
+                    Ok(AgentResponseChunk::Approval { message, approved, .. }) => {
+                        let approval_id = id_gen.new_uuid_v7();
+                        let response = context.broker.request_approval(
+                            approval_id,
+                            current_tool_call_id.clone(),
+                            message.clone(),
+                        );
+                        emit!(EventKind::ApprovalRequested {
+                            approval_id,
+                            tool_call_id: current_tool_call_id.clone(),
+                            message,
+                        });
+                        let approved_value = response.await;
+                        let _ = approved.send(approved_value);
+                        emit!(EventKind::ApprovalResolved {
+                            approval_id,
+                            approved: approved_value,
+                        });
+                    }
+                    Ok(AgentResponseChunk::Quiz { questions, answered, .. }) => {
+                        let quiz_id = id_gen.new_uuid_v7();
+                        let response = context.broker.request_quiz(quiz_id, questions.clone());
+                        emit!(EventKind::QuizRequested {
+                            quiz_id,
+                            questions,
+                        });
+                        let answers = response.await;
+                        let _ = answered.send(answers);
+                        emit!(EventKind::QuizAnswered { quiz_id });
+                    }
+                    Err(error) => {
+                        emit!(EventKind::RunFailed {
+                            error: error.to_string(),
+                        });
+                        return;
+                    }
+                }
+            }
+
+            if let Some(message_id) = assistant_message_id {
+                emit!(EventKind::MessageCommitted { message_id });
+            }
+            emit!(EventKind::RunFinished);
+        })
+    }
+}
+
+struct ToolExecutionRequest {
+    index: usize,
+    id: String,
+    name: String,
+    arguments: String,
+    readable_name: String,
+    tool: Option<Arc<dyn Tool>>,
+    needs_approval: bool,
+    context: Option<ToolContext>,
+}
+
+struct ToolExecution {
+    index: usize,
+    id: String,
+    name: String,
+    readable_name: String,
+    content: String,
+    images: Vec<ImageSource>,
+}
+
+async fn execute_tool_call(
+    config: Arc<AgentConfig>,
+    call: ToolExecutionRequest,
+    interaction_tx: mpsc::UnboundedSender<AgentResponseChunk>,
+) -> ToolExecution {
+    let result = match serde_json::from_str::<Value>(&call.arguments) {
+        Ok(args) => match call.tool {
+            Some(tool) => {
+                if let Some(questions) = tool.quiz_questions(&args) {
+                    let answers = if let Some(context) = &call.context {
+                        context.request_quiz(questions.clone()).await
+                    } else {
+                        let (answered, response) = oneshot::channel();
+                        let _ = interaction_tx.unbounded_send(AgentResponseChunk::Quiz {
+                            questions: questions.clone(),
+                            answered,
+                        });
+                        response.await.unwrap_or_default()
+                    };
+                    json!({
+                        "answers": questions.iter().zip(answers.iter()).map(|(question, answer)| {
+                            json!({ "question": question.question, "answer": answer })
+                        }).collect::<Vec<_>>()
+                    })
+                } else if call.needs_approval {
+                    let message = tool.confirmation_prompt(&args);
+                    let approved = if let Some(context) = &call.context {
+                        context.request_approval(message).await
+                    } else {
+                        let (approved, response) = oneshot::channel();
+                        let _ = interaction_tx
+                            .unbounded_send(AgentResponseChunk::Approval { message, approved });
+                        response.await.unwrap_or(false)
+                    };
+                    if approved {
+                        tool.execute_with_context(config, args, call.context).await
+                    } else {
+                        json!({ "error": "tool execution denied by user" })
+                    }
+                } else {
+                    tool.execute_with_context(config, args, call.context).await
+                }
+            }
+            None => json!({ "error": format!("unknown tool: {}", call.name) }),
+        },
+        Err(error) => json!({ "error": error.to_string() }),
+    };
+
+    if result.get("error").is_some() {
+        log_tool_error(&call.name, &result);
+    } else {
+        log_tool_result(&call.name, &result);
+    }
+    let mut result = result;
+    let images = take_tool_images(&mut result);
+    let content =
+        serde_json::to_string(&result).unwrap_or_else(|error| format!(r#"{{"error":"{error}"}}"#));
+
+    ToolExecution {
+        index: call.index,
+        id: call.id,
+        name: call.name,
+        readable_name: call.readable_name,
+        content,
+        images,
     }
 }
 
@@ -711,34 +974,27 @@ fn take_tool_images(result: &mut Value) -> Vec<ImageSource> {
     serde_json::from_value(images).unwrap_or_default()
 }
 
-fn append_tool_result(
+fn append_tool_content(
     agent: &Rc<RefCell<BaseAgentInner>>,
     id: String,
-    mut result: Value,
+    content: String,
     readable_name: String,
-    pending_images: &mut Vec<ImageSource>,
-) -> String {
-    pending_images.extend(take_tool_images(&mut result));
-
-    let content =
-        serde_json::to_string(&result).unwrap_or_else(|err| format!(r#"{{"error":"{}"}}"#, err));
-
+) {
     let mut lock = agent.borrow_mut();
     lock.thread.push(Message {
         role: llm::Role::Tool,
-        content: content.clone(),
+        content,
         tool_call_id: Some(id),
         ..Default::default()
     });
-    let idx = lock.thread.len() - 1;
-    lock.tool_display_names.insert(idx, readable_name);
-    content
+    let index = lock.thread.len() - 1;
+    lock.tool_display_names.insert(index, readable_name);
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -750,10 +1006,56 @@ mod tests {
     };
 
     use super::*;
+    use crate::InteractionBroker;
 
     #[derive(Clone)]
     struct ApprovalTool {
         calls: Arc<AtomicUsize>,
+    }
+
+    struct GatedTool {
+        name: String,
+        gate: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<ThreadEvent>>);
+
+    impl crate::EventSink for RecordingSink {
+        fn emit(&self, event: ThreadEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl Tool for GatedTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn readable_name(&self) -> &str {
+            &self.name
+        }
+
+        fn definition(&self) -> llm::Tool {
+            llm::Tool {
+                r#type: llm::ToolType::Function,
+                function: Function {
+                    description: "Wait for a test gate".to_owned(),
+                    name: self.name.clone(),
+                    parameters: Some(FunctionParameters {
+                        param_type: "object".to_owned(),
+                        ..Default::default()
+                    }),
+                },
+            }
+        }
+
+        async fn execute(&self, _config: Arc<AgentConfig>, _args: Value) -> Value {
+            let receiver = self.gate.lock().unwrap().take().unwrap();
+            let _ = receiver.await;
+            json!({ "tool": self.name })
+        }
     }
 
     #[async_trait(?Send)]
@@ -811,7 +1113,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: registry,
                 max_iterations: 50,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             String::new(),
@@ -843,7 +1145,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: registry(&mock),
                     max_iterations: 50,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 String::new(),
@@ -851,7 +1153,7 @@ mod tests {
             );
 
             let stream = agent
-                .make_turn(
+                .make_inner_turn(
                     "look".to_string(),
                     vec![ImageSource::url("https://example.com/a.png")],
                 )
@@ -880,7 +1182,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: registry(&mock),
                     max_iterations: 50,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 "Use short answers.".to_string(),
@@ -892,7 +1194,7 @@ mod tests {
             );
             agent.register_tool(ApprovalTool { calls });
 
-            let stream = agent.make_turn("next".to_string(), vec![]).await;
+            let stream = agent.make_inner_turn("next".to_string(), vec![]).await;
             pin_mut!(stream);
             while stream.next().await.is_some() {}
 
@@ -914,7 +1216,7 @@ mod tests {
             ]);
             let agent = make_agent(&mock, calls.clone());
 
-            let stream = agent.make_turn("run tool".to_string(), vec![]).await;
+            let stream = agent.make_inner_turn("run tool".to_string(), vec![]).await;
             pin_mut!(stream);
 
             assert!(matches!(
@@ -972,7 +1274,7 @@ mod tests {
             ]);
             let agent = make_agent(&mock, calls.clone());
 
-            let stream = agent.make_turn("run tool".to_string(), vec![]).await;
+            let stream = agent.make_inner_turn("run tool".to_string(), vec![]).await;
             pin_mut!(stream);
 
             stream.next().await.unwrap().unwrap();
@@ -1003,6 +1305,217 @@ mod tests {
                 r#"{"error":"tool execution denied by user"}"#
             );
         });
+    }
+
+    #[test]
+    fn tools_finish_concurrently_but_enter_transcript_in_call_order() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new()
+                .with_stream_chunks(vec![vec![two_tool_calls_chunk()], vec![text_chunk("done")]]);
+            let (first_tx, first_rx) = oneshot::channel();
+            let (second_tx, second_rx) = oneshot::channel();
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_owned(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 4,
+                    ..Default::default()
+                }),
+                String::new(),
+                vec![],
+            );
+            agent.register_tool(GatedTool {
+                name: "first".to_owned(),
+                gate: Mutex::new(Some(first_rx)),
+            });
+            agent.register_tool(GatedTool {
+                name: "second".to_owned(),
+                gate: Mutex::new(Some(second_rx)),
+            });
+
+            let mut stream = agent.make_inner_turn("run both".to_owned(), vec![]).await;
+            assert!(matches!(
+                stream.next().await.unwrap().unwrap(),
+                AgentResponseChunk::Chunk(_)
+            ));
+            assert!(
+                matches!(stream.next().await.unwrap().unwrap(), AgentResponseChunk::ToolStarted { name, .. } if name == "first")
+            );
+            assert!(
+                matches!(stream.next().await.unwrap().unwrap(), AgentResponseChunk::ToolStarted { name, .. } if name == "second")
+            );
+
+            second_tx.send(()).unwrap();
+            assert!(
+                matches!(stream.next().await.unwrap().unwrap(), AgentResponseChunk::ToolFinished { name, .. } if name == "second")
+            );
+            first_tx.send(()).unwrap();
+            assert!(
+                matches!(stream.next().await.unwrap().unwrap(), AgentResponseChunk::ToolFinished { name, .. } if name == "first")
+            );
+            while stream.next().await.is_some() {}
+
+            let requests = mock.stream_requests();
+            let tool_results = requests[1]
+                .messages
+                .iter()
+                .filter(|message| message.role == llm::Role::Tool)
+                .map(|message| message.tool_call_id.as_deref().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(tool_results, vec!["call_1", "call_2"]);
+        });
+    }
+
+    #[test]
+    fn event_turn_emits_addressed_serializable_events() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("hello")]]);
+            let agent = BaseAgent::new(
+                DEFAULT_MODEL.to_owned(),
+                Arc::new(AgentConfig {
+                    model_registry: registry(&mock),
+                    max_iterations: 4,
+                    id_gen: Arc::new(crate::SeededIdGen::new(11)),
+                    ..Default::default()
+                }),
+                String::new(),
+                vec![],
+            );
+            let context = TurnContext::new(
+                uuid::Uuid::from_u128(99),
+                Arc::new(crate::NoopEventSink),
+                Arc::new(crate::InMemoryInteractionBroker::default()),
+            );
+
+            let events = agent
+                .make_turn("hi".to_owned(), vec![], context)
+                .await
+                .collect::<Vec<_>>()
+                .await;
+
+            let message_id = events
+                .iter()
+                .find_map(|event| match event.kind {
+                    EventKind::MessageStarted {
+                        message_id,
+                        role: MessageRole::Assistant,
+                    } => Some(message_id),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(events.iter().any(|event| matches!(
+                &event.kind,
+                EventKind::TextDelta { message_id: id, delta }
+                    if *id == message_id && delta == "hello"
+            )));
+            assert!(events.iter().any(|event| matches!(
+                event.kind,
+                EventKind::MessageCommitted { message_id: id } if id == message_id
+            )));
+            assert!(serde_json::to_string(&events).is_ok());
+            insta::assert_json_snapshot!(
+                "text_turn_events",
+                events.iter().map(|event| &event.kind).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn event_turn_registers_multiple_approvals_concurrently() {
+        futures::executor::block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![two_approval_tool_calls_chunk()],
+                vec![text_chunk("done")],
+            ]);
+            let agent = make_agent(&mock, calls.clone());
+            let sink = Arc::new(RecordingSink::default());
+            let broker = Arc::new(crate::InMemoryInteractionBroker::default());
+            let context = TurnContext::new(uuid::Uuid::from_u128(9), sink.clone(), broker.clone());
+            let mut stream = agent
+                .make_turn("run both".to_owned(), vec![], context)
+                .await;
+
+            let mut started = 0;
+            let mut approval_ids = Vec::new();
+            while started < 2 || approval_ids.len() < 2 {
+                let event = stream.next().await.unwrap();
+                match event.kind {
+                    EventKind::ToolCallStarted { .. } => started += 1,
+                    EventKind::ApprovalRequested { approval_id, .. } => {
+                        approval_ids.push(approval_id);
+                    }
+                    _ => {}
+                }
+            }
+            let sink_approval_ids = sink
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|event| match event.kind {
+                    EventKind::ApprovalRequested { approval_id, .. } => Some(approval_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(sink_approval_ids, approval_ids);
+            for id in approval_ids {
+                assert!(broker.resolve_approval(id, true));
+            }
+            while stream.next().await.is_some() {}
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    fn two_tool_calls_chunk() -> StreamResponseChunk {
+        let call = |index, id: &str, name: &str| ToolCallChunk {
+            index: Some(index),
+            id: Some(id.to_owned()),
+            call_type: None,
+            function: Some(ToolCallFunction {
+                name: Some(name.to_owned()),
+                arguments: Some("{}".to_owned()),
+            }),
+        };
+        StreamResponseChunk {
+            choices: vec![CompletionChoice {
+                index: 0,
+                delta: Some(Delta {
+                    tool_calls: Some(vec![
+                        call(0, "call_1", "first"),
+                        call(1, "call_2", "second"),
+                    ]),
+                    ..Default::default()
+                }),
+                finish_reason: Some("tool_calls".to_owned()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn two_approval_tool_calls_chunk() -> StreamResponseChunk {
+        let call = |index, id: &str| ToolCallChunk {
+            index: Some(index),
+            id: Some(id.to_owned()),
+            call_type: None,
+            function: Some(ToolCallFunction {
+                name: Some("approval_tool".to_owned()),
+                arguments: Some("{}".to_owned()),
+            }),
+        };
+        StreamResponseChunk {
+            choices: vec![CompletionChoice {
+                index: 0,
+                delta: Some(Delta {
+                    tool_calls: Some(vec![call(0, "call_1"), call(1, "call_2")]),
+                    ..Default::default()
+                }),
+                finish_reason: Some("tool_calls".to_owned()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
     }
 
     fn tool_call_chunk(arguments: &str) -> StreamResponseChunk {
@@ -1197,7 +1710,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: registry(&mock),
                 max_iterations: 50,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             String::new(),
@@ -1256,7 +1769,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: registry(&mock),
                     max_iterations: 50,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 String::new(),
@@ -1271,12 +1784,12 @@ mod tests {
                 category: None,
             });
 
-            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            let stream = agent.make_inner_turn("go".to_string(), vec![]).await;
             pin_mut!(stream);
             let mut search_result = None;
             while let Some(chunk) = stream.next().await {
                 if let AgentResponseChunk::ToolFinished { name, result, .. } = chunk.unwrap()
-                    && name == "Search Tools"
+                    && name == "search_tools"
                 {
                     search_result = Some(result);
                 }
@@ -1305,7 +1818,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: registry(&mock),
                     max_iterations: 50,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 String::new(),
@@ -1313,7 +1826,7 @@ mod tests {
             );
             agent.register_searchable_tool(EchoTool);
 
-            let stream = agent.make_turn("go".to_string(), vec![]).await;
+            let stream = agent.make_inner_turn("go".to_string(), vec![]).await;
             pin_mut!(stream);
             while stream.next().await.is_some() {}
 

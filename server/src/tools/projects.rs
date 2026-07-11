@@ -214,6 +214,15 @@ impl Tool for StartThreadTool {
         if let Err(e) = insert.execute(&self.db).await {
             return json!({"success": false, "error": e.to_string()});
         }
+        crate::user_events::publish(
+            self.user_id,
+            config.id_gen.new_uuid_v7(),
+            crate::user_events::UserEventKind::ThreadCreated {
+                thread_id,
+                title: title.clone(),
+                project_id,
+            },
+        );
 
         match self
             .pool

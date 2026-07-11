@@ -9,7 +9,7 @@ use clap::Parser;
 use crossterm::style::Color;
 use futures::{Stream, StreamExt};
 use minisql::ConnectionPool;
-use stride_agent::{AgentError, AgentResponseChunk};
+use stride_agent::{EventKind, ThreadEvent};
 
 use crate::{
     agent::{CodeAgent, LocalAgent},
@@ -19,7 +19,7 @@ use term::Terminal;
 
 enum AgentState {
     Idle,
-    Running(Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>>),
+    Running(Pin<Box<dyn Stream<Item = ThreadEvent> + 'static>>),
 }
 
 pub async fn cli_main() -> anyhow::Result<()> {
@@ -64,34 +64,29 @@ pub async fn cli_main() -> anyhow::Result<()> {
                         AgentState::Running(ref mut stream) => {
                             let done = tokio::select! {
                                 _ = tokio::signal::ctrl_c() => break 'main,
-                                chunk = stream.next() => {
-                                    match chunk {
-                                        Some(Ok(AgentResponseChunk::Chunk(c))) => {
-                                            for choice in &c.choices {
-                                                if let Some(text) = choice
-                                                    .delta
-                                                    .as_ref()
-                                                    .and_then(|d| d.content.as_deref())
-                                                    .or(choice.text.as_deref())
-                                                {
-                                                    term_output.print(text, None)
-                                                }
-                                            }
+                                event = stream.next() => {
+                                    match event.map(|event| event.kind) {
+                                        Some(EventKind::TextDelta { delta, .. }) => {
+                                            term_output.print(&delta, None);
                                             false
                                         }
-                                        Some(Ok(AgentResponseChunk::Approval { tool_name, message, approved })) => {
-                                            term_output.request_approval(&tool_name, &message, approved).await;
+                                        Some(EventKind::ApprovalRequested { approval_id, tool_call_id, message }) => {
+                                            let approved = term_output
+                                                .request_approval(&tool_call_id, &message)
+                                                .await;
+                                            agent.resolve_approval(approval_id, approved);
                                             false
                                         }
-                                        Some(Err(err)) => {
-                                            term_output.print(&format!("\n{err}\n"), Some(Color::Red));
+                                        Some(EventKind::RunFailed { error }) => {
+                                            term_output.print(&format!("\n{error}\n"), Some(Color::Red));
                                             true
                                         }
-                                        Some(Ok(AgentResponseChunk::Quiz { answered, .. })) => {
-                                            let _ = answered.send(vec![]);
+                                        Some(EventKind::QuizRequested { quiz_id, .. }) => {
+                                            agent.answer_quiz(quiz_id, Vec::new());
                                             false
                                         }
-                                        Some(Ok(AgentResponseChunk::ToolStarted { .. } | AgentResponseChunk::ToolFinished { .. })) => false,
+                                        Some(EventKind::RunFinished | EventKind::RunCancelled) => true,
+                                        Some(_) => false,
                                         None => true,
                                     }
                                 }

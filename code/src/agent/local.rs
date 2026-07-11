@@ -4,8 +4,9 @@ use futures::{Stream, StreamExt, stream};
 use llm::{API, Anthropic, Ollama, OpenAI};
 use minisql::ConnectionPool;
 use stride_agent::{
-    AgentConfig, AgentError, AgentResponseChunk, BaseAgent, IdGen, ModelRegEntry, ModelRegistry,
-    SystemIdGen, Tool,
+    AgentConfig, AgentError, BaseAgent, EventKind, IdGen, InMemoryInteractionBroker,
+    InteractionBroker, MessageRole, ModelRegEntry, ModelRegistry, NoopEventSink, SystemIdGen,
+    ThreadEvent, Tool, TurnContext,
     tools::{explorer::make_explorer, file::ReadFileTool, glob::GlobTool, patch::PatchTool},
 };
 use uuid::Uuid;
@@ -22,6 +23,7 @@ pub struct LocalAgent {
     agent: stride_agent::BaseAgent,
     thread: Rc<RefCell<ThreadState>>,
     id_gen: Arc<dyn IdGen>,
+    broker: Arc<InMemoryInteractionBroker>,
 }
 
 #[derive(Default)]
@@ -48,7 +50,7 @@ impl LocalAgent {
         let base_config = Arc::new(AgentConfig {
             model_registry,
             max_iterations: 90,
-            observer: Arc::new(stride_agent::NoopAgentObserver),
+            usage_observer: Arc::new(stride_agent::NoopUsageObserver),
             id_gen: id_gen.clone(),
             ..Default::default()
         });
@@ -68,6 +70,7 @@ impl LocalAgent {
             agent,
             thread: Rc::new(RefCell::new(ThreadState::default())),
             id_gen,
+            broker: Arc::new(InMemoryInteractionBroker::default()),
         }
     }
 
@@ -123,6 +126,17 @@ impl LocalAgent {
             .map_err(db_error)?;
 
         Ok(id)
+    }
+
+    fn failed_event(&self, run_id: Uuid, error: impl ToString) -> ThreadEvent {
+        ThreadEvent {
+            id: self.id_gen.new_uuid_v7(),
+            run_id,
+            agent_path: Vec::new(),
+            kind: EventKind::RunFailed {
+                error: error.to_string(),
+            },
+        }
     }
 }
 
@@ -186,47 +200,53 @@ fn register_default_tools(agent: &mut BaseAgent) {
 }
 
 impl CodeAgent for LocalAgent {
-    async fn make_turn(
-        &self,
-        message: &str,
-    ) -> Pin<Box<dyn Stream<Item = Result<AgentResponseChunk, AgentError>> + 'static>> {
+    async fn make_turn(&self, message: &str) -> Pin<Box<dyn Stream<Item = ThreadEvent> + 'static>> {
+        let run_id = self.id_gen.new_uuid_v7();
         let thread_id = match self.ensure_thread().await {
             Ok(id) => id,
-            Err(err) => return Box::pin(stream::once(async { Err(err) })),
+            Err(error) => {
+                let event = self.failed_event(run_id, error);
+                return Box::pin(stream::once(async move { event }));
+            }
         };
 
         if let Err(err) = self
             .insert_message(thread_id, Role::User, message, None)
             .await
         {
-            return Box::pin(stream::once(async { Err(err) }));
+            let event = self.failed_event(run_id, err);
+            return Box::pin(stream::once(async move { event }));
         }
 
-        let stream = self.agent.make_turn(message.to_string(), Vec::new()).await;
+        let context = TurnContext::new(run_id, Arc::new(NoopEventSink), self.broker.clone())
+            .without_user_message_events();
+        let stream = self
+            .agent
+            .make_turn(message.to_string(), Vec::new(), context)
+            .await;
         let db = self.db.clone();
         let thread_state = self.thread.clone();
-        let id_gen = self.id_gen.clone();
         let assistant_state = Rc::new(RefCell::new(AssistantMessageState::default()));
 
-        Box::pin(stream.then(move |item| {
+        Box::pin(stream.then(move |mut event| {
             let db = db.clone();
             let thread_state = thread_state.clone();
-            let id_gen = id_gen.clone();
             let assistant_state = assistant_state.clone();
 
             async move {
-                if let Ok(AgentResponseChunk::Chunk(chunk)) = &item {
-                    if assistant_state.borrow().id.is_none() {
-                        let id = id_gen.new_uuid_v7();
+                let persistence = match &event.kind {
+                    EventKind::MessageStarted {
+                        message_id,
+                        role: MessageRole::Assistant,
+                    } => {
                         let seq = {
                             let mut thread = thread_state.borrow_mut();
                             let seq = thread.next_seq;
                             thread.next_seq += 1;
                             seq
                         };
-
                         messages::insert()
-                            .id(id)
+                            .id(*message_id)
                             .parent_thread(thread_id)
                             .seq(seq)
                             .role(Role::Agent)
@@ -234,58 +254,68 @@ impl CodeAgent for LocalAgent {
                             .thinking(Option::<&str>::None)
                             .execute(&db)
                             .await
-                            .map_err(db_error)?;
-
-                        let mut assistant = assistant_state.borrow_mut();
-                        assistant.id = Some(id);
-                        assistant.content.clear();
-                        assistant.thinking = None;
+                            .map_err(db_error)
+                            .map(|_| {
+                                let mut assistant = assistant_state.borrow_mut();
+                                assistant.id = Some(*message_id);
+                                assistant.content.clear();
+                                assistant.thinking = None;
+                            })
                     }
-
-                    let (id, content, thinking) = {
-                        let mut assistant = assistant_state.borrow_mut();
-
-                        for choice in &chunk.choices {
-                            if let Some(content) = &choice.text {
-                                assistant.content.push_str(content);
-                            }
-
-                            if let Some(delta) = &choice.delta {
-                                if let Some(content) = &delta.content {
-                                    assistant.content.push_str(content);
-                                }
-
-                                if let Some(thinking) = &delta.thinking {
-                                    assistant
-                                        .thinking
-                                        .get_or_insert_with(String::new)
-                                        .push_str(thinking);
-                                }
-                            }
+                    EventKind::TextDelta { message_id, delta } => {
+                        let update = {
+                            let mut assistant = assistant_state.borrow_mut();
+                            (assistant.id == Some(*message_id)).then(|| {
+                                assistant.content.push_str(delta);
+                                (assistant.content.clone(), assistant.thinking.clone())
+                            })
+                        };
+                        if let Some((content, thinking)) = update {
+                            update_message(&db, *message_id, &content, thinking.as_deref()).await
+                        } else {
+                            Ok(())
                         }
-
-                        (
-                            assistant.id,
-                            assistant.content.clone(),
-                            assistant.thinking.clone(),
-                        )
-                    };
-
-                    if let Some(id) = id {
-                        update_message(&db, id, &content, thinking.as_deref()).await?;
                     }
-
-                    if chunk
-                        .choices
-                        .iter()
-                        .any(|choice| choice.finish_reason.is_some())
+                    EventKind::ThinkingDelta { message_id, delta } => {
+                        let update = {
+                            let mut assistant = assistant_state.borrow_mut();
+                            (assistant.id == Some(*message_id)).then(|| {
+                                assistant
+                                    .thinking
+                                    .get_or_insert_with(String::new)
+                                    .push_str(delta);
+                                (assistant.content.clone(), assistant.thinking.clone())
+                            })
+                        };
+                        if let Some((content, thinking)) = update {
+                            update_message(&db, *message_id, &content, thinking.as_deref()).await
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    EventKind::MessageCommitted { message_id }
+                        if assistant_state.borrow().id == Some(*message_id) =>
                     {
                         assistant_state.borrow_mut().id = None;
+                        Ok(())
                     }
+                    _ => Ok(()),
+                };
+                if let Err(error) = persistence {
+                    event.kind = EventKind::RunFailed {
+                        error: error.to_string(),
+                    };
                 }
-
-                item
+                event
             }
         }))
+    }
+
+    fn resolve_approval(&self, approval_id: Uuid, approved: bool) -> bool {
+        self.broker.resolve_approval(approval_id, approved)
+    }
+
+    fn answer_quiz(&self, quiz_id: Uuid, answers: Vec<String>) -> bool {
+        self.broker.answer_quiz(quiz_id, answers)
     }
 }

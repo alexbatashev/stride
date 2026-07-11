@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use stride_agent::QuizQuestion;
+use stride_agent::{EventKind, QuizQuestion};
 use uuid::Uuid;
 
 use crate::db::MessageFormat;
@@ -78,8 +78,8 @@ pub struct ThreadSnapshot {
     pub last_event_seq: EventSeq,
     pub status: ThreadStatus,
     pub in_progress: Option<PartialAgentMessage>,
-    pub pending_approval: Option<PendingApproval>,
-    pub pending_quiz: Option<PendingQuiz>,
+    pub pending_approvals: Vec<PendingApproval>,
+    pub pending_quizzes: Vec<PendingQuiz>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,6 +90,7 @@ pub enum ThreadStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PartialAgentMessage {
+    pub message_id: Uuid,
     pub run_id: RunId,
     pub content: String,
     pub thinking: Option<String>,
@@ -110,57 +111,15 @@ pub struct PendingQuiz {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentEvent {
+    pub id: Uuid,
     pub seq: EventSeq,
     pub thread_id: Uuid,
     pub run_id: Option<RunId>,
-    pub kind: AgentEventKind,
+    pub agent_path: Vec<Uuid>,
+    pub kind: EventKind,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum AgentEventKind {
-    RunStarted,
-    UserMessageCommitted {
-        message_id: Uuid,
-        seq: u64,
-    },
-    AgentDelta {
-        content: String,
-        format: MessageFormat,
-    },
-    ThinkingDelta {
-        thinking: String,
-    },
-    AgentMessageCommitted {
-        message_id: Uuid,
-        seq: u64,
-    },
-    ToolStarted {
-        name: String,
-    },
-    ToolFinished {
-        name: String,
-    },
-    WaitingForApproval {
-        approval_id: Uuid,
-        message: String,
-    },
-    ApprovalResolved {
-        approval_id: Uuid,
-        approved: bool,
-    },
-    WaitingForQuiz {
-        quiz_id: Uuid,
-        questions: Vec<QuizQuestion>,
-    },
-    QuizAnswered {
-        quiz_id: Uuid,
-    },
-    RunFinished,
-    RunFailed {
-        error: String,
-    },
-    RunCancelled,
-}
+pub type AgentEventKind = EventKind;
 
 #[derive(Debug)]
 pub enum AgentPoolError {

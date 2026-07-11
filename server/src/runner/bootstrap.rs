@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use minisql::{ConnectionPool, Value};
 use stride_agent::{
@@ -130,9 +130,10 @@ pub(crate) async fn ensure_runner(
     let config = Arc::new(AgentConfig {
         model_registry: merged_registry,
         max_iterations: config.max_iterations,
-        observer: config.observer.clone(),
+        usage_observer: config.usage_observer.clone(),
         clock: config.clock.clone(),
         id_gen: config.id_gen.clone(),
+        max_concurrent_tools: config.max_concurrent_tools,
     });
     let vision = config.model_registry.get_or_default("default").vision;
     let mut mcp_tools = mcp_tools;
@@ -410,10 +411,10 @@ pub(crate) async fn ensure_runner(
     state.borrow_mut().threads.insert(
         thread_id,
         ThreadRunner {
+            owner: user_id,
             agent: Some(agent),
             cancel_tx: None,
-            pending_approvals: HashMap::new(),
-            pending_quizzes: HashMap::new(),
+            broker: Arc::new(stride_agent::InMemoryInteractionBroker::default()),
             queued: std::collections::VecDeque::new(),
             last_event_seq,
             next_message_seq,
@@ -887,7 +888,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 0,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             "System prompt".to_string(),
@@ -934,7 +935,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 0,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             "System prompt".to_string(),

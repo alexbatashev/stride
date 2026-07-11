@@ -709,10 +709,14 @@ struct ActiveRun {
     last_draft_text: String,
     last_draft: Instant,
     finalized: bool,
+    message_id: Option<Uuid>,
 }
 
 impl TelegramSubscriber {
     async fn handle_event(&mut self, event: &AgentEvent) {
+        if !event.agent_path.is_empty() {
+            return;
+        }
         let Some(run_id) = event.run_id.map(|id| id.0) else {
             return;
         };
@@ -739,6 +743,7 @@ impl TelegramSubscriber {
                 last_draft_text: String::new(),
                 last_draft: self.state.clock.now_instant(),
                 finalized: false,
+                message_id: None,
             });
             if let Some(active) = self.active.as_mut() {
                 let draft = telegram_draft_markdown("", &active.thinking);
@@ -755,12 +760,23 @@ impl TelegramSubscriber {
         }
 
         match &event.kind {
-            AgentEventKind::AgentDelta { content, .. } => {
+            AgentEventKind::MessageStarted {
+                message_id,
+                role: stride_agent::MessageRole::Assistant,
+            } => {
+                if let Some(active) = self.active.as_mut().filter(|a| a.run_id == run_id) {
+                    active.message_id = Some(*message_id);
+                    active.content.clear();
+                    active.thinking.clear();
+                    active.finalized = false;
+                }
+            }
+            AgentEventKind::TextDelta { delta, .. } => {
                 let draft = {
                     let Some(active) = self.active.as_mut().filter(|a| a.run_id == run_id) else {
                         return;
                     };
-                    active.content = content.clone();
+                    active.content.push_str(delta);
                     let draft = telegram_draft_markdown(&active.content, &active.thinking);
                     if draft != active.last_draft_text
                         && active.last_draft.elapsed() >= DRAFT_INTERVAL
@@ -782,13 +798,13 @@ impl TelegramSubscriber {
                     });
                 }
             }
-            AgentEventKind::ThinkingDelta { thinking } => {
+            AgentEventKind::ThinkingDelta { delta, .. } => {
                 let draft = {
                     let Some(active) = self.active.as_mut().filter(|a| a.run_id == run_id) else {
                         return;
                     };
                     let first_real_thinking = active.thinking.trim().is_empty();
-                    active.thinking.push_str(thinking);
+                    active.thinking.push_str(delta);
                     let draft = telegram_draft_markdown(&active.content, &active.thinking);
                     if draft != active.last_draft_text
                         && (first_real_thinking || active.last_draft.elapsed() >= DRAFT_INTERVAL)
@@ -810,10 +826,13 @@ impl TelegramSubscriber {
                     });
                 }
             }
-            AgentEventKind::AgentMessageCommitted { message_id, .. } => {
+            AgentEventKind::MessageCommitted { message_id } => {
                 let Some((user_id, chat_id, topic_id)) = self.active_run(run_id) else {
                     return;
                 };
+                if self.active.as_ref().and_then(|active| active.message_id) != Some(*message_id) {
+                    return;
+                }
                 if let Some(content) = agent_message_content(&self.state, *message_id).await {
                     finalize_telegram_stream(
                         &self.state,
@@ -877,9 +896,10 @@ impl TelegramSubscriber {
                     self.end_run(chat_id, topic_id);
                 }
             }
-            AgentEventKind::WaitingForApproval {
+            AgentEventKind::ApprovalRequested {
                 approval_id,
                 message,
+                ..
             } => {
                 if let Some((_, chat_id, topic_id)) = self.active_run(run_id) {
                     tracing::info!(
@@ -900,7 +920,7 @@ impl TelegramSubscriber {
                     .await;
                 }
             }
-            AgentEventKind::WaitingForQuiz { quiz_id, questions } => {
+            AgentEventKind::QuizRequested { quiz_id, questions } => {
                 if let Some((_, chat_id, topic_id)) = self.active_run(run_id) {
                     tracing::info!(
                         thread_id = %self.thread_id,
@@ -1818,6 +1838,16 @@ async fn ensure_telegram_thread(
         .execute(&state.db)
         .await
         .map_err(|_| TelegramApiError::Internal)?;
+
+    crate::user_events::publish(
+        user_id,
+        state.id_gen.new_uuid_v7(),
+        crate::user_events::UserEventKind::ThreadCreated {
+            thread_id,
+            title: DEFAULT_THREAD_TITLE.to_owned(),
+            project_id: None,
+        },
+    );
 
     telegram_threads::insert()
         .id(state.id_gen.new_uuid_v7())
@@ -3001,7 +3031,7 @@ mod tests {
             model_config: Arc::new(stride_agent::AgentConfig {
                 model_registry: stride_agent::ModelRegistry::default(),
                 max_iterations: 1,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             clock: Arc::new(stride_agent::SystemClock),
@@ -3106,16 +3136,20 @@ mod tests {
             let run_id = RunId(Uuid::now_v7());
             let _ =
                 pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(&AgentEvent {
+                    id: Uuid::now_v7(),
                     seq: 1,
                     thread_id,
                     run_id: Some(run_id),
+                    agent_path: Vec::new(),
                     kind: AgentEventKind::RunStarted,
                 });
             let _ =
                 pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(&AgentEvent {
+                    id: Uuid::now_v7(),
                     seq: 2,
                     thread_id,
                     run_id: Some(run_id),
+                    agent_path: Vec::new(),
                     kind: AgentEventKind::RunFinished,
                 });
             Ok(run_id)
@@ -3127,8 +3161,8 @@ mod tests {
                 last_event_seq: 0,
                 status: ThreadStatus::Idle,
                 in_progress: None,
-                pending_approval: None,
-                pending_quiz: None,
+                pending_approvals: Vec::new(),
+                pending_quizzes: Vec::new(),
             })
         }
 
@@ -3190,7 +3224,7 @@ mod tests {
             model_config: Arc::new(stride_agent::AgentConfig {
                 model_registry: stride_agent::ModelRegistry::default(),
                 max_iterations: 1,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             clock: Arc::new(stride_agent::SystemClock),
@@ -3471,9 +3505,11 @@ mod tests {
         };
         let run_id = RunId(Uuid::now_v7());
         let event = |kind| AgentEvent {
+            id: Uuid::now_v7(),
             seq: 0,
             thread_id,
             run_id: Some(run_id),
+            agent_path: Vec::new(),
             kind,
         };
         subscriber
@@ -3481,7 +3517,7 @@ mod tests {
             .await;
         let quiz_id = Uuid::now_v7();
         subscriber
-            .handle_event(&event(AgentEventKind::WaitingForQuiz {
+            .handle_event(&event(AgentEventKind::QuizRequested {
                 quiz_id,
                 questions: vec![QuizQuestion {
                     question: "Pick".to_string(),

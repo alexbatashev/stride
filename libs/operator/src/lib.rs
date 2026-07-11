@@ -7,7 +7,7 @@ use std::{
 };
 
 use stride_agent::{
-    AgentConfig, AgentResponseStream, BaseAgent, DEFAULT_MODEL, ModelRegEntry, ModelRegistry,
+    AgentConfig, BaseAgent, DEFAULT_MODEL, ModelRegEntry, ModelRegistry,
     tools::shell::{BashBackend, ShellTool},
 };
 
@@ -83,7 +83,7 @@ impl Operator {
             config: Arc::new(AgentConfig {
                 model_registry,
                 max_iterations: config.max_iterations,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             model: DEFAULT_MODEL.to_string(),
@@ -134,8 +134,14 @@ impl OperatorThread {
             .collect()
     }
 
-    pub async fn make_turn(&self, content: impl Into<String>) -> AgentResponseStream {
-        self.agent.make_turn(content.into(), Vec::new()).await
+    pub async fn make_turn(
+        &self,
+        content: impl Into<String>,
+        context: stride_agent::TurnContext,
+    ) -> stride_agent::ThreadEventStream {
+        self.agent
+            .make_turn(content.into(), Vec::new(), context)
+            .await
     }
 }
 

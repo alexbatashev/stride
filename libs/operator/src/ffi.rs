@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -11,8 +10,10 @@ use std::{
 
 use crate::{Operator, OperatorConfig};
 use futures::StreamExt;
-use futures::channel::oneshot;
-use stride_agent::AgentResponseChunk;
+use stride_agent::{
+    EventKind, InMemoryInteractionBroker, InteractionBroker, ThreadEvent, TurnContext,
+};
+use uuid::Uuid;
 
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct OperatorThreadSummary {
@@ -29,13 +30,82 @@ pub struct OperatorTurnResult {
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct OperatorEvent {
     pub seq: u64,
-    pub kind: String,
-    pub content: Option<String>,
-    pub name: Option<String>,
-    pub approval_id: Option<String>,
-    pub message: Option<String>,
-    pub approved: Option<bool>,
-    pub error: Option<String>,
+    pub event_id: String,
+    pub run_id: String,
+    pub agent_path: Vec<String>,
+    pub kind: OperatorEventKind,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct OperatorQuizQuestion {
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum OperatorEventKind {
+    RunStarted,
+    RunFinished,
+    RunFailed {
+        error: String,
+    },
+    RunCancelled,
+    MessageStarted {
+        message_id: String,
+        role: String,
+    },
+    TextDelta {
+        message_id: String,
+        delta: String,
+    },
+    ThinkingDelta {
+        message_id: String,
+        delta: String,
+    },
+    MessageCommitted {
+        message_id: String,
+    },
+    ToolCallStarted {
+        tool_call_id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolCallProgress {
+        tool_call_id: String,
+        payload: String,
+    },
+    ToolCallFinished {
+        tool_call_id: String,
+        name: String,
+        result: String,
+        is_error: bool,
+    },
+    AgentSpawned {
+        agent_id: String,
+        parent_tool_call_id: String,
+        name: String,
+        model: String,
+    },
+    AgentFinished {
+        agent_id: String,
+        result: String,
+    },
+    ApprovalRequested {
+        approval_id: String,
+        tool_call_id: String,
+        message: String,
+    },
+    ApprovalResolved {
+        approval_id: String,
+        approved: bool,
+    },
+    QuizRequested {
+        quiz_id: String,
+        questions: Vec<OperatorQuizQuestion>,
+    },
+    QuizAnswered {
+        quiz_id: String,
+    },
 }
 
 #[derive(uniffi::Object)]
@@ -80,7 +150,7 @@ pub struct OperatorThreadHandle {
     sender: Mutex<mpsc::Sender<WorkerRequest>>,
     event_receiver: Mutex<mpsc::Receiver<OperatorEvent>>,
     event_sink: EventSink,
-    pending_approvals: SharedApprovals,
+    broker: Arc<InMemoryInteractionBroker>,
 }
 
 #[uniffi::export]
@@ -125,24 +195,15 @@ impl OperatorThreadHandle {
     }
 
     pub fn resolve_approval(&self, approval_id: String, approved: bool) -> bool {
-        let Ok(mut pending) = self.pending_approvals.lock() else {
-            self.event_sink
-                .emit(OperatorEvent::failed("operator approval lock poisoned"));
-            return false;
-        };
-        let Some(sender) = pending.remove(&approval_id) else {
-            return false;
-        };
-        let sent = sender.send(approved).is_ok();
-        if sent {
-            self.event_sink.emit(OperatorEvent {
-                kind: "approval_resolved".to_string(),
-                approval_id: Some(approval_id),
-                approved: Some(approved),
-                ..OperatorEvent::empty()
-            });
-        }
-        sent
+        Uuid::parse_str(&approval_id)
+            .ok()
+            .is_some_and(|id| self.broker.resolve_approval(id, approved))
+    }
+
+    pub fn answer_quiz(&self, quiz_id: String, answers: Vec<String>) -> bool {
+        Uuid::parse_str(&quiz_id)
+            .ok()
+            .is_some_and(|id| self.broker.answer_quiz(id, answers))
     }
 }
 
@@ -152,12 +213,12 @@ impl OperatorThreadHandle {
         let (init_tx, init_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let event_sink = EventSink::new(event_tx);
-        let pending_approvals = Arc::new(Mutex::new(HashMap::new()));
+        let broker = Arc::new(InMemoryInteractionBroker::default());
 
         thread::spawn({
             let event_sink = event_sink.clone();
-            let pending_approvals = pending_approvals.clone();
-            move || run_worker(request, worker_rx, init_tx, event_sink, pending_approvals)
+            let broker = broker.clone();
+            move || run_worker(request, worker_rx, init_tx, event_sink, broker)
         });
 
         let init = init_rx
@@ -170,12 +231,10 @@ impl OperatorThreadHandle {
             sender: Mutex::new(worker_tx),
             event_receiver: Mutex::new(event_rx),
             event_sink,
-            pending_approvals,
+            broker,
         })
     }
 }
-
-type SharedApprovals = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
 
 #[derive(Clone)]
 struct EventSink {
@@ -191,7 +250,7 @@ impl EventSink {
         }
     }
 
-    fn emit(&self, mut event: OperatorEvent) {
+    fn send(&self, mut event: OperatorEvent) {
         event.seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let _ = self.sender.send(event);
     }
@@ -199,36 +258,131 @@ impl EventSink {
     fn failed(&self, error: impl Into<String>) -> OperatorEvent {
         OperatorEvent {
             seq: self.seq.fetch_add(1, Ordering::Relaxed),
-            kind: "run_failed".to_string(),
-            content: None,
-            name: None,
-            approval_id: None,
-            message: None,
-            approved: None,
-            error: Some(error.into()),
+            event_id: String::new(),
+            run_id: String::new(),
+            agent_path: Vec::new(),
+            kind: OperatorEventKind::RunFailed {
+                error: error.into(),
+            },
         }
     }
 }
 
-impl OperatorEvent {
-    fn empty() -> Self {
+impl stride_agent::EventSink for EventSink {
+    fn emit(&self, event: ThreadEvent) {
+        self.send(event.into());
+    }
+}
+
+impl From<ThreadEvent> for OperatorEvent {
+    fn from(event: ThreadEvent) -> Self {
         Self {
             seq: 0,
-            kind: String::new(),
-            content: None,
-            name: None,
-            approval_id: None,
-            message: None,
-            approved: None,
-            error: None,
-        }
-    }
-
-    fn failed(error: impl Into<String>) -> Self {
-        Self {
-            kind: "run_failed".to_string(),
-            error: Some(error.into()),
-            ..Self::empty()
+            event_id: event.id.to_string(),
+            run_id: event.run_id.to_string(),
+            agent_path: event
+                .agent_path
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            kind: match event.kind {
+                EventKind::RunStarted => OperatorEventKind::RunStarted,
+                EventKind::RunFinished => OperatorEventKind::RunFinished,
+                EventKind::RunFailed { error } => OperatorEventKind::RunFailed { error },
+                EventKind::RunCancelled => OperatorEventKind::RunCancelled,
+                EventKind::MessageStarted { message_id, role } => {
+                    OperatorEventKind::MessageStarted {
+                        message_id: message_id.to_string(),
+                        role: format!("{role:?}").to_lowercase(),
+                    }
+                }
+                EventKind::TextDelta { message_id, delta } => OperatorEventKind::TextDelta {
+                    message_id: message_id.to_string(),
+                    delta,
+                },
+                EventKind::ThinkingDelta { message_id, delta } => {
+                    OperatorEventKind::ThinkingDelta {
+                        message_id: message_id.to_string(),
+                        delta,
+                    }
+                }
+                EventKind::MessageCommitted { message_id } => OperatorEventKind::MessageCommitted {
+                    message_id: message_id.to_string(),
+                },
+                EventKind::ToolCallStarted {
+                    tool_call_id,
+                    name,
+                    arguments,
+                } => OperatorEventKind::ToolCallStarted {
+                    tool_call_id,
+                    name,
+                    arguments,
+                },
+                EventKind::ToolCallProgress {
+                    tool_call_id,
+                    payload,
+                } => OperatorEventKind::ToolCallProgress {
+                    tool_call_id,
+                    payload: payload.to_string(),
+                },
+                EventKind::ToolCallFinished {
+                    tool_call_id,
+                    name,
+                    result,
+                    is_error,
+                } => OperatorEventKind::ToolCallFinished {
+                    tool_call_id,
+                    name,
+                    result,
+                    is_error,
+                },
+                EventKind::AgentSpawned {
+                    agent_id,
+                    parent_tool_call_id,
+                    name,
+                    model,
+                } => OperatorEventKind::AgentSpawned {
+                    agent_id: agent_id.to_string(),
+                    parent_tool_call_id,
+                    name,
+                    model,
+                },
+                EventKind::AgentFinished { agent_id, result } => OperatorEventKind::AgentFinished {
+                    agent_id: agent_id.to_string(),
+                    result,
+                },
+                EventKind::ApprovalRequested {
+                    approval_id,
+                    tool_call_id,
+                    message,
+                } => OperatorEventKind::ApprovalRequested {
+                    approval_id: approval_id.to_string(),
+                    tool_call_id,
+                    message,
+                },
+                EventKind::ApprovalResolved {
+                    approval_id,
+                    approved,
+                } => OperatorEventKind::ApprovalResolved {
+                    approval_id: approval_id.to_string(),
+                    approved,
+                },
+                EventKind::QuizRequested { quiz_id, questions } => {
+                    OperatorEventKind::QuizRequested {
+                        quiz_id: quiz_id.to_string(),
+                        questions: questions
+                            .into_iter()
+                            .map(|question| OperatorQuizQuestion {
+                                question: question.question,
+                                options: question.options,
+                            })
+                            .collect(),
+                    }
+                }
+                EventKind::QuizAnswered { quiz_id } => OperatorEventKind::QuizAnswered {
+                    quiz_id: quiz_id.to_string(),
+                },
+            },
         }
     }
 }
@@ -269,7 +423,7 @@ fn run_worker(
     receiver: mpsc::Receiver<WorkerRequest>,
     init: mpsc::Sender<WorkerInit>,
     event_sink: EventSink,
-    pending_approvals: SharedApprovals,
+    broker: Arc<InMemoryInteractionBroker>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -310,7 +464,7 @@ fn run_worker(
                     &thread,
                     content,
                     event_sink.clone(),
-                    pending_approvals.clone(),
+                    broker.clone(),
                 ));
                 let _ = response.send(result);
             }
@@ -322,67 +476,20 @@ async fn send_message(
     thread: &crate::OperatorThread,
     content: String,
     event_sink: EventSink,
-    pending_approvals: SharedApprovals,
+    broker: Arc<InMemoryInteractionBroker>,
 ) -> OperatorTurnResult {
     let mut output = String::new();
-    let mut stream = thread.make_turn(content).await;
+    let context = TurnContext::new(Uuid::now_v7(), Arc::new(event_sink), broker);
+    let mut stream = thread.make_turn(content, context).await;
 
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(AgentResponseChunk::Chunk(chunk)) => {
-                for choice in chunk.choices {
-                    if let Some(delta) = choice.delta
-                        && let Some(content) = delta.content
-                    {
-                        event_sink.emit(OperatorEvent {
-                            kind: "agent_delta".to_string(),
-                            content: Some(content.clone()),
-                            ..OperatorEvent::empty()
-                        });
-                        output.push_str(&content);
-                    }
-                }
+    while let Some(event) = stream.next().await {
+        match event.kind {
+            EventKind::TextDelta { delta, .. } => output.push_str(&delta),
+            EventKind::ToolCallStarted { name, .. } if output.is_empty() => {
+                output.push_str(&format!("Running {name}..."));
             }
-            Ok(AgentResponseChunk::ToolStarted { name, .. }) => {
-                event_sink.emit(OperatorEvent {
-                    kind: "tool_started".to_string(),
-                    name: Some(name.clone()),
-                    ..OperatorEvent::empty()
-                });
-                if output.is_empty() {
-                    output.push_str(&format!("Running {name}..."));
-                }
-            }
-            Ok(AgentResponseChunk::ToolFinished { name, .. }) => {
-                event_sink.emit(OperatorEvent {
-                    kind: "tool_finished".to_string(),
-                    name: Some(name),
-                    ..OperatorEvent::empty()
-                });
-            }
-            Ok(AgentResponseChunk::Approval {
-                tool_name,
-                message,
-                approved,
-            }) => {
-                let approval_id = format!("approval-{}", event_sink.seq.load(Ordering::Relaxed));
-                let Ok(mut pending) = pending_approvals.lock() else {
-                    return OperatorTurnResult::failed("operator approval lock poisoned");
-                };
-                pending.insert(approval_id.clone(), approved);
-                drop(pending);
-                event_sink.emit(OperatorEvent {
-                    kind: "waiting_for_approval".to_string(),
-                    name: Some(tool_name),
-                    approval_id: Some(approval_id),
-                    message: Some(message),
-                    ..OperatorEvent::empty()
-                });
-            }
-            Ok(AgentResponseChunk::Quiz { tool_name, .. }) => {
-                return OperatorTurnResult::failed(format!("{tool_name} requires input"));
-            }
-            Err(error) => return OperatorTurnResult::failed(error.to_string()),
+            EventKind::RunFailed { error } => return OperatorTurnResult::failed(error),
+            _ => {}
         }
     }
 
@@ -417,5 +524,33 @@ mod tests {
 
         assert!(thread.summary().id.starts_with("local:"));
         assert!(thread.tool_names().contains(&"shell".to_string()));
+    }
+
+    #[test]
+    fn shared_event_conversion_keeps_attachment_ids() {
+        let event_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let message_id = Uuid::now_v7();
+        let agent_id = Uuid::now_v7();
+        let event = OperatorEvent::from(ThreadEvent {
+            id: event_id,
+            run_id,
+            agent_path: vec![agent_id],
+            kind: EventKind::TextDelta {
+                message_id,
+                delta: "hello".to_owned(),
+            },
+        });
+
+        assert_eq!(event.event_id, event_id.to_string());
+        assert_eq!(event.run_id, run_id.to_string());
+        assert_eq!(event.agent_path, vec![agent_id.to_string()]);
+        assert!(matches!(
+            event.kind,
+            OperatorEventKind::TextDelta {
+                message_id: converted_message_id,
+                delta,
+            } if converted_message_id == message_id.to_string() && delta == "hello"
+        ));
     }
 }

@@ -68,31 +68,36 @@ export type SendMessageResponse = {
 };
 
 export type ThreadEvent = {
+	id?: string;
 	seq: number;
 	thread_id: string;
 	run_id: string | null;
+	agent_path: string[];
 	kind:
 		| {
-				type: 'Snapshot';
+				type: 'snapshot';
 				status: 'idle' | 'running';
-				in_progress: {run_id: string; content: string; format: 'markdown' | 'html'; thinking: string | null} | null;
-				pending_approval: {approval_id: string; message: string} | null;
-				pending_quiz: {quiz_id: string; questions: QuizQuestion[]} | null;
+				in_progress: {message_id: string; run_id: string; content: string; format: 'markdown' | 'html'; thinking: string | null} | null;
+				pending_approvals: {approval_id: string; message: string}[];
+				pending_quizzes: {quiz_id: string; questions: QuizQuestion[]}[];
 		  }
-		| {type: 'RunStarted'}
-		| {type: 'UserMessageCommitted'; message_id: string; seq: number}
-		| {type: 'AgentDelta'; content: string; format: 'markdown' | 'html'}
-		| {type: 'ThinkingDelta'; thinking: string}
-		| {type: 'AgentMessageCommitted'; message_id: string; seq: number}
-		| {type: 'ToolStarted'; name: string}
-		| {type: 'ToolFinished'; name: string}
-		| {type: 'WaitingForApproval'; approval_id: string; message: string}
-		| {type: 'ApprovalResolved'; approval_id: string; approved: boolean}
-		| {type: 'WaitingForQuiz'; quiz_id: string; questions: QuizQuestion[]}
-		| {type: 'QuizAnswered'; quiz_id: string}
-		| {type: 'RunFinished'}
-		| {type: 'RunFailed'; error: string}
-		| {type: 'RunCancelled'};
+		| {type: 'run_started'}
+		| {type: 'message_started'; message_id: string; role: 'user' | 'assistant' | 'system' | 'tool'}
+		| {type: 'text_delta'; message_id: string; delta: string}
+		| {type: 'thinking_delta'; message_id: string; delta: string}
+		| {type: 'message_committed'; message_id: string}
+		| {type: 'tool_call_started'; tool_call_id: string; name: string; arguments: string}
+		| {type: 'tool_call_progress'; tool_call_id: string; payload: unknown}
+		| {type: 'tool_call_finished'; tool_call_id: string; name: string; result: string; is_error: boolean}
+		| {type: 'agent_spawned'; agent_id: string; parent_tool_call_id: string; name: string; model: string}
+		| {type: 'agent_finished'; agent_id: string; result: string}
+		| {type: 'approval_requested'; approval_id: string; tool_call_id: string; message: string}
+		| {type: 'approval_resolved'; approval_id: string; approved: boolean}
+		| {type: 'quiz_requested'; quiz_id: string; questions: QuizQuestion[]}
+		| {type: 'quiz_answered'; quiz_id: string}
+		| {type: 'run_finished'}
+		| {type: 'run_failed'; error: string}
+		| {type: 'run_cancelled'};
 };
 
 export type QuizQuestion = {

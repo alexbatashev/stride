@@ -18,6 +18,7 @@ pub mod runner;
 mod scheduler;
 mod tools;
 mod triggers;
+mod user_events;
 mod vfs;
 
 use std::{
@@ -119,9 +120,10 @@ async fn main() -> anyhow::Result<()> {
     let model_config = Arc::new(AgentConfig {
         model_registry: create_model_registry(&config),
         max_iterations: 90,
-        observer: observability.clone(),
+        usage_observer: observability.clone(),
         clock: clock.clone(),
         id_gen: id_gen.clone(),
+        max_concurrent_tools: 4,
     });
     let encryption_secret = email::encryption_secret(&jwt_secret);
     let cipher = crypto::SecretCipher::new(&encryption_secret);
@@ -411,6 +413,11 @@ async fn run_thread_retention(state: &ServerState) -> anyhow::Result<()> {
                 tracing::warn!(%id, %error, "auto-archive failed");
             } else {
                 tracing::info!(%id, "auto-archived idle thread");
+                user_events::publish(
+                    owner,
+                    state.id_gen.new_uuid_v7(),
+                    user_events::UserEventKind::ThreadArchived { thread_id: id },
+                );
             }
         }
     }
@@ -424,7 +431,14 @@ async fn run_thread_retention(state: &ServerState) -> anyhow::Result<()> {
         };
         if now - archived_at >= days * MS_PER_DAY {
             match api::threads::hard_delete_thread(state, id).await {
-                Ok(()) => tracing::info!(%id, "auto-removed archived thread"),
+                Ok(()) => {
+                    tracing::info!(%id, "auto-removed archived thread");
+                    user_events::publish(
+                        owner,
+                        state.id_gen.new_uuid_v7(),
+                        user_events::UserEventKind::ThreadDeleted { thread_id: id },
+                    );
+                }
                 Err(error) => tracing::warn!(%id, ?error, "auto-remove failed"),
             }
         }
@@ -618,6 +632,7 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             "/api/projects/{id}",
             patch(api::projects::rename).delete(api::projects::delete),
         )
+        .route("/api/events", get(api::events::stream))
         .route(
             "/api/threads",
             get(api::threads::list_threads).post(api::threads::create_thread),

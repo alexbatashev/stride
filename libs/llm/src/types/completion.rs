@@ -89,6 +89,20 @@ impl CompletionRequest {
         self
     }
 
+    pub fn last_message_contains(&self, needle: &str) -> bool {
+        self.messages
+            .last()
+            .is_some_and(|message| message.content.contains(needle))
+    }
+
+    pub fn last_tool_result_contains(&self, needle: &str) -> bool {
+        self.messages
+            .iter()
+            .rev()
+            .find(|message| message.role == crate::Role::Tool)
+            .is_some_and(|message| message.content.contains(needle))
+    }
+
     pub fn frequency_penalty(mut self, penalty: f32) -> Self {
         self.frequency_penalty = Some(penalty);
         self

@@ -512,7 +512,7 @@ mod tests {
         let model_config = Arc::new(AgentConfig {
             model_registry: mock_model_registry(),
             max_iterations: 2,
-            observer: Arc::new(stride_agent::NoopAgentObserver),
+            usage_observer: Arc::new(stride_agent::NoopUsageObserver),
             ..Default::default()
         });
         let runner = Arc::new(InProcessAgentPool::new(

@@ -2,16 +2,14 @@ import { logout } from "../api/auth.js";
 import { createProject, deleteProject, renameProject } from "../api/projects.js";
 import { openThreadMenu, type ThreadMutation, type ThreadRef } from "./thread-actions.js";
 
-// After a sidebar-triggered mutation, reload so the list re-renders. If the
-// affected thread is the one currently open, an archive/delete makes its page
-// invalid, so navigate to the new-thread view instead.
+// The global user stream updates sidebar entries after mutations. If the open
+// thread is archived or deleted, move to the new-thread view.
 function reloadAfterThreadMutation(mutation: ThreadMutation, thread: ThreadRef): void {
 	const currentId = document.querySelector<HTMLElement>("#threads-page")?.dataset.threadId;
 	if (currentId && currentId === thread.id && (mutation === "delete" || mutation === "archive")) {
 		window.location.href = "/threads";
 		return;
 	}
-	window.location.reload();
 }
 
 // Sidebar navigation is plain <a href> links, so every page gets it for free.

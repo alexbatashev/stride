@@ -5,7 +5,7 @@ use llm::Tool as LlmTool;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::AgentConfig;
+use crate::{AgentConfig, ToolContext};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct QuizQuestion {
@@ -32,6 +32,15 @@ pub trait Tool: Send + Sync {
     /// Execute the tool with the given arguments
     async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value;
 
+    async fn execute_with_context(
+        &self,
+        config: Arc<AgentConfig>,
+        args: Value,
+        _context: Option<ToolContext>,
+    ) -> Value {
+        self.execute(config, args).await
+    }
+
     /// Whether this tool requires confirmation before execution
     fn requires_confirmation(&self) -> bool {
         false
@@ -48,8 +57,8 @@ pub trait Tool: Send + Sync {
     }
 
     /// If this tool requires interactive user input, return the questions to ask.
-    /// When Some is returned, the base agent yields AgentResponseChunk::Quiz instead
-    /// of calling execute(), and the user's answers become the tool result.
+    /// When present, the base agent requests answers through the interaction broker
+    /// instead of calling `execute`, and the answers become the tool result.
     fn quiz_questions(&self, _args: &Value) -> Option<Vec<QuizQuestion>> {
         None
     }

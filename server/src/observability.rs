@@ -7,13 +7,10 @@ use std::{
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use minisql::ConnectionPool;
 use std::sync::{Arc, Mutex};
-use stride_agent::{AgentObserver, TokenUsage};
+use stride_agent::{TokenUsage, UsageObserver};
 
 #[derive(Default)]
 pub(crate) struct Observability {
-    tool_calls: AtomicU64,
-    user_messages: AtomicU64,
-    agent_messages: AtomicU64,
     input_tokens: AtomicU64,
     output_tokens: AtomicU64,
     model_tokens: Mutex<HashMap<String, TokenTotals>>,
@@ -60,16 +57,7 @@ fn token_snapshot(totals: &Mutex<HashMap<String, TokenTotals>>) -> Vec<(String, 
     rows
 }
 
-impl AgentObserver for Observability {
-    fn user_message_added(&self) {
-        self.user_messages.fetch_add(1, Ordering::Relaxed);
-    }
-    fn agent_message_started(&self) {
-        self.agent_messages.fetch_add(1, Ordering::Relaxed);
-    }
-    fn tool_call_started(&self, _name: &str) {
-        self.tool_calls.fetch_add(1, Ordering::Relaxed);
-    }
+impl UsageObserver for Observability {
     fn token_usage(&self, usage: TokenUsage) {
         self.input_tokens
             .fetch_add(usage.input_tokens, Ordering::Relaxed);
@@ -130,24 +118,6 @@ async fn metrics(State(state): State<MetricsState>) -> impl IntoResponse {
         "stride_tool_messages_total",
         "Tool result messages stored by Stride.",
         snapshot.tool_messages,
-    );
-    metric(
-        &mut out,
-        "stride_process_tool_calls_total",
-        "Tool calls observed since this server process started.",
-        obs.tool_calls.load(Ordering::Relaxed),
-    );
-    metric(
-        &mut out,
-        "stride_process_user_messages_total",
-        "User messages observed since this server process started.",
-        obs.user_messages.load(Ordering::Relaxed),
-    );
-    metric(
-        &mut out,
-        "stride_process_agent_messages_total",
-        "Agent message turns observed since this server process started.",
-        obs.agent_messages.load(Ordering::Relaxed),
     );
     metric(
         &mut out,
