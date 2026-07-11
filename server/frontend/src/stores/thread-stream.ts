@@ -27,13 +27,3 @@ export const threadStream = store({
 	pendingApprovals: [] as {id: string; toolCallId: string; message: string}[],
 	pendingQuizzes: [] as {id: string; questions: {question: string; options: string[]}[]}[],
 });
-
-export function resetThreadStream(threadId: string) {
-	threadStream.threadId = threadId;
-	threadStream.running = false;
-	threadStream.messages = [];
-	threadStream.toolCalls = [];
-	threadStream.subagents = [];
-	threadStream.pendingApprovals = [];
-	threadStream.pendingQuizzes = [];
-}

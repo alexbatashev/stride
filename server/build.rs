@@ -84,6 +84,57 @@ fn compile_ssr_modules(frontend: &Path, out_dir: &str) {
         .status()
         .expect("argon compile failed");
     assert!(status.success(), "argon --rust failed");
+
+    let status = Command::new("pnpm")
+        .current_dir(frontend)
+        .args([
+            "exec",
+            "argon",
+            "compile",
+            "src/shared/timeline.ts",
+            "src/shared/model-option.ts",
+            "--shared",
+            "--out-dir",
+            out_dir,
+            "--flat",
+        ])
+        .status()
+        .expect("argon shared compile failed");
+    assert!(status.success(), "argon --shared failed");
+
+    let status = Command::new("pnpm")
+        .current_dir(frontend)
+        .args([
+            "exec",
+            "argon",
+            "compile",
+            "src/pages/threads-page-view.tsx",
+            "--rust",
+            "--async-server",
+            "--out-dir",
+            out_dir,
+            "--flat",
+        ])
+        .status()
+        .expect("argon page compile failed");
+    assert!(status.success(), "argon page compile failed");
+
+    let status = Command::new("pnpm")
+        .current_dir(frontend)
+        .args([
+            "exec",
+            "argon",
+            "compile",
+            "src/pages/shell-page-view.tsx",
+            "--rust",
+            "--async-server",
+            "--out-dir",
+            out_dir,
+            "--flat",
+        ])
+        .status()
+        .expect("argon shell page compile failed");
+    assert!(status.success(), "argon shell page compile failed");
 }
 
 fn read_store_modules(frontend: &Path) -> Vec<String> {

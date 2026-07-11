@@ -24,6 +24,11 @@ argon_module!(auto_markdown);
 argon_module!(file_state);
 argon_module!(settings);
 argon_module!(ui);
+argon_module!(timeline);
+argon_module!(model_option);
+argon_module!(thread_view);
+argon_module!(threads_page_view);
+argon_module!(shell_page_view);
 
 argon_module!(archive);
 argon_module!(arrow_up);

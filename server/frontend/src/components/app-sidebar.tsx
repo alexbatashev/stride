@@ -20,12 +20,12 @@ const styles = css`:host{--sidebar-width:260px;--sidebar-width-icon:48px;--sideb
 
 const toggleStyles = css`:host{display:inline-flex;}icon-panel-left-open,icon-panel-left-close{height:16px;width:16px;}.brand-mark{align-items:center;background:var(--primary);border-radius:8px;color:var(--primary-foreground);display:inline-flex;font-size:13px;font-weight:700;height:32px;justify-content:center;width:32px;}.hover-icon{display:none;}.with-brand:hover .brand-mark,.with-brand:focus-within .brand-mark{display:none;}.with-brand:hover .hover-icon,.with-brand:focus-within .hover-icon{align-items:center;display:inline-flex;height:16px;justify-content:center;width:16px;}`;
 
-interface SidebarThread {
+export interface SidebarThread {
   id: string;
   title: string;
 }
 
-interface SidebarProject {
+export interface SidebarProject {
   id: string;
   title: string;
   threads: SidebarThread[];

@@ -4,6 +4,7 @@
  */
 import { Component, css, effect, emit, ref, state } from "@frontiers-labs/argon";
 import { transcribeAudio } from "../api/threads.js";
+import type { ModelOption } from "../shared/model-option.js";
 import { IconArrowUp } from "./icons/arrow-up.js";
 import { IconMic } from "./icons/mic.js";
 import { IconPlus } from "./icons/plus.js";
@@ -349,7 +350,7 @@ export function AppPromptInput({
   disabled?: boolean;
   running?: boolean;
   placeholder?: string;
-  models?: { value: string; label: string }[];
+  models?: ModelOption[];
   selectedModel?: string;
 }): Component {
   const input = ref<HTMLTextAreaElement>();
