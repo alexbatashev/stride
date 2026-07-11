@@ -1,0 +1,35 @@
+---
+source: libs/agent/src/base.rs
+expression: "events.iter().map(|event| &event.kind).collect::<Vec<_>>()"
+---
+[
+  {
+    "type": "run_started"
+  },
+  {
+    "type": "message_started",
+    "message_id": "00000000-0000-7000-8000-00000000000b",
+    "role": "user"
+  },
+  {
+    "type": "message_committed",
+    "message_id": "00000000-0000-7000-8000-00000000000b"
+  },
+  {
+    "type": "message_started",
+    "message_id": "00000000-0000-7004-8000-00000000000b",
+    "role": "assistant"
+  },
+  {
+    "type": "text_delta",
+    "message_id": "00000000-0000-7004-8000-00000000000b",
+    "delta": "hello"
+  },
+  {
+    "type": "message_committed",
+    "message_id": "00000000-0000-7004-8000-00000000000b"
+  },
+  {
+    "type": "run_finished"
+  }
+]

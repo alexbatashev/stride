@@ -5,4 +5,5 @@ export const sidebar = store({
   activeThread: "",
   activeProject: "",
   activePage: "",
+  runningThreads: [] as string[],
 });

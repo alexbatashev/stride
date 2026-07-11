@@ -564,7 +564,7 @@ mod tests {
         let model_config = Arc::new(AgentConfig {
             model_registry: ModelRegistry::new(),
             max_iterations: 1,
-            observer: Arc::new(stride_agent::NoopAgentObserver),
+            usage_observer: Arc::new(stride_agent::NoopUsageObserver),
             ..Default::default()
         });
         let config = Config {

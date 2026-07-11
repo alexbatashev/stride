@@ -62,7 +62,7 @@ pub struct Completion {
     pub usage: Usage,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamResponseChunk {
     pub id: String,
     pub object: String,
@@ -74,7 +74,7 @@ pub struct StreamResponseChunk {
     pub usage: Option<Usage>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Delta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
@@ -104,7 +104,7 @@ pub struct ToolCallFunction {
     pub arguments: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompletionChoice {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<Message>,
@@ -120,7 +120,7 @@ pub struct CompletionChoice {
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
     pub prompt_tokens: u32,
     #[serde(default)]

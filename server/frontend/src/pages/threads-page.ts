@@ -16,10 +16,11 @@ import {
 	updateThreadModel,
 } from "../api/threads.js";
 import { sidebar } from "../stores/ui.js";
+import {resetThreadStream, threadStream} from '../stores/thread-stream.js';
 import { bindSidebar } from "./sidebar.js";
 import { openThreadMenu, type ThreadMutation } from "./thread-actions.js";
 
-type ViewMessage = ThreadMessage & { pending?: boolean };
+type ViewMessage = ThreadMessage & { pending?: boolean; liveToolName?: string };
 type PendingQuiz = {
 	id: string;
 	questions: QuizQuestion[];
@@ -70,8 +71,6 @@ class ThreadsPageHydrator {
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
-	private pendingAssistant = "";
-	private pendingAssistantFormat: ThreadMessage["format"] = "markdown";
 	private pendingApproval: { id: string; message: string } | null = null;
 	private pendingQuiz: PendingQuiz | null = null;
 	private refreshSeq = 0;
@@ -90,6 +89,7 @@ class ThreadsPageHydrator {
 
 	constructor(private readonly root: HTMLElement) {
 		this.threadId = root.dataset.threadId ?? "";
+		resetThreadStream(this.threadId);
 		this.selectedModel = root.dataset.selectedModel ?? "";
 		this.running = root.dataset.running === "true";
 		this.messagesEl = this.mustQuery("[data-messages]");
@@ -256,10 +256,7 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		// The snapshot resets the baseline; always apply it. Any live or replayed event whose seq we
-		// have already applied is a duplicate (e.g. topic backlog overlap on reconnect) and is dropped
-		// so a message is never rendered twice.
-		if (event.kind.type === "Snapshot") {
+		if (event.kind.type === "snapshot") {
 			this.lastEventSeq = event.seq;
 		} else {
 			if (event.seq <= this.lastEventSeq) {
@@ -268,132 +265,300 @@ class ThreadsPageHydrator {
 			this.lastEventSeq = event.seq;
 		}
 
-		if (event.kind.type === "Snapshot") {
+		if (event.kind.type === "snapshot") {
 			this.running = event.kind.status === "running";
-			this.pendingApproval = event.kind.pending_approval
+			threadStream.running = this.running;
+			const firstApproval = event.kind.pending_approvals[0];
+			const firstQuiz = event.kind.pending_quizzes[0];
+			this.pendingApproval = firstApproval
 				? {
-						id: event.kind.pending_approval.approval_id,
-						message: event.kind.pending_approval.message,
+						id: firstApproval.approval_id,
+						message: firstApproval.message,
 					}
 				: null;
-			this.pendingQuiz = event.kind.pending_quiz
+			this.pendingQuiz = firstQuiz
 				? this.createPendingQuiz(
-						event.kind.pending_quiz.quiz_id,
-						event.kind.pending_quiz.questions,
+						firstQuiz.quiz_id,
+						firstQuiz.questions,
 					)
 				: null;
+			threadStream.pendingApprovals = event.kind.pending_approvals.map((approval) => ({id: approval.approval_id, toolCallId: '', message: approval.message}));
+			threadStream.pendingQuizzes = event.kind.pending_quizzes.map((quiz) => ({id: quiz.quiz_id, questions: quiz.questions}));
 			this.syncComposer();
 			if (event.kind.in_progress?.content) {
-				const last = this.messages[this.messages.length - 1];
-				if (
-					last?.role !== "agent" ||
-					last.content !== event.kind.in_progress.content
-				) {
-					this.pendingAssistant = event.kind.in_progress.content;
-					this.pendingAssistantFormat = event.kind.in_progress.format;
-					this.upsertPendingAssistant();
+				const partial = event.kind.in_progress;
+				threadStream.messages = [...threadStream.messages.filter((message) => message.id !== partial.message_id), {
+					id: partial.message_id,
+					content: partial.content,
+					thinking: partial.thinking ?? '',
+					agentPath: [],
+					committed: false,
+				}];
+				const existing = this.messages.find((message) => message.id === partial.message_id);
+				if (existing) {
+					existing.content = partial.content;
+					existing.thinking = partial.thinking;
+					existing.pending = true;
+					this.updateMessageElement(existing);
+				} else {
+					const message: ViewMessage = {id: partial.message_id, seq: Number.MAX_SAFE_INTEGER, role: 'agent', format: partial.format, content: partial.content, thinking: partial.thinking, tool_call_name: null, pending: true};
+					this.messages.push(message);
+					this.appendMessage(message);
 				}
 			}
+			return;
 		}
 
-		if (event.kind.type === "RunStarted") {
+		if (event.kind.type === 'run_started') {
 			this.running = true;
+			threadStream.running = true;
 			this.syncComposer();
+			return;
 		}
 
-		if (event.kind.type === "UserMessageCommitted") {
-			const pending = this.messages.find((message) => message.pending && message.role === "user");
-			if (pending) {
-				pending.id = event.kind.message_id;
-				pending.seq = event.kind.seq;
-				pending.pending = false;
-				this.renderMessages();
+		if (event.kind.type === 'message_started') {
+			if (event.kind.role === 'user') {
+				const pending = this.messages.find((message) => message.pending && message.role === 'user');
+				if (pending) {
+					pending.id = event.kind.message_id;
+					pending.seq = event.seq;
+					pending.pending = false;
+					this.renderMessages();
+				}
+				} else if (event.kind.role === 'assistant') {
+					const messageId = event.kind.message_id;
+					threadStream.messages = [
+						...threadStream.messages.filter((message) => message.id !== messageId),
+						{
+							id: messageId,
+						content: '',
+						thinking: '',
+						agentPath: event.agent_path,
+						committed: false,
+						},
+					];
+					if (event.agent_path.length === 0 && !this.messages.some((message) => message.id === messageId)) {
+						const message: ViewMessage = {
+							id: messageId,
+						seq: event.seq,
+						role: 'agent',
+						format: 'markdown',
+						content: '',
+						thinking: null,
+						tool_call_name: null,
+						pending: true,
+					};
+					this.messages.push(message);
+					this.appendMessage(message);
+				}
 			}
+			return;
 		}
 
-		if (event.kind.type === "AgentDelta") {
-			this.pendingAssistant = event.kind.content;
-			this.pendingAssistantFormat = event.kind.format;
-			this.upsertPendingAssistant();
-		}
-
-		if (event.kind.type === "ThinkingDelta") {
-			this.upsertPendingAssistant(event.kind.thinking);
-		}
-
-		if (event.kind.type === "WaitingForApproval") {
-			this.running = true;
-			this.pendingApproval = {
-				id: event.kind.approval_id,
-				message: event.kind.message,
-			};
-			this.syncComposer();
-		}
-
-		if (event.kind.type === "ApprovalResolved") {
-			if (this.pendingApproval?.id === event.kind.approval_id) {
-				this.pendingApproval = null;
-				this.syncComposer();
+		if (event.kind.type === 'text_delta' || event.kind.type === 'thinking_delta') {
+			const messageId = event.kind.message_id;
+			const live = threadStream.messages.find((message) => message.id === messageId);
+			if (!live) return;
+			if (event.kind.type === 'text_delta') live.content += event.kind.delta;
+			else live.thinking += event.kind.delta;
+			threadStream.messages = threadStream.messages.map((message) => message.id === live.id ? {...live} : message);
+			if (event.agent_path.length === 0) {
+				const message = this.messages.find((candidate) => candidate.id === live.id);
+				if (message) {
+					message.content = live.content;
+					message.thinking = live.thinking || null;
+					this.updateMessageElement(message);
+				}
+			} else {
+				this.updateSubagentToolCard(event.agent_path[event.agent_path.length - 1]);
 			}
+			return;
 		}
 
-		if (event.kind.type === "WaitingForQuiz") {
-			this.running = true;
-			this.pendingQuiz = this.createPendingQuiz(
-				event.kind.quiz_id,
-				event.kind.questions,
-			);
-			this.syncComposer();
-		}
-
-		if (event.kind.type === "QuizAnswered") {
-			if (this.pendingQuiz?.id === event.kind.quiz_id) {
-				this.pendingQuiz = null;
-				this.syncComposer();
+		if (event.kind.type === 'message_committed') {
+			const messageId = event.kind.message_id;
+			const live = threadStream.messages.find((message) => message.id === messageId);
+			if (live) {
+				live.committed = true;
+				threadStream.messages = threadStream.messages.map((message) => message.id === live.id ? {...live} : message);
 			}
+			const message = this.messages.find((candidate) => candidate.id === messageId);
+			if (message) message.pending = false;
+			return;
 		}
 
-		if (event.kind.type === "AgentMessageCommitted") {
-			void this.refreshAfterRun();
-		}
-
-		if (event.kind.type === "ToolStarted") {
+		if (event.kind.type === 'tool_call_started') {
+			const toolCallId = event.kind.tool_call_id;
 			this.running = true;
+			threadStream.toolCalls = [
+				...threadStream.toolCalls.filter((tool) => tool.id !== toolCallId),
+				{
+					id: toolCallId,
+					name: event.kind.name,
+					arguments: event.kind.arguments,
+					result: '',
+					isError: false,
+					status: 'running',
+					agentPath: event.agent_path,
+				},
+			];
+			if (event.agent_path.length === 0) this.upsertToolCard(toolCallId);
 			this.syncComposer();
+			return;
 		}
 
-		if (event.kind.type === "ToolFinished") {
+		if (event.kind.type === 'tool_call_progress') {
+			const toolCallId = event.kind.tool_call_id;
+			const tool = threadStream.toolCalls.find((candidate) => candidate.id === toolCallId);
+			if (tool) {
+				tool.result = typeof event.kind.payload === 'string' ? event.kind.payload : JSON.stringify(event.kind.payload);
+				threadStream.toolCalls = threadStream.toolCalls.map((candidate) => candidate.id === tool.id ? {...tool} : candidate);
+				this.upsertToolCard(tool.id);
+			}
+			return;
+		}
+
+		if (event.kind.type === 'tool_call_finished') {
+			const toolCallId = event.kind.tool_call_id;
+			const tool = threadStream.toolCalls.find((candidate) => candidate.id === toolCallId);
+			if (tool) {
+				tool.result = event.kind.result;
+				tool.isError = event.kind.is_error;
+				tool.status = 'finished';
+				threadStream.toolCalls = threadStream.toolCalls.map((candidate) => candidate.id === tool.id ? {...tool} : candidate);
+				this.upsertToolCard(tool.id);
+			}
+			this.syncComposer();
+			return;
+		}
+
+		if (event.kind.type === 'agent_spawned') {
+			const agentId = event.kind.agent_id;
+			threadStream.subagents = [
+				...threadStream.subagents.filter((child) => child.id !== agentId),
+				{
+					id: agentId,
+					name: event.kind.name,
+					model: event.kind.model,
+					result: '',
+					finished: false,
+					parentToolCallId: event.kind.parent_tool_call_id,
+				},
+			];
+			this.updateSubagentToolCard(agentId);
+			return;
+		}
+
+		if (event.kind.type === 'agent_finished') {
+			const agentId = event.kind.agent_id;
+			const child = threadStream.subagents.find((candidate) => candidate.id === agentId);
+			if (child) {
+				child.result = event.kind.result;
+				child.finished = true;
+				threadStream.subagents = threadStream.subagents.map((candidate) => candidate.id === child.id ? {...child} : candidate);
+				this.updateSubagentToolCard(agentId);
+			}
+			return;
+		}
+
+		if (event.kind.type === 'approval_requested') {
+			const approvalId = event.kind.approval_id;
+			this.running = true;
+			threadStream.pendingApprovals = [...threadStream.pendingApprovals.filter((approval) => approval.id !== approvalId), {id: approvalId, toolCallId: event.kind.tool_call_id, message: event.kind.message}];
+			this.pendingApproval = {id: approvalId, message: event.kind.message};
+			this.syncComposer();
+			return;
+		}
+
+		if (event.kind.type === 'approval_resolved') {
+			const approvalId = event.kind.approval_id;
+			threadStream.pendingApprovals = threadStream.pendingApprovals.filter((approval) => approval.id !== approvalId);
+			if (this.pendingApproval?.id === approvalId) {
+				const next = threadStream.pendingApprovals[0];
+				this.pendingApproval = next ? {id: next.id, message: next.message} : null;
+			}
+			this.syncComposer();
+			return;
+		}
+
+		if (event.kind.type === 'quiz_requested') {
+			const quizId = event.kind.quiz_id;
+			threadStream.pendingQuizzes = [...threadStream.pendingQuizzes.filter((quiz) => quiz.id !== quizId), {id: quizId, questions: event.kind.questions}];
+			this.pendingQuiz = this.createPendingQuiz(quizId, event.kind.questions);
+			this.syncComposer();
+			return;
+		}
+
+		if (event.kind.type === 'quiz_answered') {
+			const quizId = event.kind.quiz_id;
+			threadStream.pendingQuizzes = threadStream.pendingQuizzes.filter((quiz) => quiz.id !== quizId);
+			if (this.pendingQuiz?.id === quizId) {
+				const next = threadStream.pendingQuizzes[0];
+				this.pendingQuiz = next ? this.createPendingQuiz(next.id, next.questions) : null;
+			}
+			this.syncComposer();
+			return;
+		}
+
+		if (event.kind.type === 'run_finished') {
+			this.running = false;
+			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
 
-		if (event.kind.type === "RunFinished") {
+		if (event.kind.type === 'run_failed') {
 			this.running = false;
-			this.pendingApproval = null;
-			this.pendingQuiz = null;
-			this.syncComposer();
-			void this.refreshAfterRun();
-		}
-
-		if (event.kind.type === "RunFailed") {
-			this.running = false;
+			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
 			this.syncComposer();
 			this.setError(event.kind.error);
+			void this.refreshAfterRun();
+			return;
 		}
 
-		if (event.kind.type === "RunCancelled") {
+		if (event.kind.type === 'run_cancelled') {
 			this.running = false;
+			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
-			this.pendingAssistant = "";
-			this.pendingAssistantFormat = "markdown";
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
+	}
+
+	private upsertToolCard(toolCallId: string) {
+		const tool = threadStream.toolCalls.find((candidate) => candidate.id === toolCallId);
+		if (!tool) return;
+		const id = `tool:${tool.id}`;
+		const content = tool.status === 'running' && !tool.result ? `Running ${tool.name}…` : tool.result;
+		let message = this.messages.find((candidate) => candidate.id === id);
+		if (!message) {
+			message = {id, seq: Number.MAX_SAFE_INTEGER, role: 'tool', format: 'markdown', content, thinking: null, tool_call_name: null, pending: tool.status === 'running', liveToolName: tool.name};
+			this.messages.push(message);
+			this.appendMessage(message);
+		} else {
+			message.content = content;
+			message.pending = tool.status === 'running';
+			this.updateMessageElement(message);
+		}
+	}
+
+	private updateSubagentToolCard(agentId: string) {
+		const child = threadStream.subagents.find((candidate) => candidate.id === agentId);
+		if (!child) return;
+		const tool = threadStream.toolCalls.find((candidate) => candidate.id === child.parentToolCallId);
+		if (!tool) return;
+		const streamed = threadStream.messages
+			.filter((message) => message.agentPath.includes(agentId))
+			.map((message) => message.content)
+			.join('');
+		tool.result = child.finished ? child.result : `${child.name} (${child.model})\n${streamed || 'Working…'}`;
+		threadStream.toolCalls = threadStream.toolCalls.map((candidate) => candidate.id === tool.id ? {...tool} : candidate);
+		this.upsertToolCard(tool.id);
 	}
 
 	private createPendingQuiz(id: string, questions: QuizQuestion[]): PendingQuiz | null {
@@ -404,43 +569,12 @@ class ThreadsPageHydrator {
 		return { id, questions, index: 0, answers: [] };
 	}
 
-	private upsertPendingAssistant(thinking?: string) {
-		const last = this.messages[this.messages.length - 1];
-
-		if (last?.role === "agent" && !last.tool_call_name) {
-			last.pending = true;
-			// Keep the format in sync: a message first created during the thinking
-			// phase defaults to markdown, but content deltas may be html. Without
-			// this, html streams render as escaped markdown until the final commit.
-			last.format = this.pendingAssistantFormat;
-			last.content = this.pendingAssistant;
-			last.thinking = thinking ? `${last.thinking ?? ""}${thinking}` : last.thinking;
-			this.updateMessageElement(last);
-			return;
-		}
-
-		const message: ViewMessage = {
-			id: "pending-agent",
-			seq: Number.MAX_SAFE_INTEGER,
-			role: "agent",
-			format: this.pendingAssistantFormat,
-			content: this.pendingAssistant,
-			thinking: thinking ?? null,
-			tool_call_name: null,
-			pending: true,
-		};
-		this.messages.push(message);
-		this.appendMessage(message);
-	}
-
 	private async refreshAfterRun() {
 		if (!this.threadId) {
 			return;
 		}
 
 		const refreshSeq = ++this.refreshSeq;
-		this.pendingAssistant = "";
-		this.pendingAssistantFormat = "markdown";
 		const [messages, threads, projects] = await Promise.all([
 			listMessages(this.threadId),
 			listThreads(),
@@ -556,9 +690,8 @@ class ThreadsPageHydrator {
 
 	private async loadThread(threadId: string) {
 		this.closeEvents();
+		resetThreadStream(threadId);
 		this.lastEventSeq = 0;
-		this.pendingAssistant = "";
-		this.pendingAssistantFormat = "markdown";
 		this.pendingApproval = null;
 		this.pendingQuiz = null;
 		this.attachedFiles = [];
@@ -712,6 +845,10 @@ class ThreadsPageHydrator {
 	}
 
 	private messageType(message: ThreadMessage): { type: string; toolName?: string } {
+		const liveToolName = (message as ViewMessage).liveToolName;
+		if (liveToolName) {
+			return {type: 'tool_output', toolName: liveToolName};
+		}
 		if (message.tool_call_name) {
 			return { type: "agent", toolName: message.tool_call_name };
 		}
@@ -778,12 +915,16 @@ class ThreadsPageHydrator {
 		openThreadMenu(
 			this.menuButtonEl,
 			{ id: this.threadId, title, archived: false },
-			(mutation: ThreadMutation) => {
+			(mutation: ThreadMutation, thread) => {
 				if (mutation === "delete" || mutation === "archive") {
 					window.location.href = "/threads";
 					return;
 				}
-				window.location.reload();
+				if (mutation === 'rename') {
+					this.threads = this.threads.map((candidate) => candidate.id === thread.id ? {...candidate, title: thread.title} : candidate);
+					this.syncTitle();
+					this.renderSidebar();
+				}
 			},
 		);
 	}

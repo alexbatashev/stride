@@ -1,7 +1,7 @@
 // Smoke tests for the compiled component bundle: registration, rendering,
 // reactivity, and the custom events the page hydrators rely on.
 // Run with: pnpm test (builds dist/components.js first).
-import { test, before } from 'node:test';
+import { test, before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 
@@ -14,6 +14,10 @@ before(async () => {
   stores.textContent = JSON.stringify({ sidebar: { activeThread: 't1' } });
   document.head.appendChild(stores);
   await import('../dist/components.js');
+});
+
+afterEach(() => {
+  document.body.replaceChildren();
 });
 
 function mount(tag, props = {}) {

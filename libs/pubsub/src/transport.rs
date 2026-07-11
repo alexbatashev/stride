@@ -63,6 +63,9 @@ pub trait TopicHandle: Send + Sync {
     /// predates the retained window the subscription's first delivery is
     /// [`RawDelivery::Lagged`].
     fn subscribe(&self, from: Option<Offset>) -> Box<dyn RawSubscription>;
+
+    /// Subscribe to events appended after the subscription starts, without replay.
+    fn subscribe_live(&self) -> Box<dyn RawSubscription>;
 }
 
 /// A pub/sub transport. The in-memory implementation ships in [`crate::memory`];

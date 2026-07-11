@@ -1,20 +1,20 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 
 use futures::StreamExt;
 use minisql::{ConnectionPool, Value};
 use stride_agent::{
-    AgentResponseChunk,
+    EventKind, EventSink, MessageRole, ThreadEvent, TurnContext,
     sanitizer::{HtmlFormattingSanitizer, StreamingMessageSanitizer},
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 use crate::{
-    db::{MessageFormat, Role, messages, threads},
+    db::{MessageFormat, Role, messages, thread_events, threads},
     model_registry,
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, PartialAgentMessage, RunId, db_error,
-        pool::{PendingApprovalState, PendingQuizState, WorkerState, drain_queue, with_runner},
+        pool::{WorkerState, drain_queue, with_runner},
         thread_events_topic,
     },
 };
@@ -25,13 +25,20 @@ use crate::{
 const JOURNAL_RETAINED_RUNS: usize = 5;
 
 struct AssistantMessageState {
-    id: Option<Uuid>,
-    seq: Option<u64>,
     content: String,
     thinking: Option<String>,
-    tool_calls: BTreeMap<usize, PartialToolCall>,
     format: MessageFormat,
     output_sanitizer: Box<dyn StreamingMessageSanitizer>,
+}
+
+#[derive(Default)]
+struct TurnPersistence {
+    assistants: HashMap<Uuid, AssistantMessageState>,
+    last_root_message_id: Option<Uuid>,
+    tool_calls: Vec<PartialToolCall>,
+    tool_results: HashMap<String, (String, String)>,
+    next_tool_result: usize,
+    tool_calls_message_id: Option<Uuid>,
 }
 
 #[derive(Default)]
@@ -44,6 +51,17 @@ struct PartialToolCall {
 #[derive(Default)]
 struct RawMarkdownSanitizer {
     output: String,
+}
+
+#[derive(Clone)]
+struct ServerEventSink {
+    sender: mpsc::UnboundedSender<ThreadEvent>,
+}
+
+impl EventSink for ServerEventSink {
+    fn emit(&self, event: ThreadEvent) {
+        let _ = self.sender.send(event);
+    }
 }
 
 impl StreamingMessageSanitizer for RawMarkdownSanitizer {
@@ -102,20 +120,27 @@ pub(crate) async fn run_agent_turn(
     agent.set_model(resolved_model);
 
     let format = thread_message_format(&state, thread_id).unwrap_or(MessageFormat::Markdown);
-    let mut stream = agent
-        .make_turn(with_format_reminder(content, format), images)
-        .await;
-    let mut assistant = AssistantMessageState {
-        id: None,
-        seq: None,
-        content: String::new(),
-        thinking: None,
-        tool_calls: BTreeMap::new(),
-        format,
-        output_sanitizer: output_sanitizer(format, &state),
+    let broker = {
+        let state = state.borrow();
+        let Some(runner) = state.threads.get(&thread_id) else {
+            return;
+        };
+        runner.broker.clone()
     };
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let context = TurnContext::new(
+        run_id.0,
+        Arc::new(ServerEventSink { sender: event_tx }),
+        broker,
+    )
+    .without_user_message_events();
+    let mut stream = agent
+        .make_turn(with_format_reminder(content, format), images, context)
+        .await;
+    let mut persistence = TurnPersistence::default();
+    let mut source_finished = false;
 
-    loop {
+    while !source_finished {
         tokio::select! {
             biased;
             _ = cancel_rx.changed() => {
@@ -124,138 +149,46 @@ pub(crate) async fn run_agent_turn(
                 drain_queue(&state, thread_id).await;
                 return;
             }
-            item = stream.next() => {
-                let Some(item) = item else { break; };
-                match item {
-                    Ok(AgentResponseChunk::Chunk(chunk)) => {
-                        if let Err(error) =
-                            handle_agent_chunk(&state, thread_id, run_id, &mut assistant, chunk).await
-                        {
-                            fail_run(&state, thread_id, run_id, error.to_string()).await;
-                            restore_agent(&state, thread_id, agent);
-                            drain_queue(&state, thread_id).await;
-                            return;
-                        }
-                    }
-                    Ok(AgentResponseChunk::ToolStarted { name, .. }) => {
-                        emit(
-                            &state,
-                            thread_id,
-                            Some(run_id),
-                            AgentEventKind::ToolStarted { name },
-                        )
-                        .await;
-                    }
-                    Ok(AgentResponseChunk::ToolFinished {
-                        tool_call_id,
-                        name,
-                        result,
-                    }) => {
-                        if let Err(error) =
-                            persist_tool_message(&state, thread_id, &tool_call_id, &result).await
-                        {
-                            fail_run(&state, thread_id, run_id, error.to_string()).await;
-                            restore_agent(&state, thread_id, agent);
-                            drain_queue(&state, thread_id).await;
-                            return;
-                        }
-
-                        emit(
-                            &state,
-                            thread_id,
-                            Some(run_id),
-                            AgentEventKind::ToolFinished { name },
-                        )
-                        .await;
-                    }
-                    Ok(AgentResponseChunk::Approval {
-                        message, approved, ..
-                    }) => {
-                        let approval_id = state.borrow().init.config.id_gen.new_uuid_v7();
-                        tracing::info!(
-                            %thread_id,
-                            run_id = %run_id.0,
-                            %approval_id,
-                            "agent waiting for approval"
-                        );
-                        with_runner(&state, thread_id, |runner| {
-                            runner.pending_approvals.insert(
-                                approval_id,
-                                PendingApprovalState {
-                                    run_id,
-                                    message: message.clone(),
-                                    approved,
-                                },
-                            );
-                        });
-                        emit(
-                            &state,
-                            thread_id,
-                            Some(run_id),
-                            AgentEventKind::WaitingForApproval {
-                                approval_id,
-                                message,
-                            },
-                        )
-                        .await;
-                    }
-                    Ok(AgentResponseChunk::Quiz {
-                        questions,
-                        answered,
-                        ..
-                    }) => {
-                        tracing::info!(
-                            %thread_id,
-                            run_id = %run_id.0,
-                            question_count = questions.len(),
-                            "agent waiting for quiz answers"
-                        );
-                        // An empty question set has nothing to present; resolve it here so the
-                        // agent never blocks on a dispatcher that cannot answer it.
-                        if questions.is_empty() {
-                            let _ = answered.send(Vec::new());
-                            continue;
-                        }
-                        let quiz_id = state.borrow().init.config.id_gen.new_uuid_v7();
-                        with_runner(&state, thread_id, |runner| {
-                            runner.pending_quizzes.insert(
-                                quiz_id,
-                                PendingQuizState {
-                                    run_id,
-                                    questions: questions.clone(),
-                                    answered,
-                                },
-                            );
-                        });
-                        emit(
-                            &state,
-                            thread_id,
-                            Some(run_id),
-                            AgentEventKind::WaitingForQuiz { quiz_id, questions },
-                        )
-                        .await;
-                    }
-                    Err(error) => {
-                        fail_run(&state, thread_id, run_id, error.to_string()).await;
-                        restore_agent(&state, thread_id, agent);
-                        drain_queue(&state, thread_id).await;
-                        return;
-                    }
+            event = event_rx.recv() => {
+                if let Some(event) = event
+                    && let Err(error) = process_thread_event(
+                        &state,
+                        thread_id,
+                        run_id,
+                        format,
+                        &mut persistence,
+                        event,
+                    ).await
+                {
+                    fail_run(&state, thread_id, run_id, error.to_string()).await;
+                    restore_agent(&state, thread_id, agent);
+                    drain_queue(&state, thread_id).await;
+                    return;
                 }
             }
+            item = stream.next() => source_finished = item.is_none(),
+        }
+    }
+
+    while let Ok(event) = event_rx.try_recv() {
+        if let Err(error) =
+            process_thread_event(&state, thread_id, run_id, format, &mut persistence, event).await
+        {
+            fail_run(&state, thread_id, run_id, error.to_string()).await;
+            restore_agent(&state, thread_id, agent);
+            drain_queue(&state, thread_id).await;
+            return;
         }
     }
 
     let clock = state.borrow().init.config.clock.clone();
     with_runner(&state, thread_id, |runner| {
         runner.cancel_tx = None;
-        runner.pending_approvals.clear();
-        runner.pending_quizzes.clear();
+        runner.broker.clear();
         runner.status = crate::runner::ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = clock.now_instant();
     });
-    emit(&state, thread_id, Some(run_id), AgentEventKind::RunFinished).await;
     restore_agent(&state, thread_id, agent);
     drain_queue(&state, thread_id).await;
 }
@@ -272,224 +205,157 @@ async fn persist_thread_model(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid,
     }
 }
 
-async fn handle_agent_chunk(
+async fn process_thread_event(
     state: &Rc<RefCell<WorkerState>>,
     thread_id: Uuid,
     run_id: RunId,
-    assistant: &mut AssistantMessageState,
-    chunk: llm::StreamResponseChunk,
+    format: MessageFormat,
+    persistence: &mut TurnPersistence,
+    event: ThreadEvent,
 ) -> Result<(), AgentPoolError> {
-    let mut has_message_delta = false;
-
-    for choice in &chunk.choices {
-        if let Some(message) = &choice.message {
-            if !message.content.is_empty() {
-                has_message_delta = true;
-                append_assistant_content(state, thread_id, run_id, assistant, &message.content)
-                    .await?;
-            }
-
-            if let Some(thinking) = message
-                .thinking
-                .as_ref()
-                .filter(|thinking| !thinking.is_empty())
-            {
-                ensure_assistant_message(state, thread_id, assistant).await?;
-                has_message_delta = true;
-                assistant
-                    .thinking
-                    .get_or_insert_with(String::new)
-                    .push_str(thinking);
-                emit(
-                    state,
-                    thread_id,
-                    Some(run_id),
-                    AgentEventKind::ThinkingDelta {
-                        thinking: thinking.clone(),
-                    },
-                )
-                .await;
-            }
-
-            if let Some(chunks) = message
-                .tool_calls
-                .as_ref()
-                .filter(|chunks| has_tool_call_data(chunks))
-            {
-                ensure_assistant_message(state, thread_id, assistant).await?;
-                has_message_delta = true;
-                append_tool_call_chunks(&mut assistant.tool_calls, chunks);
-            }
-        }
-
-        if let Some(content) = choice.text.as_ref().filter(|content| !content.is_empty()) {
-            has_message_delta = true;
-            append_assistant_content(state, thread_id, run_id, assistant, content).await?;
-        }
-
-        if let Some(delta) = &choice.delta {
-            if let Some(content) = delta.content.as_ref().filter(|content| !content.is_empty()) {
-                has_message_delta = true;
-                append_assistant_content(state, thread_id, run_id, assistant, content).await?;
-            }
-
-            if let Some(thinking) = delta
-                .thinking
-                .as_ref()
-                .filter(|thinking| !thinking.is_empty())
-            {
-                ensure_assistant_message(state, thread_id, assistant).await?;
-                has_message_delta = true;
-                assistant
-                    .thinking
-                    .get_or_insert_with(String::new)
-                    .push_str(thinking);
-                emit(
-                    state,
-                    thread_id,
-                    Some(run_id),
-                    AgentEventKind::ThinkingDelta {
-                        thinking: thinking.clone(),
-                    },
-                )
-                .await;
-            }
-
-            if let Some(chunks) = delta
-                .tool_calls
-                .as_ref()
-                .filter(|chunks| has_tool_call_data(chunks))
-            {
-                ensure_assistant_message(state, thread_id, assistant).await?;
-                has_message_delta = true;
-                append_tool_call_chunks(&mut assistant.tool_calls, chunks);
-            }
-        }
-    }
-
-    if has_message_delta && let Some(id) = assistant.id {
-        let db = state.borrow().init.db.clone();
-        update_message(
-            &db,
-            id,
-            &assistant.content,
-            assistant.thinking.as_deref(),
-            None,
-        )
-        .await?;
-
-        with_runner(state, thread_id, |runner| {
-            runner.in_progress = Some(PartialAgentMessage {
-                run_id,
-                content: assistant.content.clone(),
-                thinking: assistant.thinking.clone(),
-                format: assistant.format,
-            });
-        });
-    }
-
-    if chunk
-        .choices
-        .iter()
-        .any(|choice| choice.finish_reason.is_some())
-    {
-        if let (Some(message_id), Some(seq)) = (assistant.id, assistant.seq) {
-            assistant.content = assistant.output_sanitizer.finish();
-            let tool_calls = serialize_tool_calls(&assistant.tool_calls)?;
+    let is_root = event.agent_path.is_empty();
+    match &event.kind {
+        EventKind::MessageStarted {
+            message_id,
+            role: MessageRole::Assistant,
+        } if is_root => {
+            let seq = crate::runner::pool::next_message_seq(state, thread_id)?;
             let db = state.borrow().init.db.clone();
-            update_message(
-                &db,
-                message_id,
-                &assistant.content,
-                assistant.thinking.as_deref(),
-                tool_calls.as_deref(),
-            )
-            .await?;
-
-            emit(
-                state,
-                thread_id,
-                Some(run_id),
-                AgentEventKind::AgentMessageCommitted { message_id, seq },
-            )
-            .await;
+            messages::insert()
+                .id(*message_id)
+                .parent_thread(thread_id)
+                .seq(seq)
+                .role(Role::Agent)
+                .content("")
+                .content_format(format)
+                .images(Option::<&str>::None)
+                .thinking(Option::<&str>::None)
+                .tool_calls(Option::<&str>::None)
+                .tool_call_id(Option::<&str>::None)
+                .execute(&db)
+                .await
+                .map_err(db_error)?;
+            persistence.assistants.insert(
+                *message_id,
+                AssistantMessageState {
+                    content: String::new(),
+                    thinking: None,
+                    format,
+                    output_sanitizer: output_sanitizer(format, state),
+                },
+            );
         }
-
-        assistant.id = None;
-        assistant.seq = None;
-        assistant.content.clear();
-        assistant.thinking = None;
-        assistant.tool_calls.clear();
-        assistant.output_sanitizer = output_sanitizer(assistant.format, state);
+        EventKind::TextDelta { message_id, delta } if is_root => {
+            if let Some(assistant) = persistence.assistants.get_mut(message_id) {
+                assistant.output_sanitizer.push_str(delta);
+                assistant.content = assistant.output_sanitizer.snapshot();
+                let content = assistant.content.clone();
+                let thinking = assistant.thinking.clone();
+                let db = state.borrow().init.db.clone();
+                update_message(&db, *message_id, &content, thinking.as_deref(), None).await?;
+                with_runner(state, thread_id, |runner| {
+                    runner.in_progress = Some(PartialAgentMessage {
+                        message_id: *message_id,
+                        run_id,
+                        content,
+                        thinking,
+                        format: assistant.format,
+                    });
+                });
+            }
+        }
+        EventKind::ThinkingDelta { message_id, delta } if is_root => {
+            if let Some(assistant) = persistence.assistants.get_mut(message_id) {
+                assistant
+                    .thinking
+                    .get_or_insert_with(String::new)
+                    .push_str(delta);
+                let content = assistant.content.clone();
+                let thinking = assistant.thinking.clone();
+                let db = state.borrow().init.db.clone();
+                update_message(&db, *message_id, &content, thinking.as_deref(), None).await?;
+            }
+        }
+        EventKind::MessageCommitted { message_id } if is_root => {
+            if let Some(mut assistant) = persistence.assistants.remove(message_id) {
+                assistant.content = assistant.output_sanitizer.finish();
+                let db = state.borrow().init.db.clone();
+                update_message(
+                    &db,
+                    *message_id,
+                    &assistant.content,
+                    assistant.thinking.as_deref(),
+                    None,
+                )
+                .await?;
+                persistence.last_root_message_id = Some(*message_id);
+                with_runner(state, thread_id, |runner| runner.in_progress = None);
+            }
+        }
+        EventKind::ToolCallStarted {
+            tool_call_id,
+            name,
+            arguments,
+        } if is_root => {
+            if persistence.tool_calls_message_id != persistence.last_root_message_id {
+                persistence.tool_calls.clear();
+                persistence.tool_results.clear();
+                persistence.next_tool_result = 0;
+                persistence.tool_calls_message_id = persistence.last_root_message_id;
+            }
+            persistence.tool_calls.push(PartialToolCall {
+                id: tool_call_id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            });
+            if let Some(message_id) = persistence.last_root_message_id {
+                let tool_calls = serialize_tool_calls(&persistence.tool_calls)?;
+                let db = state.borrow().init.db.clone();
+                messages::update()
+                    .tool_calls(tool_calls.as_deref())
+                    .where_(messages::id.eq(message_id))
+                    .execute(&db)
+                    .await
+                    .map_err(db_error)?;
+            }
+        }
+        EventKind::ToolCallFinished {
+            tool_call_id,
+            name,
+            result,
+            ..
+        } if is_root => {
+            persistence
+                .tool_results
+                .insert(tool_call_id.clone(), (name.clone(), result.clone()));
+            while let Some(call) = persistence.tool_calls.get(persistence.next_tool_result) {
+                let Some((_, result)) = persistence.tool_results.remove(&call.id) else {
+                    break;
+                };
+                persist_tool_message(state, thread_id, &call.id, &result).await?;
+                persistence.next_tool_result += 1;
+            }
+        }
+        EventKind::RunFinished | EventKind::RunFailed { .. } => {
+            let clock = state.borrow().init.config.clock.clone();
+            with_runner(state, thread_id, |runner| {
+                runner.cancel_tx = None;
+                runner.broker.clear();
+                runner.status = crate::runner::ThreadStatus::Idle;
+                runner.in_progress = None;
+                runner.last_used = clock.now_instant();
+            });
+        }
+        _ => {}
     }
 
+    emit_thread_event(state, thread_id, event).await;
     Ok(())
 }
 
-async fn append_assistant_content(
-    state: &Rc<RefCell<WorkerState>>,
-    thread_id: Uuid,
-    run_id: RunId,
-    assistant: &mut AssistantMessageState,
-    content: &str,
-) -> Result<(), AgentPoolError> {
-    ensure_assistant_message(state, thread_id, assistant).await?;
-    assistant.output_sanitizer.push_str(content);
-    assistant.content = assistant.output_sanitizer.snapshot();
-    emit(
-        state,
-        thread_id,
-        Some(run_id),
-        AgentEventKind::AgentDelta {
-            content: assistant.content.clone(),
-            format: assistant.format,
-        },
-    )
-    .await;
-    Ok(())
-}
-
-fn has_tool_call_data(chunks: &[llm::ToolCallChunk]) -> bool {
-    chunks.iter().any(|chunk| {
-        chunk.id.as_ref().is_some_and(|id| !id.is_empty())
-            || chunk.function.as_ref().is_some_and(|function| {
-                function.name.as_ref().is_some_and(|name| !name.is_empty())
-                    || function
-                        .arguments
-                        .as_ref()
-                        .is_some_and(|arguments| !arguments.is_empty())
-            })
-    })
-}
-
-fn append_tool_call_chunks(
-    tool_calls: &mut BTreeMap<usize, PartialToolCall>,
-    chunks: &[llm::ToolCallChunk],
-) {
-    for chunk in chunks {
-        let index = chunk.index.unwrap_or(0);
-        let call = tool_calls.entry(index).or_default();
-
-        if let Some(id) = &chunk.id {
-            call.id.push_str(id);
-        }
-
-        if let Some(function) = &chunk.function {
-            if let Some(name) = &function.name {
-                call.name.push_str(name);
-            }
-            if let Some(arguments) = &function.arguments {
-                call.arguments.push_str(arguments);
-            }
-        }
-    }
-}
-
-fn serialize_tool_calls(
-    tool_calls: &BTreeMap<usize, PartialToolCall>,
-) -> Result<Option<String>, AgentPoolError> {
+fn serialize_tool_calls(tool_calls: &[PartialToolCall]) -> Result<Option<String>, AgentPoolError> {
     let calls: Vec<_> = tool_calls
-        .values()
+        .iter()
         .filter(|call| !call.name.is_empty())
         .map(|call| llm::ToolCallChunk {
             index: None,
@@ -509,49 +375,6 @@ fn serialize_tool_calls(
     serde_json::to_string(&calls)
         .map(Some)
         .map_err(|error| AgentPoolError::Internal(anyhow::anyhow!(error)))
-}
-
-async fn ensure_assistant_message(
-    state: &Rc<RefCell<WorkerState>>,
-    thread_id: Uuid,
-    assistant: &mut AssistantMessageState,
-) -> Result<(), AgentPoolError> {
-    if assistant.id.is_some() {
-        return Ok(());
-    }
-
-    let (db, id) = {
-        let state = state.borrow();
-        (
-            state.init.db.clone(),
-            state.init.config.id_gen.new_uuid_v7(),
-        )
-    };
-    let seq = crate::runner::pool::next_message_seq(state, thread_id)?;
-
-    messages::insert()
-        .id(id)
-        .parent_thread(thread_id)
-        .seq(seq)
-        .role(Role::Agent)
-        .content("")
-        .content_format(assistant.format)
-        .images(Option::<&str>::None)
-        .thinking(Option::<&str>::None)
-        .tool_calls(Option::<&str>::None)
-        .tool_call_id(Option::<&str>::None)
-        .execute(&db)
-        .await
-        .map_err(db_error)?;
-
-    assistant.id = Some(id);
-    assistant.seq = Some(seq);
-    assistant.content.clear();
-    assistant.thinking = None;
-    assistant.tool_calls.clear();
-    assistant.output_sanitizer = output_sanitizer(assistant.format, state);
-
-    Ok(())
 }
 
 fn with_format_reminder(content: String, format: MessageFormat) -> String {
@@ -640,8 +463,7 @@ async fn fail_run(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_id: Run
     let clock = state.borrow().init.config.clock.clone();
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
-        runner.pending_approvals.clear();
-        runner.pending_quizzes.clear();
+        runner.broker.clear();
         runner.status = crate::runner::ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = clock.now_instant();
@@ -659,8 +481,7 @@ async fn cancel_run_task(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, run_
     let clock = state.borrow().init.config.clock.clone();
     with_runner(state, thread_id, |runner| {
         runner.cancel_tx = None;
-        runner.pending_approvals.clear();
-        runner.pending_quizzes.clear();
+        runner.broker.clear();
         runner.status = crate::runner::ThreadStatus::Idle;
         runner.in_progress = None;
         runner.last_used = clock.now_instant();
@@ -678,7 +499,23 @@ pub(crate) async fn emit(
     run_id: Option<RunId>,
     kind: AgentEventKind,
 ) {
-    let (event, db, event_id) = {
+    let Some(run_id) = run_id else {
+        return;
+    };
+    let event = {
+        let state = state.borrow();
+        ThreadEvent {
+            id: state.init.config.id_gen.new_uuid_v7(),
+            run_id: run_id.0,
+            agent_path: Vec::new(),
+            kind,
+        }
+    };
+    emit_thread_event(state, thread_id, event).await;
+}
+
+async fn emit_thread_event(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, shared: ThreadEvent) {
+    let (event, db, global) = {
         let mut state = state.borrow_mut();
         let seq = {
             let Some(runner) = state.threads.get_mut(&thread_id) else {
@@ -687,50 +524,81 @@ pub(crate) async fn emit(
             runner.last_event_seq += 1;
             runner.last_event_seq
         };
-        let event_id = state.init.config.id_gen.new_uuid_v7();
         let db = state.init.db.clone();
+        let global = state.threads.get(&thread_id).and_then(|runner| {
+            let running = match &shared.kind {
+                EventKind::RunStarted => Some(true),
+                EventKind::RunFinished | EventKind::RunFailed { .. } | EventKind::RunCancelled => {
+                    Some(false)
+                }
+                _ => None,
+            }?;
+            Some((runner.owner, running))
+        });
         let event = AgentEvent {
+            id: shared.id,
             seq,
             thread_id,
-            run_id,
-            kind,
+            run_id: Some(RunId(shared.run_id)),
+            agent_path: shared.agent_path,
+            kind: shared.kind,
         };
-        (event, db, event_id)
+        (event, db, global)
     };
 
     let _ = pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).publish(&event);
-    journal_event(&db, event_id, &event).await;
+    if let Some((owner, running)) = global {
+        crate::user_events::publish(
+            owner,
+            event.id,
+            crate::user_events::UserEventKind::ThreadRunStatus { thread_id, running },
+        );
+    }
+    journal_event(&db, &event).await;
 }
 
 /// Per-kind journal metadata: `(kind tag, message_id, terminal)`. Returns `None`
 /// for deltas, which are never journaled — the committed message row holds the
 /// final text and the snapshot carries in-flight partials.
-fn journal_metadata(kind: &AgentEventKind) -> Option<(&'static str, Option<Uuid>, bool)> {
+fn journal_metadata(
+    kind: &AgentEventKind,
+) -> Option<(&'static str, Option<Uuid>, Option<&str>, bool)> {
     match kind {
-        AgentEventKind::RunStarted => Some(("run_started", None, false)),
-        AgentEventKind::UserMessageCommitted { message_id, .. } => {
-            Some(("user_message_committed", Some(*message_id), false))
+        AgentEventKind::RunStarted => Some(("run_started", None, None, false)),
+        AgentEventKind::RunFinished => Some(("run_finished", None, None, true)),
+        AgentEventKind::RunFailed { .. } => Some(("run_failed", None, None, true)),
+        AgentEventKind::RunCancelled => Some(("run_cancelled", None, None, true)),
+        AgentEventKind::MessageStarted { message_id, .. } => {
+            Some(("message_started", Some(*message_id), None, false))
         }
-        AgentEventKind::AgentMessageCommitted { message_id, .. } => {
-            Some(("agent_message_committed", Some(*message_id), false))
+        AgentEventKind::MessageCommitted { message_id } => {
+            Some(("message_committed", Some(*message_id), None, false))
         }
-        AgentEventKind::ToolStarted { .. } => Some(("tool_started", None, false)),
-        AgentEventKind::ToolFinished { .. } => Some(("tool_finished", None, false)),
-        AgentEventKind::WaitingForApproval { .. } => Some(("waiting_for_approval", None, false)),
-        AgentEventKind::ApprovalResolved { .. } => Some(("approval_resolved", None, false)),
-        AgentEventKind::WaitingForQuiz { .. } => Some(("waiting_for_quiz", None, false)),
-        AgentEventKind::QuizAnswered { .. } => Some(("quiz_answered", None, false)),
-        AgentEventKind::RunFinished => Some(("run_finished", None, true)),
-        AgentEventKind::RunFailed { .. } => Some(("run_failed", None, true)),
-        AgentEventKind::RunCancelled => Some(("run_cancelled", None, true)),
-        AgentEventKind::AgentDelta { .. } | AgentEventKind::ThinkingDelta { .. } => None,
+        AgentEventKind::ToolCallStarted { tool_call_id, .. } => {
+            Some(("tool_call_started", None, Some(tool_call_id), false))
+        }
+        AgentEventKind::ToolCallProgress { tool_call_id, .. } => {
+            Some(("tool_call_progress", None, Some(tool_call_id), false))
+        }
+        AgentEventKind::ToolCallFinished { tool_call_id, .. } => {
+            Some(("tool_call_finished", None, Some(tool_call_id), false))
+        }
+        AgentEventKind::AgentSpawned { .. } => Some(("agent_spawned", None, None, false)),
+        AgentEventKind::AgentFinished { .. } => Some(("agent_finished", None, None, false)),
+        AgentEventKind::ApprovalRequested { tool_call_id, .. } => {
+            Some(("approval_requested", None, Some(tool_call_id), false))
+        }
+        AgentEventKind::ApprovalResolved { .. } => Some(("approval_resolved", None, None, false)),
+        AgentEventKind::QuizRequested { .. } => Some(("quiz_requested", None, None, false)),
+        AgentEventKind::QuizAnswered { .. } => Some(("quiz_answered", None, None, false)),
+        AgentEventKind::TextDelta { .. } | AgentEventKind::ThinkingDelta { .. } => None,
     }
 }
 
 /// Writes a structural event to the durable journal and prunes old runs once a
 /// terminal event lands. Delta events and events without a run are skipped.
-async fn journal_event(db: &ConnectionPool, event_id: Uuid, event: &AgentEvent) {
-    let Some((kind_tag, message_id, terminal)) = journal_metadata(&event.kind) else {
+async fn journal_event(db: &ConnectionPool, event: &AgentEvent) {
+    let Some((kind_tag, message_id, tool_call_id, terminal)) = journal_metadata(&event.kind) else {
         return;
     };
     let Some(run_id) = event.run_id else {
@@ -738,23 +606,32 @@ async fn journal_event(db: &ConnectionPool, event_id: Uuid, event: &AgentEvent) 
     };
 
     let payload = serde_json::to_string(&event.kind).ok();
-    let result = db
-        .query_with_params(
-            "INSERT INTO thread_events \
-             (id, thread_id, run_id, seq, agent_path, kind, message_id, tool_call_id, payload) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            vec![
-                Value::Uuid(event_id),
-                Value::Uuid(event.thread_id),
-                Value::Uuid(run_id.0),
-                Value::Integer(event.seq as i64),
-                Value::Null,
-                Value::Text(kind_tag.to_string()),
-                message_id.map(Value::Uuid).unwrap_or(Value::Null),
-                Value::Null,
-                payload.map(Value::Text).unwrap_or(Value::Null),
-            ],
-        )
+    let agent_path = encode_agent_path(&event.agent_path);
+    if kind_tag == "tool_call_progress"
+        && let Some(tool_call_id) = tool_call_id
+    {
+        let _ = thread_events::delete()
+            .where_(
+                thread_events::thread_id
+                    .eq(event.thread_id)
+                    .and(thread_events::run_id.eq(run_id.0))
+                    .and(thread_events::kind.eq("tool_call_progress"))
+                    .and(thread_events::tool_call_id.eq(Some(tool_call_id))),
+            )
+            .execute(db)
+            .await;
+    }
+    let result = thread_events::insert()
+        .id(event.id)
+        .thread_id(event.thread_id)
+        .run_id(run_id.0)
+        .seq(event.seq)
+        .agent_path(agent_path.as_deref())
+        .kind(kind_tag)
+        .message_id(message_id)
+        .tool_call_id(tool_call_id)
+        .payload(payload.as_deref())
+        .execute(db)
         .await;
 
     if let Err(error) = result {
@@ -765,6 +642,22 @@ async fn journal_event(db: &ConnectionPool, event_id: Uuid, event: &AgentEvent) 
     if terminal {
         prune_journal(db, event.thread_id).await;
     }
+}
+
+fn encode_agent_path(path: &[Uuid]) -> Option<String> {
+    (!path.is_empty()).then(|| {
+        path.iter()
+            .map(Uuid::to_string)
+            .collect::<Vec<_>>()
+            .join("/")
+    })
+}
+
+fn decode_agent_path(path: Option<&str>) -> Vec<Uuid> {
+    path.into_iter()
+        .flat_map(|path| path.split('/'))
+        .filter_map(|part| Uuid::parse_str(part).ok())
+        .collect()
 }
 
 /// Keeps only the most recent [`JOURNAL_RETAINED_RUNS`] runs' events for a thread.
@@ -821,7 +714,7 @@ pub(crate) async fn journal_events_after(
 ) -> Vec<AgentEvent> {
     let result = db
         .query_with_params(
-            "SELECT seq, run_id, payload FROM thread_events \
+            "SELECT id, seq, run_id, agent_path, payload FROM thread_events \
              WHERE thread_id = ? AND seq > ? ORDER BY seq ASC",
             vec![Value::Uuid(thread_id), Value::Integer(after as i64)],
         )
@@ -836,6 +729,9 @@ pub(crate) async fn journal_events_after(
 
     let mut events = Vec::new();
     for row in rows.rows() {
+        let Some(id) = row_uuid(row, "id") else {
+            continue;
+        };
         let Some(seq) = row.get_int("seq").and_then(|seq| u64::try_from(seq).ok()) else {
             continue;
         };
@@ -854,13 +750,24 @@ pub(crate) async fn journal_events_after(
             continue;
         };
         events.push(AgentEvent {
+            id,
             seq,
             thread_id,
             run_id,
+            agent_path: decode_agent_path(row.get_text("agent_path")),
             kind,
         });
     }
     events
+}
+
+fn row_uuid(row: &minisql::Row, column: &str) -> Option<Uuid> {
+    match row.get(column) {
+        Some(Value::Uuid(id)) => Some(*id),
+        Some(Value::Blob(bytes)) if bytes.len() == 16 => Uuid::from_slice(bytes).ok(),
+        Some(Value::Text(text)) => Uuid::parse_str(text).ok(),
+        _ => None,
+    }
 }
 
 async fn update_message(
@@ -919,7 +826,7 @@ mod tests {
             std::sync::Arc::new(AgentConfig {
                 model_registry: models,
                 max_iterations: 4,
-                observer: std::sync::Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: std::sync::Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             test_server_config(),
@@ -939,9 +846,10 @@ mod tests {
             std::sync::Arc::new(AgentConfig {
                 model_registry: models,
                 max_iterations: 4,
-                observer: std::sync::Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: std::sync::Arc::new(stride_agent::NoopUsageObserver),
                 clock: std::sync::Arc::new(TestClock::new(1_700_000_000_000)),
                 id_gen: std::sync::Arc::new(SeededIdGen::new(7)),
+                max_concurrent_tools: 4,
             }),
             test_server_config(),
             SecretCipher::new("test-secret"),
@@ -1041,6 +949,9 @@ mod tests {
         let pool = test_pool(db.clone(), models);
 
         let mut subscription = subscribe_events(thread_id);
+        let mut user_events =
+            pubsub::topic::<crate::user_events::UserEvent>(&crate::user_events::topic(owner))
+                .subscribe();
         let run_id = pool
             .send(
                 thread_id,
@@ -1065,7 +976,7 @@ mod tests {
             assert_eq!(event.run_id, Some(run_id));
 
             match event.kind {
-                AgentEventKind::AgentDelta { content, .. } if content == "pong" => {
+                AgentEventKind::TextDelta { delta, .. } if delta == "pong" => {
                     saw_delta = true;
                 }
                 AgentEventKind::RunFinished => {
@@ -1079,6 +990,17 @@ mod tests {
         assert!(saw_delta);
         assert!(saw_finished);
         assert_eq!(pool.status(thread_id).await.unwrap(), ThreadStatus::Idle);
+        let mut statuses = Vec::new();
+        while statuses.len() < 2 {
+            let event = tokio::time::timeout(Duration::from_secs(2), user_events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let crate::user_events::UserEventKind::ThreadRunStatus { running, .. } = event.kind {
+                statuses.push(running);
+            }
+        }
+        assert_eq!(statuses, vec![true, false]);
 
         let rows = db
             .query_with_params(
@@ -1246,10 +1168,10 @@ mod tests {
                 .unwrap();
 
             match event.kind {
-                AgentEventKind::ToolStarted { name } if name == "missing_tool" => {
+                AgentEventKind::ToolCallStarted { name, .. } if name == "missing_tool" => {
                     saw_tool_started = true;
                 }
-                AgentEventKind::ToolFinished { name } if name == "missing_tool" => {
+                AgentEventKind::ToolCallFinished { name, .. } if name == "missing_tool" => {
                     saw_tool_finished = true;
                 }
                 AgentEventKind::RunFinished => {
@@ -1354,9 +1276,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             match event.kind {
-                AgentEventKind::AgentDelta { content, .. }
-                    if content == "<h1>Helloalert(1)</h1>" =>
-                {
+                AgentEventKind::TextDelta { delta, .. } if delta.contains("Hello") => {
                     saw_speculative_html = true;
                 }
                 AgentEventKind::RunFinished => break,
@@ -1845,7 +1765,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            if let AgentEventKind::WaitingForQuiz { quiz_id: id, .. } = event.kind {
+            if let AgentEventKind::QuizRequested { quiz_id: id, .. } = event.kind {
                 quiz_id = Some(id);
                 break;
             }
@@ -2001,7 +1921,7 @@ mod tests {
             };
             match event.kind {
                 AgentEventKind::RunStarted => saw_started = true,
-                AgentEventKind::AgentDelta { .. } => saw_delta = true,
+                AgentEventKind::TextDelta { .. } => saw_delta = true,
                 AgentEventKind::RunFinished => {
                     saw_finished = true;
                     break;
@@ -2112,7 +2032,7 @@ mod tests {
         assert!(
             events.iter().all(|e| !matches!(
                 e.kind,
-                AgentEventKind::AgentDelta { .. } | AgentEventKind::ThinkingDelta { .. }
+                AgentEventKind::TextDelta { .. } | AgentEventKind::ThinkingDelta { .. }
             )),
             "deltas must not be journaled"
         );
@@ -2124,12 +2044,12 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e.kind, AgentEventKind::UserMessageCommitted { .. }))
+                .any(|e| matches!(e.kind, AgentEventKind::MessageStarted { .. }))
         );
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e.kind, AgentEventKind::AgentMessageCommitted { .. }))
+                .any(|e| matches!(e.kind, AgentEventKind::MessageCommitted { .. }))
         );
         assert!(
             events
@@ -2178,6 +2098,45 @@ mod tests {
         assert_eq!(got, expected, "replay must be exact and ordered");
     }
 
+    #[tokio::test]
+    async fn journal_keeps_only_latest_tool_progress() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        let run_id = RunId(Uuid::now_v7());
+        let agent_id = Uuid::now_v7();
+        seed_owner_and_thread(&db, owner, thread_id).await;
+
+        for (seq, value) in [(1, "first"), (2, "latest")] {
+            super::journal_event(
+                &db,
+                &AgentEvent {
+                    id: Uuid::now_v7(),
+                    seq,
+                    thread_id,
+                    run_id: Some(run_id),
+                    agent_path: vec![agent_id],
+                    kind: AgentEventKind::ToolCallProgress {
+                        tool_call_id: "call_1".to_owned(),
+                        payload: serde_json::json!({"value": value}),
+                    },
+                },
+            )
+            .await;
+        }
+
+        let events = super::journal_events_after(&db, thread_id, 0).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].seq, 2);
+        assert_eq!(events[0].agent_path, vec![agent_id]);
+        assert!(matches!(
+            &events[0].kind,
+            AgentEventKind::ToolCallProgress { payload, .. }
+                if payload["value"] == "latest"
+        ));
+    }
+
     // R3/5c: a consumer that fell behind past a tool call recovers the missed structural tool
     // events from the journal — the data path the WS/Telegram `Lagged` resync replays.
     #[tokio::test]
@@ -2213,7 +2172,7 @@ mod tests {
         // Cursor just before the first tool event, as if the consumer lagged from there.
         let tool_started = all
             .iter()
-            .find(|e| matches!(e.kind, AgentEventKind::ToolStarted { .. }))
+            .find(|e| matches!(e.kind, AgentEventKind::ToolCallStarted { .. }))
             .expect("tool run must journal ToolStarted");
         let cursor = tool_started.seq - 1;
 
@@ -2221,13 +2180,13 @@ mod tests {
         assert!(
             recovered
                 .iter()
-                .any(|e| matches!(e.kind, AgentEventKind::ToolStarted { .. })),
+                .any(|e| matches!(e.kind, AgentEventKind::ToolCallStarted { .. })),
             "resync must recover ToolStarted"
         );
         assert!(
             recovered
                 .iter()
-                .any(|e| matches!(e.kind, AgentEventKind::ToolFinished { .. })),
+                .any(|e| matches!(e.kind, AgentEventKind::ToolCallFinished { .. })),
             "resync must recover ToolFinished"
         );
     }

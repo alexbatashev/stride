@@ -1,5 +1,6 @@
 mod base;
 pub mod determinism;
+pub mod events;
 pub mod mcp;
 pub mod memory;
 pub mod sanitizer;
@@ -12,6 +13,7 @@ extern crate self as stride_agent;
 pub use agent_macro::{ToolDesc, build_prompt};
 pub use base::*;
 pub use determinism::{Clock, IdGen, SeededIdGen, SystemClock, SystemIdGen, TestClock};
+pub use events::*;
 pub use sanitizer::*;
 pub use tool::*;
 pub use tool_registry::*;

@@ -1904,7 +1904,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 json!({ "script": "print(1)" }),
@@ -1957,7 +1957,7 @@ mod tests {
         Arc::new(AgentConfig {
             model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 1,
-            observer: Arc::new(stride_agent::NoopAgentObserver),
+            usage_observer: Arc::new(stride_agent::NoopUsageObserver),
             ..Default::default()
         })
     }
@@ -2071,7 +2071,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 json!({ "script": "print(2 + 2)" }),
@@ -2153,7 +2153,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 json!({ "script": script }),
@@ -2207,7 +2207,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 json!({ "script": script }),
@@ -2260,7 +2260,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 json!({ "script": script }),
@@ -2312,7 +2312,7 @@ mod tests {
                 Arc::new(AgentConfig {
                     model_registry: stride_agent::ModelRegistry::new(),
                     max_iterations: 1,
-                    observer: Arc::new(stride_agent::NoopAgentObserver),
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                     ..Default::default()
                 }),
                 json!({ "script": script }),

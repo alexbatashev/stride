@@ -86,6 +86,14 @@ impl<T> Topic<T> {
         self.subscribe_from(None)
     }
 
+    /// Subscribe to events published after this call without replaying retained history.
+    pub fn subscribe_live(&self) -> Subscriber<T> {
+        Subscriber {
+            inner: self.handle.subscribe_live(),
+            _marker: PhantomData,
+        }
+    }
+
     /// Subscribe from a cursor: replay events with offset greater than `from`
     /// (or the whole backlog when `from` is `None`) before live events. A
     /// cursor older than the retained window yields [`RecvError::Lagged`] first.
@@ -192,6 +200,15 @@ mod tests {
         assert_eq!(sub.recv().await.unwrap(), 2);
         t.publish(&3).unwrap();
         assert_eq!(sub.recv().await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn live_subscriber_skips_backlog() {
+        let t = topic::<i32>("live_subscriber_skips_backlog");
+        t.publish(&1).unwrap();
+        let mut sub = t.subscribe_live();
+        t.publish(&2).unwrap();
+        assert_eq!(sub.recv().await.unwrap(), 2);
     }
 
     // -- Contract tests over the transport trait ---------------------------

@@ -5,9 +5,19 @@ use futures::StreamExt;
 use llm::{Function, Tool as LlmTool};
 use serde_json::{Value, json};
 
-use crate::{AgentConfig, AgentResponseChunk, BaseAgent, Tool, ToolDesc, ToolRegistry};
+use crate::{
+    AgentConfig, AutoDenyInteractionBroker, BaseAgent, EventKind, NoopEventSink, Tool, ToolContext,
+    ToolDesc, ToolRegistry, TurnContext,
+};
 
 pub const SUBAGENT_NAME: &str = "subagent";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SubagentInteractionPolicy {
+    AutoDeny,
+    #[default]
+    Bubble,
+}
 
 const SYSTEM_PROMPT: &str = "You are a focused subagent. Complete the assigned task using available tools when needed. Return a self-contained answer the main agent can act on. Do not ask the user questions directly.";
 
@@ -20,6 +30,7 @@ pub struct SubAgentTool {
     system_prompt: String,
     requires_confirmation: bool,
     confirmation_prompt: Option<String>,
+    interaction_policy: SubagentInteractionPolicy,
 }
 
 #[derive(ToolDesc)]
@@ -39,12 +50,18 @@ impl SubAgentTool {
             system_prompt: SYSTEM_PROMPT.to_string(),
             requires_confirmation: false,
             confirmation_prompt: None,
+            interaction_policy: SubagentInteractionPolicy::Bubble,
         }
     }
 
     pub fn requiring_confirmation(mut self, prompt: &str) -> Self {
         self.requires_confirmation = true;
         self.confirmation_prompt = Some(prompt.to_string());
+        self
+    }
+
+    pub fn interaction_policy(mut self, policy: SubagentInteractionPolicy) -> Self {
+        self.interaction_policy = policy;
         self
     }
 
@@ -56,6 +73,102 @@ impl SubAgentTool {
             system_prompt: system_prompt.to_string(),
             requires_confirmation: false,
             confirmation_prompt: None,
+            interaction_policy: SubagentInteractionPolicy::Bubble,
+        }
+    }
+
+    async fn run_subagent(
+        &self,
+        config: Arc<AgentConfig>,
+        args: Value,
+        context: Option<ToolContext>,
+    ) -> Value {
+        let args = match SubAgentParams::decode(args) {
+            Ok(args) => args,
+            Err(error) => return json!({ "success": false, "error": error }),
+        };
+
+        let model = args.model.trim();
+        if model.is_empty() {
+            return json!({ "success": false, "error": "model is required" });
+        }
+        if !self.allowed_models.iter().any(|allowed| allowed == model) {
+            return json!({
+                "success": false,
+                "error": format!("model '{model}' is not allowed for subagents")
+            });
+        }
+        if config.model_registry.get(model).is_none() {
+            return json!({
+                "success": false,
+                "error": format!("unknown model '{model}'")
+            });
+        }
+
+        let agent_id = config.id_gen.new_uuid_v7();
+        if let Some(context) = &context {
+            context.emit(EventKind::AgentSpawned {
+                agent_id,
+                parent_tool_call_id: context.tool_call_id.clone(),
+                name: "Subagent".to_owned(),
+                model: model.to_owned(),
+            });
+        }
+        let agent = BaseAgent::new_with_tools(
+            model.to_string(),
+            config.clone(),
+            self.system_prompt.clone(),
+            vec![],
+            self.tool_registry.clone(),
+        );
+        let mut content = String::new();
+        let error = if let Some(context) = &context {
+            let child_turn = match self.interaction_policy {
+                SubagentInteractionPolicy::Bubble => context.child_turn(agent_id),
+                SubagentInteractionPolicy::AutoDeny => context
+                    .child_turn(agent_id)
+                    .with_broker(Arc::new(crate::AutoDenyInteractionBroker)),
+            };
+            let mut stream = agent
+                .make_turn(args.prompt, Vec::new(), child_turn.clone())
+                .await;
+            let mut error = None;
+            while let Some(event) = stream.next().await {
+                match event.kind {
+                    EventKind::TextDelta { delta, .. } => content.push_str(&delta),
+                    EventKind::RunFailed { error: message } => error = Some(message),
+                    _ => {}
+                }
+            }
+            child_turn.emit(
+                config.id_gen.as_ref(),
+                EventKind::AgentFinished {
+                    agent_id,
+                    result: error.clone().unwrap_or_else(|| content.clone()),
+                },
+            );
+            error
+        } else {
+            let child_turn = TurnContext::new(
+                config.id_gen.new_uuid_v7(),
+                Arc::new(NoopEventSink),
+                Arc::new(AutoDenyInteractionBroker),
+            );
+            let mut stream = agent.make_turn(args.prompt, Vec::new(), child_turn).await;
+            let mut error = None;
+            while let Some(event) = stream.next().await {
+                match event.kind {
+                    EventKind::TextDelta { delta, .. } => content.push_str(&delta),
+                    EventKind::RunFailed { error: message } => error = Some(message),
+                    _ => {}
+                }
+            }
+            error
+        };
+
+        match error {
+            Some(error) => json!({ "success": false, "error": error }),
+            None => json!({ "success": true, "content": content }),
         }
     }
 }
@@ -96,62 +209,16 @@ impl Tool for SubAgentTool {
     }
 
     async fn execute(&self, config: Arc<AgentConfig>, args: Value) -> Value {
-        let args = match SubAgentParams::decode(args) {
-            Ok(args) => args,
-            Err(error) => return json!({ "success": false, "error": error }),
-        };
+        self.run_subagent(config, args, None).await
+    }
 
-        let model = args.model.trim();
-        if model.is_empty() {
-            return json!({ "success": false, "error": "model is required" });
-        }
-        if !self.allowed_models.iter().any(|allowed| allowed == model) {
-            return json!({
-                "success": false,
-                "error": format!("model '{model}' is not allowed for subagents")
-            });
-        }
-        if config.model_registry.get(model).is_none() {
-            return json!({
-                "success": false,
-                "error": format!("unknown model '{model}'")
-            });
-        }
-
-        let agent = BaseAgent::new_with_tools(
-            model.to_string(),
-            config,
-            self.system_prompt.clone(),
-            vec![],
-            self.tool_registry.clone(),
-        );
-        let mut stream = agent.make_turn(args.prompt, Vec::new()).await;
-        let mut content = String::new();
-
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(AgentResponseChunk::Chunk(chunk)) => {
-                    for choice in chunk.choices {
-                        if let Some(delta_content) = choice.delta.and_then(|d| d.content) {
-                            content.push_str(&delta_content);
-                        }
-                    }
-                }
-                Ok(AgentResponseChunk::Approval { approved, .. }) => {
-                    let _ = approved.send(false);
-                }
-                Ok(AgentResponseChunk::Quiz { answered, .. }) => {
-                    let _ = answered.send(vec![]);
-                }
-                Ok(
-                    AgentResponseChunk::ToolStarted { .. }
-                    | AgentResponseChunk::ToolFinished { .. },
-                ) => {}
-                Err(error) => return json!({ "success": false, "error": error.to_string() }),
-            }
-        }
-
-        json!({ "success": true, "content": content })
+    async fn execute_with_context(
+        &self,
+        config: Arc<AgentConfig>,
+        args: Value,
+        context: Option<ToolContext>,
+    ) -> Value {
+        self.run_subagent(config, args, context).await
     }
 
     fn requires_confirmation(&self) -> bool {
@@ -227,6 +294,25 @@ impl Tool for FixedModelSubAgentTool {
             )
             .await
     }
+
+    async fn execute_with_context(
+        &self,
+        config: Arc<AgentConfig>,
+        args: Value,
+        context: Option<ToolContext>,
+    ) -> Value {
+        let args = match SubAgentPromptOnlyParams::decode(args) {
+            Ok(args) => args,
+            Err(error) => return json!({ "success": false, "error": error }),
+        };
+        self.inner
+            .execute_with_context(
+                config,
+                json!({ "prompt": args.prompt, "model": self.model }),
+                context,
+            )
+            .await
+    }
 }
 
 #[derive(ToolDesc)]
@@ -237,7 +323,7 @@ struct SubAgentPromptOnlyParams {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -249,6 +335,15 @@ mod tests {
 
     use super::*;
     use crate::{DEFAULT_MODEL, ModelRegEntry, ModelRegistry};
+
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<crate::ThreadEvent>>);
+
+    impl crate::EventSink for RecordingSink {
+        fn emit(&self, event: crate::ThreadEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
 
     #[derive(Clone)]
     struct ApprovalTool {
@@ -360,6 +455,52 @@ mod tests {
         });
     }
 
+    #[test]
+    fn forwards_child_events_with_agent_path() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new().with_stream_chunks(vec![vec![text_chunk("child answer")]]);
+            let config = config(&mock);
+            let sink = Arc::new(RecordingSink::default());
+            let turn = crate::TurnContext::new(
+                uuid::Uuid::from_u128(1),
+                sink.clone(),
+                Arc::new(crate::InMemoryInteractionBroker::default()),
+            );
+            let context =
+                crate::ToolContext::new(turn, "parent_call".to_owned(), config.id_gen.clone());
+            let tool = SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_owned()], "");
+
+            let result = tool
+                .execute_with_context(
+                    config,
+                    json!({ "prompt": "inspect this", "model": DEFAULT_MODEL }),
+                    Some(context),
+                )
+                .await;
+
+            assert_eq!(
+                result,
+                json!({ "success": true, "content": "child answer" })
+            );
+            let events = sink.0.lock().unwrap();
+            let agent_id = events
+                .iter()
+                .find_map(|event| match event.kind {
+                    crate::EventKind::AgentSpawned { agent_id, .. } => Some(agent_id),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(events.iter().any(|event| {
+                event.agent_path == [agent_id]
+                    && matches!(&event.kind, crate::EventKind::TextDelta { delta, .. } if delta == "child answer")
+            }));
+            assert!(events.iter().any(|event| {
+                event.agent_path == [agent_id]
+                    && matches!(event.kind, crate::EventKind::AgentFinished { agent_id: id, .. } if id == agent_id)
+            }));
+        });
+    }
+
     fn config(mock: &llm::Mock) -> Arc<AgentConfig> {
         let mut registry = ModelRegistry::new();
         registry.add_model(
@@ -375,7 +516,7 @@ mod tests {
         Arc::new(AgentConfig {
             model_registry: registry,
             max_iterations: 50,
-            observer: Arc::new(stride_agent::NoopAgentObserver),
+            usage_observer: Arc::new(stride_agent::NoopUsageObserver),
             ..Default::default()
         })
     }

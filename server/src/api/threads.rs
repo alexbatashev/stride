@@ -22,12 +22,13 @@ use crate::{
         auth::{self, AuthError},
         projects::ProjectResponse,
     },
-    db::{MessageFormat, Role, messages, projects, threads, user_models},
+    db::{MessageFormat, Role, messages, projects, thread_events, threads, user_models},
     model_registry,
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
         ThreadStatus, thread_events_topic,
     },
+    user_events::{self, UserEventKind},
 };
 
 /// Placeholder title a new thread gets until the LLM generates a real one.
@@ -123,15 +124,19 @@ pub struct SendMessageResponse {
 }
 
 #[derive(Serialize)]
-struct EventResponse {
+struct EventResponse<K> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     seq: u64,
     thread_id: String,
     run_id: Option<String>,
-    kind: EventKindResponse,
+    agent_path: Vec<String>,
+    kind: K,
 }
 
 #[derive(Serialize)]
 struct SnapshotMessageResponse {
+    message_id: String,
     run_id: String,
     content: String,
     format: &'static str,
@@ -157,56 +162,14 @@ struct QuizResponse {
 }
 
 #[derive(Serialize)]
-#[serde(tag = "type")]
-enum EventKindResponse {
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SnapshotKind {
     Snapshot {
         status: &'static str,
         in_progress: Option<SnapshotMessageResponse>,
-        pending_approval: Option<ApprovalResponse>,
-        pending_quiz: Option<QuizResponse>,
+        pending_approvals: Vec<ApprovalResponse>,
+        pending_quizzes: Vec<QuizResponse>,
     },
-    RunStarted,
-    UserMessageCommitted {
-        message_id: String,
-        seq: u64,
-    },
-    AgentDelta {
-        content: String,
-        format: &'static str,
-    },
-    ThinkingDelta {
-        thinking: String,
-    },
-    AgentMessageCommitted {
-        message_id: String,
-        seq: u64,
-    },
-    ToolStarted {
-        name: String,
-    },
-    ToolFinished {
-        name: String,
-    },
-    WaitingForApproval {
-        approval_id: String,
-        message: String,
-    },
-    ApprovalResolved {
-        approval_id: String,
-        approved: bool,
-    },
-    WaitingForQuiz {
-        quiz_id: String,
-        questions: Vec<QuizQuestionResponse>,
-    },
-    QuizAnswered {
-        quiz_id: String,
-    },
-    RunFinished,
-    RunFailed {
-        error: String,
-    },
-    RunCancelled,
 }
 
 #[derive(Debug)]
@@ -286,6 +249,15 @@ pub async fn rename_thread(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
+    user_events::publish(
+        owner,
+        state.id_gen.new_uuid_v7(),
+        UserEventKind::ThreadRenamed {
+            thread_id,
+            title: title.clone(),
+        },
+    );
+
     let project_id = threads::select_cols((threads::project_id,))
         .where_(threads::id.eq(thread_id))
         .all(&state.db)
@@ -340,6 +312,12 @@ pub async fn archive_thread(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
+    user_events::publish(
+        owner,
+        state.id_gen.new_uuid_v7(),
+        UserEventKind::ThreadArchived { thread_id },
+    );
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -361,6 +339,12 @@ pub async fn unarchive_thread(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
+    user_events::publish(
+        owner,
+        state.id_gen.new_uuid_v7(),
+        UserEventKind::ThreadRestored { thread_id },
+    );
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -376,6 +360,12 @@ pub async fn delete_thread(
 
     hard_delete_thread(&state, thread_id).await?;
 
+    user_events::publish(
+        owner,
+        state.id_gen.new_uuid_v7(),
+        UserEventKind::ThreadDeleted { thread_id },
+    );
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -389,6 +379,12 @@ pub(crate) async fn hard_delete_thread(
 
     messages::delete()
         .where_(messages::parent_thread.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    thread_events::delete()
+        .where_(thread_events::thread_id.eq(thread_id))
         .execute(&state.db)
         .await
         .map_err(|_| ThreadApiError::Internal)?;
@@ -644,6 +640,16 @@ pub async fn create_thread(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
+    user_events::publish(
+        owner,
+        state.id_gen.new_uuid_v7(),
+        UserEventKind::ThreadCreated {
+            thread_id,
+            title: DEFAULT_THREAD_TITLE.to_string(),
+            project_id,
+        },
+    );
+
     let mut file_paths = request.file_paths;
     let staged =
         materialize_staged_uploads(&state, thread_id, owner, &request.staged_uploads).await?;
@@ -707,15 +713,22 @@ pub(crate) fn spawn_title_generation(
             .await
         {
             Ok(_) => {
-                let stored = threads::select_cols((threads::title,))
+                let stored = threads::select_cols((threads::title, threads::owner))
                     .where_(threads::id.eq(thread_id))
                     .all(&state.db)
                     .await
                     .ok()
                     .and_then(|rows| rows.into_iter().next());
                 match stored {
-                    Some((stored,)) if stored == title => {}
-                    Some((stored,)) => tracing::warn!(
+                    Some((stored, owner)) if stored == title => user_events::publish(
+                        owner,
+                        state.id_gen.new_uuid_v7(),
+                        UserEventKind::ThreadRenamed {
+                            thread_id,
+                            title: title.clone(),
+                        },
+                    ),
+                    Some((stored, _)) => tracing::warn!(
                         %thread_id,
                         %title,
                         %stored,
@@ -753,7 +766,7 @@ async fn generate_title(
     let request = title_generation_request(&model.model_name, content);
 
     let completion = model.api.get_completion(&model.token, request).await?;
-    config.observer.token_usage(TokenUsage {
+    config.usage_observer.token_usage(TokenUsage {
         input_tokens: completion.usage.prompt_tokens as u64,
         output_tokens: completion.usage.completion_tokens as u64,
         model: model_key.to_string(),
@@ -1762,70 +1775,29 @@ fn join_workspace_path(parent: &str, name: &str) -> String {
     }
 }
 
-fn event_response(event: AgentEvent) -> EventResponse {
+fn event_response(event: AgentEvent) -> EventResponse<AgentEventKind> {
     EventResponse {
+        id: Some(event.id.to_string()),
         seq: event.seq,
         thread_id: event.thread_id.to_string(),
         run_id: event.run_id.map(|run_id| run_id.0.to_string()),
-        kind: match event.kind {
-            AgentEventKind::RunStarted => EventKindResponse::RunStarted,
-            AgentEventKind::UserMessageCommitted { message_id, seq } => {
-                EventKindResponse::UserMessageCommitted {
-                    message_id: message_id.to_string(),
-                    seq,
-                }
-            }
-            AgentEventKind::AgentDelta { content, format } => EventKindResponse::AgentDelta {
-                content,
-                format: message_format_name(format),
-            },
-            AgentEventKind::ThinkingDelta { thinking } => {
-                EventKindResponse::ThinkingDelta { thinking }
-            }
-            AgentEventKind::AgentMessageCommitted { message_id, seq } => {
-                EventKindResponse::AgentMessageCommitted {
-                    message_id: message_id.to_string(),
-                    seq,
-                }
-            }
-            AgentEventKind::ToolStarted { name } => EventKindResponse::ToolStarted { name },
-            AgentEventKind::ToolFinished { name } => EventKindResponse::ToolFinished { name },
-            AgentEventKind::WaitingForApproval {
-                approval_id,
-                message,
-            } => EventKindResponse::WaitingForApproval {
-                approval_id: approval_id.to_string(),
-                message,
-            },
-            AgentEventKind::ApprovalResolved {
-                approval_id,
-                approved,
-            } => EventKindResponse::ApprovalResolved {
-                approval_id: approval_id.to_string(),
-                approved,
-            },
-            AgentEventKind::WaitingForQuiz { quiz_id, questions } => {
-                EventKindResponse::WaitingForQuiz {
-                    quiz_id: quiz_id.to_string(),
-                    questions: quiz_questions_response(questions),
-                }
-            }
-            AgentEventKind::QuizAnswered { quiz_id } => EventKindResponse::QuizAnswered {
-                quiz_id: quiz_id.to_string(),
-            },
-            AgentEventKind::RunFinished => EventKindResponse::RunFinished,
-            AgentEventKind::RunFailed { error } => EventKindResponse::RunFailed { error },
-            AgentEventKind::RunCancelled => EventKindResponse::RunCancelled,
-        },
+        agent_path: event
+            .agent_path
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        kind: event.kind,
     }
 }
 
 fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
     let event = EventResponse {
+        id: None,
         seq: snapshot.last_event_seq,
         thread_id: snapshot.thread_id.to_string(),
         run_id: None,
-        kind: EventKindResponse::Snapshot {
+        agent_path: Vec::new(),
+        kind: SnapshotKind::Snapshot {
             status: match snapshot.status {
                 ThreadStatus::Idle => "idle",
                 ThreadStatus::Running { .. } => "running",
@@ -1834,22 +1806,28 @@ fn snapshot_event(snapshot: &ThreadSnapshot) -> String {
                 .in_progress
                 .as_ref()
                 .map(|message| SnapshotMessageResponse {
+                    message_id: message.message_id.to_string(),
                     run_id: message.run_id.0.to_string(),
                     content: message.content.clone(),
                     format: message_format_name(message.format),
                     thinking: message.thinking.clone(),
                 }),
-            pending_approval: snapshot
-                .pending_approval
-                .as_ref()
+            pending_approvals: snapshot
+                .pending_approvals
+                .iter()
                 .map(|approval| ApprovalResponse {
                     approval_id: approval.approval_id.to_string(),
                     message: approval.message.clone(),
-                }),
-            pending_quiz: snapshot.pending_quiz.as_ref().map(|quiz| QuizResponse {
-                quiz_id: quiz.quiz_id.to_string(),
-                questions: quiz_questions_response(quiz.questions.clone()),
-            }),
+                })
+                .collect(),
+            pending_quizzes: snapshot
+                .pending_quizzes
+                .iter()
+                .map(|quiz| QuizResponse {
+                    quiz_id: quiz.quiz_id.to_string(),
+                    questions: quiz_questions_response(quiz.questions.clone()),
+                })
+                .collect(),
         },
     };
 
@@ -1871,6 +1849,32 @@ fn quiz_questions_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_response_keeps_shared_attachment_ids() {
+        let event_id = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        let run_id = RunId(Uuid::now_v7());
+        let message_id = Uuid::now_v7();
+        let agent_id = Uuid::now_v7();
+        let response = event_response(AgentEvent {
+            id: event_id,
+            seq: 7,
+            thread_id,
+            run_id: Some(run_id),
+            agent_path: vec![agent_id],
+            kind: AgentEventKind::TextDelta {
+                message_id,
+                delta: "hello".to_owned(),
+            },
+        });
+        let json = serde_json::to_value(response).unwrap();
+
+        assert_eq!(json["id"], event_id.to_string());
+        assert_eq!(json["agent_path"][0], agent_id.to_string());
+        assert_eq!(json["kind"]["type"], "text_delta");
+        assert_eq!(json["kind"]["message_id"], message_id.to_string());
+    }
 
     #[tokio::test]
     async fn title_update_persists_and_is_read_back() {

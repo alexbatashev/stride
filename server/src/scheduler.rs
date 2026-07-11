@@ -10,11 +10,10 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::StreamExt;
-use llm::StreamResponseChunk;
 use minisql::ConnectionPool;
 use serde_json::Value as JsonValue;
 use stride_agent::{
-    AgentConfig, AgentResponseChunk, BaseAgent, Tool,
+    AgentConfig, AutoDenyInteractionBroker, BaseAgent, EventKind, NoopEventSink, Tool, TurnContext,
     mcp::McpTool,
     tools::email::{CreateEmailDraftTool, ListEmailsTool},
 };
@@ -506,6 +505,7 @@ async fn run_agent(
     google: Option<(GoogleService, Uuid)>,
     searchable_tools_preview_limit: usize,
 ) -> Result<String, String> {
+    let run_id = model_config.id_gen.new_uuid_v7();
     let agent = BaseAgent::new(
         "default".to_string(),
         model_config,
@@ -527,12 +527,19 @@ async fn run_agent(
     if let Some((service, user)) = google {
         crate::tools::google::register(&agent, service, user);
     }
-    let mut stream = agent.make_turn(prompt.to_string(), Vec::new()).await;
+    let context = TurnContext::new(
+        run_id,
+        Arc::new(NoopEventSink),
+        Arc::new(AutoDenyInteractionBroker),
+    );
+    let mut stream = agent
+        .make_turn(prompt.to_string(), Vec::new(), context)
+        .await;
     let mut output = String::new();
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(AgentResponseChunk::Chunk(chunk)) => collect_agent_output(&chunk, &mut output),
-            Ok(AgentResponseChunk::ToolFinished { name, result, .. }) => {
+    while let Some(event) = stream.next().await {
+        match event.kind {
+            EventKind::TextDelta { delta, .. } => output.push_str(&delta),
+            EventKind::ToolCallFinished { name, result, .. } => {
                 if !result.trim().is_empty() {
                     if !output.is_empty() {
                         output.push_str("\n\n");
@@ -540,34 +547,11 @@ async fn run_agent(
                     output.push_str(&format!("{name} output:\n{result}"));
                 }
             }
-            Ok(_) => {}
-            Err(error) => return Err(format!("{output}\n{error}")),
+            EventKind::RunFailed { error } => return Err(format!("{output}\n{error}")),
+            _ => {}
         }
     }
     Ok(output)
-}
-
-fn collect_agent_output(chunk: &StreamResponseChunk, output: &mut String) {
-    for choice in &chunk.choices {
-        if let Some(message) = &choice.message
-            && !message.content.is_empty()
-        {
-            output.push_str(&message.content);
-        }
-
-        if let Some(text) = &choice.text
-            && !text.is_empty()
-        {
-            output.push_str(text);
-        }
-
-        if let Some(delta) = &choice.delta
-            && let Some(content) = &delta.content
-            && !content.is_empty()
-        {
-            output.push_str(content);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -608,7 +592,7 @@ mod tests {
         Arc::new(AgentConfig {
             model_registry: stride_agent::ModelRegistry::new(),
             max_iterations: 2,
-            observer: Arc::new(stride_agent::NoopAgentObserver),
+            usage_observer: Arc::new(stride_agent::NoopUsageObserver),
             ..Default::default()
         })
     }
@@ -628,53 +612,6 @@ mod tests {
         assert!(script.contains("PAYLOAD = _json.loads"));
         assert!(script.ends_with("print(PAYLOAD)"));
         assert_eq!(python_script("noop", None), "noop");
-    }
-
-    #[test]
-    fn collect_agent_output_reads_all_stream_shapes() {
-        let chunk = llm::StreamResponseChunk {
-            id: "chunk".to_string(),
-            object: "chat.completion.chunk".to_string(),
-            created: 1,
-            model: "mock".to_string(),
-            system_fingerprint: None,
-            usage: None,
-            choices: vec![
-                llm::CompletionChoice {
-                    message: Some(llm::Message {
-                        role: llm::Role::Assistant,
-                        content: "message ".to_string(),
-                        images: None,
-                        thinking: None,
-                        tool_calls: None,
-                        tool_call_id: None,
-                    }),
-                    text: None,
-                    index: 0,
-                    delta: None,
-                    logprobs: None,
-                    tool_calls: None,
-                    finish_reason: None,
-                },
-                llm::CompletionChoice {
-                    message: None,
-                    text: Some("text ".to_string()),
-                    index: 0,
-                    delta: Some(llm::Delta {
-                        content: Some("delta".to_string()),
-                        thinking: None,
-                        tool_calls: None,
-                    }),
-                    logprobs: None,
-                    tool_calls: None,
-                    finish_reason: None,
-                },
-            ],
-        };
-
-        let mut output = String::new();
-        collect_agent_output(&chunk, &mut output);
-        assert_eq!(output, "message text delta");
     }
 
     #[tokio::test]

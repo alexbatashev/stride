@@ -7,9 +7,12 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::channel::oneshot as futures_oneshot;
 use minisql::ConnectionPool;
-use stride_agent::{AgentConfig, BaseAgent, QuizQuestion, mcp::McpTool};
+#[cfg(test)]
+use stride_agent::QuizQuestion;
+use stride_agent::{
+    AgentConfig, BaseAgent, InMemoryInteractionBroker, InteractionBroker, MessageRole, mcp::McpTool,
+};
 use tokio::{
     runtime::Builder,
     sync::{mpsc, oneshot, watch},
@@ -206,10 +209,10 @@ pub(crate) struct WorkerState {
 }
 
 pub(crate) struct ThreadRunner {
+    pub(crate) owner: Uuid,
     pub(crate) agent: Option<BaseAgent>,
     pub(crate) cancel_tx: Option<watch::Sender<bool>>,
-    pub(crate) pending_approvals: HashMap<Uuid, PendingApprovalState>,
-    pub(crate) pending_quizzes: HashMap<Uuid, PendingQuizState>,
+    pub(crate) broker: Arc<InMemoryInteractionBroker>,
     /// Requests received while a run is in progress, started in order once the thread goes idle.
     pub(crate) queued: VecDeque<(RunId, String, Vec<llm::ImageSource>, Option<String>)>,
     pub(crate) last_event_seq: u64,
@@ -218,18 +221,6 @@ pub(crate) struct ThreadRunner {
     pub(crate) in_progress: Option<PartialAgentMessage>,
     pub(crate) message_format: MessageFormat,
     pub(crate) last_used: Instant,
-}
-
-pub(crate) struct PendingApprovalState {
-    pub(crate) run_id: RunId,
-    pub(crate) message: String,
-    pub(crate) approved: futures_oneshot::Sender<bool>,
-}
-
-pub(crate) struct PendingQuizState {
-    pub(crate) run_id: RunId,
-    pub(crate) questions: Vec<QuizQuestion>,
-    pub(crate) answered: futures_oneshot::Sender<Vec<String>>,
 }
 
 impl InProcessAgentPool {
@@ -525,9 +516,18 @@ async fn handle_send(
         &state,
         thread_id,
         Some(run_id),
-        AgentEventKind::UserMessageCommitted {
+        AgentEventKind::MessageStarted {
             message_id: user_message_id,
-            seq: user_message_seq,
+            role: MessageRole::User,
+        },
+    )
+    .await;
+    emit(
+        &state,
+        thread_id,
+        Some(run_id),
+        AgentEventKind::MessageCommitted {
+            message_id: user_message_id,
         },
     )
     .await;
@@ -587,7 +587,6 @@ async fn start_run(
         cancel_rx
     };
 
-    emit(state, thread_id, Some(run_id), AgentEventKind::RunStarted).await;
     tokio::task::spawn_local(run_agent_turn(
         state.clone(),
         thread_id,
@@ -636,22 +635,24 @@ async fn handle_snapshot(
         last_event_seq: runner.last_event_seq,
         status: runner.status.clone(),
         in_progress: runner.in_progress.clone(),
-        pending_approval: runner
-            .pending_approvals
-            .iter()
-            .next()
-            .map(|(approval_id, approval)| PendingApproval {
-                approval_id: *approval_id,
+        pending_approvals: runner
+            .broker
+            .pending_approvals()
+            .into_iter()
+            .map(|approval| PendingApproval {
+                approval_id: approval.id,
                 message: approval.message.clone(),
-            }),
-        pending_quiz: runner
-            .pending_quizzes
-            .iter()
-            .next()
-            .map(|(quiz_id, quiz)| PendingQuiz {
-                quiz_id: *quiz_id,
+            })
+            .collect(),
+        pending_quizzes: runner
+            .broker
+            .pending_quizzes()
+            .into_iter()
+            .map(|quiz| PendingQuiz {
+                quiz_id: quiz.id,
                 questions: quiz.questions.clone(),
-            }),
+            })
+            .collect(),
     })
 }
 
@@ -673,29 +674,16 @@ async fn handle_resolve_approval(
     approval_id: Uuid,
     approved: bool,
 ) -> Result<(), AgentPoolError> {
-    let run_id = {
+    {
         let mut state = state.borrow_mut();
         let runner = state
             .threads
             .get_mut(&thread_id)
             .ok_or(AgentPoolError::ThreadNotFound)?;
-        let Some(approval) = runner.pending_approvals.remove(&approval_id) else {
+        if !runner.broker.resolve_approval(approval_id, approved) {
             return Err(AgentPoolError::ApprovalNotFound);
-        };
-        let run_id = approval.run_id;
-        let _ = approval.approved.send(approved);
-        run_id
-    };
-    emit(
-        state,
-        thread_id,
-        Some(run_id),
-        AgentEventKind::ApprovalResolved {
-            approval_id,
-            approved,
-        },
-    )
-    .await;
+        }
+    }
     Ok(())
 }
 
@@ -705,26 +693,16 @@ async fn handle_answer_quiz(
     quiz_id: Uuid,
     answers: Vec<String>,
 ) -> Result<(), AgentPoolError> {
-    let run_id = {
+    {
         let mut state = state.borrow_mut();
         let runner = state
             .threads
             .get_mut(&thread_id)
             .ok_or(AgentPoolError::ThreadNotFound)?;
-        let Some(quiz) = runner.pending_quizzes.remove(&quiz_id) else {
+        if !runner.broker.answer_quiz(quiz_id, answers) {
             return Err(AgentPoolError::QuizNotFound);
-        };
-        let run_id = quiz.run_id;
-        let _ = quiz.answered.send(answers);
-        run_id
-    };
-    emit(
-        state,
-        thread_id,
-        Some(run_id),
-        AgentEventKind::QuizAnswered { quiz_id },
-    )
-    .await;
+        }
+    }
     Ok(())
 }
 
@@ -807,11 +785,7 @@ mod tests {
 
     use super::*;
     use crate::db::{self, threads, users};
-    use crate::runner::{AgentEvent, AgentEventKind, AgentPool, thread_events_topic};
-
-    fn subscribe_events(thread_id: Uuid) -> pubsub::Subscriber<AgentEvent> {
-        pubsub::topic::<AgentEvent>(&thread_events_topic(thread_id)).subscribe()
-    }
+    use crate::runner::AgentPool;
 
     fn test_server_config() -> config::Config {
         config::Config {
@@ -829,7 +803,7 @@ mod tests {
             config: Arc::new(AgentConfig {
                 model_registry: ModelRegistry::new(),
                 max_iterations: 4,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             server_config: test_server_config(),
@@ -879,14 +853,15 @@ mod tests {
         let thread_id = Uuid::now_v7();
         let run_id = RunId(Uuid::now_v7());
         let approval_id = Uuid::now_v7();
-        let (approved_tx, approved_rx) = futures::channel::oneshot::channel();
-        let mut events = subscribe_events(thread_id);
+        let broker = Arc::new(InMemoryInteractionBroker::default());
+        let approved_rx =
+            broker.request_approval(approval_id, "call_1".to_owned(), "Approve test".to_owned());
 
-        let mut runner = ThreadRunner {
+        let runner = ThreadRunner {
+            owner: Uuid::nil(),
             agent: None,
             cancel_tx: None,
-            pending_approvals: HashMap::new(),
-            pending_quizzes: HashMap::new(),
+            broker,
             queued: VecDeque::new(),
             last_event_seq: 0,
             next_message_seq: 0,
@@ -895,14 +870,6 @@ mod tests {
             message_format: MessageFormat::Html,
             last_used: Instant::now(),
         };
-        runner.pending_approvals.insert(
-            approval_id,
-            PendingApprovalState {
-                run_id,
-                message: "Approve test".to_string(),
-                approved: approved_tx,
-            },
-        );
 
         let mut threads = HashMap::new();
         threads.insert(thread_id, runner);
@@ -914,29 +881,17 @@ mod tests {
 
         let snapshot = handle_snapshot(state.clone(), thread_id).await.unwrap();
         assert_eq!(
-            snapshot.pending_approval.as_ref().map(|a| a.approval_id),
+            snapshot.pending_approvals.first().map(|a| a.approval_id),
             Some(approval_id)
         );
 
         handle_resolve_approval(&state, thread_id, approval_id, false)
             .await
             .unwrap();
-        assert!(!approved_rx.await.unwrap());
-
-        let event = events.recv().await.unwrap();
-        match event.kind {
-            AgentEventKind::ApprovalResolved {
-                approval_id: resolved_id,
-                approved,
-            } => {
-                assert_eq!(resolved_id, approval_id);
-                assert!(!approved);
-            }
-            _ => panic!("expected approval resolution"),
-        }
+        assert!(!approved_rx.await);
 
         let snapshot = handle_snapshot(state, thread_id).await.unwrap();
-        assert!(snapshot.pending_approval.is_none());
+        assert!(snapshot.pending_approvals.is_empty());
     }
 
     #[tokio::test]
@@ -951,14 +906,14 @@ mod tests {
             question: "Pick one".to_string(),
             options: vec!["A".to_string(), "B".to_string()],
         }];
-        let (answered_tx, answered_rx) = futures::channel::oneshot::channel();
-        let mut events = subscribe_events(thread_id);
+        let broker = Arc::new(InMemoryInteractionBroker::default());
+        let answered_rx = broker.request_quiz(quiz_id, questions.clone());
 
-        let mut runner = ThreadRunner {
+        let runner = ThreadRunner {
+            owner: Uuid::nil(),
             agent: None,
             cancel_tx: None,
-            pending_approvals: HashMap::new(),
-            pending_quizzes: HashMap::new(),
+            broker,
             queued: VecDeque::new(),
             last_event_seq: 0,
             next_message_seq: 0,
@@ -967,14 +922,6 @@ mod tests {
             message_format: MessageFormat::Html,
             last_used: Instant::now(),
         };
-        runner.pending_quizzes.insert(
-            quiz_id,
-            PendingQuizState {
-                run_id,
-                questions: questions.clone(),
-                answered: answered_tx,
-            },
-        );
 
         let mut threads = HashMap::new();
         threads.insert(thread_id, runner);
@@ -986,26 +933,18 @@ mod tests {
 
         let snapshot = handle_snapshot(state.clone(), thread_id).await.unwrap();
         assert_eq!(
-            snapshot.pending_quiz.as_ref().map(|q| q.quiz_id),
+            snapshot.pending_quizzes.first().map(|q| q.quiz_id),
             Some(quiz_id)
         );
-        assert_eq!(snapshot.pending_quiz.unwrap().questions, questions);
+        assert_eq!(snapshot.pending_quizzes[0].questions, questions);
 
         handle_answer_quiz(&state, thread_id, quiz_id, vec!["B".to_string()])
             .await
             .unwrap();
-        assert_eq!(answered_rx.await.unwrap(), vec!["B".to_string()]);
-
-        let event = events.recv().await.unwrap();
-        match event.kind {
-            AgentEventKind::QuizAnswered {
-                quiz_id: answered_id,
-            } => assert_eq!(answered_id, quiz_id),
-            _ => panic!("expected quiz answer"),
-        }
+        assert_eq!(answered_rx.await, vec!["B".to_string()]);
 
         let snapshot = handle_snapshot(state, thread_id).await.unwrap();
-        assert!(snapshot.pending_quiz.is_none());
+        assert!(snapshot.pending_quizzes.is_empty());
     }
 
     #[tokio::test]
@@ -1053,7 +992,7 @@ mod tests {
             Arc::new(AgentConfig {
                 model_registry: models,
                 max_iterations: 4,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             test_server_config(),

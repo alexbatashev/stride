@@ -8,7 +8,7 @@ fn dummy_config() -> Arc<AgentConfig> {
     Arc::new(AgentConfig {
         model_registry: ModelRegistry::new(),
         max_iterations: 50,
-        observer: Arc::new(stride_agent::NoopAgentObserver),
+        usage_observer: Arc::new(stride_agent::NoopUsageObserver),
         ..Default::default()
     })
 }

@@ -128,6 +128,15 @@ impl TopicHandle for MemoryTopic {
         let lag = overflow_gap(from, inner.backlog.front().map(|(offset, _)| *offset));
         Box::new(MemorySubscription { lag, replay, rx })
     }
+
+    fn subscribe_live(&self) -> Box<dyn RawSubscription> {
+        let rx = self.tx.subscribe();
+        Box::new(MemorySubscription {
+            lag: None,
+            replay: VecDeque::new(),
+            rx,
+        })
+    }
 }
 
 /// Events lost between the requested cursor and the oldest retained offset.

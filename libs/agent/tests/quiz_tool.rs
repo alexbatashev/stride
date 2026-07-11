@@ -3,8 +3,8 @@ use llm::{CompletionChoice, Delta, StreamResponseChunk, ToolCallChunk, ToolCallF
 use serde_json::json;
 use std::sync::Arc;
 use stride_agent::{
-    AgentConfig, AgentResponseChunk, BaseAgent, DEFAULT_MODEL, ModelRegEntry, ModelRegistry,
-    tools::quiz::QuizTool,
+    AgentConfig, BaseAgent, DEFAULT_MODEL, EventKind, InMemoryInteractionBroker, InteractionBroker,
+    ModelRegEntry, ModelRegistry, NoopEventSink, TurnContext, tools::quiz::QuizTool,
 };
 
 fn registry(mock: &llm::Mock) -> ModelRegistry {
@@ -97,7 +97,7 @@ fn quiz_yields_questions_and_returns_answers() {
             Arc::new(AgentConfig {
                 model_registry: registry(&mock),
                 max_iterations: 50,
-                observer: Arc::new(stride_agent::NoopAgentObserver),
+                usage_observer: Arc::new(stride_agent::NoopUsageObserver),
                 ..Default::default()
             }),
             String::new(),
@@ -105,35 +105,31 @@ fn quiz_yields_questions_and_returns_answers() {
         );
         agent.register_tool(QuizTool);
 
-        let stream = agent.make_turn("ask".to_string(), vec![]).await;
+        let broker = Arc::new(InMemoryInteractionBroker::default());
+        let stream = agent
+            .make_turn(
+                "ask".to_string(),
+                vec![],
+                TurnContext::new(
+                    uuid::Uuid::now_v7(),
+                    Arc::new(NoopEventSink),
+                    broker.clone(),
+                ),
+            )
+            .await;
         pin_mut!(stream);
 
-        // First chunk is the tool call delta
-        stream.next().await.unwrap().unwrap();
-
-        // Second chunk announces the tool call
-        stream.next().await.unwrap().unwrap();
-
-        // Third chunk should be the Quiz event
-        match stream.next().await.unwrap().unwrap() {
-            AgentResponseChunk::Quiz {
-                questions,
-                answered,
-                ..
-            } => {
+        loop {
+            let event = stream.next().await.unwrap();
+            if let EventKind::QuizRequested { quiz_id, questions } = event.kind {
                 assert_eq!(questions.len(), 2);
                 assert_eq!(questions[0].question, "Favorite color?");
                 assert_eq!(questions[0].options, vec!["red", "blue", "green"]);
                 assert_eq!(questions[1].question, "Age?");
                 assert!(questions[1].options.is_empty());
-                answered
-                    .send(vec!["blue".to_string(), "30".to_string()])
-                    .unwrap();
+                assert!(broker.answer_quiz(quiz_id, vec!["blue".to_string(), "30".to_string()],));
+                break;
             }
-            other => panic!(
-                "expected Quiz chunk, got something else: {:?}",
-                std::mem::discriminant(&other)
-            ),
         }
 
         while stream.next().await.is_some() {}

@@ -228,12 +228,8 @@ impl TermOutput {
         self.cmd_tx.send(command).unwrap();
     }
 
-    pub async fn request_approval(
-        &self,
-        tool_name: &str,
-        message: &str,
-        approved: oneshot::Sender<bool>,
-    ) {
+    pub async fn request_approval(&self, tool_name: &str, message: &str) -> bool {
+        let (approved, response) = oneshot::channel();
         let command = Command::RequestApproval {
             tool_name: tool_name.to_string(),
             message: message.to_string(),
@@ -241,7 +237,8 @@ impl TermOutput {
         };
 
         // TODO handle errors
-        self.cmd_tx.send(command).unwrap()
+        self.cmd_tx.send(command).unwrap();
+        response.await.unwrap_or(false)
     }
 
     pub fn charge_spinner(&self) {
