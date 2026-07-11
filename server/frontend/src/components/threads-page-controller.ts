@@ -16,9 +16,21 @@ import {
 	updateThreadModel,
 } from "../api/threads.js";
 import { sidebar } from "../stores/ui.js";
-import {resetThreadStream, threadStream} from '../stores/thread-stream.js';
-import { bindSidebar } from "./sidebar.js";
-import { openThreadMenu, type ThreadMutation } from "./thread-actions.js";
+import {threadStream} from '../stores/thread-stream.js';
+import {threadView} from '../stores/thread-view.js';
+import type {TimelineMessage} from '../shared/timeline.js';
+import { bindSidebar } from "../pages/sidebar.js";
+import { openThreadMenu, type ThreadMutation } from "../pages/thread-actions.js";
+
+function resetThreadStream(threadId: string): void {
+	threadStream.threadId = threadId;
+	threadStream.running = false;
+	threadStream.messages = [];
+	threadStream.toolCalls = [];
+	threadStream.subagents = [];
+	threadStream.pendingApprovals = [];
+	threadStream.pendingQuizzes = [];
+}
 
 type ViewMessage = ThreadMessage & { pending?: boolean; liveToolName?: string };
 type PendingQuiz = {
@@ -33,17 +45,6 @@ type SidebarEl = HTMLElement & {
 	threads: { id: string; title: string }[];
 };
 
-type MessageEl = HTMLElement & {
-	messageId: string;
-	seq: number;
-	role: string;
-	kind: string;
-	format: string;
-	text: string;
-	thinking: string;
-	toolName: string;
-};
-
 type PromptEl = HTMLElement & {
 	disabled: boolean;
 	running: boolean;
@@ -55,8 +56,6 @@ type PromptEl = HTMLElement & {
 type ApprovalEl = HTMLElement & { message: string };
 type QuizEl = HTMLElement & { question: string; options: string[] };
 type FileManagerEl = HTMLElement & { threadId: string; open: boolean };
-
-const root = document.querySelector<HTMLElement>("#threads-page");
 
 class ThreadsPageHydrator {
 	private threadId: string;
@@ -82,21 +81,26 @@ class ThreadsPageHydrator {
 	private readonly promptEl: PromptEl;
 	private readonly approvalEl: ApprovalEl;
 	private readonly quizEl: QuizEl;
-	private readonly errorEl: HTMLElement;
 	private readonly sidebarEl: SidebarEl;
 	private readonly fileManagerEl: FileManagerEl;
+	private readonly scope: ShadowRoot;
 	private menuButtonEl: HTMLElement | null = null;
 
 	constructor(private readonly root: HTMLElement) {
+		if (!root.shadowRoot) throw new Error("Threads page is not hydrated");
+		this.scope = root.shadowRoot;
+		threadView.active = false;
+		const initial = JSON.parse(root.dataset.argonServer ?? "{}") as {
+			data?: {selectedModel?: string; running?: boolean};
+		};
 		this.threadId = root.dataset.threadId ?? "";
 		resetThreadStream(this.threadId);
-		this.selectedModel = root.dataset.selectedModel ?? "";
-		this.running = root.dataset.running === "true";
+		this.selectedModel = initial.data?.selectedModel ?? "";
+		this.running = initial.data?.running ?? false;
 		this.messagesEl = this.mustQuery("[data-messages]");
 		this.scrollEl = this.messagesEl.closest<HTMLElement>(".content") ?? this.messagesEl;
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");
-		this.errorEl = this.mustQuery("[data-error]");
 		this.approvalEl = this.mustQuery("[data-approval]");
 		this.quizEl = this.mustQuery("[data-quiz]");
 		this.sidebarEl = this.mustQuery("app-sidebar");
@@ -106,6 +110,8 @@ class ThreadsPageHydrator {
 		this.currentProjectId = this.threadId
 			? (this.threads.find((t) => t.id === this.threadId)?.project_id ?? null)
 			: this.readProjectFromQuery();
+		sidebar.activeThread = this.threadId;
+		sidebar.activeProject = this.currentProjectId ?? "";
 
 		this.bindEvents();
 		void this.loadModels();
@@ -113,6 +119,8 @@ class ThreadsPageHydrator {
 
 		if (this.threadId) {
 			void this.hydrateMessages(this.threadId);
+		} else {
+			this.syncMessages();
 		}
 	}
 
@@ -126,7 +134,7 @@ class ThreadsPageHydrator {
 			if (this.threadId !== threadId) {
 				return;
 			}
-			this.renderMessages();
+			this.syncMessages();
 			this.scrollInitial();
 		} catch (error) {
 			this.handleError(error);
@@ -138,7 +146,7 @@ class ThreadsPageHydrator {
 	}
 
 	private mustQuery<T extends Element>(selector: string): T {
-		const element = this.root.querySelector<T>(selector);
+		const element = this.scope.querySelector<T>(selector);
 		if (!element) {
 			throw new Error(`Missing ${selector}`);
 		}
@@ -166,10 +174,10 @@ class ThreadsPageHydrator {
 
 	private bindEvents() {
 		bindSidebar(this.sidebarEl);
-		this.root
+		this.scope
 			.querySelectorAll<HTMLElement>('[data-action="files"]')
 			.forEach((button) => button.addEventListener("click", () => this.toggleFiles()));
-		this.menuButtonEl = this.root.querySelector<HTMLElement>('[data-action="thread-menu"]');
+		this.menuButtonEl = this.scope.querySelector<HTMLElement>('[data-action="thread-menu"]');
 		this.menuButtonEl?.addEventListener("click", () => this.openThreadActions());
 		this.syncMenuButton();
 		this.fileManagerEl.addEventListener("files-close", () => {
@@ -323,7 +331,7 @@ class ThreadsPageHydrator {
 					pending.id = event.kind.message_id;
 					pending.seq = event.seq;
 					pending.pending = false;
-					this.renderMessages();
+					this.syncMessages();
 				}
 				} else if (event.kind.role === 'assistant') {
 					const messageId = event.kind.message_id;
@@ -585,7 +593,7 @@ class ThreadsPageHydrator {
 		}
 
 		this.messages = messages;
-		this.renderMessages();
+		this.syncMessages();
 		this.threads = threads;
 		this.projects = projects;
 		this.renderSidebar();
@@ -699,7 +707,7 @@ class ThreadsPageHydrator {
 
 		try {
 			this.messages = await listMessages(threadId);
-			this.renderMessages();
+			this.syncMessages();
 			this.scrollInitial();
 			this.syncTitle();
 			this.openEvents(threadId);
@@ -725,58 +733,30 @@ class ThreadsPageHydrator {
 		sidebar.activeProject = this.threads.find((thread) => thread.id === this.threadId)?.project_id ?? "";
 	}
 
-	private renderMessages() {
-		if (!this.threadId || this.messages.length === 0) {
-			this.messagesEl.replaceChildren(this.createEmptyElement());
-			return;
-		}
-
-		this.messagesEl.querySelector("[data-empty]")?.remove();
-		const existing = new Map<string, MessageEl>();
-		this.messagesEl.querySelectorAll<MessageEl>("app-message[data-message-id]").forEach((element) => {
-			existing.set(element.dataset.messageId ?? "", element);
-		});
-
-		for (const message of this.messages) {
-			const element = existing.get(message.id) ?? this.createMessageElement(message);
-			this.syncMessageElement(element, message);
-			this.messagesEl.append(element);
-			existing.delete(message.id);
-		}
-		for (const stale of existing.values()) {
-			stale.remove();
-		}
+	private syncMessages() {
+		threadView.messages = this.messages.map((message) => this.timelineMessage(message));
+		threadView.active = true;
 	}
 
-	private appendMessage(message: ViewMessage) {
-		this.messagesEl.querySelector("[data-empty]")?.remove();
-		const element = this.createMessageElement(message);
-		this.messagesEl.append(element);
+	private appendMessage(_message: ViewMessage) {
+		this.syncMessages();
 	}
 
-	private updateMessageElement(message: ViewMessage) {
-		const element = this.messagesEl.querySelector<MessageEl>(
-			`app-message[data-message-id="${this.escapeSelectorValue(message.id)}"]`,
-		);
-		if (!element) {
-			return;
-		}
-
-		this.syncMessageElement(element, message);
+	private updateMessageElement(_message: ViewMessage) {
+		this.syncMessages();
 	}
 
-	private syncMessageElement(element: MessageEl, message: ViewMessage) {
-		const messageType = this.messageType(message);
-		element.setAttribute("data-message-id", message.id);
-		element.seq = message.seq;
-		element.role = message.role;
-		element.kind = messageType.type;
-		element.format = message.format;
-		element.toolName = messageType.toolName ?? "";
-		element.thinking = message.thinking ? message.thinking : "";
-		element.text = message.content
-			? this.messageText(message, messageType.type)
-			: message.pending ? "Thinking..." : "";
+	private timelineMessage(message: ViewMessage): TimelineMessage {
+		return {
+			id: message.id,
+			seq: message.seq,
+			role: message.role,
+			messageType: message.liveToolName ? "tool_output" : "",
+			format: message.format,
+			content: message.content || (message.pending ? "Thinking..." : ""),
+			thinking: message.thinking ?? "",
+			toolName: message.liveToolName ?? message.tool_call_name ?? (message.role === "tool" ? "Tool output" : ""),
+		};
 	}
 
 	private scrollInitial() {
@@ -815,52 +795,6 @@ class ThreadsPageHydrator {
 		return this.messagesEl.querySelector<HTMLElement>("app-message[data-message-id]:last-of-type");
 	}
 
-	private escapeSelectorValue(value: string): string {
-		return typeof CSS !== "undefined" ? CSS.escape(value) : value.replace(/\"/g, '\\"');
-	}
-
-	private createMessageElement(message: ViewMessage) {
-		const element = document.createElement("app-message") as MessageEl;
-		this.syncMessageElement(element, message);
-		return element;
-	}
-
-	private messageText(message: ThreadMessage, messageType: string): string {
-		return message.content;
-	}
-
-	private createEmptyElement() {
-		const empty = document.createElement("div");
-		empty.className = "empty";
-		empty.dataset.empty = "";
-
-		const title = document.createElement("h2");
-		title.textContent = "What are we working on?";
-
-		const body = document.createElement("p");
-		body.textContent = "Start a thread and S.T.R.I.D.E. will keep the context here.";
-
-		empty.append(title, body);
-		return empty;
-	}
-
-	private messageType(message: ThreadMessage): { type: string; toolName?: string } {
-		const liveToolName = (message as ViewMessage).liveToolName;
-		if (liveToolName) {
-			return {type: 'tool_output', toolName: liveToolName};
-		}
-		if (message.tool_call_name) {
-			return { type: "agent", toolName: message.tool_call_name };
-		}
-		if (message.role === "tool") {
-			return { type: "tool_output", toolName: "Tool output" };
-		}
-		if (message.role === "system") {
-			return { type: "agent" };
-		}
-		return { type: message.role };
-	}
-
 	private syncTitle() {
 		this.titleEl.textContent =
 			this.threads.find((thread) => thread.id === this.threadId)?.title ??
@@ -868,21 +802,16 @@ class ThreadsPageHydrator {
 	}
 
 	private syncComposer() {
-		this.promptEl.running = this.running;
-		this.promptEl.placeholder = this.composerPlaceholder();
-		this.promptEl.models = this.modelOptions;
-		this.promptEl.selectedModel = this.selectedModel;
-		const hasApproval = this.pendingApproval !== null;
-		const hasQuiz = this.pendingQuiz !== null;
-		this.promptEl.hidden = hasApproval || hasQuiz;
-		this.approvalEl.hidden = !hasApproval;
-		this.approvalEl.message = this.pendingApproval?.message ?? "";
-		this.quizEl.hidden = !hasQuiz;
 		const quiz = this.pendingQuiz;
 		const question = quiz ? quiz.questions[quiz.index] : undefined;
-		this.quizEl.question = question?.question ?? "";
-		this.quizEl.options = question?.options ?? [];
-		this.errorEl.textContent = this.error;
+		threadView.running = this.running;
+		threadView.placeholder = this.composerPlaceholder();
+		threadView.models = this.modelOptions;
+		threadView.selectedModel = this.selectedModel;
+		threadView.approvalMessage = this.pendingApproval?.message ?? "";
+		threadView.quizQuestion = question?.question ?? "";
+		threadView.quizOptions = question?.options ?? [];
+		threadView.error = this.error;
 		this.fileManagerEl.threadId = this.threadId;
 		this.syncMenuButton();
 	}
@@ -1019,16 +948,10 @@ class ThreadsPageHydrator {
 	}
 
 	private navigate(path: string) {
-		this.root.dispatchEvent(
-			new CustomEvent("navigate", {
-				bubbles: true,
-				composed: true,
-				detail: { path },
-			}),
-		);
+		window.location.href = path === "/login" ? "/auth/login" : path;
 	}
 }
 
-if (root) {
+export function mountThreadsPage(root: HTMLElement): void {
 	new ThreadsPageHydrator(root);
 }

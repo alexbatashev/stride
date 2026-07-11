@@ -8,18 +8,10 @@ use axum::{
 
 use crate::{ServerState, api::threads};
 
-pub(super) fn page_script() -> String {
-    super::module_script("pages/files-page.js")
-}
-
 pub async fn files(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    let data = match threads::thread_page_data(&state, &headers, None).await {
-        Ok(data) => data,
-        Err(threads::ThreadApiError::Auth(_)) => {
-            return Redirect::to("/auth/login").into_response();
-        }
-        Err(error) => return error.into_response(),
-    };
-
-    Html(super::render_files_page(&data)).into_response()
+    match super::render_shell_page(state, headers, "files", "Files - S.T.R.I.D.E.").await {
+        Ok(html) => Html(html).into_response(),
+        Err(threads::ThreadApiError::Auth(_)) => Redirect::to("/auth/login").into_response(),
+        Err(error) => error.into_response(),
+    }
 }

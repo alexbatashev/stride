@@ -8,18 +8,10 @@ use axum::{
 
 use crate::{ServerState, api::threads};
 
-pub(super) fn page_script() -> String {
-    super::module_script("pages/settings-page.js")
-}
-
 pub async fn settings(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    let data = match threads::thread_page_data(&state, &headers, None).await {
-        Ok(data) => data,
-        Err(threads::ThreadApiError::Auth(_)) => {
-            return Redirect::to("/auth/login").into_response();
-        }
-        Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    Html(super::render_settings_page(&data)).into_response()
+    match super::render_shell_page(state, headers, "settings", "Settings - S.T.R.I.D.E.").await {
+        Ok(html) => Html(html).into_response(),
+        Err(threads::ThreadApiError::Auth(_)) => Redirect::to("/auth/login").into_response(),
+        Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
