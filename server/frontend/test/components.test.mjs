@@ -50,19 +50,57 @@ function buttonWithText(root, text) {
 
 test('all custom elements register', () => {
   for (const tag of [
-    'app-button', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
+    'app-button', 'app-input', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
     'app-message', 'app-spoiler', 'auto-markdown', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
     'app-file-manager', 'app-automations', 'app-settings', 'icon-arrow-up', 'icon-x',
     'app-badge', 'app-label', 'app-separator', 'app-skeleton', 'app-aspect-ratio',
-    'app-card', 'app-avatar', 'app-alert', 'app-progress', 'app-checkbox',
+    'app-card', 'app-avatar', 'app-avatar-group', 'app-avatar-group-count', 'app-alert', 'app-progress', 'app-checkbox',
     'app-switch', 'app-toggle', 'app-textarea', 'app-radio-group', 'app-slider',
     'app-breadcrumb', 'app-tabs', 'app-accordion', 'app-pagination', 'app-dialog',
     'app-alert-dialog', 'app-sheet', 'app-tooltip', 'app-popover', 'app-hover-card',
-    'app-select', 'app-settings-memory', 'app-settings-models', 'icon-check',
+    'app-select', 'app-combobox', 'app-attachment', 'app-marker', 'app-message-scroller',
+    'app-kbd', 'app-spinner', 'app-toggle-group', 'app-sonner',
+    'app-sidebar-provider', 'app-sidebar-panel', 'app-sidebar-inset', 'app-sidebar-header',
+    'app-sidebar-content', 'app-sidebar-footer', 'app-sidebar-group', 'app-sidebar-group-label',
+    'app-sidebar-group-content', 'app-sidebar-menu', 'app-sidebar-menu-item',
+    'app-sidebar-menu-button', 'app-sidebar-menu-action', 'app-sidebar-menu-badge',
+    'app-sidebar-input', 'app-sidebar-separator', 'app-sidebar-menu-skeleton', 'app-sidebar-rail',
+    'app-settings-memory', 'app-settings-models', 'icon-check',
   ]) {
     assert.ok(customElements.get(tag), `${tag} is not registered`);
   }
+});
+
+test('app-combobox filters options and emits selection intent', async () => {
+  const el = mount('app-combobox', { options: [{ value: 'alpha', label: 'Alpha' }, { value: 'beta', label: 'Beta' }] });
+  const events = [];
+  el.addEventListener('value-change', (event) => events.push(event.detail));
+  const input = el.shadowRoot.querySelector('app-input').shadowRoot.querySelector('input');
+  input.value = 'bet';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await nextFrame();
+  assert.doesNotMatch(el.shadowRoot.textContent, /Alpha/);
+  el.shadowRoot.querySelector('.option').click();
+  assert.deepEqual(events, [{ value: 'beta' }]);
+});
+
+test('app-toggle-group is controlled and supports single selection intent', () => {
+  const el = mount('app-toggle-group', { kind: 'single', value: ['bold'], options: [{ value: 'bold', label: 'Bold' }, { value: 'italic', label: 'Italic' }] });
+  let detail;
+  el.addEventListener('value-change', (event) => { detail = event.detail; });
+  const toggles = Array.from(el.shadowRoot.querySelectorAll('app-toggle'));
+  toggles.find((toggle) => toggle.textContent.trim() === 'Italic').shadowRoot.querySelector('button').click();
+  assert.deepEqual(detail, { value: ['italic'] });
+  assert.equal(toggles.find((toggle) => toggle.textContent.trim() === 'Bold').shadowRoot.querySelector('button').getAttribute('aria-pressed'), 'true');
+});
+
+test('app-sonner reports toast actions', () => {
+  const el = mount('app-sonner', { toasts: [{ id: 'saved', title: 'Saved', action: 'Undo' }] });
+  let detail;
+  el.addEventListener('toast-action', (event) => { detail = event.detail; });
+  buttonWithText(el.shadowRoot, 'Undo').click();
+  assert.deepEqual(detail, { id: 'saved' });
 });
 
 test('app-sidebar renders projects and threads as links', () => {

@@ -1,7 +1,7 @@
 @import "./reset.css";
 
 html {
-    font-family: "Noto Sans", sans-serif;
+    font-family: ui-sans-serif, system-ui, sans-serif;
     font-optical-sizing: auto;
     font-weight: 400;
     font-style: normal;
@@ -15,35 +15,40 @@ html {
 }
 
 :root {
-    --background: #ffffff;
-    --foreground: #09090b;
-    --card: #ffffff;
-    --card-foreground: #18181b;
-    --popover: #ffffff;
-    --popover-foreground: #18181b;
-    --primary: #18181b;
-    --primary-foreground: #fafafa;
-    --primary-hover: #27272a;
-    --secondary: #f4f4f5;
-    --secondary-foreground: #18181b;
-    --secondary-hover: #e4e4e7;
-    --muted: #f4f4f5;
-    --muted-foreground: #71717a;
-    --accent: #f4f4f5;
-    --accent-foreground: #18181b;
+    --radius: 0.625rem;
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+    --background: oklch(1 0 0);
+    --foreground: oklch(0 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0 0 0);
+    --primary: oklch(0 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --primary-hover: oklch(0.205 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --secondary-hover: oklch(0.922 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
     /* Sidebar sits slightly off the page background so its hover/active
        surfaces read against it (shadcn keeps these as a distinct scale). */
-    --sidebar-bg: #fafafa;
-    --sidebar-fg: #18181b;
-    --sidebar-accent: #ececef;
-    --sidebar-accent-fg: #18181b;
-    --sidebar-border: #e4e4e7;
-    --border: #e4e4e7;
-    --input: #e4e4e7;
+    --sidebar-bg: oklch(0.985 0 0);
+    --sidebar-fg: oklch(0 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-fg: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
     --input-disabled: rgb(244 244 245 / 50%);
-    --ring: #18181b;
-    --ring-shadow: rgb(24 24 27 / 12%);
-    --destructive: #dc2626;
+    --ring: oklch(0.708 0 0);
+    --ring-shadow: color-mix(in oklab, var(--ring) 50%, transparent);
+    --destructive: oklch(0.577 0.245 27.325);
     --destructive-muted: rgb(220 38 38 / 10%);
     --destructive-hover: rgb(220 38 38 / 20%);
     --destructive-ring: rgb(220 38 38 / 40%);
@@ -80,33 +85,33 @@ html {
 
 @media (prefers-color-scheme: dark) {
     :root {
-        --background: #121212;
-        --foreground: #d4d4d4;
-        --card: #212121;
-        --card-foreground: #d4d4d4;
-        --popover: #212121;
-        --popover-foreground: #d4d4d4;
-        --primary: #f4f4f5;
-        --primary-foreground: #18181b;
-        --primary-hover: #e4e4e7;
-        --secondary: #212121;
-        --secondary-foreground: #d4d4d4;
-        --secondary-hover: #2d2d2d;
-        --muted: #212121;
-        --muted-foreground: #bdbdbd;
-        --accent: #2d2d2d;
-        --accent-foreground: #e4e4e7;
-        --sidebar-bg: #1a1a1a;
-        --sidebar-fg: #d4d4d4;
-        --sidebar-accent: #2d2d2d;
-        --sidebar-accent-fg: #fafafa;
-        --sidebar-border: #2a2a2a;
-        --border: #333333;
-        --input: #333333;
+        --background: oklch(0.145 0 0);
+        --foreground: oklch(0.985 0 0);
+        --card: oklch(0.205 0 0);
+        --card-foreground: oklch(0.985 0 0);
+        --popover: oklch(0.205 0 0);
+        --popover-foreground: oklch(0.985 0 0);
+        --primary: oklch(0.922 0 0);
+        --primary-foreground: oklch(0.205 0 0);
+        --primary-hover: oklch(0.985 0 0);
+        --secondary: oklch(0.269 0 0);
+        --secondary-foreground: oklch(0.985 0 0);
+        --secondary-hover: oklch(0.371 0 0);
+        --muted: oklch(0.269 0 0);
+        --muted-foreground: oklch(0.708 0 0);
+        --accent: oklch(0.371 0 0);
+        --accent-foreground: oklch(0.985 0 0);
+        --sidebar-bg: oklch(0.205 0 0);
+        --sidebar-fg: oklch(0.985 0 0);
+        --sidebar-accent: oklch(0.269 0 0);
+        --sidebar-accent-fg: oklch(0.985 0 0);
+        --sidebar-border: oklch(1 0 0 / 10%);
+        --border: oklch(1 0 0 / 10%);
+        --input: oklch(1 0 0 / 15%);
         --input-disabled: rgb(51 51 51 / 55%);
-        --ring: #e4e4e7;
-        --ring-shadow: rgb(255 255 255 / 7%);
-        --destructive: #f87171;
+        --ring: oklch(0.556 0 0);
+        --ring-shadow: color-mix(in oklab, var(--ring) 50%, transparent);
+        --destructive: oklch(0.704 0.191 22.216);
         --destructive-muted: rgb(248 113 113 / 14%);
         --destructive-hover: rgb(248 113 113 / 22%);
         --destructive-ring: rgb(248 113 113 / 40%);
@@ -123,6 +128,76 @@ html {
         --message-agent-shadow: 0 1px 2px rgb(0 0 0 / 20%);
         color-scheme: dark;
     }
+}
+
+::selection {
+    background: var(--primary);
+    color: var(--primary-foreground);
+}
+
+:where(button, input, select, textarea, a):focus-visible {
+    outline: none;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    caption-side: bottom;
+    color: var(--foreground);
+    font-size: 0.875rem;
+}
+
+thead tr,
+tbody tr:not(:last-child),
+tfoot {
+    border-bottom: 1px solid var(--border);
+}
+
+tfoot {
+    border-top: 1px solid var(--border);
+    background: color-mix(in oklab, var(--muted) 50%, transparent);
+    font-weight: 500;
+}
+
+tbody tr {
+    transition: background-color 150ms ease;
+}
+
+tbody tr:hover,
+tr[aria-selected="true"] {
+    background: color-mix(in oklab, var(--muted) 50%, transparent);
+}
+
+th {
+    height: 40px;
+    padding: 0 8px;
+    text-align: left;
+    vertical-align: middle;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+td {
+    padding: 8px;
+    vertical-align: middle;
+}
+
+caption {
+    margin-top: 16px;
+    color: var(--muted-foreground);
+    font-size: 0.875rem;
 }
 
 body {

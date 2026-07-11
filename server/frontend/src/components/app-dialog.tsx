@@ -27,7 +27,7 @@ const styles = css`
   .dialog {
     background: var(--background, #ffffff);
     border: 1px solid var(--border, #e4e4e7);
-    border-radius: 14px;
+    border-radius: var(--radius-lg, 10px);
     box-shadow: 0 10px 38px rgb(0 0 0 / 18%);
     box-sizing: border-box;
     color: var(--foreground, #09090b);
@@ -35,7 +35,7 @@ const styles = css`
     flex-direction: column;
     gap: 16px;
     max-height: calc(100dvh - 32px);
-    max-width: 480px;
+    max-width: 512px;
     overflow: auto;
     padding: 24px;
     position: relative;

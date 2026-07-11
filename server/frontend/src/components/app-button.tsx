@@ -14,7 +14,7 @@ const styles = css`
     background: var(--primary, #18181b);
     background-clip: padding-box;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: var(--radius-md, 8px);
     box-sizing: border-box;
     color: var(--primary-foreground, #fafafa);
     cursor: pointer;
@@ -22,12 +22,12 @@ const styles = css`
     font: inherit;
     font-size: 0.875rem;
     font-weight: 500;
-    gap: 6px;
-    height: 32px;
+    gap: 8px;
+    height: 36px;
     justify-content: center;
     line-height: 1;
     outline: none;
-    padding: 0 10px;
+    padding: 0 16px;
     position: relative;
     transition:
       background-color 140ms ease,
@@ -58,6 +58,11 @@ const styles = css`
     background: var(--background, #ffffff);
     border-color: var(--border, #e4e4e7);
     color: var(--foreground, #18181b);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :host([variant="outline"]) button { background: color-mix(in oklab, var(--input) 30%, transparent); }
+    :host([variant="outline"]) button:hover { background: color-mix(in oklab, var(--input) 50%, transparent); }
   }
 
   :host([variant="outline"]) button:hover {
@@ -121,19 +126,19 @@ const styles = css`
     border-radius: 8px;
     font-size: 0.8rem;
     gap: 4px;
-    height: 28px;
-    padding: 0 10px;
+    height: 32px;
+    padding: 0 12px;
   }
 
   :host([size="lg"]) button {
-    height: 36px;
-    padding: 0 10px;
+    height: 40px;
+    padding: 0 24px;
   }
 
   :host([size="icon"]) button {
-    height: 32px;
+    height: 36px;
     padding: 0;
-    width: 32px;
+    width: 36px;
   }
 
   :host([size="icon-xs"]) button {
@@ -145,16 +150,18 @@ const styles = css`
 
   :host([size="icon-sm"]) button {
     border-radius: 8px;
-    height: 28px;
+    height: 32px;
     padding: 0;
-    width: 28px;
+    width: 32px;
   }
 
   :host([size="icon-lg"]) button {
-    height: 36px;
+    height: 40px;
     padding: 0;
-    width: 36px;
+    width: 40px;
   }
+
+  :host([align="start"]) button { justify-content: flex-start; }
 
   :host([disabled]) button,
   :host([loading]) button {

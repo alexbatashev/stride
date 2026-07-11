@@ -14,13 +14,17 @@ const styles = css`
     display: block;
   }
 
+  .root { display: flex; flex-direction: column; gap: 8px; }
+  .root.vertical { align-items: flex-start; flex-direction: row; }
+
   .list {
     align-items: center;
     background: var(--muted, #f4f4f5);
-    border-radius: 10px;
+    border-radius: var(--radius-lg, 10px);
     display: inline-flex;
     gap: 4px;
     padding: 3px;
+    min-height: 36px;
   }
 
   .trigger {
@@ -51,24 +55,45 @@ const styles = css`
   }
 
   .panels {
-    margin-top: 12px;
+    flex: 1;
   }
+
+  .root.vertical .list { align-items: stretch; flex-direction: column; height: auto; }
+  .root.vertical .trigger { text-align: left; }
+  .root.line .list { background: transparent; border-radius: 0; gap: 4px; padding: 0; }
+  .root.line .trigger { border-radius: 0; position: relative; }
+  .root.line .trigger[aria-selected="true"] { background: transparent; box-shadow: none; }
+  .root.line .trigger[aria-selected="true"]::after { background: var(--foreground); bottom: -5px; content: ""; height: 2px; inset-inline: 0; position: absolute; }
+  .root.vertical.line .trigger[aria-selected="true"]::after { bottom: 0; height: auto; inset-block: 0; left: auto; right: -5px; width: 2px; }
 `;
 
-export function AppTabs({ tabs = [], value = "" }: { tabs?: Tab[]; value?: string }): Component {
+export function AppTabs({ tabs = [], value = "", variant = "default", orientation = "horizontal" }: { tabs?: Tab[]; value?: string; variant?: string; orientation?: string }): Component {
   const active = value || (tabs[0]?.value ?? "");
   return (
     <>
       <style>{styles}</style>
+      <div class={`root ${variant} ${orientation}`}>
       <div
         class="list"
         role="tablist"
+        aria-orientation={orientation}
         onClick={(event: Event) => {
           const trigger = (event.target as Element).closest(".trigger");
           if (!trigger) return;
           const next = trigger.getAttribute("data-value") ?? "";
           const current = value || (tabs[0]?.value ?? "");
           if (current === next) return;
+          emit(this, "tab-change", { value: next });
+        }}
+        onKeyDown={(event: KeyboardEvent) => {
+          const horizontal = orientation === "horizontal";
+          const previous = event.key === (horizontal ? "ArrowLeft" : "ArrowUp");
+          const nextKey = event.key === (horizontal ? "ArrowRight" : "ArrowDown");
+          if (!previous && !nextKey && event.key !== "Home" && event.key !== "End") return;
+          event.preventDefault();
+          const index = Math.max(0, tabs.findIndex((tab) => tab.value === active));
+          const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : previous ? (index - 1 + tabs.length) % tabs.length : (index + 1) % tabs.length;
+          const next = tabs[nextIndex]?.value ?? active;
           emit(this, "tab-change", { value: next });
         }}
       >
@@ -96,6 +121,7 @@ export function AppTabs({ tabs = [], value = "" }: { tabs?: Tab[]; value?: strin
             ></slot>
           ))
           .join("")}
+      </div>
       </div>
     </>
   );

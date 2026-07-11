@@ -7,13 +7,38 @@
 # - app-automations.tsx: browser-owned REST automation editor/run controls.
 # - app-settings.tsx: browser-owned integration/account settings forms.
 # - app-archived-threads.tsx: browser-owned archived-thread list mutations.
+# - app-data-table.tsx: browser-owned file rows with imperative checkbox property sync.
+# - app-dropdown-menu.tsx: browser-positioned menu populated imperatively from mixed legacy item shapes.
 src/components/app-approval-bar.tsx
+src/components/app-alert-dialog.tsx
+src/components/app-aspect-ratio.tsx
+src/components/app-attachment.tsx
+src/components/app-avatar.tsx
 src/components/app-button.tsx
+src/components/app-card.tsx
+src/components/app-checkbox.tsx
+src/components/app-combobox.tsx
+src/components/app-dialog.tsx
+src/components/app-input.tsx
+src/components/app-kbd.tsx
+src/components/app-marker.tsx
 src/components/app-message.tsx
+src/components/app-message-scroller.tsx
 src/components/app-prompt-input.tsx
 src/components/app-quiz-bar.tsx
+src/components/app-radio-group.tsx
+src/components/app-select.tsx
 src/components/app-sidebar.tsx
+src/components/app-sidebar-primitives.tsx
+src/components/app-skeleton.tsx
+src/components/app-slider.tsx
+src/components/app-sonner.tsx
+src/components/app-spinner.tsx
 src/components/app-spoiler.tsx
+src/components/app-tabs.tsx
 src/components/app-text-input.tsx
+src/components/app-toggle-group.tsx
+src/components/app-toggle.tsx
+src/components/app-tooltip.tsx
 src/components/auth-form.tsx
 src/components/auto-markdown.tsx
