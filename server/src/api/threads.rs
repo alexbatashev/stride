@@ -49,11 +49,21 @@ pub struct ThreadResponse {
 pub struct MessageResponse {
     id: String,
     seq: u64,
+    created_at: i64,
     role: &'static str,
     format: &'static str,
     content: String,
     thinking: Option<String>,
     tool_call_name: Option<String>,
+    tool_call_id: Option<String>,
+    tool_calls: Vec<ToolCallResponse>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ToolCallResponse {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Serialize)]
@@ -85,10 +95,13 @@ pub struct ThreadTemplateData {
 pub struct MessageTemplateData {
     pub id: String,
     pub seq: u64,
+    pub created_at: i64,
     pub role: &'static str,
     pub format: &'static str,
     pub message_type: &'static str,
     pub tool_name: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub tool_calls: Vec<ToolCallResponse>,
     pub content: String,
     pub thinking: Option<String>,
     pub has_thinking: bool,
@@ -537,10 +550,13 @@ pub async fn thread_page_data(
                 MessageTemplateData {
                     id: message.id,
                     seq: message.seq,
+                    created_at: message.created_at,
                     role: message.role,
                     format: message.format,
                     message_type,
                     tool_name,
+                    tool_call_id: message.tool_call_id,
+                    tool_calls: message.tool_calls,
                     content: message.content,
                     thinking: message.thinking,
                     has_thinking,
@@ -864,14 +880,21 @@ async fn thread_messages(
 
     Ok(rows
         .into_iter()
-        .map(|row| MessageResponse {
-            id: row.id.to_string(),
-            seq: row.seq,
-            role: role_name(row.role),
-            format: message_format_name(row.content_format.unwrap_or(MessageFormat::Markdown)),
-            content: row.content,
-            thinking: row.thinking,
-            tool_call_name: tool_call_name(row.tool_calls.as_deref()),
+        .map(|row| {
+            let tool_calls = tool_calls(row.tool_calls.as_deref());
+            let tool_call_name = tool_calls.first().map(|call| call.name.clone());
+            MessageResponse {
+                id: row.id.to_string(),
+                seq: row.seq,
+                created_at: uuid_v7_ms(row.id),
+                role: role_name(row.role),
+                format: message_format_name(row.content_format.unwrap_or(MessageFormat::Markdown)),
+                content: row.content,
+                thinking: row.thinking,
+                tool_call_name,
+                tool_call_id: row.tool_call_id,
+                tool_calls,
+            }
         })
         .filter(|message| {
             message.role != "agent"
@@ -1316,12 +1339,24 @@ fn message_template_type(message: &MessageResponse) -> (&'static str, Option<Str
     }
 }
 
-fn tool_call_name(tool_calls: Option<&str>) -> Option<String> {
-    let calls: Vec<llm::ToolCallChunk> = serde_json::from_str(tool_calls?).ok()?;
+fn tool_calls(tool_calls: Option<&str>) -> Vec<ToolCallResponse> {
+    let Some(tool_calls) = tool_calls else {
+        return Vec::new();
+    };
+    let Ok(calls) = serde_json::from_str::<Vec<llm::ToolCallChunk>>(tool_calls) else {
+        return Vec::new();
+    };
     calls
-        .first()
-        .and_then(|call| call.function.as_ref())
-        .and_then(|function| function.name.clone())
+        .into_iter()
+        .filter_map(|call| {
+            let function = call.function?;
+            Some(ToolCallResponse {
+                id: call.id?,
+                name: function.name?,
+                arguments: function.arguments.unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 /// The millisecond timestamp packed into a UUIDv7's leading 48 bits. Used as a

@@ -55,11 +55,14 @@ export type ArchivedThread = {
 export type ThreadMessage = {
 	id: string;
 	seq: number;
+	created_at?: number;
 	role: 'system' | 'agent' | 'user' | 'tool';
 	format: 'markdown' | 'html';
 	content: string;
 	thinking: string | null;
 	tool_call_name: string | null;
+	tool_call_id: string | null;
+	tool_calls: {id: string; name: string; arguments: string}[];
 };
 
 export type SendMessageResponse = {

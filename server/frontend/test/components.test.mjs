@@ -51,7 +51,7 @@ function buttonWithText(root, text) {
 test('all custom elements register', () => {
   for (const tag of [
     'app-button', 'app-input', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
-    'app-message', 'app-spoiler', 'auto-markdown', 'app-prompt-input',
+    'app-chat-view', 'app-message', 'app-message-actions', 'app-spoiler', 'app-tool-activity', 'app-tool-cluster', 'app-work-group', 'auto-markdown', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
     'app-file-manager', 'app-automations', 'app-settings', 'icon-arrow-up', 'icon-x',
     'app-badge', 'app-label', 'app-separator', 'app-skeleton', 'app-aspect-ratio',
@@ -66,7 +66,7 @@ test('all custom elements register', () => {
     'app-sidebar-group-content', 'app-sidebar-menu', 'app-sidebar-menu-item',
     'app-sidebar-menu-button', 'app-sidebar-menu-action', 'app-sidebar-menu-badge',
     'app-sidebar-input', 'app-sidebar-separator', 'app-sidebar-menu-skeleton', 'app-sidebar-rail',
-    'app-settings-memory', 'app-settings-models', 'icon-check',
+    'app-settings-memory', 'app-settings-models', 'icon-check', 'icon-terminal',
   ]) {
     assert.ok(customElements.get(tag), `${tag} is not registered`);
   }
@@ -238,42 +238,99 @@ test('app-message wraps html tables for horizontal scrolling', () => {
 });
 
 test('app-message tool output folds into a spoiler', () => {
-  const el = mount('app-message', { kind: 'tool_output', toolName: 'Shell', text: 'output' });
-  const spoiler = el.shadowRoot.querySelector('app-spoiler');
+  const spoiler = mount('app-tool-activity', { title: 'Shell', content: 'output' });
   assert.ok(spoiler);
   assert.match(spoiler.shadowRoot.innerHTML, /Shell/);
-  assert.doesNotMatch(spoiler.shadowRoot.innerHTML, /output/);
+  assert.equal(spoiler.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'false');
   spoiler.shadowRoot.querySelector('button').click();
   assert.match(spoiler.shadowRoot.innerHTML, /output/);
 
-  el.text = 'streamed output';
-  const updated = el.shadowRoot.querySelector('app-spoiler');
-  assert.equal(updated, spoiler);
-  assert.match(updated.shadowRoot.innerHTML, /streamed output/);
+  spoiler.content = 'streamed output';
+  assert.match(spoiler.shadowRoot.innerHTML, /streamed output/);
 });
 
-test('app-message keeps thinking spoiler open through streamed updates', async () => {
-  const el = mount('app-message', {
-    kind: 'agent',
-    text: 'initial',
-    thinking: 'token 0',
+test('chat timeline merges calls with outputs and excludes subagents', async () => {
+  const { buildClientTimeline } = await import('../dist/argon/components/chat-timeline.js');
+  const base = { format: 'markdown', thinking: null, tool_call_name: null, tool_call_id: null, tool_calls: [] };
+  const timeline = buildClientTimeline([
+    { ...base, id: 'assistant', seq: 1, role: 'agent', content: '', tool_calls: [
+      { id: 'call-1', name: 'shell', arguments: '{"command":"ls -la"}' },
+      { id: 'call-2', name: 'collaboration.spawn_agent', arguments: '{}' },
+    ] },
+    { ...base, id: 'output-1', seq: 2, role: 'tool', content: 'files', tool_call_id: 'call-1' },
+    { ...base, id: 'output-2', seq: 3, role: 'tool', content: 'child', tool_call_id: 'call-2' },
+  ]);
+  assert.equal(timeline.length, 1);
+  assert.equal(timeline[0].id, 'tool:call-1');
+  assert.equal(timeline[0].toolName, 'Ran command');
+  assert.equal(timeline[0].toolDetail, 'ls -la');
+  assert.equal(timeline[0].content, 'files');
+});
+
+test('chat turns fold all reasoning and tools while leaving the final answer visible', async () => {
+  const { buildChatTurns } = await import('../dist/argon/shared/timeline.js');
+  const item = (overrides) => ({ id: '', seq: 0, createdAt: 0, role: 'agent', kind: 'agent', format: 'markdown', text: '', thinking: '', toolName: '', toolDetail: '', status: 'finished', isError: false, pending: false, ...overrides });
+  const turns = buildChatTurns([
+    item({ id: 'user', seq: 1, createdAt: 1_000, role: 'user', kind: 'user', text: 'Question' }),
+    item({ id: 'thinking', seq: 2, createdAt: 2_000, thinking: 'Checking the real source.' }),
+    item({ id: 'tool-1', seq: 3, createdAt: 5_000, role: 'tool', kind: 'tool_activity', toolName: 'Ran command', toolDetail: 'pwd', text: '/repo' }),
+    item({ id: 'tool-2', seq: 4, createdAt: 7_000, role: 'tool', kind: 'tool_activity', toolName: 'Ran command', toolDetail: 'rg flags', text: 'matches' }),
+    item({ id: 'answer', seq: 5, createdAt: 28_000, text: 'Final answer', thinking: 'Now summarize the findings.' }),
+  ], false);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].workLabel, 'Worked for 27s');
+  assert.equal(turns[0].segments.length, 2);
+  assert.equal(turns[0].segments[0].commentary, 'Checking the real source.');
+  assert.equal(turns[0].segments[0].tools.length, 2);
+  assert.equal(turns[0].segments[1].commentary, 'Now summarize the findings.');
+  assert.equal(turns[0].answer.text, 'Final answer');
+});
+
+test('completed message copy action writes the exact message text', async () => {
+  let copied = '';
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { copied = value; } } });
+  const el = mount('app-message', { kind: 'agent', text: 'Copy this exactly', pending: false });
+  const actions = el.shadowRoot.querySelector('app-message-actions');
+  actions.shadowRoot.querySelector('app-button').shadowRoot.querySelector('button').click();
+  await tick();
+  assert.equal(copied, 'Copy this exactly');
+  assert.equal(actions.shadowRoot.querySelector('app-tooltip').text, 'Copied');
+});
+
+test('work group owns reasoning and tool disclosures without remounting during streams', async () => {
+  const el = mount('app-work-group', {
+    label: 'Worked for 12s',
+    segments: [{
+      id: 'segment-1',
+      commentary: 'Checking the source.',
+      tools: [{ id: 'tool-1', seq: 1, createdAt: 1, role: 'tool', kind: 'tool_activity', format: 'markdown', text: 'token 0', thinking: '', toolName: 'Ran command', toolDetail: 'rg flags', status: 'running', isError: false, pending: true }],
+    }],
   });
-  const spoiler = el.shadowRoot.querySelector('app-spoiler');
-  assert.ok(spoiler);
-  spoiler.shadowRoot.querySelector('button').click();
-  assert.equal(spoiler.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'true');
+  const fold = el.shadowRoot.querySelector('.fold-toggle');
+  assert.equal(fold.getAttribute('aria-expanded'), 'false');
+  assert.equal(el.shadowRoot.querySelector('app-tool-activity'), null);
+  fold.click();
+  assert.equal(fold.getAttribute('aria-expanded'), 'true');
+  const cluster = el.shadowRoot.querySelector('app-tool-cluster');
+  const tool = cluster.shadowRoot.querySelector('app-tool-activity');
+  assert.ok(tool);
+  tool.shadowRoot.querySelector('button').click();
 
   for (let i = 1; i <= 20; i += 1) {
-    el.text = `streamed body ${i}`;
-    el.thinking = `token ${i}`;
+    el.segments = [{
+      id: 'segment-1',
+      commentary: `Checking the source ${i}.`,
+      tools: [{ id: 'tool-1', seq: 1, createdAt: 1, role: 'tool', kind: 'tool_activity', format: 'markdown', text: `token ${i}`, thinking: '', toolName: 'Ran command', toolDetail: 'rg flags', status: 'running', isError: false, pending: true }],
+    }];
     await tick();
-    const current = el.shadowRoot.querySelector('app-spoiler');
-    assert.equal(current, spoiler);
+    const current = el.shadowRoot.querySelector('app-tool-cluster').shadowRoot.querySelector('app-tool-activity');
+    assert.equal(current, tool);
+    assert.equal(fold.getAttribute('aria-expanded'), 'true');
     assert.equal(current.shadowRoot.querySelector('button').getAttribute('aria-expanded'), 'true');
   }
 
-  assert.match(spoiler.shadowRoot.innerHTML, /token 20/);
-  assert.match(el.shadowRoot.querySelector('auto-markdown').shadowRoot.textContent, /streamed body 20/);
+  assert.match(tool.shadowRoot.innerHTML, /token 20/);
+  assert.match(el.shadowRoot.querySelector('auto-markdown').shadowRoot.textContent, /Checking the source 20/);
 });
 
 test('app-prompt-input submits on Enter and clears', () => {

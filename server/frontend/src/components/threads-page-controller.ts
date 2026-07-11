@@ -18,9 +18,10 @@ import {
 import { sidebar } from "../stores/ui.js";
 import {threadStream} from '../stores/thread-stream.js';
 import {threadView} from '../stores/thread-view.js';
-import type {TimelineMessage} from '../shared/timeline.js';
 import { bindSidebar } from "../pages/sidebar.js";
 import { openThreadMenu, type ThreadMutation } from "../pages/thread-actions.js";
+import { buildClientTimeline } from "./chat-timeline.js";
+import { buildChatTurns, buildTimeline } from "../shared/timeline.js";
 
 function resetThreadStream(threadId: string): void {
 	threadStream.threadId = threadId;
@@ -32,7 +33,7 @@ function resetThreadStream(threadId: string): void {
 	threadStream.pendingQuizzes = [];
 }
 
-type ViewMessage = ThreadMessage & { pending?: boolean; liveToolName?: string };
+type ViewMessage = ThreadMessage & { pending?: boolean; liveToolName?: string; liveToolDetail?: string; liveToolError?: boolean };
 type PendingQuiz = {
 	id: string;
 	questions: QuizQuestion[];
@@ -75,8 +76,6 @@ class ThreadsPageHydrator {
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
 	private reconnectAttempts = 0;
-	private readonly messagesEl: HTMLElement;
-	private readonly scrollEl: HTMLElement;
 	private readonly titleEl: HTMLElement;
 	private readonly promptEl: PromptEl;
 	private readonly approvalEl: ApprovalEl;
@@ -97,8 +96,6 @@ class ThreadsPageHydrator {
 		resetThreadStream(this.threadId);
 		this.selectedModel = initial.data?.selectedModel ?? "";
 		this.running = initial.data?.running ?? false;
-		this.messagesEl = this.mustQuery("[data-messages]");
-		this.scrollEl = this.messagesEl.closest<HTMLElement>(".content") ?? this.messagesEl;
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");
 		this.approvalEl = this.mustQuery("[data-approval]");
@@ -135,7 +132,6 @@ class ThreadsPageHydrator {
 				return;
 			}
 			this.syncMessages();
-			this.scrollInitial();
 		} catch (error) {
 			this.handleError(error);
 		}
@@ -309,7 +305,7 @@ class ThreadsPageHydrator {
 					existing.pending = true;
 					this.updateMessageElement(existing);
 				} else {
-					const message: ViewMessage = {id: partial.message_id, seq: Number.MAX_SAFE_INTEGER, role: 'agent', format: partial.format, content: partial.content, thinking: partial.thinking, tool_call_name: null, pending: true};
+					const message: ViewMessage = {id: partial.message_id, seq: Number.MAX_SAFE_INTEGER, created_at: Date.now(), role: 'agent', format: partial.format, content: partial.content, thinking: partial.thinking, tool_call_name: null, tool_call_id: null, tool_calls: [], pending: true};
 					this.messages.push(message);
 					this.appendMessage(message);
 				}
@@ -349,11 +345,14 @@ class ThreadsPageHydrator {
 						const message: ViewMessage = {
 							id: messageId,
 						seq: event.seq,
+						created_at: Date.now(),
 						role: 'agent',
 						format: 'markdown',
 						content: '',
 						thinking: null,
 						tool_call_name: null,
+						tool_call_id: null,
+						tool_calls: [],
 						pending: true,
 					};
 					this.messages.push(message);
@@ -402,6 +401,8 @@ class ThreadsPageHydrator {
 				...threadStream.toolCalls.filter((tool) => tool.id !== toolCallId),
 				{
 					id: toolCallId,
+					seq: event.seq,
+					createdAt: Date.now(),
 					name: event.kind.name,
 					arguments: event.kind.arguments,
 					result: '',
@@ -545,12 +546,13 @@ class ThreadsPageHydrator {
 		const content = tool.status === 'running' && !tool.result ? `Running ${tool.name}…` : tool.result;
 		let message = this.messages.find((candidate) => candidate.id === id);
 		if (!message) {
-			message = {id, seq: Number.MAX_SAFE_INTEGER, role: 'tool', format: 'markdown', content, thinking: null, tool_call_name: null, pending: tool.status === 'running', liveToolName: tool.name};
+				message = {id, seq: tool.seq, created_at: tool.createdAt, role: 'tool', format: 'markdown', content, thinking: null, tool_call_name: null, tool_call_id: tool.id, tool_calls: [], pending: tool.status === 'running', liveToolName: tool.name, liveToolDetail: tool.arguments, liveToolError: tool.isError};
 			this.messages.push(message);
 			this.appendMessage(message);
 		} else {
-			message.content = content;
-			message.pending = tool.status === 'running';
+				message.content = content;
+				message.pending = tool.status === 'running';
+				message.liveToolError = tool.isError;
 			this.updateMessageElement(message);
 		}
 	}
@@ -689,11 +691,12 @@ class ThreadsPageHydrator {
 			content,
 			thinking: null,
 			tool_call_name: null,
+			tool_call_id: null,
+			tool_calls: [],
 			pending: true,
 		};
 		this.messages.push(message);
 		this.appendMessage(message);
-		this.scrollToBottom();
 	}
 
 	private async loadThread(threadId: string) {
@@ -708,7 +711,6 @@ class ThreadsPageHydrator {
 		try {
 			this.messages = await listMessages(threadId);
 			this.syncMessages();
-			this.scrollInitial();
 			this.syncTitle();
 			this.openEvents(threadId);
 		} catch (error) {
@@ -734,7 +736,7 @@ class ThreadsPageHydrator {
 	}
 
 	private syncMessages() {
-		threadView.messages = this.messages.map((message) => this.timelineMessage(message));
+		threadView.turns = buildChatTurns(buildTimeline(buildClientTimeline(this.messages)), this.running);
 		threadView.active = true;
 	}
 
@@ -746,54 +748,6 @@ class ThreadsPageHydrator {
 		this.syncMessages();
 	}
 
-	private timelineMessage(message: ViewMessage): TimelineMessage {
-		return {
-			id: message.id,
-			seq: message.seq,
-			role: message.role,
-			messageType: message.liveToolName ? "tool_output" : "",
-			format: message.format,
-			content: message.content || (message.pending ? "Thinking..." : ""),
-			thinking: message.thinking ?? "",
-			toolName: message.liveToolName ?? message.tool_call_name ?? (message.role === "tool" ? "Tool output" : ""),
-		};
-	}
-
-	private scrollInitial() {
-		requestAnimationFrame(() => {
-			if (this.running) {
-				this.scrollToLastMessageStart();
-			} else {
-				this.scrollToLastMessageEnd();
-			}
-		});
-	}
-
-	private scrollToLastMessageStart() {
-		const last = this.lastMessageElement();
-		if (!last) {
-			return;
-		}
-		this.scrollEl.scrollTop = last.offsetTop - this.scrollEl.offsetTop;
-	}
-
-	private scrollToLastMessageEnd() {
-		const last = this.lastMessageElement();
-		if (!last) {
-			return;
-		}
-		this.scrollEl.scrollTop = last.offsetTop - this.scrollEl.offsetTop + last.offsetHeight - this.scrollEl.clientHeight;
-	}
-
-	private scrollToBottom() {
-		requestAnimationFrame(() => {
-			this.scrollEl.scrollTop = this.scrollEl.scrollHeight;
-		});
-	}
-
-	private lastMessageElement(): HTMLElement | null {
-		return this.messagesEl.querySelector<HTMLElement>("app-message[data-message-id]:last-of-type");
-	}
 
 	private syncTitle() {
 		this.titleEl.textContent =

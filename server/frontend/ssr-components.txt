@@ -17,12 +17,14 @@ src/components/app-avatar.tsx
 src/components/app-button.tsx
 src/components/app-card.tsx
 src/components/app-checkbox.tsx
+src/components/app-chat-view.tsx
 src/components/app-combobox.tsx
 src/components/app-dialog.tsx
 src/components/app-input.tsx
 src/components/app-kbd.tsx
 src/components/app-marker.tsx
 src/components/app-message.tsx
+src/components/app-message-actions.tsx
 src/components/app-message-scroller.tsx
 src/components/app-prompt-input.tsx
 src/components/app-quiz-bar.tsx
@@ -40,5 +42,9 @@ src/components/app-text-input.tsx
 src/components/app-toggle-group.tsx
 src/components/app-toggle.tsx
 src/components/app-tooltip.tsx
+src/components/app-tool-activity.tsx
+src/components/app-tool-cluster.tsx
+src/components/app-work-group.tsx
 src/components/auth-form.tsx
 src/components/auto-markdown.tsx
+src/components/icons/terminal.tsx

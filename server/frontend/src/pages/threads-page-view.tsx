@@ -1,11 +1,11 @@
 import { Component, css, onMount, server } from "@frontiers-labs/argon";
 import { AppApprovalBar } from "../components/app-approval-bar.js";
 import { AppButton } from "../components/app-button.js";
-import { AppMessage } from "../components/app-message.js";
+import { AppChatView } from "../components/app-chat-view.js";
 import { AppPromptInput } from "../components/app-prompt-input.js";
 import { AppQuizBar } from "../components/app-quiz-bar.js";
 import { AppSidebar, AppSidebarToggle, type SidebarProject, type SidebarThread } from "../components/app-sidebar.js";
-import { buildTimeline, type TimelineMessage } from "../shared/timeline.js";
+import { type ChatTurn } from "../shared/timeline.js";
 import { mountThreadsPage } from "../components/threads-page-controller.js";
 import { threadView } from "../stores/thread-view.js";
 
@@ -16,7 +16,7 @@ interface ThreadPageData {
   running: boolean;
   projects: SidebarProject[];
   threads: SidebarThread[];
-  messages: TimelineMessage[];
+  turns: ChatTurn[];
 }
 
 declare function loadThreadPage(threadId: string): ThreadPageData;
@@ -36,11 +36,8 @@ const styles = css`
   .toolbar-spacer { flex: 1; }
   .files-button { min-width: 72px; }
   .thread-menu-button { margin-left: 4px; }
-  .content { display: flex; flex: 1; justify-content: center; overflow: auto; padding: 24px 16px; width: 100%; }
-  .wrapper { display: flex; flex-direction: column; max-width: 960px; width: 100%; }
-  .empty { align-content: center; display: grid; justify-items: center; min-height: 100%; padding-bottom: 96px; text-align: center; }
-  .empty h2 { color: var(--foreground); font-size: clamp(28px, 4vw, 40px); font-weight: 700; line-height: 1.08; margin: 0 0 12px; }
-  .empty p { color: var(--muted-foreground); font-size: 15px; line-height: 1.5; margin: 0; max-width: 420px; }
+  .content { flex: 1; min-height: 0; width: 100%; }
+  app-chat-view { height: 100%; }
   .error { color: var(--destructive); font-size: 13px; margin: 10px auto 0; max-width: 860px; }
   .error:empty { display: none; }
   @media (max-width: 767px) {
@@ -51,7 +48,7 @@ const styles = css`
 
 export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Component {
   const data = server(loadThreadPage(threadId));
-  const timeline = buildTimeline(threadView.active ? threadView.messages : data.messages);
+  const turns = threadView.active ? threadView.turns : data.turns;
   const running = threadView.active ? threadView.running : data.running;
   const placeholder = threadView.active
     ? threadView.placeholder
@@ -74,26 +71,7 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
             <span data-current-title hidden>{data.currentTitle}</span>
           </header>
           <section class="content">
-            <div class="wrapper" data-messages>
-              {timeline.length === 0 ? (
-                <div class="empty" data-empty>
-                  <h2>What are we working on?</h2>
-                  <p>Start a thread and S.T.R.I.D.E. will keep the context here.</p>
-                </div>
-              ) : timeline.map((item) => (
-                <AppMessage
-                  key={item.id}
-                  messageId={item.id}
-                  seq={item.seq}
-                  role={item.role}
-                  kind={item.kind}
-                  format={item.format}
-                  text={item.text}
-                  thinking={item.thinking}
-                  toolName={item.toolName}
-                />
-              )).join("")}
-            </div>
+            <AppChatView turns={turns} />
           </section>
           <AppPromptInput
             style="margin: auto"

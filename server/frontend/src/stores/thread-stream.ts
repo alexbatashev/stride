@@ -10,6 +10,8 @@ export type LiveThreadMessage = {
 
 export type LiveToolCall = {
 	id: string;
+	seq: number;
+	createdAt: number;
 	name: string;
 	arguments: string;
 	result: string;

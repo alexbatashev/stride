@@ -1,50 +1,21 @@
 import { Component, css } from "@frontiers-labs/argon";
-import { AppSpoiler } from "./app-spoiler.js";
+import { AppMessageActions } from "./app-message-actions.js";
 import { AutoMarkdown } from "./auto-markdown.js";
 
 const styles = css`
-  :host {
-    width: 100%;
-    display: block;
-  }
-
-  .bubble {
-    display: block;
-  }
-
-  .user {
-    border-radius: 24px;
-    background: var(--secondary, #fefefe);
-    max-width: 800px;
-    width: fit-content;
-    float: right;
-    padding: 24px;
-  }
-
-  .tool-call {
-    font-size: 0.95rem;
-    font-weight: bold;
-  }
-
-  .plain {
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-  }
-
+  :host { display: block; min-width: 0; width: 100%; }
+  .row { display: flex; min-width: 0; width: 100%; }
+  .row.user { justify-content: flex-end; }
+  .message { min-width: 0; overflow-wrap: anywhere; }
+  .agent { padding: 2px 4px; width: 100%; }
+  .user .message { background: var(--message-user-bg); border: 1px solid color-mix(in oklab, var(--message-user-bg) 82%, var(--border)); border-radius: 16px; color: var(--message-user-fg); max-width: min(80%, 640px); padding: 12px; }
+  .plain { white-space: pre-wrap; }
+  .actions { margin-top: 6px; }
+  .user-actions { max-width: min(80%, 640px); width: 100%; }
+  @media (max-width: 767px) { .user .message, .user-actions { max-width: 88%; } }
   @media print {
-    .user {
-      float: none;
-      max-width: 100%;
-      border-radius: 0;
-      background: transparent;
-      padding: 0 0 0 14px;
-      border-left: 3px solid #999;
-    }
-
-    app-spoiler,
-    .tool-call {
-      display: none;
-    }
+    .user .message { background: transparent; border: 0; border-left: 3px solid #999; border-radius: 0; color: inherit; max-width: 100%; padding: 0 0 0 14px; }
+    app-message-actions { display: none; }
   }
 `;
 
@@ -55,8 +26,7 @@ export function AppMessage({
   kind = "user",
   format = "markdown",
   text = "",
-  thinking = "",
-  toolName = "",
+  pending = false,
 }: {
   messageId?: string;
   seq?: number;
@@ -64,25 +34,8 @@ export function AppMessage({
   kind?: string;
   format?: string;
   text?: string;
-  thinking?: string;
-  toolName?: string;
+  pending?: boolean;
 }): Component {
-  return (
-    <>
-      <style>{styles}</style>
-      {kind === "tool_output" ? (
-        <AppSpoiler key="tool-output" title={toolName !== "" ? toolName : "Tool output"} content={text} />
-      ) : (
-        <div class={kind === "user" ? "bubble user" : "bubble"}>
-          {thinking !== "" && <AppSpoiler key="thinking" title="Thinking" content={thinking} />}
-          {kind === "agent" ? (
-            <AutoMarkdown key="body" text={text} format={format} />
-          ) : (
-            <div class="plain">{text}</div>
-          )}
-          {toolName !== "" && <p class="tool-call">Called tool {toolName}</p>}
-        </div>
-      )}
-    </>
-  );
+  const user = kind === "user";
+  return <><style>{styles}</style><div class={`row${user ? " user" : ""}`}><div class={`message ${user ? "user-message" : "agent"}`}>{kind === "agent" ? <AutoMarkdown key="body" text={text} format={format} /> : <div class="plain">{text}</div>}</div></div>{!pending && text !== "" && <div class={`actions${user ? " user-actions" : ""}`} style={user ? "margin-left: auto" : ""}><AppMessageActions text={text} align={user ? "end" : "start"} /></div>}</>;
 }
