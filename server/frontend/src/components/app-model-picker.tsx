@@ -1,4 +1,4 @@
-import { Component, css, emit, state } from "@frontiers-labs/argon";
+import { Component, css, emit, onMount, state } from "@frontiers-labs/argon";
 import type { ModelOption } from "../shared/model-option.js";
 import { IconCheck } from "./icons/check.js";
 import { IconChevronDown } from "./icons/chevron-down.js";
@@ -15,7 +15,7 @@ const styles = css`
   .trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .effort { color: var(--prompt-muted, #a0a0a0); font-weight: 400; }
   .trigger app-button icon-chevron-down { color: var(--prompt-muted, #a0a0a0); height: 18px; margin-left: 2px; width: 18px; }
-  .popup { background: var(--popover, #292929); border: 1px solid var(--prompt-control-border, #3a3a3a); border-radius: 12px; box-shadow: 0 16px 36px rgb(0 0 0 / 30%); box-sizing: border-box; display: none; margin-top: 8px; max-height: min(360px, 50vh); min-width: min(340px, calc(100vw - 32px)); overflow-y: auto; padding: 4px; position: absolute; right: 0; width: max-content; z-index: 30; }
+  .popup { background: var(--popover, #292929); border: 1px solid var(--prompt-control-border, #3a3a3a); border-radius: 12px; bottom: calc(100% + 8px); box-shadow: 0 16px 36px rgb(0 0 0 / 30%); box-sizing: border-box; display: none; max-height: min(360px, 50vh); min-width: min(340px, calc(100vw - 32px)); overflow-y: auto; padding: 4px; position: absolute; right: 0; width: max-content; z-index: 30; }
   :host([open]) .popup { display: block; }
   .empty { color: var(--muted-foreground); font-size: 0.8125rem; padding: 10px; }
   :host([disabled]) { opacity: 0.5; pointer-events: none; }
@@ -60,6 +60,16 @@ function ModelPickerOption({ model, selected }: { model: ModelOption; selected: 
 export function AppModelPicker({ models = [], value = "", label = "Choose model", reasoningEffort = "", disabled = false }: { models?: ModelOption[]; value?: string; label?: string; reasoningEffort?: string; disabled?: boolean }): Component {
   let open = state(false);
   const hasReasoningEffort = reasoningEffort !== "";
+  onMount(() => {
+    const close = (event: Event) => {
+      if (open && !event.composedPath().includes(this)) {
+        open = false;
+        this.removeAttribute("open");
+      }
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  });
 
   return (
     <>
@@ -73,7 +83,7 @@ export function AppModelPicker({ models = [], value = "", label = "Choose model"
         {models.length === 0
           ? <div class="empty">No models available</div>
           : models.map((model) => (
-            <ModelPickerOption key={model.value} model={model} selected={model.value === value} on:model-select={(event: Event) => chooseModel(this, event)} />
+            <ModelPickerOption key={model.value} model={model} selected={model.value === value} on:model-select={(event: Event) => { open = false; chooseModel(this, event); }} />
           ))}
       </div>
     </>

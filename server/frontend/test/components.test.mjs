@@ -411,6 +411,30 @@ test('app-prompt-input submits the selected model', () => {
   assert.equal(submitted.detail.model, 'fast-model');
 });
 
+test('app-prompt-input closes the model picker on outside click and reopens after selection', () => {
+  const el = mount('app-prompt-input', {
+    models: [
+      { value: 'default', label: 'Default', description: 'Balanced model', vision: false },
+      { value: 'fast-model', label: 'Fast Model', description: 'Quick replies', vision: false },
+    ],
+    selectedModel: 'default',
+  });
+  const picker = el.shadowRoot.querySelector('app-model-picker');
+  const trigger = picker.shadowRoot.querySelector('.trigger-button');
+
+  trigger.click();
+  assert.equal(picker.hasAttribute('open'), true);
+  document.body.click();
+  assert.equal(picker.hasAttribute('open'), false);
+
+  trigger.click();
+  picker.shadowRoot.querySelectorAll('model-picker-option')[1].shadowRoot.querySelector('button').click();
+  assert.equal(picker.hasAttribute('open'), false);
+
+  trigger.click();
+  assert.equal(picker.hasAttribute('open'), true);
+});
+
 test('app-prompt-input escapes model picker labels and descriptions', () => {
   const el = mount('app-prompt-input', {
     models: [{ value: 'model"quoted', label: '<strong>Quoted</strong>', description: '<em>Unsafe</em>', vision: true }],
