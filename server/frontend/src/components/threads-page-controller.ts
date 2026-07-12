@@ -68,8 +68,10 @@ type PromptEl = HTMLElement & {
 	disabled: boolean;
 	running: boolean;
 	placeholder: string;
-	models: { value: string; label: string }[];
+	models: { value: string; label: string; description: string; vision: boolean }[];
 	selectedModel: string;
+	selectedModelLabel: string;
+	selectedModelReasoningEffort: string;
 };
 
 type ApprovalEl = HTMLElement & { message: string };
@@ -90,8 +92,10 @@ class ThreadsPageHydrator {
 	private currentProjectId: string | null = null;
 	private messages: ViewMessage[] = [];
 	private attachedFiles: { name: string; id: string }[] = [];
-	private modelOptions: { value: string; label: string }[] = [];
+	private modelOptions: { value: string; label: string; description: string; vision: boolean }[] = [];
 	private selectedModel = "";
+	private selectedModelLabel = "Choose model";
+	private selectedModelReasoningEffort = "";
 	private modelPersistSeq = 0;
 	private running: boolean;
 	private error = "";
@@ -765,6 +769,8 @@ class ThreadsPageHydrator {
 			this.modelOptions = models.map((model) => ({
 				value: model.key,
 				label: model.display_name,
+				description: model.description,
+				vision: model.vision,
 			}));
 			if (!this.selectedModel) {
 				this.selectedModel =
@@ -772,6 +778,9 @@ class ThreadsPageHydrator {
 					models[0]?.key ??
 					"";
 			}
+			const selected = models.find((model) => model.key === this.selectedModel) ?? models[0];
+			this.selectedModelLabel = selected?.display_name ?? "Choose model";
+			this.selectedModelReasoningEffort = selected?.reasoning_effort ?? "";
 			this.syncComposer();
 		} catch {
 			this.modelOptions = [];
@@ -914,6 +923,8 @@ class ThreadsPageHydrator {
 		threadView.placeholder = this.composerPlaceholder();
 		threadView.models = this.modelOptions;
 		threadView.selectedModel = this.selectedModel;
+		threadView.selectedModelLabel = this.selectedModelLabel;
+		threadView.selectedModelReasoningEffort = this.selectedModelReasoningEffort;
 		threadView.approvalMessage = this.pendingApproval?.message ?? "";
 		threadView.quizQuestion = question?.question ?? "";
 		threadView.quizOptions = question?.options ?? [];

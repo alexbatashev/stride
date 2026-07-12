@@ -349,34 +349,36 @@ test('app-prompt-input submits on Enter and clears', () => {
 
 test('app-prompt-input populates model picker when models prop updates', () => {
   const el = mount('app-prompt-input');
-  const select = () => el.shadowRoot.querySelector('select.model-picker');
-  assert.equal(select().options.length, 0);
+  const picker = () => el.shadowRoot.querySelector('app-model-picker');
+  assert.match(picker().shadowRoot.textContent, /No models available/);
 
   el.models = [
-    { value: 'default', label: 'GPT-4.1' },
-    { value: 'claude_sonnet_4', label: 'Claude Sonnet 4' },
+    { value: 'default', label: 'GPT-4.1', description: 'OpenAI flagship model', vision: true },
+    { value: 'claude_sonnet_4', label: 'Claude Sonnet 4', description: 'Fast general-purpose model', vision: false },
   ];
   el.selectedModel = 'claude_sonnet_4';
-  assert.equal(select().options.length, 2);
-  assert.equal(select().value, 'claude_sonnet_4');
-  assert.equal(select().disabled, false);
+  el.selectedModelLabel = 'Claude Sonnet 4';
+  assert.match(picker().shadowRoot.textContent, /Claude Sonnet 4/);
+  assert.equal(picker().hasAttribute('disabled'), false);
 });
 
 test('app-prompt-input submits the selected model', () => {
   const el = mount('app-prompt-input', {
     models: [
-      { value: 'default', label: 'Default' },
-      { value: 'fast-model', label: 'Fast Model' },
+      { value: 'default', label: 'Default', description: 'Balanced model', vision: false },
+      { value: 'fast-model', label: 'Fast Model', description: 'Quick replies', vision: false },
     ],
     selectedModel: 'default',
   });
   const submitted = lastEvent(el, 'prompt-submit');
   const changed = lastEvent(el, 'model-change');
-  const select = el.shadowRoot.querySelector('select.model-picker');
+  const picker = el.shadowRoot.querySelector('app-model-picker');
   const textarea = el.shadowRoot.querySelector('textarea');
 
-  select.value = 'fast-model';
-  select.dispatchEvent(new Event('change', { bubbles: true }));
+  picker.shadowRoot.querySelector('.trigger-button').click();
+  assert.equal(picker.hasAttribute('open'), true);
+  const option = picker.shadowRoot.querySelectorAll('model-picker-option')[1];
+  option.shadowRoot.querySelector('button').click();
   textarea.value = 'use fast model';
   textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
@@ -384,36 +386,38 @@ test('app-prompt-input submits the selected model', () => {
   assert.equal(submitted.detail.model, 'fast-model');
 });
 
-test('app-prompt-input escapes model option values and labels', () => {
+test('app-prompt-input escapes model picker labels and descriptions', () => {
   const el = mount('app-prompt-input', {
-    models: [{ value: 'model"quoted', label: '<strong>Quoted</strong>' }],
+    models: [{ value: 'model"quoted', label: '<strong>Quoted</strong>', description: '<em>Unsafe</em>', vision: true }],
     selectedModel: 'model"quoted',
   });
-  const select = el.shadowRoot.querySelector('select.model-picker');
+  const picker = el.shadowRoot.querySelector('app-model-picker');
+  picker.shadowRoot.querySelector('.trigger-button').click();
+  const option = picker.shadowRoot.querySelector('model-picker-option');
 
-  assert.equal(select.value, 'model"quoted');
-  assert.equal(select.options[0].textContent, '<strong>Quoted</strong>');
-  assert.equal(select.options[0].querySelector('strong'), null);
+  assert.match(option.shadowRoot.textContent, /<strong>Quoted<\/strong>/);
+  assert.match(option.shadowRoot.textContent, /<em>Unsafe<\/em>/);
+  assert.equal(option.shadowRoot.querySelector('strong'), null);
+  assert.equal(option.shadowRoot.querySelector('em'), null);
 });
 
-test('app-prompt-input swaps send for stop while running', () => {
+test('app-prompt-input swaps its primary action for stop while running', () => {
   const el = mount('app-prompt-input');
-  assert.ok(el.shadowRoot.querySelector('button[type="submit"]'));
+  const action = () => el.shadowRoot.querySelector('.primary-action app-button');
+  assert.equal(action().getAttribute('aria-label'), 'Record voice message');
   el.running = true;
-  const stop = el.shadowRoot.querySelector('button.stop');
-  assert.ok(stop);
   const stopped = lastEvent(el, 'prompt-stop');
-  stop.click();
+  action().shadowRoot.querySelector('button').click();
   assert.equal(stopped.count, 1);
   assert.ok(el.shadowRoot.querySelector('textarea').disabled);
 });
 
-test('app-prompt-input exposes a voice record button', () => {
+test('app-prompt-input uses its primary action for voice recording', () => {
   const el = mount('app-prompt-input');
-  const mic = el.shadowRoot.querySelector('button[aria-label="Record voice message"]');
+  const mic = el.shadowRoot.querySelector('.primary-action app-button');
   assert.ok(mic);
   assert.equal(mic.getAttribute('aria-pressed'), 'false');
-  assert.equal(mic.disabled, false);
+  assert.equal(mic.hasAttribute('disabled'), false);
 });
 
 test('app-text-input exposes a focus control for page controllers', () => {

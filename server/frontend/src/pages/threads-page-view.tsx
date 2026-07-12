@@ -89,6 +89,8 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
             placeholder={placeholder}
             models={threadView.models}
             selectedModel={selectedModel}
+            selectedModelLabel={threadView.active ? threadView.selectedModelLabel : "Choose model"}
+            selectedModelReasoningEffort={threadView.active ? threadView.selectedModelReasoningEffort : ""}
           />
           <AppApprovalBar style="margin: auto" data-approval hidden={threadView.approvalMessage === ""} message={threadView.approvalMessage} />
           <AppQuizBar style="margin: auto" data-quiz hidden={threadView.quizQuestion === ""} question={threadView.quizQuestion} options={threadView.quizOptions} />

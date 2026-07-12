@@ -9,6 +9,8 @@ export const threadView = store({
   placeholder: "",
   models: [] as ModelOption[],
   selectedModel: "",
+  selectedModelLabel: "Choose model",
+  selectedModelReasoningEffort: "",
   approvalMessage: "",
   quizQuestion: "",
   quizOptions: [] as string[],

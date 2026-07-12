@@ -5,20 +5,21 @@
 import { Component, css, effect, emit, ref, state } from "@frontiers-labs/argon";
 import { transcribeAudio } from "../api/threads.js";
 import type { ModelOption } from "../shared/model-option.js";
+import { AppButton } from "./app-button.js";
+import { AppModelPicker } from "./app-model-picker.js";
 import { IconArrowUp } from "./icons/arrow-up.js";
 import { IconMic } from "./icons/mic.js";
 import { IconPlus } from "./icons/plus.js";
-import { IconSettingsHorizontal } from "./icons/settings-horizontal.js";
 import { IconStop } from "./icons/stop.js";
 
 const styles = css`
   :host {
     display: inline-block;
-    max-width: 960px;
+    max-width: 870px;
     width: 100%;
     height: fit-content;
-    max-height: 250px;
-    padding: 8px;
+    max-height: none;
+    padding: 8px 0 12px;
   }
 
   :host([hidden]) {
@@ -32,12 +33,13 @@ const styles = css`
   form {
     background: var(--prompt-bg, #212121);
     border: 1px solid var(--prompt-border, #333333);
-    border-radius: 20px;
+    border-radius: 24px;
     box-shadow: var(--prompt-shadow, none);
     box-sizing: border-box;
     display: grid;
-    gap: 10px;
-    padding: 12px 12px 10px;
+    gap: 8px;
+    min-height: 112px;
+    padding: 12px 20px 10px;
     transition:
       border-color 140ms ease,
       box-shadow 140ms ease;
@@ -53,14 +55,14 @@ const styles = css`
     border: 0;
     color: var(--prompt-fg, #d4d4d4);
     font: inherit;
-    font-size: 0.95rem;
+    font-size: 1rem;
     line-height: 1.4;
     max-height: 220px;
-    min-height: 36px;
+    min-height: 44px;
     min-width: 0;
     outline: none;
     overflow-y: auto;
-    padding: 0;
+    padding: 0 2px;
     resize: none;
     width: 100%;
   }
@@ -76,124 +78,22 @@ const styles = css`
 
   .toolbar {
     align-items: center;
-    display: flex;
-    gap: 8px;
-    justify-content: space-between;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: 1fr auto auto;
     min-height: 32px;
-  }
-
-  .actions {
-    align-items: center;
-    display: flex;
-    gap: 6px;
-    min-width: 0;
   }
 
   .right-actions {
     align-items: center;
     display: flex;
-    gap: 6px;
   }
 
-  .tool-button,
-  .send {
-    align-items: center;
-    border-radius: 999px;
-    display: inline-flex;
-    flex: 0 0 auto;
-    justify-content: center;
-    outline: none;
-    user-select: none;
-    transition:
-      background-color 140ms ease,
-      border-color 140ms ease,
-      box-shadow 140ms ease,
-      color 140ms ease,
-      opacity 140ms ease;
-    white-space: nowrap;
-  }
-
-  .tool-button {
-    background: transparent;
-    border: 1px solid var(--prompt-control-border, #343434);
-    color: var(--prompt-control-fg, #bdbdbd);
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.875rem;
-    font-weight: 500;
-    gap: 6px;
-    height: 32px;
-    padding: 0 12px;
-  }
-
-  .tool-button.icon {
-    font-size: 1.25rem;
-    padding: 0;
-    width: 32px;
-  }
-
-  .tool-button:hover {
-    background: var(--prompt-control-hover-bg, #2d2d2d);
-    color: var(--prompt-control-hover-fg, #e4e4e7);
-  }
-
-  .send {
-    background: var(--prompt-send-bg, #333333);
-    border: 1px solid var(--prompt-send-bg, #333333);
-    color: var(--prompt-send-fg, #777777);
-    cursor: pointer;
-    height: 32px;
-    width: 32px;
-  }
-
-  .send:not(:disabled) {
-    background: var(--prompt-send-ready-bg, #f4f4f5);
-    border-color: var(--prompt-send-ready-bg, #f4f4f5);
-    color: var(--prompt-send-ready-fg, #18181b);
-  }
-
-  .send:hover:not(:disabled) {
-    opacity: 0.92;
-  }
-
-  .tool-button:focus-visible,
-  .send:focus-visible {
-    box-shadow: 0 0 0 3px var(--prompt-ring, rgb(255 255 255 / 7%));
-  }
-
-  .send:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-    pointer-events: none;
-  }
-
-  .send.stop {
-    background: var(--prompt-send-ready-bg, #f4f4f5);
-    border-color: var(--prompt-send-ready-bg, #f4f4f5);
-    color: var(--prompt-send-ready-fg, #18181b);
-  }
-
-  .send.stop:hover {
-    opacity: 0.92;
-  }
-
-  .tool-button.recording {
-    background: var(--prompt-record-bg, #b91c1c);
-    border-color: var(--prompt-record-bg, #b91c1c);
-    color: #ffffff;
-    animation: prompt-pulse 1.2s ease-in-out infinite;
-  }
-
-  .tool-button.recording:hover {
-    background: var(--prompt-record-hover-bg, #dc2626);
-    color: #ffffff;
-  }
-
-  .tool-button:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-    pointer-events: none;
-  }
+  .attachment { --secondary: transparent; --secondary-foreground: var(--prompt-control-fg, #efefef); --secondary-hover: var(--prompt-control-hover-bg, #303030); }
+  .primary-action { --primary: var(--accent); --primary-foreground: var(--accent-foreground); --primary-hover: color-mix(in oklab, var(--accent) 82%, black); }
+  .primary-action.ready { --primary: var(--accent); --primary-foreground: var(--accent-foreground); --primary-hover: color-mix(in oklab, var(--accent) 82%, black); }
+  .primary-action.recording { --primary: var(--prompt-record-bg, #b91c1c); --primary-foreground: #ffffff; --primary-hover: var(--prompt-record-hover-bg, #dc2626); animation: prompt-pulse 1.2s ease-in-out infinite; }
+  .primary-action:has(app-button[disabled]) { opacity: 0.5; pointer-events: none; }
 
   @keyframes prompt-pulse {
     0%,
@@ -217,58 +117,24 @@ const styles = css`
     width: 1px;
   }
 
-  @media (min-width: 768px) {
-    textarea {
-      font-size: 1rem;
-    }
-  }
-
-  .model-select select {
-    background: transparent;
-    border: 1px solid var(--prompt-control-border, #343434);
-    border-radius: 999px;
-    box-sizing: border-box;
-    color: var(--prompt-control-fg, #bdbdbd);
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.8125rem;
-    height: 32px;
-    max-width: 180px;
-    min-width: 120px;
-    outline: none;
-    padding: 0 28px 0 12px;
-  }
-
-  .model-select select:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-
   @media (max-width: 640px) {
     :host {
       max-width: 100%;
     }
 
     form {
-      border-radius: 18px;
-      gap: 10px;
-      padding: 12px;
+      border-radius: 28px;
+      gap: 14px;
+      min-height: 108px;
+      padding: 14px 16px 12px;
       width: 100%;
     }
 
     .toolbar {
-      align-items: flex-end;
-      gap: 8px;
+      gap: 12px;
     }
 
-    .actions {
-      gap: 8px;
-      min-width: 0;
-    }
-
-    .right-actions {
-      gap: 8px;
-    }
+    textarea { font-size: 1rem; min-height: 44px; }
   }
 `;
 
@@ -277,8 +143,7 @@ function submitPrompt(host: HTMLElement, textarea: HTMLTextAreaElement): void {
   if (!value || textarea.disabled) return;
   textarea.value = "";
   textarea.style.height = "";
-  const picker = host.shadowRoot?.querySelector<HTMLSelectElement>("select.model-picker");
-  const model = picker?.value ?? host.getAttribute("data-selected-model") ?? "";
+  const model = host.getAttribute("data-selected-model") ?? "";
   host.dispatchEvent(
     new CustomEvent("prompt-submit", {
       bubbles: true,
@@ -286,26 +151,6 @@ function submitPrompt(host: HTMLElement, textarea: HTMLTextAreaElement): void {
       detail: { value, model: model || null },
     }),
   );
-}
-
-function syncModelSelect(
-  select: HTMLSelectElement,
-  models: { value: string; label: string }[],
-  selectedModel: string,
-): void {
-  select.replaceChildren(
-    ...models.map((model) => {
-      const option = document.createElement("option");
-      option.value = model.value;
-      option.textContent = model.label;
-      return option;
-    }),
-  );
-  if (selectedModel && models.some((model) => model.value === selectedModel)) {
-    select.value = selectedModel;
-  } else if (models.length > 0) {
-    select.value = models[0]!.value;
-  }
 }
 
 function emitModelChange(host: HTMLElement, value: string): void {
@@ -346,12 +191,16 @@ export function AppPromptInput({
   placeholder = "Send a message",
   models = [],
   selectedModel = "",
+  selectedModelLabel = "Choose model",
+  selectedModelReasoningEffort = "",
 }: {
   disabled?: boolean;
   running?: boolean;
   placeholder?: string;
   models?: ModelOption[];
   selectedModel?: string;
+  selectedModelLabel?: string;
+  selectedModelReasoningEffort?: string;
 }): Component {
   const input = ref<HTMLTextAreaElement>();
   let recording = state(false);
@@ -360,17 +209,14 @@ export function AppPromptInput({
   let recorder: MediaRecorder | false = false;
   const chunks: Blob[] = [];
   const blocked = disabled || running || transcribing;
-  const micDisabled = transcribing || (!recording && (disabled || running));
+  const actionDisabled = transcribing || (!recording && disabled);
+  const hasDraft = draft.trim() !== "";
 
   effect(() => {
     if (selectedModel) {
       this.setAttribute("data-selected-model", selectedModel);
     } else {
       this.removeAttribute("data-selected-model");
-    }
-    const modelSelect = this.shadowRoot?.querySelector<HTMLSelectElement>("select.model-picker");
-    if (modelSelect) {
-      syncModelSelect(modelSelect, models, selectedModel);
     }
   });
 
@@ -415,34 +261,26 @@ export function AppPromptInput({
           }}
         ></textarea>
         <div class="toolbar">
-          <div class="actions">
-            <button
-              class="tool-button icon"
-              type="button"
-              aria-label="Add attachment"
-              onClick={() => root.querySelector<HTMLInputElement>('input[type="file"]')!.click()}
-            >
-              <IconPlus />
-            </button>
-            <button class="tool-button icon" type="button" aria-label="Tools">
-              <IconSettingsHorizontal />
-            </button>
-            <div class="model-select">
-              <select
-                class="model-picker"
-                disabled={blocked}
-                onChange={(event: Event) =>
-                  emitModelChange(this, (event.currentTarget as HTMLSelectElement).value)
-                }
-              ></select>
-            </div>
-            <button
-              class={`tool-button icon${recording ? " recording" : ""}`}
-              type="button"
-              disabled={micDisabled}
-              aria-label={recording ? "Stop recording" : "Record voice message"}
+          <AppButton class="attachment" size="icon-lg" variant="secondary" aria-label="Add attachment" title="Add attachment" onClick={() => root.querySelector<HTMLInputElement>('input[type="file"]')!.click()}>
+            <IconPlus />
+          </AppButton>
+          <AppModelPicker models={models} value={selectedModel} label={selectedModelLabel} reasoningEffort={selectedModelReasoningEffort} disabled={blocked} on:value-change={(event: CustomEvent<{ value: string }>) => emitModelChange(this, event.detail.value)} />
+          <div class={`right-actions primary-action${recording ? " recording" : ""}${hasDraft && !running && !recording ? " ready" : ""}`}>
+            <AppButton
+              size="icon-lg"
+              disabled={actionDisabled}
+              aria-label={running ? "Stop response" : recording ? "Stop recording" : hasDraft ? "Send message" : "Record voice message"}
               aria-pressed={recording ? "true" : "false"}
               onClick={() => {
+                if (running) {
+                  emit(this, "prompt-stop");
+                  return;
+                }
+                if (hasDraft) {
+                  submitPrompt(this, root.querySelector("textarea")!);
+                  draft = "";
+                  return;
+                }
                 if (transcribing) return;
                 if (recording) {
                   recorder?.stop();
@@ -504,24 +342,8 @@ export function AppPromptInput({
                 })();
               }}
             >
-              {recording ? <IconStop /> : <IconMic />}
-            </button>
-          </div>
-          <div
-            class="right-actions"
-            onClick={(event: Event) => {
-              if (!(event.target as Element).closest(".stop")) return;
-              emit(this, "prompt-stop");
-            }}
-          >
-            <button class="send stop" type="button" hidden={!running}>
-              <IconStop />
-              <span class="sr-only">Stop</span>
-            </button>
-            <button class="send" type="submit" hidden={running} disabled={blocked || draft.trim() === ""}>
-              <IconArrowUp />
-              <span class="sr-only">Send message</span>
-            </button>
+              {running || recording ? <IconStop /> : hasDraft ? <IconArrowUp /> : <IconMic />}
+            </AppButton>
           </div>
         </div>
       </form>

@@ -26,6 +26,7 @@ src/components/app-marker.tsx
 src/components/app-message.tsx
 src/components/app-message-actions.tsx
 src/components/app-message-scroller.tsx
+src/components/app-model-picker.tsx
 src/components/app-prompt-input.tsx
 src/components/app-quiz-bar.tsx
 src/components/app-radio-group.tsx
@@ -48,3 +49,4 @@ src/components/app-work-group.tsx
 src/components/auth-form.tsx
 src/components/auto-markdown.tsx
 src/components/icons/terminal.tsx
+src/components/icons/eye.tsx
