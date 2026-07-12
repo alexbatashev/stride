@@ -7,6 +7,7 @@ import { AppQuizBar } from "../components/app-quiz-bar.js";
 import { AppDialog } from "../components/app-dialog.js";
 import { IconPanelRight } from "../components/icons/panel-right.js";
 import { AppSidebar, AppSidebarToggle, type SidebarProject, type SidebarThread } from "../components/app-sidebar.js";
+import { AppSidebarProvider } from "../components/app-sidebar-primitives.js";
 import { type ChatTurn } from "../shared/timeline.js";
 import { mountThreadsPage } from "../components/threads-page-controller.js";
 import { threadView } from "../stores/thread-view.js";
@@ -68,9 +69,10 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
   return (
     <>
       <style>{styles}</style>
-      <div class="page">
-        <nav><AppSidebar projects={data.projects} threads={data.threads} /></nav>
-        <main>
+      <AppSidebarProvider>
+        <div class="page">
+          <nav><AppSidebar projects={data.projects} threads={data.threads} /></nav>
+          <main>
           <header>
             <AppSidebarToggle />
             <span class="toolbar-spacer"></span>
@@ -104,8 +106,9 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
         <AppDialog open={false} size="fullscreen" title="Files" data-mobile-panel>
           <app-file-explorer data-thread-id={data.threadId} data-pane-active={false} data-mobile-files></app-file-explorer>
           <app-subagent-view data-thread-id={data.threadId} data-active={false} data-mobile-subagents></app-subagent-view>
-        </AppDialog>
-      </div>
+          </AppDialog>
+        </div>
+      </AppSidebarProvider>
     </>
   );
 }

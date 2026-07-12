@@ -48,6 +48,13 @@ function buttonWithText(root, text) {
   return Array.from(root.querySelectorAll('button')).find((button) => button.textContent.trim() === text);
 }
 
+function deepElements(root) {
+  return Array.from(root.querySelectorAll('*')).flatMap((element) => [
+    element,
+    ...(element.shadowRoot ? deepElements(element.shadowRoot) : []),
+  ]);
+}
+
 test('all custom elements register', () => {
   for (const tag of [
     'app-button', 'app-input', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
@@ -113,12 +120,18 @@ test('app-sidebar renders projects and threads as links', () => {
   assert.match(html, /Thread One/);
   assert.match(html, /Loose/);
 
-  const active = el.shadowRoot.querySelector('a[data-thread-id="t1"]');
-  assert.equal(active.getAttribute('aria-current'), 'page');
+  const composed = deepElements(el.shadowRoot);
+  for (const tag of ['app-sidebar-panel', 'app-sidebar-header', 'app-sidebar-content', 'app-sidebar-group', 'app-sidebar-menu', 'app-sidebar-menu-item', 'app-sidebar-menu-button', 'app-sidebar-menu-action', 'app-sidebar-footer', 'app-sidebar-rail']) {
+    assert.ok(composed.some((element) => element.localName === tag), `${tag} is composed into app-sidebar`);
+  }
+
+  const links = composed.filter((element) => element.localName === 'a');
+  const active = links.find((link) => link.getAttribute('href') === '/threads/t1');
+  assert.equal(active?.getAttribute('aria-current'), 'page');
 
   // Threads are plain links; navigation is the browser's job, not a custom event.
-  const loose = el.shadowRoot.querySelector('a[data-thread-id="t2"]');
-  assert.equal(loose.getAttribute('href'), '/threads/t2');
+  const loose = links.find((link) => link.getAttribute('href') === '/threads/t2');
+  assert.equal(loose?.getAttribute('href'), '/threads/t2');
 
   // Reactive update: a new thread shows up without remounting.
   el.threads = [{ id: 't2', title: 'Loose' }, { id: 't3', title: 'Fresh' }];
@@ -129,27 +142,39 @@ test('app-sidebar footer dispatches logout and new-project', () => {
   const el = mount('app-sidebar');
   const logout = lastEvent(el, 'logout');
   const newProject = lastEvent(el, 'new-project');
-  for (const button of el.shadowRoot.querySelectorAll('.footer [data-action]')) {
-    button.click();
+  for (const action of el.shadowRoot.querySelectorAll('app-sidebar-footer app-button')) {
+    action.shadowRoot.querySelector('button').click();
   }
   assert.equal(logout.count, 1);
   assert.equal(newProject.count, 1);
+});
+
+test('app-sidebar thread menu includes its composed action anchor', () => {
+  const el = mount('app-sidebar', { threads: [{ id: 't1', title: 'Thread one' }] });
+  const menu = lastEvent(el, 'thread-menu');
+  const action = deepElements(el.shadowRoot).find((element) => element.localName === 'app-sidebar-menu-action');
+  action.shadowRoot.querySelector('button').click();
+  assert.equal(menu.count, 1);
+  assert.equal(menu.detail.id, 't1');
+  assert.equal(menu.detail.anchor, action);
 });
 
 test('app-sidebar collapse keeps rail icons left aligned during width transition', async () => {
   const el = mount('app-sidebar');
   await Promise.resolve();
 
-  el.shadowRoot.querySelector('app-sidebar-toggle').shadowRoot.querySelector('app-button').click();
+  el.shadowRoot.querySelector('app-sidebar-toggle').shadowRoot.querySelector('app-button').shadowRoot.querySelector('button').click();
   await Promise.resolve();
 
-  const root = el.shadowRoot.querySelector('.root');
-  assert.match(root.getAttribute('class'), /collapsed/);
+  const panel = el.shadowRoot.querySelector('app-sidebar-panel');
+  assert.equal(panel.getAttribute('state'), 'collapsed');
 
-  const css = el.shadowRoot.querySelector('style').textContent;
-  assert.match(css, /\.root\.collapsed\s+\.nav-item\s+a\s*{[^}]*width:\s*var\(--sidebar-menu-button-size\)/s);
-  assert.match(css, /\.root\.collapsed\s+\.nav-item\s+a\s*{[^}]*padding:\s*0 8px/s);
-  assert.doesNotMatch(css, /\.root\.collapsed\s+\.nav-item\s+a\s*{[^}]*justify-content:\s*center/s);
+  const navButtons = Array.from(el.shadowRoot.querySelectorAll('sidebar-navigation-item'))
+    .map((item) => item.shadowRoot.querySelector('app-sidebar-menu-button'));
+  assert.ok(navButtons.every((button) => button.getAttribute('data-collapsed') === 'true'));
+  const css = navButtons[0].shadowRoot.querySelector('style').textContent;
+  assert.match(css, /:host\(\[data-collapsed="true"\]\) \.control\s*{[^}]*width:\s*32px/s);
+  assert.doesNotMatch(css, /justify-content:\s*center/);
 });
 
 test('app-message renders html for agent text', () => {
