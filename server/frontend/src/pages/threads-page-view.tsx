@@ -4,10 +4,13 @@ import { AppButton } from "../components/app-button.js";
 import { AppChatView } from "../components/app-chat-view.js";
 import { AppPromptInput } from "../components/app-prompt-input.js";
 import { AppQuizBar } from "../components/app-quiz-bar.js";
+import { AppDialog } from "../components/app-dialog.js";
+import { IconPanelRight } from "../components/icons/panel-right.js";
 import { AppSidebar, AppSidebarToggle, type SidebarProject, type SidebarThread } from "../components/app-sidebar.js";
 import { type ChatTurn } from "../shared/timeline.js";
 import { mountThreadsPage } from "../components/threads-page-controller.js";
 import { threadView } from "../stores/thread-view.js";
+import { sidePanel } from "../stores/side-panel.js";
 
 interface ThreadPageData {
   threadId: string;
@@ -34,7 +37,8 @@ const styles = css`
   header { align-items: center; border-bottom: 1px solid var(--border); box-sizing: border-box; display: flex; height: 48px; padding: 8px; width: 100%; }
   header app-sidebar-toggle { display: none; }
   .toolbar-spacer { flex: 1; }
-  .files-button { min-width: 72px; }
+  .panel-button { color: var(--muted-foreground); }
+  .panel-button[hidden] { display: none; }
   .thread-menu-button { margin-left: 4px; }
   .content { flex: 1; min-height: 0; width: 100%; }
   app-chat-view { height: 100%; }
@@ -43,6 +47,10 @@ const styles = css`
   @media (max-width: 767px) {
     header app-sidebar-toggle { display: inline-flex; }
     header { justify-content: space-between; }
+    .panel-button { display: none; }
+  }
+  @media (min-width: 768px) {
+    .thread-menu-button { display: none; }
   }
 `;
 
@@ -66,8 +74,8 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
           <header>
             <AppSidebarToggle />
             <span class="toolbar-spacer"></span>
-            <AppButton variant="ghost" size="sm" class="files-button" data-action="files">Files</AppButton>
-            <AppButton variant="ghost" size="icon-sm" class="thread-menu-button" title="Thread actions" aria-label="Thread actions" data-action="thread-menu">⋯</AppButton>
+            <AppButton variant="ghost" size="icon-sm" class="panel-button" title="Open side panel" aria-label="Open side panel" data-action="side-panel-open"><IconPanelRight /></AppButton>
+            <AppButton variant="ghost" size="icon-sm" class="thread-menu-button" title="Thread actions" aria-label="Thread actions" data-action="thread-menu" hidden>⋯</AppButton>
             <span data-current-title hidden>{data.currentTitle}</span>
           </header>
           <section class="content">
@@ -86,7 +94,15 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
           <AppQuizBar style="margin: auto" data-quiz hidden={threadView.quizQuestion === ""} question={threadView.quizQuestion} options={threadView.quizOptions} />
           <div class="error" data-error>{threadView.error}</div>
         </main>
-        <app-file-manager data-file-manager data-thread-id={data.threadId}></app-file-manager>
+        <app-side-panel open={sidePanel.open} tabs='[{"value":"files","label":"Files"},{"value":"subagents","label":"Subagents"}]' data-active-tab={sidePanel.tab} data-side-panel>
+          <AppButton slot="header-action" variant="ghost" size="icon-sm" title="Close side panel" aria-label="Close side panel" data-action="side-panel-close"><IconPanelRight /></AppButton>
+          <app-file-explorer slot="files" data-thread-id={data.threadId} data-pane-active={sidePanel.open && sidePanel.tab === "files"}></app-file-explorer>
+          <app-subagent-view slot="subagents" data-thread-id={data.threadId} data-active={sidePanel.open && sidePanel.tab === "subagents"}></app-subagent-view>
+        </app-side-panel>
+        <AppDialog open={false} size="fullscreen" title="Files" data-mobile-panel>
+          <app-file-explorer data-thread-id={data.threadId} data-pane-active={false} data-mobile-files></app-file-explorer>
+          <app-subagent-view data-thread-id={data.threadId} data-active={false} data-mobile-subagents></app-subagent-view>
+        </AppDialog>
       </div>
     </>
   );

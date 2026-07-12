@@ -60,7 +60,8 @@ export type VersionHost = FilesHost & {
 };
 
 export function fileActions(host: VersionHost): FileActions {
-  if ("threadId" in host) {
+  const threadId = "threadId" in host ? (host as unknown as ManagerHost).threadId : "";
+  if (threadId) {
     const manager = host as unknown as ManagerHost;
     return {
       download: (targetPath, version) => downloadWorkspaceFileVersion(manager.threadId, targetPath, version),

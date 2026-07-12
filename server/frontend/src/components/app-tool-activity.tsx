@@ -1,4 +1,4 @@
-import { Component, css, state } from "@frontiers-labs/argon";
+import { Component, css, emit, state } from "@frontiers-labs/argon";
 import { AppSpinner } from "./app-spinner.js";
 import { IconCheck } from "./icons/check.js";
 import { IconChevronDown } from "./icons/chevron-down.js";
@@ -25,7 +25,7 @@ const styles = css`
   @media (prefers-reduced-motion: reduce) { .control.chevron > * { transition: none; } }
 `;
 
-export function AppToolActivity({ activityId = "", seq = 0, title = "Tool", detail = "", content = "", status = "finished", isError = false }: { activityId?: string; seq?: number; title?: string; detail?: string; content?: string; status?: string; isError?: boolean }): Component {
+export function AppToolActivity({ activityId = "", seq = 0, title = "Tool", detail = "", content = "", status = "finished", isError = false, subagentKey = "" }: { activityId?: string; seq?: number; title?: string; detail?: string; content?: string; status?: string; isError?: boolean; subagentKey?: string }): Component {
   let visible = state(false);
-  return <><style>{styles}</style><div class={`activity${isError ? " error" : ""}`}><button type="button" data-activity-id={activityId} data-seq={seq} aria-expanded={visible ? "true" : "false"} onClick={() => { visible = !visible; }}><span class="tool-icon" aria-hidden="true"><IconTerminal /></span><span class="summary"><span class="title">{status === "running" ? `Running ${title}` : title}</span>{detail !== "" && <span class="detail">{detail}</span>}</span><span class="controls" aria-hidden="true"><span class={`control chevron${visible ? " expanded" : ""}`}><IconChevronDown /></span><span class="control">{status === "running" ? <AppSpinner /> : <IconCheck />}</span></span></button>{visible && <pre>{content !== "" ? content : status === "running" ? "Waiting for output…" : "No output"}</pre>}</div></>;
+  return <><style>{styles}</style><div class={`activity${isError ? " error" : ""}`}><button type="button" data-activity-id={activityId} data-seq={seq} aria-expanded={visible ? "true" : "false"} onClick={() => { if (subagentKey) emit(this, "subagent-open", { agentKey: subagentKey }); else visible = !visible; }}><span class="tool-icon" aria-hidden="true"><IconTerminal /></span><span class="summary"><span class="title">{status === "running" ? `Running ${title}` : title}</span>{detail !== "" && <span class="detail">{detail}</span>}</span><span class="controls" aria-hidden="true"><span class={`control chevron${visible ? " expanded" : ""}`}><IconChevronDown /></span><span class="control">{status === "running" ? <AppSpinner /> : <IconCheck />}</span></span></button>{subagentKey === "" && visible && <pre>{content !== "" ? content : status === "running" ? "Waiting for output…" : "No output"}</pre>}</div></>;
 }

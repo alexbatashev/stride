@@ -12,6 +12,7 @@ import {
 export type ThreadRef = { id: string; title: string; archived: boolean };
 export type ThreadMutation = "rename" | "archive" | "unarchive" | "delete";
 export type OnMutated = (mutation: ThreadMutation, thread: ThreadRef) => void;
+export type OpenThreadPanel = (tab: "files" | "subagents") => void;
 
 type MenuItem = { label: string; action: string; variant?: string };
 type MenuEl = HTMLElement & { open: boolean; items: MenuItem[] };
@@ -26,7 +27,7 @@ type AlertEl = HTMLElement & {
 type TextInputEl = HTMLElement & { value: string; focusControl?: () => void };
 
 let menu: MenuEl | null = null;
-let menuContext: { thread: ThreadRef; onMutated: OnMutated } | null = null;
+let menuContext: { thread: ThreadRef; onMutated: OnMutated; openPanel?: OpenThreadPanel } | null = null;
 let activeTrigger: HTMLElement | null = null;
 let dismissClick: ((event: Event) => void) | null = null;
 let dismissKey: ((event: KeyboardEvent) => void) | null = null;
@@ -36,10 +37,12 @@ function ensureMenu(): MenuEl {
 	const el = document.createElement("app-dropdown-menu") as MenuEl;
 	document.body.appendChild(el);
 	el.addEventListener("select", (event) => {
-		const action = (event as CustomEvent<{ action: string }>).detail.action as ThreadMutation;
+		const action = (event as CustomEvent<{ action: string }>).detail.action;
 		const context = menuContext;
 		closeMenu();
-		if (context) runAction(action, context.thread, context.onMutated);
+		if (!context) return;
+		if (action === "files" || action === "subagents") context.openPanel?.(action);
+		else runAction(action as ThreadMutation, context.thread, context.onMutated);
 	});
 	menu = el;
 	return el;
@@ -55,12 +58,12 @@ function closeMenu(): void {
 	activeTrigger = null;
 }
 
-export function openThreadMenu(trigger: HTMLElement, thread: ThreadRef, onMutated: OnMutated): void {
+export function openThreadMenu(trigger: HTMLElement, thread: ThreadRef, onMutated: OnMutated, openPanel?: OpenThreadPanel): void {
 	const el = ensureMenu();
-	menuContext = { thread, onMutated };
+	menuContext = { thread, onMutated, openPanel };
 	activeTrigger = trigger;
 	trigger.setAttribute("aria-expanded", "true");
-	el.items = thread.archived
+	const threadItems = thread.archived
 		? [
 				{ label: "Unarchive", action: "unarchive" },
 				{ label: "Delete", action: "delete", variant: "destructive" },
@@ -70,6 +73,9 @@ export function openThreadMenu(trigger: HTMLElement, thread: ThreadRef, onMutate
 				{ label: "Archive", action: "archive" },
 				{ label: "Delete", action: "delete", variant: "destructive" },
 			];
+	el.items = matchMedia("(max-width: 767px)").matches && openPanel
+		? [{ label: "Files", action: "files" }, { label: "Subagents", action: "subagents" }, ...threadItems]
+		: threadItems;
 	el.open = true;
 	requestAnimationFrame(() => positionMenu(el, trigger));
 

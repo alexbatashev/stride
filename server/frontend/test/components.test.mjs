@@ -53,7 +53,7 @@ test('all custom elements register', () => {
     'app-button', 'app-input', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
     'app-chat-view', 'app-message', 'app-message-actions', 'app-spoiler', 'app-tool-activity', 'app-tool-cluster', 'app-work-group', 'auto-markdown', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
-    'app-file-manager', 'app-automations', 'app-settings', 'icon-arrow-up', 'icon-x',
+    'app-file-explorer', 'app-side-panel', 'app-subagent-view', 'app-automations', 'app-settings', 'icon-arrow-up', 'icon-x',
     'app-badge', 'app-label', 'app-separator', 'app-skeleton', 'app-aspect-ratio',
     'app-card', 'app-avatar', 'app-avatar-group', 'app-avatar-group-count', 'app-alert', 'app-progress', 'app-checkbox',
     'app-switch', 'app-toggle', 'app-textarea', 'app-radio-group', 'app-slider',
@@ -249,8 +249,10 @@ test('app-message tool output folds into a spoiler', () => {
   assert.match(spoiler.shadowRoot.innerHTML, /streamed output/);
 });
 
-test('chat timeline merges calls with outputs and excludes subagents', async () => {
+test('chat timeline merges calls with outputs and includes clickable subagents', async () => {
   const { buildClientTimeline } = await import('../dist/argon/components/chat-timeline.js');
+  const { threadStream } = await import('../dist/argon/stores/thread-stream.js');
+  threadStream.subagents = [{ id: 'agent-1', name: 'Research options', model: 'helper', result: 'child', finished: true, parentToolCallId: 'call-2', agentPath: 'agent-1', createdAt: 1 }];
   const base = { format: 'markdown', thinking: null, tool_call_name: null, tool_call_id: null, tool_calls: [] };
   const timeline = buildClientTimeline([
     { ...base, id: 'assistant', seq: 1, role: 'agent', content: '', tool_calls: [
@@ -260,11 +262,13 @@ test('chat timeline merges calls with outputs and excludes subagents', async () 
     { ...base, id: 'output-1', seq: 2, role: 'tool', content: 'files', tool_call_id: 'call-1' },
     { ...base, id: 'output-2', seq: 3, role: 'tool', content: 'child', tool_call_id: 'call-2' },
   ]);
-  assert.equal(timeline.length, 1);
+  assert.equal(timeline.length, 2);
   assert.equal(timeline[0].id, 'tool:call-1');
   assert.equal(timeline[0].toolName, 'Ran command');
   assert.equal(timeline[0].toolDetail, 'ls -la');
   assert.equal(timeline[0].content, 'files');
+  assert.equal(timeline[1].toolName, 'Research options');
+  assert.equal(timeline[1].subagentKey, 'agent-1');
 });
 
 test('chat turns fold all reasoning and tools while leaving the final answer visible', async () => {
@@ -465,7 +469,7 @@ test('app-data-table renders rows and reports selection', () => {
   assert.equal(typeof action.detail.top, 'number');
 });
 
-test('app-file-manager opens version history from file click', async () => {
+test('app-file-explorer opens version history from file click', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     assert.match(String(url), /\/api\/threads\/t1\/file-versions\?path=mortgage\.pdf/);
@@ -475,9 +479,9 @@ test('app-file-manager opens version history from file click', async () => {
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
   try {
-    const el = mount('app-file-manager', {
+    const el = mount('app-file-explorer', {
       threadId: 't1',
-      open: false,
+      paneActive: false,
     });
     el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
     await tick();
@@ -493,10 +497,10 @@ test('app-file-manager opens version history from file click', async () => {
   }
 });
 
-test('app-file-manager file menu renders supported actions', async () => {
-  const el = mount('app-file-manager', {
+test('app-file-explorer file menu renders supported actions', async () => {
+  const el = mount('app-file-explorer', {
     threadId: 't1',
-    open: false,
+    paneActive: false,
   });
   el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
   await tick();
@@ -510,10 +514,10 @@ test('app-file-manager file menu renders supported actions', async () => {
   assert.doesNotMatch(menu.shadowRoot.innerHTML, /\[object Object\]/);
 });
 
-test('app-file-manager file menu closes on outside click and toggles from menu button', async () => {
-  const el = mount('app-file-manager', {
+test('app-file-explorer file menu closes on outside click and toggles from menu button', async () => {
+  const el = mount('app-file-explorer', {
     threadId: 't1',
-    open: false,
+    paneActive: false,
   });
   el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
   await tick();
@@ -548,14 +552,14 @@ test('app-dialog close icon fits its button', async () => {
   assert.equal(getComputedStyle(icon).height, '16px');
 });
 
-test('app-file-manager closes version dialog from close button', async () => {
+test('app-file-explorer closes version dialog from close button', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({
     path: 'mortgage.pdf',
     versions: [{ version: 1, size: 100, created_at: 1760000000000, mime_type: 'application/pdf' }],
   }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   try {
-    const el = mount('app-file-manager', { threadId: 't1', open: false });
+    const el = mount('app-file-explorer', { threadId: 't1', paneActive: false });
     el.entries = [{ name: 'mortgage.pdf', path: 'mortgage.pdf', kind: 'file', sizeLabel: '8.9 KB', updatedLabel: 'Jul 4, 2026', mimeType: 'application/pdf' }];
     await tick();
     el.shadowRoot.querySelector('app-data-table').shadowRoot.querySelector('button[data-row-action="open"]').click();
@@ -936,6 +940,60 @@ test('app-tabs is controlled: dispatches intent, renders from prop', () => {
   assert.equal(el.shadowRoot.querySelector('[data-value="two"]').getAttribute('aria-selected'), 'false');
   el.value = 'two';
   assert.equal(el.shadowRoot.querySelector('[data-value="two"]').getAttribute('aria-selected'), 'true');
+});
+
+test('app-side-panel switches nested tabs and removes the close control', () => {
+  const panel = mount('app-side-panel', {
+    open: true,
+    tabs: [{ value: 'files', label: 'Files' }, { value: 'subagents', label: 'Subagents' }],
+    activeTab: 'files',
+  });
+  const tabs = panel.shadowRoot.querySelector('app-tabs');
+  const triggers = tabs.shadowRoot.querySelectorAll('[role="tab"]');
+  assert.equal(triggers.length, 2);
+  triggers[1].click();
+  assert.equal(tabs.shadowRoot.querySelector('[aria-selected="true"]').textContent, 'Subagents');
+  assert.equal(panel.shadowRoot.querySelector('slot[name="subagents"]').getAttribute('style'), '');
+  assert.equal(panel.shadowRoot.querySelector('[aria-label^="Close"]'), null);
+});
+
+test('app-subagent-view loads one transcript once and renders persisted markdown', async () => {
+  const originalFetch = globalThis.fetch;
+  let transcriptRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/agents/agent-1/messages')) {
+      transcriptRequests += 1;
+      return Response.json([{
+        id: 'message-1', seq: 3, role: 'agent', format: 'markdown', content: 'Persisted subagent answer',
+        thinking: null, tool_call_name: null, tool_call_id: null, tool_calls: [], created_at: 3,
+      }]);
+    }
+    return Response.json([]);
+  };
+  try {
+    const view = document.createElement('app-subagent-view');
+    view._agentsLoadedThread = 'thread-1';
+    Object.assign(view, {
+      threadId: 'thread-1', active: true,
+      agents: [{ id: 'agent-1', name: 'Research options', model: 'helper', result: '', finished: true, parentToolCallId: 'call-1', agentPath: 'agent-1', createdAt: 1 }],
+      selectedKey: 'agent-1',
+    });
+    document.body.appendChild(view);
+    await tick();
+    await tick();
+    await tick();
+    assert.equal(transcriptRequests, 1);
+    assert.equal(view.transcript.length, 1);
+    assert.equal(view.transcript[0].content, 'Persisted subagent answer');
+    const chat = view.shadowRoot.querySelector('app-chat-view');
+    assert.equal(chat.turns.length, 1);
+    assert.equal(chat.turns[0].answer.text, 'Persisted subagent answer');
+    view.dispatchEvent(new CustomEvent('transcript-update', { detail: { item: { ...view.transcript[0], content: 'Persisted subagent answer, streamed tail', pending: true } } }));
+    assert.equal(view.shadowRoot.querySelector('app-chat-view').turns[0].answer.text, 'Persisted subagent answer, streamed tail');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('app-accordion is controlled: dispatches intent, renders from prop', () => {

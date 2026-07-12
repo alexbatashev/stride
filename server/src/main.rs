@@ -662,6 +662,11 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             get(api::threads::list_messages).post(api::threads::send_message),
         )
         .route("/api/threads/{id}/events", get(api::threads::events))
+        .route("/api/threads/{id}/agents", get(api::threads::list_agents))
+        .route(
+            "/api/threads/{id}/agents/{agent_id}/messages",
+            get(api::threads::agent_messages),
+        )
         .route("/api/threads/{id}/cancel", post(api::threads::cancel))
         .route(
             "/api/threads/{id}/approvals/{approval_id}",

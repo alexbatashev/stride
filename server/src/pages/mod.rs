@@ -69,6 +69,7 @@ fn empty_timeline_item(id: String) -> TimelineItem {
         status: "finished".to_string(),
         is_error: false,
         pending: false,
+        subagent_key: None,
     }
 }
 
@@ -259,6 +260,7 @@ fn content_timeline_message(message: &MessageTemplateData, message_type: &str) -
         pending: false,
         status: "finished".to_string(),
         is_error: false,
+        subagent_key: None,
     }
 }
 
@@ -285,6 +287,7 @@ fn tool_timeline_message(
         pending: false,
         status: "finished".to_string(),
         is_error: false,
+        subagent_key: None,
     }
 }
 
@@ -625,7 +628,9 @@ mod tests {
         let server = TestPageServer(data);
         let ui = UiStores::default();
         let thread_view = crate::components::thread_view::Stores::default();
+        let side_panel = crate::components::side_panel::Stores::default();
         let stores = RenderStores {
+            side_panel: &side_panel,
             thread_view: &thread_view,
             ui: &ui,
         };
@@ -658,7 +663,11 @@ mod tests {
         assert!(html.contains(r#"data-prompt"#));
         assert!(html.contains(r#"data-approval hidden"#));
         assert!(html.contains(r#"data-quiz hidden"#));
-        assert!(html.contains(r#"<app-file-manager data-file-manager data-thread-id="thread-1""#));
+        assert!(html.contains(r#"<app-side-panel"#));
+        assert!(html.contains("<app-file-explorer"));
+        assert!(html.contains(r#"slot="files""#));
+        assert!(html.contains("<app-subagent-view"));
+        assert!(html.contains(r#"slot="subagents""#));
     }
 
     #[test]

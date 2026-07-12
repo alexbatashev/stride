@@ -547,6 +547,38 @@ migrations! {
         raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_seq ON thread_events(thread_id, seq)";
         raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_run ON thread_events(thread_id, run_id)";
     }
+
+    message_agent_path {
+        // Marks a message as belonging to a subagent: `agent_path` is the
+        // slash-joined UUID path (same encoding as `thread_events.agent_path`).
+        // NULL = root agent. Existing rows are all root, so NULL is correct.
+        alter table messages {
+            add agent_path: Option<String>;
+        }
+
+        raw "CREATE INDEX IF NOT EXISTS idx_messages_thread_agent ON messages(parent_thread, agent_path)";
+    }
+
+    thread_agents_registry {
+        // One row per subagent spawned in a thread. Drives the Subagents side
+        // panel: human-readable `name`, `model`, live `finished`/`result`, and
+        // `agent_path` (this agent's full path, slash-joined UUIDs) for nesting.
+        table thread_agents {
+            agent_id: Uuid [PrimaryKey],
+            thread_id: Uuid,
+            agent_path: String,
+            parent_tool_call_id: Option<String>,
+            name: String,
+            model: String,
+            result: Option<String>,
+            finished: bool,
+            created_at: i64,
+
+            foreign_key(thread_id -> threads.id);
+        }
+
+        raw "CREATE INDEX IF NOT EXISTS idx_thread_agents_thread ON thread_agents(thread_id)";
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema

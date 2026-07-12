@@ -1,5 +1,6 @@
 import type { ThreadMessage } from "../api/threads.js";
 import type { TimelineMessage } from "../shared/timeline.js";
+import { threadStream } from "../stores/thread-stream.js";
 
 type ViewMessage = ThreadMessage & { pending?: boolean; liveToolName?: string; liveToolDetail?: string; liveToolError?: boolean };
 
@@ -66,7 +67,9 @@ export function buildClientTimeline(messages: ViewMessage[]): TimelineMessage[] 
     for (const call of message.tool_calls) {
       const output = messages.find((candidate) => candidate.tool_call_id === call.id);
       if (output) consumed.add(output.id);
-      if (isSubagentTool(call.name)) continue;
+      const subagent = isSubagentTool(call.name)
+        ? threadStream.subagents.find((candidate) => candidate.parentToolCallId === call.id)
+        : undefined;
       timeline.push({
         id: `tool:${call.id}`,
         seq: message.seq,
@@ -76,18 +79,81 @@ export function buildClientTimeline(messages: ViewMessage[]): TimelineMessage[] 
         format: output?.format ?? "markdown",
         content: output?.content ?? "",
         thinking: "",
-        toolName: toolActivityLabel(call.name),
+        toolName: subagent?.name ?? toolActivityLabel(call.name),
         toolDetail: summarizeToolArguments(call.arguments),
         pending: !output,
         status: output ? "finished" : "running",
         isError: false,
+        subagentKey: subagent?.agentPath,
       });
     }
   }
   for (const message of messages) {
     if (message.tool_calls.length > 0 || consumed.has(message.id)) continue;
-    if (message.liveToolName && isSubagentTool(message.liveToolName)) continue;
+    if (message.liveToolName && isSubagentTool(message.liveToolName)) {
+      const subagent = threadStream.subagents.find((candidate) => candidate.parentToolCallId === message.tool_call_id);
+      if (subagent) {
+        const item = plainMessage(message);
+        item.toolName = subagent.name;
+        item.subagentKey = subagent.agentPath;
+        timeline.push(item);
+      }
+      continue;
+    }
     timeline.push(plainMessage(message));
+  }
+  return timeline.sort((left, right) => left.seq - right.seq);
+}
+
+// Builds a subagent's chat timeline from `threadStream.agentTranscripts`,
+// aggregating the selected agent's own bucket plus its descendants' buckets
+// (path prefix). Unlike the root timeline, nested subagent spawns are kept as
+// tool cards. Deduped by id so live and REST rows for the same message merge.
+export function buildSubagentTimeline(agentKey: string): TimelineMessage[] {
+  const timeline: TimelineMessage[] = [];
+  const seen = new Set<string>();
+  const push = (item: TimelineMessage) => {
+    if (seen.has(item.id)) return;
+    seen.add(item.id);
+    timeline.push(item);
+  };
+  for (const bucket of threadStream.agentTranscripts) {
+    if (bucket.key !== agentKey && !bucket.key.startsWith(`${agentKey}/`)) continue;
+    for (const message of bucket.messages) {
+      if (!message.content && !message.thinking) continue;
+      push({
+        id: message.id,
+        seq: message.seq,
+        createdAt: message.seq,
+        role: "agent",
+        messageType: "",
+        format: "markdown",
+        content: message.content,
+        thinking: message.thinking ?? "",
+        toolName: "",
+        toolDetail: "",
+        pending: !message.committed,
+        status: message.committed ? "finished" : "running",
+        isError: false,
+      });
+    }
+    for (const tool of bucket.toolCalls) {
+      push({
+        id: `tool:${tool.id}`,
+        seq: tool.seq,
+        createdAt: tool.createdAt,
+        role: "tool",
+        messageType: "tool_activity",
+        format: "markdown",
+        content: tool.status === "running" && !tool.result ? "" : tool.result,
+        thinking: "",
+        toolName: toolActivityLabel(tool.name),
+        toolDetail: summarizeToolArguments(tool.arguments),
+        pending: tool.status === "running",
+        status: tool.status,
+        isError: tool.isError,
+      });
+    }
   }
   return timeline.sort((left, right) => left.seq - right.seq);
 }

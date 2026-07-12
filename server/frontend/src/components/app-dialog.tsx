@@ -46,6 +46,19 @@ const styles = css`
     max-width: min(980px, calc(100dvw - 32px));
   }
 
+  :host([size="fullscreen"]) .overlay { padding: 0; }
+  :host([size="fullscreen"]) .dialog {
+    border: 0;
+    border-radius: 0;
+    gap: 0;
+    height: 100dvh;
+    max-height: none;
+    max-width: none;
+    padding: 0;
+  }
+  :host([size="fullscreen"]) .header { border-bottom: 1px solid var(--border); min-height: 48px; padding: 0 48px 0 16px; }
+  :host([size="fullscreen"]) .content { flex: 1; min-height: 0; overflow: auto; }
+
   .header {
     display: grid;
     gap: 6px;

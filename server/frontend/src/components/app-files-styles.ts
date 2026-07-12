@@ -286,6 +286,166 @@ export const browserStyles = css`
     min-height: 0;
     padding: 0 8px;
   }
+
+  app-file-explorer {
+    flex: 1;
+    min-height: 0;
+  }
+`;
+
+// Inner file-explorer chrome (toolbar, path, table) shared by the /files page
+// and the thread side panel. Page/panel headers live in the hosting component.
+export const explorerStyles = css`
+  :host {
+    background: var(--background);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .action-button,
+  .icon-button {
+    align-items: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--foreground);
+    cursor: pointer;
+    display: inline-flex;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    gap: 6px;
+    height: 34px;
+    justify-content: center;
+    outline: none;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+
+  .icon-button {
+    padding: 0;
+    width: 34px;
+  }
+
+  .action-button:hover:not(:disabled),
+  .icon-button:hover:not(:disabled) {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+
+  .action-button:focus-visible,
+  .icon-button:focus-visible {
+    box-shadow: 0 0 0 3px var(--ring-shadow);
+  }
+
+  .action-button:disabled,
+  .icon-button:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+
+  /* Labels are <span>; icons are custom elements. Only size the icon so a
+     text-only button (e.g. Rename) isn't squeezed into a 16px box. */
+  .action-button > :not(span),
+  .icon-button > * {
+    height: 16px;
+    width: 16px;
+  }
+
+  .toolbar {
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    padding: 8px 20px;
+  }
+
+  .path {
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted-foreground);
+    display: flex;
+    flex: 0 0 auto;
+    font-size: 13px;
+    gap: 6px;
+    min-height: 38px;
+    padding: 0 20px;
+  }
+
+  .path span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .error {
+    color: var(--destructive);
+    font-size: 13px;
+    padding: 10px 20px 0;
+  }
+
+  .error:empty {
+    display: none;
+  }
+
+  input[type="file"] {
+    display: none;
+  }
+
+  app-data-table {
+    flex: 1;
+    min-height: 0;
+    padding: 0 8px;
+  }
+
+  /* Compact density for the narrow thread side panel. */
+  :host([data-compact]) .toolbar {
+    gap: 4px;
+    min-height: 40px;
+    padding: 4px 10px;
+  }
+
+  :host([data-compact]) .path {
+    font-size: 12px;
+    gap: 4px;
+    min-height: 36px;
+    padding: 0 12px;
+  }
+
+  :host([data-compact]) .error {
+    font-size: 12px;
+    padding: 8px 12px 0;
+  }
+
+  :host([data-compact]) .action-button,
+  :host([data-compact]) .icon-button {
+    font-size: 12px;
+    height: 28px;
+    padding: 0 8px;
+  }
+
+  :host([data-compact]) .icon-button {
+    padding: 0;
+    width: 28px;
+  }
+
+  :host([data-compact]) app-data-table {
+    padding: 0;
+    --table-size-width: 70px;
+    --table-updated-width: 96px;
+  }
+
+  @media (max-width: 767px) {
+    .toolbar {
+      overflow-x: auto;
+    }
+  }
 `;
 
 export const fileManagementStyles = css`
@@ -386,181 +546,3 @@ export const fileManagementStyles = css`
     width: min(78dvw, 980px);
   }
 `;
-
-export const managerStyles = css`
-  :host {
-    background: var(--background);
-    border-left: 1px solid var(--border);
-    box-sizing: border-box;
-    display: none;
-    flex: 0 0 380px;
-    height: 100%;
-    max-width: 380px;
-    min-width: 380px;
-  }
-
-  :host([open]) {
-    display: block;
-  }
-
-  .panel {
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    overflow: hidden;
-  }
-
-  header {
-    align-items: center;
-    border-bottom: 1px solid var(--border);
-    box-sizing: border-box;
-    display: flex;
-    flex: 0 0 auto;
-    gap: 8px;
-    height: 56px;
-    padding: 10px 12px;
-  }
-
-  h2 {
-    color: var(--foreground);
-    flex: 1;
-    font-size: 15px;
-    font-weight: 650;
-    line-height: 1;
-    margin: 0;
-    min-width: 0;
-  }
-
-  .icon-button,
-  .action-button {
-    align-items: center;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    color: var(--foreground);
-    cursor: pointer;
-    display: inline-flex;
-    font: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    gap: 6px;
-    height: 32px;
-    justify-content: center;
-    outline: none;
-    padding: 0 9px;
-    white-space: nowrap;
-  }
-
-  .icon-button {
-    padding: 0;
-    width: 32px;
-  }
-
-  .icon-button:hover,
-  .action-button:hover {
-    background: var(--accent);
-    color: var(--accent-foreground);
-  }
-
-  .icon-button:focus-visible,
-  .action-button:focus-visible {
-    box-shadow: 0 0 0 3px var(--ring-shadow);
-  }
-
-  .action-button:disabled,
-  .icon-button:disabled {
-    cursor: default;
-    opacity: 0.5;
-  }
-
-  .icon-button > * {
-    height: 16px;
-    width: 16px;
-  }
-
-  .action-button > :not(span) {
-    height: 16px;
-    width: 16px;
-  }
-
-  .toolbar {
-    align-items: center;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    flex: 0 0 auto;
-    gap: 6px;
-    padding: 8px 12px;
-  }
-
-  .path {
-    align-items: center;
-    border-bottom: 1px solid var(--border);
-    color: var(--muted-foreground);
-    display: flex;
-    flex: 0 0 auto;
-    font-size: 12px;
-    gap: 4px;
-    min-height: 36px;
-    padding: 0 12px;
-  }
-
-  .path span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .error {
-    color: var(--destructive);
-    font-size: 12px;
-    padding: 8px 12px 0;
-  }
-
-  .error:empty {
-    display: none;
-  }
-
-  input[type="file"] {
-    display: none;
-  }
-
-  app-data-table {
-    flex: 1;
-    min-height: 0;
-    --table-size-width: 70px;
-    --table-updated-width: 96px;
-  }
-
-  @media (max-width: 767px) {
-    :host {
-      border-left: 0;
-      display: none;
-      flex: none;
-      inset: 0;
-      max-width: none;
-      min-width: 0;
-      position: fixed;
-      width: 100%;
-      z-index: 80;
-    }
-
-    :host([open]) {
-      display: block;
-    }
-
-    .panel {
-      background: var(--background);
-    }
-
-    header {
-      height: 52px;
-    }
-
-    .toolbar {
-      overflow-x: auto;
-    }
-  }
-`;
-

@@ -12,6 +12,7 @@ export interface TimelineMessage {
   pending: boolean;
   status: string;
   isError: boolean;
+  subagentKey?: string;
 }
 
 export interface TimelineItem {
@@ -28,6 +29,7 @@ export interface TimelineItem {
   status: string;
   isError: boolean;
   pending: boolean;
+  subagentKey?: string;
 }
 
 export interface WorkSegment {
@@ -86,6 +88,7 @@ export function buildTimeline(messages: TimelineMessage[]): TimelineItem[] {
     status: message.status,
     isError: message.isError,
     pending: message.pending,
+    subagentKey: message.subagentKey,
   }));
 }
 

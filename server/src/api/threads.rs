@@ -22,7 +22,9 @@ use crate::{
         auth::{self, AuthError},
         projects::ProjectResponse,
     },
-    db::{MessageFormat, Role, messages, projects, thread_events, threads, user_models},
+    db::{
+        MessageFormat, Role, messages, projects, thread_agents, thread_events, threads, user_models,
+    },
     model_registry,
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
@@ -64,6 +66,18 @@ pub struct ToolCallResponse {
     pub id: String,
     pub name: String,
     pub arguments: String,
+}
+
+#[derive(Serialize)]
+pub struct AgentResponse {
+    pub agent_id: String,
+    pub agent_path: String,
+    pub parent_tool_call_id: Option<String>,
+    pub name: String,
+    pub model: String,
+    pub result: Option<String>,
+    pub finished: bool,
+    pub created_at: i64,
 }
 
 #[derive(Serialize)]
@@ -398,6 +412,12 @@ pub(crate) async fn hard_delete_thread(
 
     thread_events::delete()
         .where_(thread_events::thread_id.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    thread_agents::delete()
+        .where_(thread_agents::thread_id.eq(thread_id))
         .execute(&state.db)
         .await
         .map_err(|_| ThreadApiError::Internal)?;
@@ -867,9 +887,85 @@ pub async fn list_messages(
     Ok(Json(thread_messages(&state, thread_id).await?))
 }
 
+/// Lists every subagent spawned in a thread, most recent first. Drives the
+/// Subagents side panel.
+pub async fn list_agents(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+) -> Result<Json<Vec<AgentResponse>>, ThreadApiError> {
+    require_thread_owner(&state, &headers, thread_id).await?;
+
+    let rows = thread_agents::select()
+        .where_(thread_agents::thread_id.eq(thread_id))
+        .order_by_desc(thread_agents::created_at)
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| AgentResponse {
+                agent_id: row.agent_id.to_string(),
+                agent_path: row.agent_path,
+                parent_tool_call_id: row.parent_tool_call_id,
+                name: row.name,
+                model: row.model,
+                result: row.result,
+                finished: row.finished,
+                created_at: row.created_at,
+            })
+            .collect(),
+    ))
+}
+
+/// Returns one subagent's transcript: every message whose `agent_path` is the
+/// agent's path or a descendant of it (so nested grandchildren are included).
+pub async fn agent_messages(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path((thread_id, agent_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Vec<MessageResponse>>, ThreadApiError> {
+    require_thread_owner(&state, &headers, thread_id).await?;
+
+    let agent = thread_agents::select()
+        .where_(
+            thread_agents::agent_id
+                .eq(agent_id)
+                .and(thread_agents::thread_id.eq(thread_id)),
+        )
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?
+        .into_iter()
+        .next()
+        .ok_or(ThreadApiError::NotFound)?;
+
+    let path = agent.agent_path;
+    let descendant_prefix = format!("{path}/");
+    let messages = messages_where(&state, thread_id, |candidate| {
+        matches!(candidate, Some(candidate)
+            if candidate == path || candidate.starts_with(&descendant_prefix))
+    })
+    .await?;
+    Ok(Json(messages))
+}
+
 async fn thread_messages(
     state: &ServerState,
     thread_id: Uuid,
+) -> Result<Vec<MessageResponse>, ThreadApiError> {
+    // Root-only: subagent messages carry a non-null `agent_path` and are served
+    // by the Subagents endpoints, never mixed into the main chat.
+    messages_where(state, thread_id, |path| path.is_none()).await
+}
+
+/// Loads a thread's messages, keeps the ones whose `agent_path` satisfies
+/// `keep`, and maps them to the shared [`MessageResponse`] shape.
+async fn messages_where(
+    state: &ServerState,
+    thread_id: Uuid,
+    keep: impl Fn(Option<&str>) -> bool,
 ) -> Result<Vec<MessageResponse>, ThreadApiError> {
     let rows = messages::select()
         .where_(messages::parent_thread.eq(thread_id))
@@ -880,6 +976,7 @@ async fn thread_messages(
 
     Ok(rows
         .into_iter()
+        .filter(|row| keep(row.agent_path.as_deref()))
         .map(|row| {
             let tool_calls = tool_calls(row.tool_calls.as_deref());
             let tool_call_name = tool_calls.first().map(|call| call.name.clone());

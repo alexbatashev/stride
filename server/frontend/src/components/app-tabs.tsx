@@ -60,10 +60,11 @@ const styles = css`
 
   .root.vertical .list { align-items: stretch; flex-direction: column; height: auto; }
   .root.vertical .trigger { text-align: left; }
-  .root.line .list { background: transparent; border-radius: 0; gap: 4px; padding: 0; }
-  .root.line .trigger { border-radius: 0; position: relative; }
+  .root.line { gap: 0; }
+  .root.line .list { background: transparent; border-radius: 0; gap: 0; height: 48px; min-height: 48px; padding: 0; }
+  .root.line .trigger { align-items: center; align-self: stretch; border-radius: 0; display: inline-flex; justify-content: center; line-height: 1; padding: 0 12px; position: relative; }
   .root.line .trigger[aria-selected="true"] { background: transparent; box-shadow: none; }
-  .root.line .trigger[aria-selected="true"]::after { background: var(--foreground); bottom: -5px; content: ""; height: 2px; inset-inline: 0; position: absolute; }
+  .root.line .trigger[aria-selected="true"]::after { background: var(--foreground); bottom: 0; content: ""; height: 2px; inset-inline: 12px; position: absolute; }
   .root.vertical.line .trigger[aria-selected="true"]::after { bottom: 0; height: auto; inset-block: 0; left: auto; right: -5px; width: 2px; }
 `;
 
@@ -116,7 +117,6 @@ export function AppTabs({ tabs = [], value = "", variant = "default", orientatio
           .map((tab) => (
             <slot
               name={tab.value}
-              hidden={active !== tab.value}
               style={active === tab.value ? "" : "display:none"}
             ></slot>
           ))
