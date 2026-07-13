@@ -128,7 +128,7 @@ export function AppSettingsFiles(): Component {
   return (
     <>
       <style>{styles}</style>
-      <app-card
+      <app-settings-section
         title="Writable folders"
         description="By default your agents may only write inside a thread's workspace or its project folder. Add personal folders here to let agents create and edit files in them. Every subfolder is included."
       >
@@ -165,9 +165,9 @@ export function AppSettingsFiles(): Component {
             </div>
           )
           : <p class="muted">{loaded ? "No writable folders yet. Agents can still write to the thread workspace and project folders." : "Loading folders..."}</p>}
-      </app-card>
+      </app-settings-section>
 
-      <app-card title="Add writable folder" description="Enter a path relative to your files, e.g. Documents or Notes/Personal. The folder and everything under it becomes writable.">
+      <app-settings-section title="Add writable folder" description="Enter a path relative to your files, e.g. Documents or Notes/Personal. The folder and everything under it becomes writable.">
         <form
           onSubmit={(event: Event) => {
             event.preventDefault();
@@ -189,10 +189,10 @@ export function AppSettingsFiles(): Component {
           }}
         >
           <label>Folder path<input name="path" required placeholder="Documents/Notes" autocomplete="off" /></label>
-          <div class="actions"><app-button>Add folder</app-button></div>
+          <div class="actions"><app-button type="submit">Add folder</app-button></div>
           <p class="error">{error}</p>
         </form>
-      </app-card>
+      </app-settings-section>
     </>
   );
 }

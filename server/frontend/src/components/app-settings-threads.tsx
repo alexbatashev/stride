@@ -117,7 +117,7 @@ export function AppSettingsThreads(): Component {
   return (
     <>
       <style>{styles}</style>
-      <app-card
+      <app-settings-section
         title="Auto-archive"
         description="Archive threads automatically once they have been inactive for a while. Archived threads leave the sidebar but keep all messages and files, and can be restored anytime."
       >
@@ -152,9 +152,9 @@ export function AppSettingsThreads(): Component {
           />
           <span>days of inactivity</span>
         </div>
-      </app-card>
+      </app-settings-section>
 
-      <app-card
+      <app-settings-section
         title="Auto-remove"
         description="Permanently delete an archived thread — including its workspace files and version history — once it has stayed archived long enough. This cannot be undone."
       >
@@ -189,7 +189,7 @@ export function AppSettingsThreads(): Component {
           />
           <span>days since archival</span>
         </div>
-      </app-card>
+      </app-settings-section>
 
       <div class="status-row actions">
         <app-button

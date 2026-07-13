@@ -8,6 +8,7 @@ import { AppDialog } from "../components/app-dialog.js";
 import { IconPanelRight } from "../components/icons/panel-right.js";
 import { AppSidebar, AppSidebarToggle, type SidebarProject, type SidebarThread } from "../components/app-sidebar.js";
 import { AppSidebarProvider } from "../components/app-sidebar-primitives.js";
+import { AppSettingsDialog } from "../components/app-settings-dialog.js";
 import { type ChatTurn } from "../shared/timeline.js";
 import { type ModelOption } from "../shared/model-option.js";
 import { mountThreadsPage } from "../components/threads-page-controller.js";
@@ -115,6 +116,7 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
           <app-file-explorer data-thread-id={data.threadId} data-pane-active={false} data-mobile-files></app-file-explorer>
           <app-subagent-view data-thread-id={data.threadId} data-active={false} data-mobile-subagents></app-subagent-view>
           </AppDialog>
+        <AppSettingsDialog />
         </div>
       </AppSidebarProvider>
     </>

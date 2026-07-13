@@ -22,6 +22,7 @@ argon_module!(app_message_scroller);
 argon_module!(app_model_picker);
 argon_module!(app_prompt_input);
 argon_module!(app_quiz_bar);
+argon_module!(app_settings_dialog);
 argon_module!(app_sidebar);
 argon_module!(app_sidebar_primitives);
 argon_module!(app_skeleton);

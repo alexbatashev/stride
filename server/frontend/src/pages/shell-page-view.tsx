@@ -1,6 +1,7 @@
 import { Component, css, onMount, server } from "@frontiers-labs/argon";
 import { AppSidebar, AppSidebarToggle, type SidebarProject, type SidebarThread } from "../components/app-sidebar.js";
 import { AppSidebarProvider } from "../components/app-sidebar-primitives.js";
+import { AppSettingsDialog } from "../components/app-settings-dialog.js";
 import { mountShellPage } from "../components/shell-page-controller.js";
 
 interface ShellPageData {
@@ -15,7 +16,7 @@ const styles = css`
   .page { display: flex; height: 100%; width: 100%; }
   nav { height: 100%; }
   main { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
-  app-file-browser, app-automations, app-archived-threads, app-settings { flex: 1; min-height: 0; }
+  app-file-browser, app-automations, app-archived-threads { flex: 1; min-height: 0; }
   .mobile-bar { display: none; }
   @media (max-width: 767px) {
     .mobile-bar { border-bottom: 1px solid var(--border); display: flex; padding: 8px 12px; }
@@ -37,9 +38,9 @@ export function ShellPageView({ page }: { page: string }): Component {
             <div class="mobile-bar"><AppSidebarToggle /></div>
             {page === "files" ? <app-file-browser></app-file-browser>
               : page === "automations" ? <app-automations></app-automations>
-              : page === "archived" ? <app-archived-threads></app-archived-threads>
-              : <app-settings></app-settings>}
+              : <app-archived-threads></app-archived-threads>}
           </main>
+          <AppSettingsDialog />
         </div>
       </AppSidebarProvider>
     </>

@@ -196,7 +196,7 @@ const styles = css`
   }
 `;
 
-export function AppButton(): Component {
+export function AppButton({ type = "button" }: { type?: string }): Component {
   return (
     <>
       <style>{styles}</style>
@@ -206,6 +206,11 @@ export function AppButton(): Component {
           if (this.hasAttribute("disabled") || this.hasAttribute("loading")) {
             event.preventDefault();
             event.stopImmediatePropagation();
+            return;
+          }
+          if (type === "submit") {
+            event.preventDefault();
+            this.closest("form")?.requestSubmit();
           }
         }}
       >

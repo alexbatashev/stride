@@ -158,8 +158,8 @@ export async function getGitHubSettings(): Promise<GitHubSettings> {
 	return request("/api/settings/github");
 }
 
-export async function startGitHubAuthorize(): Promise<string> {
-	const response = await request<{ url: string }>("/api/settings/github/authorize");
+export async function startGitHubAuthorize(returnTo: string): Promise<string> {
+	const response = await request<{ url: string }>(`/api/settings/github/authorize?return_to=${encodeURIComponent(returnTo)}`);
 	return response.url;
 }
 
@@ -179,8 +179,8 @@ export async function getGoogleSettings(): Promise<GoogleSettings> {
 	return request("/api/settings/google");
 }
 
-export async function startGoogleAuthorize(): Promise<string> {
-	const response = await request<{ url: string }>("/api/settings/google/authorize");
+export async function startGoogleAuthorize(returnTo: string): Promise<string> {
+	const response = await request<{ url: string }>(`/api/settings/google/authorize?return_to=${encodeURIComponent(returnTo)}`);
 	return response.url;
 }
 

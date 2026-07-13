@@ -8,6 +8,7 @@ pub mod settings;
 use crate::api::threads::{MessageTemplateData, ThreadPageData};
 use crate::components::{
     auth_form::AuthForm,
+    settings::Stores as SettingsStores,
     shell_page_view::{
         RenderStores as ShellRenderStores, ShellPageData, ShellPageView, ShellPageViewServer,
     },
@@ -433,10 +434,16 @@ async fn render_shell_page(
 ) -> Result<String, crate::api::threads::ThreadApiError> {
     let mut ui_stores = UiStores::default();
     ui_stores.sidebar.active_page = page_name.to_string();
-    let stores = ShellRenderStores { ui: &ui_stores };
+    let settings_stores = SettingsStores::default();
+    let stores = ShellRenderStores {
+        settings: &settings_stores,
+        ui: &ui_stores,
+    };
     let server = ShellPageServer { state, headers };
     let page = ShellPageView::new(page_name).attr("id", format!("{page_name}-page"));
-    let opts = argon_document_opts(title, &ui_stores.snapshot_json());
+    let store_payload =
+        combine_store_snapshots(&[ui_stores.snapshot_json(), settings_stores.snapshot_json()]);
+    let opts = argon_document_opts(title, &store_payload);
     let opts = crate::components::shell_page_view::DocumentOpts {
         title: opts.title,
         head: opts.head,
@@ -552,6 +559,7 @@ mod tests {
         ToolCallResponse,
     };
     use crate::components::{
+        settings::Stores as SettingsStores,
         shell_page_view::{
             RenderStores as ShellRenderStores, ShellPageData, ShellPageView, ShellPageViewServer,
         },
@@ -668,7 +676,9 @@ mod tests {
         let ui = UiStores::default();
         let thread_view = crate::components::thread_view::Stores::default();
         let side_panel = crate::components::side_panel::Stores::default();
+        let settings = SettingsStores::default();
         let stores = RenderStores {
+            settings: &settings,
             side_panel: &side_panel,
             thread_view: &thread_view,
             ui: &ui,
@@ -767,7 +777,6 @@ mod tests {
             ("files", "app-file-browser"),
             ("automations", "app-automations"),
             ("archived", "app-archived-threads"),
-            ("settings", "app-settings"),
         ] {
             let data = super::argon_thread_page_data(sample_data());
             let server = TestShellServer(ShellPageData {
@@ -776,7 +785,11 @@ mod tests {
             });
             let mut ui = UiStores::default();
             ui.sidebar.active_page = name.to_string();
-            let stores = ShellRenderStores { ui: &ui };
+            let settings = SettingsStores::default();
+            let stores = ShellRenderStores {
+                settings: &settings,
+                ui: &ui,
+            };
             let html = ShellPageView::new(name)
                 .attr("id", format!("{name}-page"))
                 .render_document(
@@ -790,6 +803,7 @@ mod tests {
             assert!(html.contains(&format!(r#"id="{name}-page""#)));
             assert!(html.contains(&format!("<{child}></{child}>")));
             assert!(html.contains("<nav><app-sidebar"));
+            assert!(html.contains("<app-settings-dialog"));
         }
     }
 

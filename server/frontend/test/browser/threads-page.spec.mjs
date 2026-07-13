@@ -103,6 +103,127 @@ async function shadowSnapshot(page, selector) {
   });
 }
 
+async function openSettings(page) {
+  await page.waitForFunction(() => {
+    const item = document.querySelector('app-sidebar')?.shadowRoot?.querySelector('sidebar-settings-item');
+    return item?.shadowRoot?.querySelector('app-sidebar-menu-button')?.shadowRoot?.querySelector('button');
+  });
+  await page.evaluate(() => {
+    const sidebar = document.querySelector('app-sidebar');
+    const item = sidebar.shadowRoot.querySelector('sidebar-settings-item');
+    item.shadowRoot.querySelector('app-sidebar-menu-button').shadowRoot.querySelector('button').click();
+  });
+  await page.waitForFunction(() => {
+    const host = document.querySelector('app-settings-dialog');
+    const dialog = host?.shadowRoot?.querySelector('app-dialog');
+    return dialog?.open && dialog.querySelector('app-settings');
+  });
+}
+
+test('settings dialog follows the shadcn desktop structure and leaves background work mounted', async ({ page }) => {
+  const runtimeErrors = [];
+  page.on('pageerror', (error) => runtimeErrors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') runtimeErrors.push(message.text()); });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.setContent(`<!doctype html><html><head><script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script></head><body><div id="background">0</div><app-sidebar></app-sidebar><app-settings-dialog></app-settings-dialog></body></html>`);
+  await importComponents(page);
+  await page.evaluate(() => {
+    window.__backgroundTicks = 0;
+    window.__backgroundTimer = window.setInterval(() => {
+      window.__backgroundTicks += 1;
+      document.querySelector('#background').textContent = String(window.__backgroundTicks);
+    }, 5);
+  });
+
+  await openSettings(page);
+  const geometry = await page.evaluate(() => {
+    const host = document.querySelector('app-settings-dialog');
+    const primitive = host.shadowRoot.querySelector('app-dialog');
+    const dialog = primitive.shadowRoot.querySelector('.dialog').getBoundingClientRect();
+    const settings = primitive.querySelector('app-settings');
+    const tabs = settings.shadowRoot.querySelector('.tabs').getBoundingClientRect();
+    const panels = settings.shadowRoot.querySelector('.panels').getBoundingClientRect();
+    return {
+      dialogWidth: dialog.width,
+      tabsRight: tabs.right,
+      panelsLeft: panels.left,
+      ticks: window.__backgroundTicks,
+      cards: settings.shadowRoot.querySelectorAll('app-card').length,
+    };
+  });
+
+  expect(geometry.dialogWidth).toBeGreaterThan(800);
+  expect(geometry.tabsRight).toBeLessThanOrEqual(geometry.panelsLeft + 1);
+  expect(geometry.cards).toBe(0);
+  await page.waitForTimeout(30);
+  expect(await page.evaluate(() => window.__backgroundTicks)).toBeGreaterThan(geometry.ticks);
+  expect(runtimeErrors.filter((message) => !message.startsWith("WebSocket connection to 'ws://api/events' failed"))).toEqual([]);
+  await page.evaluate(() => window.clearInterval(window.__backgroundTimer));
+});
+
+test('settings dialog is full-screen with top tabs on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(`<!doctype html><html><head><script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script></head><body><app-sidebar></app-sidebar><app-settings-dialog></app-settings-dialog></body></html>`);
+  await importComponents(page);
+  await openSettings(page);
+
+  const geometry = await page.evaluate(() => {
+    const host = document.querySelector('app-settings-dialog');
+    const primitive = host.shadowRoot.querySelector('app-dialog');
+    const dialog = primitive.shadowRoot.querySelector('.dialog').getBoundingClientRect();
+    const settings = primitive.querySelector('app-settings');
+    const tabs = settings.shadowRoot.querySelector('.tabs').getBoundingClientRect();
+    const panels = settings.shadowRoot.querySelector('.panels').getBoundingClientRect();
+    return { dialog, tabsBottom: tabs.bottom, panelsTop: panels.top };
+  });
+
+  expect(Math.abs(geometry.dialog.width - 390)).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.dialog.height - 844)).toBeLessThanOrEqual(1);
+  expect(geometry.tabsBottom).toBeLessThanOrEqual(geometry.panelsTop + 1);
+});
+
+test('skill creation submits through app-button with a valid browser pattern', async ({ page }) => {
+  const runtimeErrors = [];
+  let created;
+  page.on('pageerror', (error) => runtimeErrors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') runtimeErrors.push(message.text()); });
+  await page.route('http://stride.test/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === '/api/settings/skills' && request.method() === 'POST') {
+      created = request.postDataJSON();
+      await route.fulfill({ json: { id: 'skill-1', ...created } });
+      return;
+    }
+    if (url.pathname === '/api/settings/skills') {
+      await route.fulfill({ json: created ? [{ id: 'skill-1', ...created }] : [] });
+      return;
+    }
+    await route.fulfill({ contentType: 'text/html', body: '<app-settings-skills></app-settings-skills>' });
+  });
+  await page.goto('http://stride.test/');
+  await importComponents(page);
+
+  const name = page.getByRole('textbox', { name: 'Name', exact: true });
+  await expect(name).toBeVisible();
+  expect(await name.evaluate((input) => input.checkValidity())).toBe(false);
+  await name.fill('python-debugging');
+  await page.getByRole('textbox', { name: 'Title', exact: true }).fill('Python Debugging');
+  await page.getByRole('textbox', { name: 'Description', exact: true }).fill('Trace Python failures.');
+  await page.getByRole('textbox', { name: 'Content', exact: true }).fill('Inspect the traceback.');
+  expect(await name.evaluate((input) => input.checkValidity())).toBe(true);
+  await page.getByRole('button', { name: 'Add skill', exact: true }).click();
+
+  await expect.poll(() => created).toEqual({
+    name: 'python-debugging',
+    title: 'Python Debugging',
+    description: 'Trace Python failures.',
+    content: 'Inspect the traceback.',
+  });
+  await expect(page.getByText('Python Debugging', { exact: true })).toBeVisible();
+  expect(runtimeErrors).toEqual([]);
+});
+
 test('threads page first-paint message hydration has no DOM snapshot diff', async ({ browser, page }) => {
   const context = await browser.newContext();
   const source = await context.newPage();

@@ -31,6 +31,7 @@ src/components/app-prompt-input.tsx
 src/components/app-quiz-bar.tsx
 src/components/app-radio-group.tsx
 src/components/app-select.tsx
+src/components/app-settings-dialog.tsx
 src/components/app-sidebar.tsx
 src/components/app-sidebar-primitives.tsx
 src/components/app-skeleton.tsx

@@ -4,6 +4,7 @@
  * https://ui.shadcn.com/docs/components/sidebar
  */
 import { Component, css, emit, onMount, state } from "@frontiers-labs/argon";
+import { settings } from "../stores/settings.js";
 import { sidebar } from "../stores/ui.js";
 import { AppButton } from "./app-button.js";
 import {
@@ -165,8 +166,22 @@ export function SidebarNavigationItem({ href, label, kind, active = false, colla
   return (
     <><style>{navigationItemStyles}</style><AppSidebarMenuItem>
       <AppSidebarMenuButton href={href} active={active} collapsed={collapsed}>
-        <span class="icon">{kind === "tasks" ? <IconBotMessageSquare /> : kind === "files" ? <IconFiles /> : kind === "automations" ? <IconWorkflow /> : kind === "archived" ? <IconArchive /> : <IconSettingsHorizontal />}</span>
+        <span class="icon">{kind === "tasks" ? <IconBotMessageSquare /> : kind === "files" ? <IconFiles /> : kind === "automations" ? <IconWorkflow /> : <IconArchive />}</span>
         <span class="label">{label}</span>
+      </AppSidebarMenuButton>
+    </AppSidebarMenuItem></>
+  );
+}
+
+export function SidebarSettingsItem(): Component {
+  return (
+    <><style>{navigationItemStyles}</style><AppSidebarMenuItem>
+      <AppSidebarMenuButton active={settings.open} collapsed={sidebar.status === "collapsed"} on:select={() => {
+        settings.open = true;
+        if (window.matchMedia(MOBILE_QUERY).matches) sidebar.status = "hidden";
+      }}>
+        <span class="icon"><IconSettingsHorizontal /></span>
+        <span class="label">Settings</span>
       </AppSidebarMenuButton>
     </AppSidebarMenuItem></>
   );
@@ -234,7 +249,7 @@ export function AppSidebar({ projects = [], threads = [] }: { projects?: Sidebar
           <SidebarNavigationItem href="/files" label="Files" kind="files" active={sidebar.activePage === "files"} collapsed={collapsed} />
           <SidebarNavigationItem href="/automations" label="Automations" kind="automations" active={sidebar.activePage === "automations"} collapsed={collapsed} />
           <SidebarNavigationItem href="/archived" label="Archived" kind="archived" active={sidebar.activePage === "archived"} collapsed={collapsed} />
-          <SidebarNavigationItem href="/settings" label="Settings" kind="settings" active={sidebar.activePage === "settings"} collapsed={collapsed} />
+          <SidebarSettingsItem />
         </AppSidebarMenu>
         <div class="groups">
           {projects.map((project) => <SidebarThreadGroup key={project.id} title={project.title} threads={project.threads} projectId={project.id} projectTitle={project.title} />)}

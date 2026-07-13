@@ -60,7 +60,7 @@ test('all custom elements register', () => {
     'app-button', 'app-input', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
     'app-chat-view', 'app-message', 'app-message-actions', 'app-spoiler', 'app-tool-activity', 'app-tool-cluster', 'app-work-group', 'auto-markdown', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
-    'app-file-explorer', 'app-side-panel', 'app-subagent-view', 'app-automations', 'app-settings', 'icon-arrow-up', 'icon-x',
+    'app-file-explorer', 'app-side-panel', 'app-subagent-view', 'app-automations', 'app-settings', 'app-settings-dialog', 'app-settings-section', 'icon-arrow-up', 'icon-x',
     'app-badge', 'app-label', 'app-separator', 'app-skeleton', 'app-aspect-ratio',
     'app-card', 'app-avatar', 'app-avatar-group', 'app-avatar-group-count', 'app-alert', 'app-progress', 'app-checkbox',
     'app-switch', 'app-toggle', 'app-textarea', 'app-radio-group', 'app-slider',
@@ -77,6 +77,22 @@ test('all custom elements register', () => {
   ]) {
     assert.ok(customElements.get(tag), `${tag} is not registered`);
   }
+});
+
+test('app-button submits its containing light-DOM form when requested', () => {
+  const form = document.createElement('form');
+  const button = document.createElement('app-button');
+  button.type = 'submit';
+  form.appendChild(button);
+  document.body.appendChild(form);
+  let submitted = 0;
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitted += 1;
+  });
+
+  button.shadowRoot.querySelector('button').click();
+  assert.equal(submitted, 1);
 });
 
 test('app-combobox filters options and emits selection intent', async () => {
@@ -132,6 +148,7 @@ test('app-sidebar renders projects and threads as links', () => {
   // Threads are plain links; navigation is the browser's job, not a custom event.
   const loose = links.find((link) => link.getAttribute('href') === '/threads/t2');
   assert.equal(loose?.getAttribute('href'), '/threads/t2');
+  assert.equal(links.some((link) => link.getAttribute('href') === '/settings'), false);
 
   // Reactive update: a new thread shows up without remounting.
   el.threads = [{ id: 't2', title: 'Loose' }, { id: 't3', title: 'Fresh' }];
@@ -640,7 +657,6 @@ test('app-file-explorer closes version dialog from close button', async () => {
 
 test('app-settings switches sections and lists integrations', () => {
   const el = mount('app-settings');
-  assert.match(el.shadowRoot.innerHTML, /Settings/);
 
   const layout = el.shadowRoot.querySelector('.layout');
   assert.equal(layout.getAttribute('data-active'), 'connections');
@@ -664,6 +680,38 @@ test('app-settings switches sections and lists integrations', () => {
   el.shadowRoot.querySelector('[data-section="models"]').click();
   assert.equal(layout.getAttribute('data-active'), 'models');
   assert.ok(el.shadowRoot.querySelector('app-settings-models'), 'model settings component missing');
+  assert.equal(deepElements(el.shadowRoot).some((element) => element.localName === 'app-card'), false);
+  assert.ok(deepElements(el.shadowRoot).some((element) => element.localName === 'app-settings-section'));
+});
+
+test('settings opens from the sidebar without navigation and closes as a controlled dialog', async () => {
+  const sidebar = mount('app-sidebar');
+  await tick();
+  const settingsItem = sidebar.shadowRoot.querySelector('sidebar-settings-item');
+  const control = settingsItem.shadowRoot.querySelector('app-sidebar-menu-button');
+  assert.equal(control.getAttribute('href'), null);
+  control.dispatchEvent(new CustomEvent('select', { bubbles: true, composed: true }));
+
+  const dialog = mount('app-settings-dialog');
+  await tick();
+  const primitive = dialog.shadowRoot.querySelector('app-dialog');
+  assert.equal(primitive.open, true);
+  const settingsPanel = primitive.querySelector('app-settings');
+  assert.ok(settingsPanel);
+
+  const close = primitive.shadowRoot.querySelector('.close');
+  let focusedSettingsControl = false;
+  for (const control of deepElements(settingsPanel.shadowRoot).filter((element) => element.matches?.('button, input, select, textarea, [href], [tabindex]'))) {
+    control.focus = () => { focusedSettingsControl = true; };
+  }
+  close.focus();
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+  assert.equal(focusedSettingsControl, true);
+
+  close.click();
+  await tick();
+  assert.equal(primitive.open, false);
+  assert.equal(primitive.querySelector('app-settings'), null);
 });
 
 test('app-settings-email lists accounts and escapes names', async () => {
@@ -755,6 +803,46 @@ test('app-settings-skills lists skills and escapes titles', async () => {
   }
 });
 
+test('app-settings-skills submits a valid slug and refreshes the list', async () => {
+  const originalFetch = globalThis.fetch;
+  let created;
+  globalThis.fetch = async (input, init = {}) => {
+    if (String(input) === '/api/settings/skills' && init.method === 'POST') {
+      created = JSON.parse(init.body);
+      return Response.json({ id: 'sk2', ...created });
+    }
+    if (String(input) === '/api/settings/skills') {
+      return Response.json(created ? [{ id: 'sk2', ...created }] : []);
+    }
+    return Response.json({});
+  };
+  try {
+    const el = mount('app-settings-skills');
+    await tick();
+    const form = el.shadowRoot.querySelector('form');
+    const name = form.querySelector('input[name="name"]');
+    assert.doesNotThrow(() => new RegExp(name.pattern, 'v'));
+    name.value = 'python-debugging';
+    form.querySelector('input[name="title"]').value = 'Python Debugging';
+    form.querySelector('input[name="description"]').value = 'Trace Python failures.';
+    form.querySelector('textarea[name="content"]').value = 'Inspect the traceback.';
+
+    form.querySelector('app-button').shadowRoot.querySelector('button').click();
+    await tick();
+    await tick();
+
+    assert.deepEqual(created, {
+      name: 'python-debugging',
+      title: 'Python Debugging',
+      description: 'Trace Python failures.',
+      content: 'Inspect the traceback.',
+    });
+    assert.match(el.shadowRoot.textContent, /Python Debugging/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('app-settings-memory renders memory palace management', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
@@ -814,10 +902,7 @@ test('app-settings-models renders model settings', async () => {
     assert.match(el.shadowRoot.innerHTML, /openai-main/);
     assert.match(el.shadowRoot.innerHTML, /Custom Sonnet/);
     assert.match(el.shadowRoot.innerHTML, /Prefer helper for quick scans/);
-    assert.equal(
-      el.shadowRoot.querySelector('app-checkbox[data-model="helper"]').getAttribute('checked'),
-      'true',
-    );
+    assert.equal(el.shadowRoot.querySelector('app-checkbox[data-model="helper"]').hasAttribute('checked'), true);
   } finally {
     globalThis.fetch = originalFetch;
   }
