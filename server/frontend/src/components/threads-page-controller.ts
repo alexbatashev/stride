@@ -120,11 +120,20 @@ class ThreadsPageHydrator {
 		this.scope = root.shadowRoot;
 		threadView.active = false;
 		const initial = JSON.parse(root.dataset.argonServer ?? "{}") as {
-			data?: {selectedModel?: string; running?: boolean};
+			data?: {
+				selectedModel?: string;
+				running?: boolean;
+				models?: { value: string; label: string; description: string; vision: boolean }[];
+				selectedModelLabel?: string;
+				selectedModelReasoningEffort?: string;
+			};
 		};
 		this.threadId = root.dataset.threadId ?? "";
 		resetThreadStream(this.threadId);
 		this.selectedModel = initial.data?.selectedModel ?? "";
+		this.modelOptions = initial.data?.models ?? [];
+		this.selectedModelLabel = initial.data?.selectedModelLabel ?? "Choose model";
+		this.selectedModelReasoningEffort = initial.data?.selectedModelReasoningEffort ?? "";
 		this.running = initial.data?.running ?? false;
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");

@@ -9,6 +9,7 @@ import { IconPanelRight } from "../components/icons/panel-right.js";
 import { AppSidebar, AppSidebarToggle, type SidebarProject, type SidebarThread } from "../components/app-sidebar.js";
 import { AppSidebarProvider } from "../components/app-sidebar-primitives.js";
 import { type ChatTurn } from "../shared/timeline.js";
+import { type ModelOption } from "../shared/model-option.js";
 import { mountThreadsPage } from "../components/threads-page-controller.js";
 import { threadView } from "../stores/thread-view.js";
 import { sidePanel } from "../stores/side-panel.js";
@@ -17,6 +18,9 @@ interface ThreadPageData {
   threadId: string;
   currentTitle: string;
   selectedModel: string;
+  models: ModelOption[];
+  selectedModelLabel: string;
+  selectedModelReasoningEffort: string;
   running: boolean;
   projects: SidebarProject[];
   threads: SidebarThread[];
@@ -42,6 +46,7 @@ const styles = css`
   .panel-button[hidden] { display: none; }
   .thread-menu-button { margin-left: 4px; }
   .content { flex: 1; min-height: 0; width: 100%; }
+  app-side-panel:not([open]) { display: none; }
   app-chat-view { height: 100%; }
   .error { color: var(--destructive); font-size: 13px; margin: 10px auto 0; max-width: 860px; }
   .error:empty { display: none; }
@@ -63,6 +68,9 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
     ? threadView.placeholder
     : data.threadId === "" ? "Ask S.T.R.I.D.E. anything" : "Message S.T.R.I.D.E.";
   const selectedModel = threadView.active ? threadView.selectedModel : data.selectedModel;
+  const models = threadView.active ? threadView.models : data.models;
+  const selectedModelLabel = threadView.active ? threadView.selectedModelLabel : data.selectedModelLabel;
+  const selectedModelReasoningEffort = threadView.active ? threadView.selectedModelReasoningEffort : data.selectedModelReasoningEffort;
 
   onMount(() => mountThreadsPage(this));
 
@@ -89,10 +97,10 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
             hidden={threadView.approvalMessage !== "" || threadView.quizQuestion !== ""}
             running={running}
             placeholder={placeholder}
-            models={threadView.models}
+            models={models}
             selectedModel={selectedModel}
-            selectedModelLabel={threadView.active ? threadView.selectedModelLabel : "Choose model"}
-            selectedModelReasoningEffort={threadView.active ? threadView.selectedModelReasoningEffort : ""}
+            selectedModelLabel={selectedModelLabel}
+            selectedModelReasoningEffort={selectedModelReasoningEffort}
           />
           <AppApprovalBar style="margin: auto" data-approval hidden={threadView.approvalMessage === ""} message={threadView.approvalMessage} />
           <AppQuizBar style="margin: auto" data-quiz hidden={threadView.quizQuestion === ""} question={threadView.quizQuestion} options={threadView.quizOptions} />

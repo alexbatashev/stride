@@ -133,7 +133,7 @@ test('nested first-paint work fold hydrates and opens', async ({ browser, page }
     button.click();
     return {
       expanded: button.getAttribute('aria-expanded'),
-      commentary: work.shadowRoot.querySelector('auto-markdown')?.shadowRoot.textContent,
+      commentary: work.shadowRoot.querySelector('auto-markdown')?.textContent,
       tool: work.shadowRoot.querySelector('app-tool-cluster')?.shadowRoot.querySelector('app-tool-activity')?.shadowRoot.textContent,
     };
   });
@@ -249,7 +249,7 @@ test('one work fold owns reasoning and tools through 100 browser updates', async
 
     return {
       ok: true,
-      commentary: work.shadowRoot.querySelector('auto-markdown').shadowRoot.textContent,
+      commentary: work.shadowRoot.querySelector('auto-markdown').textContent,
       tool: tool.shadowRoot.textContent,
     };
   });

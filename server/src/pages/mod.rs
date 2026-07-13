@@ -18,10 +18,34 @@ use crate::components::{
 
 fn argon_thread_page_data(data: ThreadPageData) -> ArgonThreadPageData {
     let running = data.running;
+    let selected_model = data
+        .models
+        .iter()
+        .find(|model| model.key == data.selected_model)
+        .or_else(|| data.models.first());
+    let selected_model_label = selected_model
+        .map(|model| model.display_name.clone())
+        .unwrap_or_else(|| "Choose model".to_string());
+    let selected_model_reasoning_effort = selected_model
+        .and_then(|model| model.reasoning_effort.clone())
+        .unwrap_or_default();
+    let models = data
+        .models
+        .into_iter()
+        .map(|model| crate::components::model_option::ModelOption {
+            value: model.key,
+            label: model.display_name,
+            description: model.description,
+            vision: model.vision,
+        })
+        .collect();
     ArgonThreadPageData {
         thread_id: data.thread_id,
         current_title: data.current_title,
         selected_model: data.selected_model,
+        models,
+        selected_model_label,
+        selected_model_reasoning_effort,
         running,
         projects: data
             .projects
@@ -246,6 +270,11 @@ fn chat_timeline(messages: Vec<MessageTemplateData>) -> Vec<TimelineMessage> {
 }
 
 fn content_timeline_message(message: &MessageTemplateData, message_type: &str) -> TimelineMessage {
+    let content = if message.format == "html" {
+        stride_agent::HtmlFormattingSanitizer::sanitize_complete(&message.content)
+    } else {
+        message.content.clone()
+    };
     TimelineMessage {
         id: message.id.clone(),
         seq: message.seq as f64,
@@ -253,7 +282,7 @@ fn content_timeline_message(message: &MessageTemplateData, message_type: &str) -
         role: message.role.to_string(),
         message_type: message_type.to_string(),
         format: message.format.to_string(),
-        content: message.content.clone(),
+        content,
         thinking: message.thinking.clone().unwrap_or_default(),
         tool_name: String::new(),
         tool_detail: String::new(),
@@ -560,6 +589,16 @@ mod tests {
             thread_id: "thread-1".to_string(),
             current_title: "Current thread".to_string(),
             selected_model: "fast".to_string(),
+            models: vec![crate::model_registry::ModelSummary {
+                key: "fast".to_string(),
+                slug: "fast-model".to_string(),
+                display_name: "Fast".to_string(),
+                description: "".to_string(),
+                source: "config",
+                provider: "test".to_string(),
+                vision: false,
+                reasoning_effort: Some("high".to_string()),
+            }],
             running: true,
             projects: vec![ProjectTemplateData {
                 id: "project-1".to_string(),
@@ -600,7 +639,7 @@ mod tests {
                     tool_name: None,
                     tool_call_id: None,
                     tool_calls: Vec::new(),
-                    content: "hello & <world>".to_string(),
+                    content: "<p onclick=\"bad()\">hello & <strong>world</strong></p><script>bad</script>".to_string(),
                     thinking: None,
                     has_thinking: false,
                 },
@@ -655,12 +694,21 @@ mod tests {
         assert!(html.contains("<app-work-group"));
         assert!(html.contains(r#"data-label="Worked for 2s""#));
         assert!(!html.contains(r#"data-message-id="message-2""#));
-        assert!(html.contains("hello &amp; &lt;world&gt;"));
+        assert!(
+            html.contains(
+                "&lt;p&gt;hello &amp;amp; &lt;strong&gt;world&lt;/strong&gt;&lt;/p&gt;bad"
+            )
+        );
+        assert!(!html.contains("onclick"));
+        assert!(!html.contains("<script>bad</script>"));
         assert!(html.contains(r#"data-message-id="message-3""#));
         assert!(html.contains("Here's Research &amp; Web"));
         assert!(html.contains("A &amp; B"));
         assert!(html.contains(r#"data-running="true""#));
         assert!(html.contains(r#"data-prompt"#));
+        assert!(html.contains(r#"data-selected-model-label="Fast""#));
+        assert!(html.contains(r#"data-selected-model-reasoning-effort="high""#));
+        assert!(html.contains(r#"&quot;label&quot;:&quot;Fast&quot;"#));
         assert!(html.contains(r#"data-approval hidden"#));
         assert!(html.contains(r#"data-quiz hidden"#));
         assert!(html.contains(r#"<app-side-panel"#));

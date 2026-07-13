@@ -85,6 +85,7 @@ pub struct ThreadPageData {
     pub thread_id: String,
     pub current_title: String,
     pub selected_model: String,
+    pub models: Vec<model_registry::ModelSummary>,
     pub running: bool,
     pub projects: Vec<ProjectTemplateData>,
     pub ungrouped_threads: Vec<ThreadTemplateData>,
@@ -504,6 +505,9 @@ pub async fn thread_page_data(
     let owner = auth::authenticated_user(state, headers).await?;
     let all_threads = thread_summaries(state, owner).await?;
     let all_projects = project_summaries(state, owner).await?;
+    let models = model_registry::list_available_models(&state.config, &state.db, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
 
     let current_title = thread_id
         .and_then(|id| {
@@ -559,6 +563,7 @@ pub async fn thread_page_data(
         thread_id: thread_id.map(|id| id.to_string()).unwrap_or_default(),
         current_title,
         selected_model,
+        models,
         running,
         projects,
         ungrouped_threads,

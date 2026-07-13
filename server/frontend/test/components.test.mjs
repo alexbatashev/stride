@@ -177,87 +177,95 @@ test('app-sidebar collapse keeps rail icons left aligned during width transition
   assert.doesNotMatch(css, /justify-content:\s*center/);
 });
 
-test('app-message renders html for agent text', () => {
+test('app-message renders html for agent text', async () => {
   const el = mount('app-message', { kind: 'agent', format: 'html', text: '<p>plain <strong>bold</strong> text</p>' });
+  await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
   assert.ok(html);
-  assert.match(html.shadowRoot.innerHTML, /<strong>bold<\/strong>/);
+  assert.match(html.innerHTML, /<strong>bold<\/strong>/);
 });
 
-test('app-message escaped text stays text in html renderer', () => {
+test('app-message escaped text stays text in html renderer', async () => {
   const el = mount('app-message', { kind: 'agent', format: 'html', text: 'a &lt;tag&gt; &amp; more' });
+  await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
-  assert.equal(html.shadowRoot.querySelector('tag'), null);
-  assert.match(html.shadowRoot.textContent, /a <tag> & more/);
+  assert.equal(html.querySelector('tag'), null);
+  assert.match(html.textContent, /a <tag> & more/);
 });
 
-test('app-message decodes escaped html code blocks as text', () => {
+test('app-message decodes escaped html code blocks as text', async () => {
   const el = mount('app-message', {
     kind: 'agent',
     format: 'html',
     text: '<pre><code>#include &amp;lt;stdio.h&amp;gt;\n&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;</code></pre>',
   });
+  await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
-  const code = html.shadowRoot.querySelector('pre code');
+  const code = html.querySelector('pre code');
   assert.equal(code?.textContent, '#include <stdio.h>\n<script>alert(1)</script>');
-  assert.equal(html.shadowRoot.querySelector('script'), null);
+  assert.equal(html.querySelector('script'), null);
 });
 
-test('app-message sanitizes html renderer output defensively', () => {
+test('app-message sanitizes html renderer output defensively', async () => {
   const el = mount('app-message', {
     kind: 'agent',
     format: 'html',
     text: '<p onclick="alert(1)">ok <strong data-x="1">bold</strong></p><script>alert(1)</script><a href="javascript:alert(1)" onclick="x()">bad</a><a href="/safe?q=1&amp;x=2">safe</a><iframe src="https://evil.example/widget.html"></iframe><img src="javascript:alert(1)" onerror="x()" alt="A">',
   });
+  await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
-  assert.equal(html.shadowRoot.querySelector('script'), null);
-  assert.equal(html.shadowRoot.querySelector('p')?.hasAttribute('onclick'), false);
-  assert.equal(html.shadowRoot.querySelector('strong')?.hasAttribute('data-x'), false);
-  assert.equal(html.shadowRoot.querySelector('a')?.hasAttribute('href'), false);
-  assert.equal(html.shadowRoot.querySelector('a[href="/safe?q=1&x=2"]')?.getAttribute('rel'), 'noopener noreferrer');
-  assert.equal(html.shadowRoot.querySelector('iframe'), null);
-  assert.equal(html.shadowRoot.querySelector('img'), null);
+  assert.equal(html.querySelector('script'), null);
+  assert.equal(html.querySelector('p')?.hasAttribute('onclick'), false);
+  assert.equal(html.querySelector('strong')?.hasAttribute('data-x'), false);
+  assert.equal(html.querySelector('a')?.hasAttribute('href'), false);
+  assert.equal(html.querySelector('a[href="/safe?q=1&x=2"]')?.getAttribute('rel'), 'noopener noreferrer');
+  assert.equal(html.querySelector('iframe'), null);
+  assert.equal(html.querySelector('img'), null);
 });
 
-test('app-message renders markdown for agent text by default', () => {
+test('app-message renders markdown for agent text by default', async () => {
   const el = mount('app-message', { kind: 'agent', text: '# Title\n\nHello **boss**' });
+  await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
   assert.ok(html);
-  assert.equal(html.shadowRoot.querySelector('h1')?.textContent, 'Title');
-  assert.equal(html.shadowRoot.querySelector('strong')?.textContent, 'boss');
+  assert.equal(html.querySelector('h1')?.textContent, 'Title');
+  assert.equal(html.querySelector('strong')?.textContent, 'boss');
 });
 
-test('app-message decodes escaped markdown text before rendering', () => {
+test('app-message decodes escaped markdown text before rendering', async () => {
   const el = mount('app-message', {
     kind: 'agent',
     text: 'That&#39;s the proof of concept right there\n\n```c\n#include &lt;stdio.h&gt;\n```',
   });
+  await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
-  assert.match(html.shadowRoot.textContent, /That's the proof of concept right there/);
-  assert.equal(html.shadowRoot.querySelector('pre code')?.textContent, '#include <stdio.h>');
+  assert.match(html.textContent, /That's the proof of concept right there/);
+  assert.equal(html.querySelector('pre code')?.textContent, '#include <stdio.h>');
 });
 
-test('app-message renders markdown tables', () => {
+test('app-message renders markdown tables', async () => {
   const el = mount('app-message', {
     kind: 'agent',
     text: '| Name | Meaning |\n| --- | --- |\n| **A** | `alpha` |\n| B | beta |',
   });
+  await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
-  const table = html.shadowRoot.querySelector('table');
+  const table = html.querySelector('table');
   assert.ok(table);
   assert.equal(table.querySelectorAll('thead th').length, 2);
   assert.equal(table.querySelector('tbody tr:first-child td:first-child strong')?.textContent, 'A');
   assert.equal(table.querySelector('tbody tr:first-child td:last-child code')?.textContent, 'alpha');
 });
 
-test('app-message wraps html tables for horizontal scrolling', () => {
+test('app-message wraps html tables for horizontal scrolling', async () => {
   const el = mount('app-message', {
     kind: 'agent',
     format: 'html',
     text: '<table><tr><th>First</th><th>Second</th></tr><tr><td>A</td><td>B</td></tr></table>',
   });
+  await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
-  const wrap = html.shadowRoot.querySelector('.table-wrap');
+  const wrap = html.querySelector('.table-wrap');
   assert.ok(wrap);
   assert.equal(wrap.querySelector('table')?.tagName, 'TABLE');
 });
@@ -359,7 +367,7 @@ test('work group owns reasoning and tool disclosures without remounting during s
   }
 
   assert.match(tool.shadowRoot.innerHTML, /token 20/);
-  assert.match(el.shadowRoot.querySelector('auto-markdown').shadowRoot.textContent, /Checking the source 20/);
+  assert.match(el.shadowRoot.querySelector('auto-markdown').textContent, /Checking the source 20/);
 });
 
 test('app-prompt-input submits on Enter and clears', () => {
