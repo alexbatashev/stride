@@ -95,11 +95,13 @@ const styles = css`
     padding: 0;
   }
   :host([size="settings"]) .header {
+    align-items: center;
     border-bottom: 1px solid var(--border);
-    gap: 3px;
-    min-height: 64px;
-    padding: 13px 52px 12px 20px;
+    min-height: 48px;
+    padding: 0 52px 0 20px;
   }
+  :host([size="settings"]) .title { font-size: 1.125rem; line-height: 1; }
+  :host([size="settings"]) .close { top: 12px; }
   :host([size="settings"]) .content { flex: 1; min-height: 0; overflow: hidden; }
 
   :host([size="fullscreen"]) .overlay { padding: 0; }
@@ -202,7 +204,7 @@ const styles = css`
       max-height: none;
       max-width: none;
     }
-    :host([size="settings"]) .header { min-height: 60px; padding-left: 16px; }
+    :host([size="settings"]) .header { padding-left: 16px; }
   }
 `;
 

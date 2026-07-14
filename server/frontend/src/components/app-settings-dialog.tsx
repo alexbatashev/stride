@@ -34,7 +34,11 @@ function applySettingsUrl(): void {
   for (const key of ["settings", "section", "github", "google"]) {
     url.searchParams.delete(key);
   }
-  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  window.history.replaceState(
+    null,
+    "",
+    `${url.pathname}${url.search}${url.hash}`,
+  );
 }
 
 export function AppSettingsDialog(): Component {
@@ -44,7 +48,6 @@ export function AppSettingsDialog(): Component {
     <AppDialog
       open={settings.open}
       title="Settings"
-      description="Manage how S.T.R.I.D.E. connects, remembers, and works."
       size="settings"
       dialogId="settings"
       on:close={() => {

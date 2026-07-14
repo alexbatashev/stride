@@ -140,20 +140,32 @@ test('settings dialog follows the shadcn desktop structure and leaves background
     const host = document.querySelector('app-settings-dialog');
     const primitive = host.shadowRoot.querySelector('app-dialog');
     const dialog = primitive.shadowRoot.querySelector('.dialog').getBoundingClientRect();
+    const header = primitive.shadowRoot.querySelector('.header').getBoundingClientRect();
+    const title = primitive.shadowRoot.querySelector('.title').getBoundingClientRect();
     const settings = primitive.querySelector('app-settings');
-    const tabs = settings.shadowRoot.querySelector('.tabs').getBoundingClientRect();
-    const panels = settings.shadowRoot.querySelector('.panels').getBoundingClientRect();
+    const tabsElement = settings.shadowRoot.querySelector('.tabs');
+    const panelsElement = settings.shadowRoot.querySelector('.panels');
+    const tabs = tabsElement.getBoundingClientRect();
+    const panels = panelsElement.getBoundingClientRect();
     return {
       dialogWidth: dialog.width,
+      headerHeight: header.height,
+      headerCenter: header.top + header.height / 2,
+      titleCenter: title.top + title.height / 2,
       tabsRight: tabs.right,
       panelsLeft: panels.left,
+      tabsBackground: getComputedStyle(tabsElement).backgroundColor,
+      panelsBackground: getComputedStyle(panelsElement).backgroundColor,
       ticks: window.__backgroundTicks,
       cards: settings.shadowRoot.querySelectorAll('app-card').length,
     };
   });
 
   expect(geometry.dialogWidth).toBeGreaterThan(800);
+  expect(geometry.headerHeight).toBe(48);
+  expect(Math.abs(geometry.headerCenter - geometry.titleCenter)).toBeLessThanOrEqual(0.5);
   expect(geometry.tabsRight).toBeLessThanOrEqual(geometry.panelsLeft + 1);
+  expect(geometry.tabsBackground).toBe(geometry.panelsBackground);
   expect(geometry.cards).toBe(0);
   await page.waitForTimeout(30);
   expect(await page.evaluate(() => window.__backgroundTicks)).toBeGreaterThan(geometry.ticks);

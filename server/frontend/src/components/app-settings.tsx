@@ -33,7 +33,7 @@ const styles = css`
   }
 
   .tabs {
-    background: var(--sidebar-bg, var(--secondary));
+    background: var(--background);
     border-right: 1px solid var(--border);
     box-sizing: border-box;
     display: flex;
@@ -81,6 +81,7 @@ const styles = css`
   }
 
   .panels {
+    background: var(--background);
     box-sizing: border-box;
     min-width: 0;
     overflow-y: auto;
