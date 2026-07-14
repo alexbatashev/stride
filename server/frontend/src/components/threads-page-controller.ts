@@ -102,6 +102,7 @@ class ThreadsPageHydrator {
 	private events: WebSocket | null = null;
 	private pendingApproval: { id: string; message: string } | null = null;
 	private pendingQuiz: PendingQuiz | null = null;
+	private submittingQuizId: string | null = null;
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
 	private reconnectAttempts = 0;
@@ -267,7 +268,7 @@ class ThreadsPageHydrator {
 		this.approvalEl.addEventListener("approval-response", (event) =>
 			void this.onApprovalResponse(event as CustomEvent<{ approved: boolean }>),
 		);
-		this.quizEl.addEventListener("quiz-response", (event) =>
+		this.scope.addEventListener("quiz-response", (event) =>
 			void this.onQuizResponse(event as CustomEvent<{ answer: string }>),
 		);
 		window.addEventListener("popstate", () => {
@@ -348,21 +349,21 @@ class ThreadsPageHydrator {
 			this.running = event.kind.status === "running";
 			threadStream.running = this.running;
 			const firstApproval = event.kind.pending_approvals[0];
-			const firstQuiz = event.kind.pending_quizzes[0];
 			this.pendingApproval = firstApproval
 				? {
 						id: firstApproval.approval_id,
 						message: firstApproval.message,
 					}
 				: null;
-			this.pendingQuiz = firstQuiz
-				? this.createPendingQuiz(
-						firstQuiz.quiz_id,
-						firstQuiz.questions,
-					)
-				: null;
 			threadStream.pendingApprovals = event.kind.pending_approvals.map((approval) => ({id: approval.approval_id, toolCallId: '', message: approval.message}));
 			threadStream.pendingQuizzes = event.kind.pending_quizzes.map((quiz) => ({id: quiz.quiz_id, questions: quiz.questions}));
+			if (!this.pendingQuiz || !threadStream.pendingQuizzes.some((quiz) => quiz.id === this.pendingQuiz?.id)) {
+				this.pendingQuiz = null;
+				this.activateNextQuiz();
+			}
+			if (this.submittingQuizId && !threadStream.pendingQuizzes.some((quiz) => quiz.id === this.submittingQuizId)) {
+				this.submittingQuizId = null;
+			}
 			this.syncComposer();
 			if (event.kind.in_progress?.content) {
 				const partial = event.kind.in_progress;
@@ -586,20 +587,19 @@ class ThreadsPageHydrator {
 
 		if (event.kind.type === 'quiz_requested') {
 			const quizId = event.kind.quiz_id;
-			threadStream.pendingQuizzes = [...threadStream.pendingQuizzes.filter((quiz) => quiz.id !== quizId), {id: quizId, questions: event.kind.questions}];
-			this.pendingQuiz = this.createPendingQuiz(quizId, event.kind.questions);
+			const questions = event.kind.questions;
+			if (threadStream.pendingQuizzes.some((quiz) => quiz.id === quizId)) {
+				threadStream.pendingQuizzes = threadStream.pendingQuizzes.map((quiz) => quiz.id === quizId ? {...quiz, questions} : quiz);
+			} else {
+				threadStream.pendingQuizzes = [...threadStream.pendingQuizzes, {id: quizId, questions}];
+			}
+			this.activateNextQuiz();
 			this.syncComposer();
 			return;
 		}
 
 		if (event.kind.type === 'quiz_answered') {
-			const quizId = event.kind.quiz_id;
-			threadStream.pendingQuizzes = threadStream.pendingQuizzes.filter((quiz) => quiz.id !== quizId);
-			if (this.pendingQuiz?.id === quizId) {
-				const next = threadStream.pendingQuizzes[0];
-				this.pendingQuiz = next ? this.createPendingQuiz(next.id, next.questions) : null;
-			}
-			this.syncComposer();
+			this.completeQuiz(event.kind.quiz_id);
 			return;
 		}
 
@@ -608,6 +608,8 @@ class ThreadsPageHydrator {
 			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
+			this.submittingQuizId = null;
+			threadStream.pendingQuizzes = [];
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
@@ -617,6 +619,8 @@ class ThreadsPageHydrator {
 			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
+			this.submittingQuizId = null;
+			threadStream.pendingQuizzes = [];
 			this.syncComposer();
 			this.setError(event.kind.error);
 			void this.refreshAfterRun();
@@ -628,6 +632,8 @@ class ThreadsPageHydrator {
 			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
+			this.submittingQuizId = null;
+			threadStream.pendingQuizzes = [];
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
@@ -743,6 +749,28 @@ class ThreadsPageHydrator {
 		}
 
 		return { id, questions, index: 0, answers: [] };
+	}
+
+	private activateNextQuiz() {
+		if (this.pendingQuiz) return;
+		while (threadStream.pendingQuizzes.length > 0) {
+			const next = threadStream.pendingQuizzes[0];
+			this.pendingQuiz = this.createPendingQuiz(next.id, next.questions);
+			if (this.pendingQuiz) return;
+			threadStream.pendingQuizzes = threadStream.pendingQuizzes.slice(1);
+		}
+	}
+
+	private completeQuiz(quizId: string) {
+		threadStream.pendingQuizzes = threadStream.pendingQuizzes.filter((quiz) => quiz.id !== quizId);
+		if (this.pendingQuiz?.id === quizId) {
+			this.pendingQuiz = null;
+		}
+		if (this.submittingQuizId === quizId) {
+			this.submittingQuizId = null;
+		}
+		this.activateNextQuiz();
+		this.syncComposer();
 	}
 
 	private async refreshAfterRun() {
@@ -875,6 +903,7 @@ class ThreadsPageHydrator {
 		this.lastEventSeq = 0;
 		this.pendingApproval = null;
 		this.pendingQuiz = null;
+		this.submittingQuizId = null;
 		this.attachedFiles = [];
 		this.setError("");
 
@@ -937,6 +966,7 @@ class ThreadsPageHydrator {
 		threadView.approvalMessage = this.pendingApproval?.message ?? "";
 		threadView.quizQuestion = question?.question ?? "";
 		threadView.quizOptions = question?.options ?? [];
+		threadView.quizSubmitting = this.submittingQuizId === quiz?.id;
 		threadView.error = this.error;
 		this.syncMenuButton();
 	}
@@ -1016,7 +1046,7 @@ class ThreadsPageHydrator {
 	}
 
 	private async onQuizResponse(event: CustomEvent<{ answer: string }>) {
-		if (!this.threadId || !this.pendingQuiz) return;
+		if (!this.threadId || !this.pendingQuiz || this.submittingQuizId) return;
 
 		const quiz = this.pendingQuiz;
 		quiz.answers[quiz.index] = event.detail.answer;
@@ -1027,14 +1057,17 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		this.pendingQuiz = null;
+		this.submittingQuizId = quiz.id;
 		this.syncComposer();
 
 		try {
 			await answerQuiz(this.threadId, quiz.id, quiz.answers);
+			this.completeQuiz(quiz.id);
 		} catch {
-			this.pendingQuiz = quiz;
-			this.setError("Quiz response failed.");
+			if (this.pendingQuiz?.id === quiz.id) {
+				this.submittingQuizId = null;
+				this.setError("Quiz response failed.");
+			}
 		}
 	}
 

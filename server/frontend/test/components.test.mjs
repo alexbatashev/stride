@@ -524,6 +524,109 @@ test('app-quiz-bar submits picked option and custom answer', () => {
   assert.equal(answered.detail.answer, 'Custom');
 });
 
+test('app-quiz-bar disables every answer control while submitting', () => {
+  const el = mount('app-quiz-bar', { question: 'Pick one', options: ['Alpha'], disabled: true });
+  assert.ok(Array.from(el.shadowRoot.querySelectorAll('input, button')).every((control) => control.disabled));
+});
+
+test('threads page keeps quizzes in arrival order and advances after submission', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  const sockets = [];
+  const answerRequests = [];
+  let releaseFirstAnswer;
+
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      sockets.push(this);
+    }
+
+    close() {}
+  }
+
+  globalThis.WebSocket = FakeWebSocket;
+  globalThis.fetch = async (input, init = {}) => {
+    const path = String(input);
+    if (path === '/api/models' || path.endsWith('/messages') || path.endsWith('/agents')) {
+      return new Response('[]', { status: 200 });
+    }
+    if (path.includes('/quizzes/')) {
+      answerRequests.push(JSON.parse(init.body));
+      if (answerRequests.length === 1) {
+        return new Promise((resolve) => {
+          releaseFirstAnswer = () => resolve(new Response(null, { status: 204 }));
+        });
+      }
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+
+  try {
+    const root = document.createElement('div');
+    root.dataset.threadId = 'thread-1';
+    root.dataset.argonServer = JSON.stringify({ data: { running: true, models: [] } });
+    const scope = root.attachShadow({ mode: 'open' });
+    scope.innerHTML = `
+      <span data-current-title>Thread</span>
+      <app-prompt-input data-prompt></app-prompt-input>
+      <app-approval-bar data-approval></app-approval-bar>
+      <app-quiz-bar data-quiz></app-quiz-bar>
+      <app-sidebar></app-sidebar>
+      <app-side-panel data-side-panel></app-side-panel>
+      <app-dialog data-mobile-panel></app-dialog>
+    `;
+    const sidebar = scope.querySelector('app-sidebar');
+    sidebar.projects = [];
+    sidebar.threads = [{ id: 'thread-1', title: 'Thread' }];
+
+    const { mountThreadsPage } = await import('../dist/argon/components/threads-page-controller.js');
+    const { threadView } = await import('../dist/argon/stores/thread-view.js');
+    const { threadStream } = await import('../dist/argon/stores/thread-stream.js');
+    mountThreadsPage(root);
+    await tick();
+    await tick();
+
+    const sendEvent = (seq, kind) => sockets[0].onmessage({ data: JSON.stringify({ seq, thread_id: 'thread-1', run_id: 'run-1', agent_path: [], kind }) });
+    sendEvent(1, { type: 'snapshot', status: 'running', in_progress: null, pending_approvals: [], pending_quizzes: [] });
+    sendEvent(2, { type: 'quiz_requested', quiz_id: 'quiz-1', questions: [
+      { question: 'First question', options: ['A'] },
+      { question: 'First follow-up', options: ['B'] },
+    ] });
+    sendEvent(3, { type: 'quiz_requested', quiz_id: 'quiz-2', questions: [{ question: 'Second quiz', options: ['C'] }] });
+    sendEvent(4, { type: 'quiz_requested', quiz_id: 'quiz-2', questions: [{ question: 'Second quiz', options: ['C'] }] });
+
+    assert.equal(threadView.quizQuestion, 'First question');
+    assert.deepEqual(threadStream.pendingQuizzes.map((quiz) => quiz.id), ['quiz-1', 'quiz-2']);
+
+    const originalQuiz = scope.querySelector('[data-quiz]');
+    const quiz = document.createElement('app-quiz-bar');
+    quiz.dataset.quiz = '';
+    originalQuiz.replaceWith(quiz);
+    quiz.dispatchEvent(new CustomEvent('quiz-response', { bubbles: true, composed: true, detail: { answer: 'A' } }));
+    assert.equal(threadView.quizQuestion, 'First follow-up');
+    quiz.dispatchEvent(new CustomEvent('quiz-response', { bubbles: true, composed: true, detail: { answer: 'B' } }));
+    await tick();
+
+    assert.equal(threadView.quizQuestion, 'First follow-up');
+    assert.equal(threadView.quizSubmitting, true);
+    assert.deepEqual(answerRequests, [{ answers: ['A', 'B'] }]);
+
+    releaseFirstAnswer();
+    await tick();
+    assert.equal(threadView.quizQuestion, 'Second quiz');
+    assert.equal(threadView.quizSubmitting, false);
+    assert.deepEqual(threadStream.pendingQuizzes.map((pending) => pending.id), ['quiz-2']);
+
+    sendEvent(5, { type: 'quiz_answered', quiz_id: 'quiz-1' });
+    assert.equal(threadView.quizQuestion, 'Second quiz');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
 test('app-data-table renders rows and reports selection', () => {
   const rows = [
     { name: 'a.txt', path: 'dir/a.txt', kind: 'file', sizeLabel: '1 KB', updatedLabel: 'Jan 1, 2026' },

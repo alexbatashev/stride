@@ -104,7 +104,7 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
             selectedModelReasoningEffort={selectedModelReasoningEffort}
           />
           <AppApprovalBar style="margin: auto" data-approval hidden={threadView.approvalMessage === ""} message={threadView.approvalMessage} />
-          <AppQuizBar style="margin: auto" data-quiz hidden={threadView.quizQuestion === ""} question={threadView.quizQuestion} options={threadView.quizOptions} />
+          <AppQuizBar style="margin: auto" data-quiz hidden={threadView.quizQuestion === ""} question={threadView.quizQuestion} options={threadView.quizOptions} disabled={threadView.quizSubmitting} />
           <div class="error" data-error>{threadView.error}</div>
         </main>
         <app-side-panel open={sidePanel.open} tabs='[{"value":"files","label":"Files"},{"value":"subagents","label":"Subagents"}]' data-active-tab={sidePanel.tab} data-side-panel>

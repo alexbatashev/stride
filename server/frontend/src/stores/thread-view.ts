@@ -14,5 +14,6 @@ export const threadView = store({
   approvalMessage: "",
   quizQuestion: "",
   quizOptions: [] as string[],
+  quizSubmitting: false,
   error: "",
 });

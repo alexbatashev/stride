@@ -106,6 +106,11 @@ const styles = css`
     outline: none;
   }
 
+  button:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
   @media (max-width: 640px) {
     .footer {
       align-items: stretch;
@@ -133,7 +138,7 @@ function submitAnswer(host: HTMLElement, root: ShadowRoot): void {
   );
 }
 
-export function AppQuizBar({ question = "", options = [] }: { question?: string; options?: string[] }): Component {
+export function AppQuizBar({ question = "", options = [], disabled = false }: { question?: string; options?: string[]; disabled?: boolean }): Component {
   return (
     <>
       <style>{styles}</style>
@@ -144,14 +149,14 @@ export function AppQuizBar({ question = "", options = [] }: { question?: string;
             <div class="options">
               {options.map((option) => (
                 <label>
-                  <input type="radio" name="quiz-option" value={option} />
+                  <input type="radio" name="quiz-option" value={option} disabled={disabled} />
                   <span>{option}</span>
                 </label>
               )).join("")}
             </div>
-            <input type="text" placeholder="Custom answer" />
+            <input type="text" placeholder="Custom answer" disabled={disabled} />
           </div>
-          <button type="button" onClick={() => submitAnswer(this, root)}>Continue</button>
+          <button type="button" disabled={disabled} onClick={() => submitAnswer(this, root)}>Continue</button>
         </div>
       </div>
     </>

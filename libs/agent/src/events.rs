@@ -285,7 +285,7 @@ pub struct InMemoryInteractionBroker {
 #[derive(Default)]
 struct BrokerState {
     approvals: Mutex<HashMap<ApprovalId, PendingApprovalEntry>>,
-    quizzes: Mutex<HashMap<QuizId, PendingQuizEntry>>,
+    quizzes: Mutex<Vec<PendingQuizEntry>>,
 }
 
 struct PendingApprovalEntry {
@@ -295,6 +295,7 @@ struct PendingApprovalEntry {
 }
 
 struct PendingQuizEntry {
+    id: QuizId,
     questions: Vec<QuizQuestion>,
     sender: oneshot::Sender<Vec<String>>,
 }
@@ -333,8 +334,8 @@ impl InMemoryInteractionBroker {
             .lock()
             .unwrap()
             .iter()
-            .map(|(id, entry)| PendingQuizInteraction {
-                id: *id,
+            .map(|entry| PendingQuizInteraction {
+                id: entry.id,
                 questions: entry.questions.clone(),
             })
             .collect()
@@ -371,11 +372,11 @@ impl InteractionBroker for InMemoryInteractionBroker {
         questions: Vec<QuizQuestion>,
     ) -> LocalBoxFuture<'static, Vec<String>> {
         let (sender, receiver) = oneshot::channel();
-        self.inner
-            .quizzes
-            .lock()
-            .unwrap()
-            .insert(id, PendingQuizEntry { questions, sender });
+        self.inner.quizzes.lock().unwrap().push(PendingQuizEntry {
+            id,
+            questions,
+            sender,
+        });
         async move { receiver.await.unwrap_or_default() }.boxed_local()
     }
 
@@ -389,12 +390,11 @@ impl InteractionBroker for InMemoryInteractionBroker {
     }
 
     fn answer_quiz(&self, id: QuizId, answers: Vec<String>) -> bool {
-        self.inner
-            .quizzes
-            .lock()
-            .unwrap()
-            .remove(&id)
-            .is_some_and(|entry| entry.sender.send(answers).is_ok())
+        let mut quizzes = self.inner.quizzes.lock().unwrap();
+        let Some(index) = quizzes.iter().position(|entry| entry.id == id) else {
+            return false;
+        };
+        quizzes.remove(index).sender.send(answers).is_ok()
     }
 }
 
@@ -431,6 +431,49 @@ mod tests {
         assert_eq!(broker.pending_quizzes().len(), 1);
         assert!(broker.answer_quiz(id, vec!["blue".to_owned()]));
         assert_eq!(block_on(response), vec!["blue"]);
+    }
+
+    #[test]
+    fn pending_quizzes_keep_request_order_when_answered_by_id() {
+        let broker = InMemoryInteractionBroker::default();
+        let first_id = Uuid::from_u128(10);
+        let second_id = Uuid::from_u128(5);
+        let first = broker.request_quiz(
+            first_id,
+            vec![QuizQuestion {
+                question: "First?".to_owned(),
+                options: Vec::new(),
+            }],
+        );
+        let second = broker.request_quiz(
+            second_id,
+            vec![QuizQuestion {
+                question: "Second?".to_owned(),
+                options: Vec::new(),
+            }],
+        );
+
+        assert_eq!(
+            broker
+                .pending_quizzes()
+                .iter()
+                .map(|quiz| quiz.id)
+                .collect::<Vec<_>>(),
+            vec![first_id, second_id]
+        );
+
+        assert!(broker.answer_quiz(second_id, vec!["two".to_owned()]));
+        assert_eq!(
+            broker
+                .pending_quizzes()
+                .iter()
+                .map(|quiz| quiz.id)
+                .collect::<Vec<_>>(),
+            vec![first_id]
+        );
+        assert_eq!(block_on(second), vec!["two"]);
+        assert!(broker.answer_quiz(first_id, vec!["one".to_owned()]));
+        assert_eq!(block_on(first), vec!["one"]);
     }
 
     #[test]
