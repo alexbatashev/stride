@@ -46,6 +46,7 @@ argon_module!(threads_page_view);
 argon_module!(shell_page_view);
 
 argon_module!(archive);
+argon_module!(arrow_down);
 argon_module!(arrow_up);
 argon_module!(bot_message_square);
 argon_module!(chevron_down);
