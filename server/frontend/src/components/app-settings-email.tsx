@@ -161,7 +161,7 @@ export function AppSettingsEmail(): Component {
   return (
     <>
       <style>{styles}</style>
-      <app-card
+      <app-settings-section
         title="Email accounts"
         description="Connect one or more TLS IMAP accounts. S.T.R.I.D.E. can read incoming and sent mail and save reply-all drafts. It cannot send email."
       >
@@ -198,9 +198,9 @@ export function AppSettingsEmail(): Component {
             </div>
           )
           : <p class="muted">{loaded ? "No IMAP accounts yet." : "Loading accounts..."}</p>}
-      </app-card>
+      </app-settings-section>
 
-      <app-card title="Add IMAP server" description="The connection is verified before it is saved. Credentials are encrypted at rest.">
+      <app-settings-section title="Add IMAP server" description="The connection is verified before it is saved. Credentials are encrypted at rest.">
         <form
           onSubmit={(event: Event) => {
             event.preventDefault();
@@ -237,10 +237,10 @@ export function AppSettingsEmail(): Component {
               <label>Drafts<input name="drafts_mailbox" value="Drafts" required /></label>
             </div>
           </details>
-          <div class="actions"><app-button>Add account</app-button></div>
+          <div class="actions"><app-button type="submit">Add account</app-button></div>
           <p class="error">{error}</p>
         </form>
-      </app-card>
+      </app-settings-section>
     </>
   );
 }

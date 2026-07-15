@@ -547,6 +547,46 @@ migrations! {
         raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_seq ON thread_events(thread_id, seq)";
         raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_run ON thread_events(thread_id, run_id)";
     }
+
+    message_agent_path {
+        // Marks a message as belonging to a subagent: `agent_path` is the
+        // slash-joined UUID path (same encoding as `thread_events.agent_path`).
+        // NULL = root agent. Existing rows are all root, so NULL is correct.
+        alter table messages {
+            add agent_path: Option<String>;
+        }
+
+        raw "CREATE INDEX IF NOT EXISTS idx_messages_thread_agent ON messages(parent_thread, agent_path)";
+    }
+
+    thread_agents_registry {
+        // One row per subagent spawned in a thread. Drives the Subagents side
+        // panel: human-readable `name`, `model`, live `finished`/`result`, and
+        // `agent_path` (this agent's full path, slash-joined UUIDs) for nesting.
+        table thread_agents {
+            agent_id: Uuid [PrimaryKey],
+            thread_id: Uuid,
+            agent_path: String,
+            parent_tool_call_id: Option<String>,
+            name: String,
+            model: String,
+            result: Option<String>,
+            finished: bool,
+            created_at: i64,
+
+            foreign_key(thread_id -> threads.id);
+        }
+
+        raw "CREATE INDEX IF NOT EXISTS idx_thread_agents_thread ON thread_agents(thread_id)";
+    }
+
+    user_full_name {
+        alter table users {
+            add full_name: Option<String>;
+        }
+
+        raw "UPDATE users SET full_name = username WHERE full_name IS NULL";
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema
@@ -727,5 +767,40 @@ impl From<RunStatus> for Value {
 impl IntoValue for RunStatus {
     fn into_value(self) -> Value {
         self.into()
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use minisql::{ConnectionPool, Value};
+
+    #[tokio::test]
+    async fn full_name_migration_backfills_username() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        let migrations = super::get_migrations();
+        db.initialize_database(migrations[..migrations.len() - 1].to_vec())
+            .await
+            .unwrap();
+        db.query_with_params(
+            "INSERT INTO users (id, username, password_hash, personality) VALUES (?, ?, ?, ?)",
+            vec![
+                Value::Uuid(uuid::Uuid::new_v4()),
+                Value::Text("alice".to_string()),
+                Value::Text("hash".to_string()),
+                Value::Null,
+            ],
+        )
+        .await
+        .unwrap();
+
+        db.initialize_database(migrations).await.unwrap();
+
+        let rows = db
+            .query("SELECT username, full_name FROM users")
+            .await
+            .unwrap();
+        let row = rows.rows().first().unwrap();
+        assert_eq!(row.get_text("username"), Some("alice"));
+        assert_eq!(row.get_text("full_name"), Some("alice"));
     }
 }

@@ -20,13 +20,13 @@ const styles = css`
   }
 
   input::-webkit-slider-runnable-track {
-    background: var(--muted, #f4f4f5);
+    background: linear-gradient(to right, var(--primary) 0 var(--slider-value, 50%), var(--muted) var(--slider-value, 50%) 100%);
     border-radius: 999px;
     height: 6px;
   }
 
   input::-moz-range-track {
-    background: var(--muted, #f4f4f5);
+    background: linear-gradient(to right, var(--primary) 0 var(--slider-value, 50%), var(--muted) var(--slider-value, 50%) 100%);
     border-radius: 999px;
     height: 6px;
   }
@@ -57,6 +57,9 @@ const styles = css`
     cursor: not-allowed;
     opacity: 0.5;
   }
+
+  :host([orientation="vertical"]) { display: inline-block; height: 176px; width: auto; }
+  :host([orientation="vertical"]) input { height: 176px; width: 16px; writing-mode: vertical-lr; direction: rtl; }
 `;
 
 export function AppSlider({
@@ -65,17 +68,26 @@ export function AppSlider({
   step = "1",
   value = "50",
   disabled = false,
+  orientation = "horizontal",
 }: {
   min?: string;
   max?: string;
   step?: string;
   value?: string;
   disabled?: boolean;
+  orientation?: string;
 }): Component {
   const input = ref<HTMLInputElement>();
   effect(() => {
     const el = input.current;
-    if (el) el.toggleAttribute("disabled", disabled);
+    if (!el) return;
+    el.toggleAttribute("disabled", disabled);
+    const low = Number(min);
+    const high = Number(max);
+    const current = Number(value);
+    const percentage = high > low ? Math.max(0, Math.min(100, ((current - low) / (high - low)) * 100)) : 0;
+    el.style.setProperty("--slider-value", `${percentage}%`);
+    this.setAttribute("orientation", orientation);
   });
   return (
     <>

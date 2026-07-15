@@ -8,6 +8,8 @@ use axum::{
 use uuid::Uuid;
 
 use crate::components::{
+    settings::Stores as SettingsStores,
+    side_panel::Stores as SidePanelStores,
     thread_view::Stores as ThreadViewStores,
     threads_page_view::{RenderStores, ThreadsPageView, ThreadsPageViewServer},
     ui::Stores as UiStores,
@@ -61,8 +63,13 @@ async fn render_threads(
     let thread_id = thread_id.map(|id| id.to_string()).unwrap_or_default();
     let mut ui_stores = UiStores::default();
     ui_stores.sidebar.active_thread = thread_id.clone();
+    ui_stores.sidebar.status = super::sidebar_status(&headers).to_string();
     let thread_view_stores = ThreadViewStores::default();
+    let side_panel_stores = SidePanelStores::default();
+    let settings_stores = SettingsStores::default();
     let stores = RenderStores {
+        settings: &settings_stores,
+        side_panel: &side_panel_stores,
         thread_view: &thread_view_stores,
         ui: &ui_stores,
     };
@@ -73,6 +80,8 @@ async fn render_threads(
     let store_payload = super::combine_store_snapshots(&[
         ui_stores.snapshot_json(),
         thread_view_stores.snapshot_json(),
+        side_panel_stores.snapshot_json(),
+        settings_stores.snapshot_json(),
     ]);
     let opts = super::argon_document_opts("S.T.R.I.D.E.", &store_payload);
 

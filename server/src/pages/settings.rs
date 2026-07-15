@@ -1,17 +1,23 @@
-use std::sync::Arc;
+use axum::response::Redirect;
 
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::{Html, IntoResponse, Redirect, Response},
-};
+pub async fn settings() -> Redirect {
+    Redirect::temporary("/threads?settings=open")
+}
 
-use crate::{ServerState, api::threads};
+#[cfg(test)]
+mod tests {
+    use axum::{http::header, response::IntoResponse};
 
-pub async fn settings(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    match super::render_shell_page(state, headers, "settings", "Settings - S.T.R.I.D.E.").await {
-        Ok(html) => Html(html).into_response(),
-        Err(threads::ThreadApiError::Auth(_)) => Redirect::to("/auth/login").into_response(),
-        Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    #[tokio::test]
+    async fn legacy_settings_route_opens_the_dialog_on_threads() {
+        let response = super::settings().await.into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::TEMPORARY_REDIRECT
+        );
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/threads?settings=open"
+        );
     }
 }

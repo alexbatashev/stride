@@ -22,7 +22,9 @@ use crate::{
         auth::{self, AuthError},
         projects::ProjectResponse,
     },
-    db::{MessageFormat, Role, messages, projects, thread_events, threads, user_models},
+    db::{
+        MessageFormat, Role, messages, projects, thread_agents, thread_events, threads, user_models,
+    },
     model_registry,
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, AgentRequest, RunId, ThreadSnapshot,
@@ -49,18 +51,43 @@ pub struct ThreadResponse {
 pub struct MessageResponse {
     id: String,
     seq: u64,
+    created_at: i64,
     role: &'static str,
     format: &'static str,
     content: String,
     thinking: Option<String>,
     tool_call_name: Option<String>,
+    tool_call_id: Option<String>,
+    tool_calls: Vec<ToolCallResponse>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ToolCallResponse {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Serialize)]
+pub struct AgentResponse {
+    pub agent_id: String,
+    pub agent_path: String,
+    pub parent_tool_call_id: Option<String>,
+    pub name: String,
+    pub model: String,
+    pub result: Option<String>,
+    pub finished: bool,
+    pub created_at: i64,
 }
 
 #[derive(Serialize)]
 pub struct ThreadPageData {
+    pub username: String,
+    pub full_name: String,
     pub thread_id: String,
     pub current_title: String,
     pub selected_model: String,
+    pub models: Vec<model_registry::ModelSummary>,
     pub running: bool,
     pub projects: Vec<ProjectTemplateData>,
     pub ungrouped_threads: Vec<ThreadTemplateData>,
@@ -85,10 +112,13 @@ pub struct ThreadTemplateData {
 pub struct MessageTemplateData {
     pub id: String,
     pub seq: u64,
+    pub created_at: i64,
     pub role: &'static str,
     pub format: &'static str,
     pub message_type: &'static str,
     pub tool_name: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub tool_calls: Vec<ToolCallResponse>,
     pub content: String,
     pub thinking: Option<String>,
     pub has_thinking: bool,
@@ -389,6 +419,12 @@ pub(crate) async fn hard_delete_thread(
         .await
         .map_err(|_| ThreadApiError::Internal)?;
 
+    thread_agents::delete()
+        .where_(thread_agents::thread_id.eq(thread_id))
+        .execute(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
     // Telegram bridge rows carry unique foreign keys onto the thread; drop them
     // before the thread row. Best-effort: absent tables/rows are not an error.
     let _ = state
@@ -469,8 +505,14 @@ pub async fn thread_page_data(
     thread_id: Option<Uuid>,
 ) -> Result<ThreadPageData, ThreadApiError> {
     let owner = auth::authenticated_user(state, headers).await?;
+    let profile = crate::api::personal::load(state, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
     let all_threads = thread_summaries(state, owner).await?;
     let all_projects = project_summaries(state, owner).await?;
+    let models = model_registry::list_available_models(&state.config, &state.db, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
 
     let current_title = thread_id
         .and_then(|id| {
@@ -523,9 +565,12 @@ pub async fn thread_page_data(
         .collect();
 
     Ok(ThreadPageData {
+        username: profile.username,
+        full_name: profile.full_name,
         thread_id: thread_id.map(|id| id.to_string()).unwrap_or_default(),
         current_title,
         selected_model,
+        models,
         running,
         projects,
         ungrouped_threads,
@@ -537,10 +582,13 @@ pub async fn thread_page_data(
                 MessageTemplateData {
                     id: message.id,
                     seq: message.seq,
+                    created_at: message.created_at,
                     role: message.role,
                     format: message.format,
                     message_type,
                     tool_name,
+                    tool_call_id: message.tool_call_id,
+                    tool_calls: message.tool_calls,
                     content: message.content,
                     thinking: message.thinking,
                     has_thinking,
@@ -851,9 +899,85 @@ pub async fn list_messages(
     Ok(Json(thread_messages(&state, thread_id).await?))
 }
 
+/// Lists every subagent spawned in a thread, most recent first. Drives the
+/// Subagents side panel.
+pub async fn list_agents(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(thread_id): Path<Uuid>,
+) -> Result<Json<Vec<AgentResponse>>, ThreadApiError> {
+    require_thread_owner(&state, &headers, thread_id).await?;
+
+    let rows = thread_agents::select()
+        .where_(thread_agents::thread_id.eq(thread_id))
+        .order_by_desc(thread_agents::created_at)
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| AgentResponse {
+                agent_id: row.agent_id.to_string(),
+                agent_path: row.agent_path,
+                parent_tool_call_id: row.parent_tool_call_id,
+                name: row.name,
+                model: row.model,
+                result: row.result,
+                finished: row.finished,
+                created_at: row.created_at,
+            })
+            .collect(),
+    ))
+}
+
+/// Returns one subagent's transcript: every message whose `agent_path` is the
+/// agent's path or a descendant of it (so nested grandchildren are included).
+pub async fn agent_messages(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path((thread_id, agent_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Vec<MessageResponse>>, ThreadApiError> {
+    require_thread_owner(&state, &headers, thread_id).await?;
+
+    let agent = thread_agents::select()
+        .where_(
+            thread_agents::agent_id
+                .eq(agent_id)
+                .and(thread_agents::thread_id.eq(thread_id)),
+        )
+        .all(&state.db)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?
+        .into_iter()
+        .next()
+        .ok_or(ThreadApiError::NotFound)?;
+
+    let path = agent.agent_path;
+    let descendant_prefix = format!("{path}/");
+    let messages = messages_where(&state, thread_id, |candidate| {
+        matches!(candidate, Some(candidate)
+            if candidate == path || candidate.starts_with(&descendant_prefix))
+    })
+    .await?;
+    Ok(Json(messages))
+}
+
 async fn thread_messages(
     state: &ServerState,
     thread_id: Uuid,
+) -> Result<Vec<MessageResponse>, ThreadApiError> {
+    // Root-only: subagent messages carry a non-null `agent_path` and are served
+    // by the Subagents endpoints, never mixed into the main chat.
+    messages_where(state, thread_id, |path| path.is_none()).await
+}
+
+/// Loads a thread's messages, keeps the ones whose `agent_path` satisfies
+/// `keep`, and maps them to the shared [`MessageResponse`] shape.
+async fn messages_where(
+    state: &ServerState,
+    thread_id: Uuid,
+    keep: impl Fn(Option<&str>) -> bool,
 ) -> Result<Vec<MessageResponse>, ThreadApiError> {
     let rows = messages::select()
         .where_(messages::parent_thread.eq(thread_id))
@@ -864,14 +988,22 @@ async fn thread_messages(
 
     Ok(rows
         .into_iter()
-        .map(|row| MessageResponse {
-            id: row.id.to_string(),
-            seq: row.seq,
-            role: role_name(row.role),
-            format: message_format_name(row.content_format.unwrap_or(MessageFormat::Markdown)),
-            content: row.content,
-            thinking: row.thinking,
-            tool_call_name: tool_call_name(row.tool_calls.as_deref()),
+        .filter(|row| keep(row.agent_path.as_deref()))
+        .map(|row| {
+            let tool_calls = tool_calls(row.tool_calls.as_deref());
+            let tool_call_name = tool_calls.first().map(|call| call.name.clone());
+            MessageResponse {
+                id: row.id.to_string(),
+                seq: row.seq,
+                created_at: uuid_v7_ms(row.id),
+                role: role_name(row.role),
+                format: message_format_name(row.content_format.unwrap_or(MessageFormat::Markdown)),
+                content: row.content,
+                thinking: row.thinking,
+                tool_call_name,
+                tool_call_id: row.tool_call_id,
+                tool_calls,
+            }
         })
         .filter(|message| {
             message.role != "agent"
@@ -1316,12 +1448,24 @@ fn message_template_type(message: &MessageResponse) -> (&'static str, Option<Str
     }
 }
 
-fn tool_call_name(tool_calls: Option<&str>) -> Option<String> {
-    let calls: Vec<llm::ToolCallChunk> = serde_json::from_str(tool_calls?).ok()?;
+fn tool_calls(tool_calls: Option<&str>) -> Vec<ToolCallResponse> {
+    let Some(tool_calls) = tool_calls else {
+        return Vec::new();
+    };
+    let Ok(calls) = serde_json::from_str::<Vec<llm::ToolCallChunk>>(tool_calls) else {
+        return Vec::new();
+    };
     calls
-        .first()
-        .and_then(|call| call.function.as_ref())
-        .and_then(|function| function.name.clone())
+        .into_iter()
+        .filter_map(|call| {
+            let function = call.function?;
+            Some(ToolCallResponse {
+                id: call.id?,
+                name: function.name?,
+                arguments: function.arguments.unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 /// The millisecond timestamp packed into a UUIDv7's leading 48 bits. Used as a

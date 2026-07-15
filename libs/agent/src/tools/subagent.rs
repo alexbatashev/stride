@@ -21,7 +21,7 @@ pub enum SubagentInteractionPolicy {
 
 const SYSTEM_PROMPT: &str = "You are a focused subagent. Complete the assigned task using available tools when needed. Return a self-contained answer the main agent can act on. Do not ask the user questions directly.";
 
-const BASE_DESCRIPTION: &str = "Spawn a subagent with a specific model to handle a focused subtask. Provide a detailed initial prompt and choose a model appropriate for the task. The subagent runs independently and returns its final answer.";
+const BASE_DESCRIPTION: &str = "Spawn a subagent with a specific model to handle a focused subtask. Provide a short imperative `title` (3-6 words) shown in the UI, a detailed initial prompt, and choose a model appropriate for the task. The subagent runs independently and returns its final answer.";
 
 pub struct SubAgentTool {
     desc: String,
@@ -31,10 +31,16 @@ pub struct SubAgentTool {
     requires_confirmation: bool,
     confirmation_prompt: Option<String>,
     interaction_policy: SubagentInteractionPolicy,
+    /// Maximum nesting depth. A subagent whose parent path already has this
+    /// length cannot spawn further subagents (see [`SubAgentTool::run_subagent`]).
+    max_depth: usize,
 }
 
 #[derive(ToolDesc)]
 struct SubAgentParams {
+    /// Short human-readable task title, 3-6 words, imperative
+    /// (e.g. "Research flight options"). Shown in the UI's subagent list.
+    title: String,
     /// Detailed initial prompt for the subagent.
     prompt: String,
     /// Registry key of the model the subagent should use.
@@ -42,7 +48,12 @@ struct SubAgentParams {
 }
 
 impl SubAgentTool {
-    pub fn new(tool_registry: ToolRegistry, allowed_models: Vec<String>, guidelines: &str) -> Self {
+    pub fn new(
+        tool_registry: ToolRegistry,
+        allowed_models: Vec<String>,
+        guidelines: &str,
+        max_depth: usize,
+    ) -> Self {
         Self {
             desc: build_description(allowed_models.as_slice(), guidelines),
             tool_registry,
@@ -51,6 +62,7 @@ impl SubAgentTool {
             requires_confirmation: false,
             confirmation_prompt: None,
             interaction_policy: SubagentInteractionPolicy::Bubble,
+            max_depth: max_depth.max(1),
         }
     }
 
@@ -74,7 +86,29 @@ impl SubAgentTool {
             requires_confirmation: false,
             confirmation_prompt: None,
             interaction_policy: SubagentInteractionPolicy::Bubble,
+            // Fixed-model subagents (the local code agent's explorer) stay
+            // non-recursive.
+            max_depth: 1,
         }
+    }
+
+    /// Tool registry for a spawned child. When the child could still spawn its
+    /// own subagents (`parent_depth + 1 < max_depth`) it gets a nested
+    /// `SubAgentTool`; the dynamic depth check bounds the actual chain length.
+    fn child_tool_registry(&self) -> ToolRegistry {
+        let mut registry = self.tool_registry.clone();
+        registry.register(SubAgentTool {
+            desc: self.desc.clone(),
+            tool_registry: self.tool_registry.clone(),
+            allowed_models: self.allowed_models.clone(),
+            system_prompt: self.system_prompt.clone(),
+            requires_confirmation: self.requires_confirmation,
+            confirmation_prompt: self.confirmation_prompt.clone(),
+            interaction_policy: self.interaction_policy,
+            max_depth: self.max_depth,
+        });
+        registry.allow_tool(SUBAGENT_NAME);
+        registry
     }
 
     async fn run_subagent(
@@ -105,21 +139,41 @@ impl SubAgentTool {
             });
         }
 
+        // Depth is the length of the *parent's* path. A parent already at the
+        // limit cannot spawn a deeper child.
+        let parent_depth = context
+            .as_ref()
+            .map(|context| context.turn.agent_path.len())
+            .unwrap_or(0);
+        if parent_depth >= self.max_depth {
+            return json!({
+                "success": false,
+                "error": "maximum subagent depth reached"
+            });
+        }
+
         let agent_id = config.id_gen.new_uuid_v7();
         if let Some(context) = &context {
             context.emit(EventKind::AgentSpawned {
                 agent_id,
                 parent_tool_call_id: context.tool_call_id.clone(),
-                name: "Subagent".to_owned(),
+                name: resolve_title(&args.title, &args.prompt),
                 model: model.to_owned(),
             });
         }
+        // Give the child a nested subagent tool only when it could still spawn
+        // within the depth limit; otherwise its registry is the plain base.
+        let child_registry = if parent_depth + 1 < self.max_depth {
+            self.child_tool_registry()
+        } else {
+            self.tool_registry.clone()
+        };
         let agent = BaseAgent::new_with_tools(
             model.to_string(),
             config.clone(),
             self.system_prompt.clone(),
             vec![],
-            self.tool_registry.clone(),
+            child_registry,
         );
         let mut content = String::new();
         let error = if let Some(context) = &context {
@@ -136,7 +190,11 @@ impl SubAgentTool {
             while let Some(event) = stream.next().await {
                 match event.kind {
                     EventKind::TextDelta { delta, .. } => content.push_str(&delta),
-                    EventKind::RunFailed { error: message } => error = Some(message),
+                    EventKind::RunFailed { error: message } => {
+                        error = Some(message);
+                        break;
+                    }
+                    EventKind::RunFinished | EventKind::RunCancelled => break,
                     _ => {}
                 }
             }
@@ -159,7 +217,11 @@ impl SubAgentTool {
             while let Some(event) = stream.next().await {
                 match event.kind {
                     EventKind::TextDelta { delta, .. } => content.push_str(&delta),
-                    EventKind::RunFailed { error: message } => error = Some(message),
+                    EventKind::RunFailed { error: message } => {
+                        error = Some(message);
+                        break;
+                    }
+                    EventKind::RunFinished | EventKind::RunCancelled => break,
                     _ => {}
                 }
             }
@@ -170,6 +232,22 @@ impl SubAgentTool {
             Some(error) => json!({ "success": false, "error": error }),
             None => json!({ "success": true, "content": content }),
         }
+    }
+}
+
+/// A subagent's UI title: the model-provided `title` if non-empty, else the
+/// first line of the prompt truncated to ~60 chars, else a generic fallback.
+fn resolve_title(title: &str, prompt: &str) -> String {
+    let title = title.trim();
+    if !title.is_empty() {
+        return title.to_string();
+    }
+    let first_line = prompt.lines().next().unwrap_or("").trim();
+    let truncated: String = first_line.chars().take(60).collect();
+    if truncated.is_empty() {
+        "Subagent".to_string()
+    } else {
+        truncated
     }
 }
 
@@ -290,7 +368,7 @@ impl Tool for FixedModelSubAgentTool {
         self.inner
             .execute(
                 config,
-                json!({ "prompt": args.prompt, "model": self.model }),
+                json!({ "title": self.readable_name, "prompt": args.prompt, "model": self.model }),
             )
             .await
     }
@@ -308,7 +386,7 @@ impl Tool for FixedModelSubAgentTool {
         self.inner
             .execute_with_context(
                 config,
-                json!({ "prompt": args.prompt, "model": self.model }),
+                json!({ "title": self.readable_name, "prompt": args.prompt, "model": self.model }),
                 context,
             )
             .await
@@ -389,11 +467,12 @@ mod tests {
         futures::executor::block_on(async {
             let mock = llm::Mock::new()
                 .with_stream_chunks(vec![vec![text_chunk("final "), text_chunk("answer")]]);
-            let tool = SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_string()], "");
+            let tool =
+                SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_string()], "", 1);
             let result = tool
                 .execute(
                     config(&mock),
-                    json!({ "prompt": "inspect this", "model": DEFAULT_MODEL }),
+                    json!({ "title": "Inspect target", "prompt": "inspect this", "model": DEFAULT_MODEL }),
                 )
                 .await;
 
@@ -420,12 +499,12 @@ mod tests {
             registry.register(ApprovalTool {
                 calls: calls.clone(),
             });
-            let tool = SubAgentTool::new(registry, vec![DEFAULT_MODEL.to_string()], "");
+            let tool = SubAgentTool::new(registry, vec![DEFAULT_MODEL.to_string()], "", 1);
 
             let result = tool
                 .execute(
                     config(&mock),
-                    json!({ "prompt": "run inner tool", "model": DEFAULT_MODEL }),
+                    json!({ "title": "Run inner tool", "prompt": "run inner tool", "model": DEFAULT_MODEL }),
                 )
                 .await;
 
@@ -438,11 +517,12 @@ mod tests {
     fn rejects_disallowed_model() {
         futures::executor::block_on(async {
             let mock = llm::Mock::new();
-            let tool = SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_string()], "");
+            let tool =
+                SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_string()], "", 1);
             let result = tool
                 .execute(
                     config(&mock),
-                    json!({ "prompt": "inspect this", "model": "other" }),
+                    json!({ "title": "Inspect target", "prompt": "inspect this", "model": "other" }),
                 )
                 .await;
             assert_eq!(
@@ -468,12 +548,13 @@ mod tests {
             );
             let context =
                 crate::ToolContext::new(turn, "parent_call".to_owned(), config.id_gen.clone());
-            let tool = SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_owned()], "");
+            let tool =
+                SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_owned()], "", 1);
 
             let result = tool
                 .execute_with_context(
                     config,
-                    json!({ "prompt": "inspect this", "model": DEFAULT_MODEL }),
+                    json!({ "title": "Inspect target", "prompt": "inspect this", "model": DEFAULT_MODEL }),
                     Some(context),
                 )
                 .await;
@@ -483,13 +564,16 @@ mod tests {
                 json!({ "success": true, "content": "child answer" })
             );
             let events = sink.0.lock().unwrap();
-            let agent_id = events
+            let (agent_id, spawned_name) = events
                 .iter()
-                .find_map(|event| match event.kind {
-                    crate::EventKind::AgentSpawned { agent_id, .. } => Some(agent_id),
+                .find_map(|event| match &event.kind {
+                    crate::EventKind::AgentSpawned { agent_id, name, .. } => {
+                        Some((*agent_id, name.clone()))
+                    }
                     _ => None,
                 })
                 .unwrap();
+            assert_eq!(spawned_name, "Inspect target");
             assert!(events.iter().any(|event| {
                 event.agent_path == [agent_id]
                     && matches!(&event.kind, crate::EventKind::TextDelta { delta, .. } if delta == "child answer")
@@ -498,6 +582,89 @@ mod tests {
                 event.agent_path == [agent_id]
                     && matches!(event.kind, crate::EventKind::AgentFinished { agent_id: id, .. } if id == agent_id)
             }));
+        });
+    }
+
+    #[test]
+    fn blocks_spawn_beyond_max_depth() {
+        futures::executor::block_on(async {
+            let mock = llm::Mock::new();
+            let config = config(&mock);
+            let sink = Arc::new(RecordingSink::default());
+            // A child (agent_path length 1) at max_depth 1 cannot spawn further.
+            let turn = crate::TurnContext::new(
+                uuid::Uuid::from_u128(1),
+                sink,
+                Arc::new(crate::InMemoryInteractionBroker::default()),
+            )
+            .child(uuid::Uuid::from_u128(9));
+            let context = crate::ToolContext::new(turn, "call".to_owned(), config.id_gen.clone());
+            let tool =
+                SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_owned()], "", 1);
+
+            let result = tool
+                .execute_with_context(
+                    config,
+                    json!({ "title": "Deeper", "prompt": "go deeper", "model": DEFAULT_MODEL }),
+                    Some(context),
+                )
+                .await;
+
+            assert_eq!(
+                result,
+                json!({ "success": false, "error": "maximum subagent depth reached" })
+            );
+        });
+    }
+
+    #[test]
+    fn nested_subagent_reaches_depth_two() {
+        futures::executor::block_on(async {
+            // Child spawns a grandchild, which streams its answer; the child then
+            // summarizes. Three sequential model requests over one mock.
+            let mock = llm::Mock::new().with_stream_chunks(vec![
+                vec![subagent_call_chunk(
+                    r#"{"title":"Compare prices","prompt":"compare","model":"default"}"#,
+                )],
+                vec![text_chunk("grandchild answer")],
+                vec![text_chunk("child summary")],
+            ]);
+            let config = config(&mock);
+            let sink = Arc::new(RecordingSink::default());
+            let turn = crate::TurnContext::new(
+                uuid::Uuid::from_u128(1),
+                sink.clone(),
+                Arc::new(crate::InMemoryInteractionBroker::default()),
+            );
+            let context =
+                crate::ToolContext::new(turn, "root_call".to_owned(), config.id_gen.clone());
+            let tool =
+                SubAgentTool::new(ToolRegistry::new(), vec![DEFAULT_MODEL.to_owned()], "", 2);
+
+            let result = tool
+                .execute_with_context(
+                    config,
+                    json!({ "title": "Plan trip", "prompt": "plan", "model": DEFAULT_MODEL }),
+                    Some(context),
+                )
+                .await;
+
+            assert_eq!(
+                result,
+                json!({ "success": true, "content": "child summary" })
+            );
+            let events = sink.0.lock().unwrap();
+            assert!(
+                events.iter().any(|event| matches!(
+                    &event.kind,
+                    crate::EventKind::AgentSpawned { name, .. } if name == "Compare prices"
+                )),
+                "grandchild must be spawned with its title"
+            );
+            assert!(
+                events.iter().any(|event| event.agent_path.len() == 2),
+                "grandchild events must carry a depth-2 agent_path"
+            );
         });
     }
 
@@ -521,7 +688,15 @@ mod tests {
         })
     }
 
+    fn subagent_call_chunk(arguments: &str) -> StreamResponseChunk {
+        named_tool_call_chunk("subagent", arguments)
+    }
+
     fn tool_call_chunk(arguments: &str) -> StreamResponseChunk {
+        named_tool_call_chunk("approval_tool", arguments)
+    }
+
+    fn named_tool_call_chunk(name: &str, arguments: &str) -> StreamResponseChunk {
         StreamResponseChunk {
             id: "chunk".to_string(),
             object: "mock.stream".to_string(),
@@ -541,7 +716,7 @@ mod tests {
                         id: Some("call_1".to_string()),
                         call_type: None,
                         function: Some(ToolCallFunction {
-                            name: Some("approval_tool".to_string()),
+                            name: Some(name.to_string()),
                             arguments: Some(arguments.to_string()),
                         }),
                     }]),

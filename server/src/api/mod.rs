@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod memories;
 pub mod models;
 pub mod openai;
+pub mod personal;
 pub mod projects;
 pub mod providers;
 pub mod skills;

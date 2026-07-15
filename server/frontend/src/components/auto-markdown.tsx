@@ -1,4 +1,4 @@
-import { Component, css, effect, ref } from "@frontiers-labs/argon";
+import { Component, css, effect } from "@frontiers-labs/argon";
 
 const styles = css`
   :host {
@@ -178,24 +178,40 @@ export function AutoMarkdown({
   text?: string;
   format?: string;
 }): Component {
-  const host = ref<HTMLDivElement>();
   effect(() => {
-    if (host.current) {
+    let cleanup: (() => void) | undefined;
+    const render = () => {
+      const content = this.firstElementChild as HTMLElement | undefined;
+      if (!content) return false;
       const isHtml = format === "html";
       if (isHtml) {
-        host.current.replaceChildren(sanitizeHtmlFragment(text));
-        decodeCodeBlockText(host.current);
+        const fragment = sanitizeHtmlFragment(text);
+        const rendered = document.createElement("div");
+        rendered.append(fragment.cloneNode(true));
+        if (content.innerHTML !== rendered.innerHTML) {
+          content.replaceChildren(fragment);
+        }
       } else {
-        host.current.innerHTML = renderMarkdown(text);
+        content.innerHTML = renderMarkdown(text);
       }
-      wrapTables(host.current);
-      return connectWidgetFrames(host.current);
-    }
+      wrapTables(content);
+      cleanup = connectWidgetFrames(content);
+      return true;
+    };
+    if (render()) return cleanup;
+    const observer = new MutationObserver(() => {
+      if (!render()) return;
+      observer.disconnect();
+    });
+    observer.observe(this, { childList: true });
+    return () => {
+      observer.disconnect();
+      cleanup?.();
+    };
   });
   return (
     <>
-      <style>{styles}</style>
-      <div ref={host}>{text}</div>
+      <slot></slot>
     </>
   );
 }
@@ -531,19 +547,6 @@ function sanitizeMediaSrc(src: string): boolean {
     return ["http:", "https:"].includes(url.protocol) && url.origin === window.location.origin;
   } catch {
     return false;
-  }
-}
-
-function decodeCodeBlockText(root: HTMLElement): void {
-  for (const code of root.querySelectorAll("pre code")) {
-    code.textContent = unescapeHtml(code.textContent ?? "");
-  }
-
-  for (const pre of root.querySelectorAll("pre")) {
-    if (pre.querySelector("code")) {
-      continue;
-    }
-    pre.textContent = unescapeHtml(pre.textContent ?? "");
   }
 }
 

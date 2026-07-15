@@ -42,6 +42,7 @@ const styles = css`
       border-color 140ms ease,
       box-shadow 140ms ease;
     width: 16px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 5%);
   }
 
   .option:focus-visible .radio {

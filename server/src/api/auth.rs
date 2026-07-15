@@ -89,6 +89,7 @@ pub async fn register(
     users::insert()
         .id(user_id)
         .username(request.username.as_str())
+        .full_name(Some(request.username.as_str()))
         .password_hash(password_hash.as_str())
         .execute(&state.db)
         .await
@@ -175,6 +176,7 @@ async fn ldap_login(
         users::insert()
             .id(id)
             .username(request.username.as_str())
+            .full_name(Some(request.username.as_str()))
             .password_hash("")
             .execute(&state.db)
             .await
@@ -377,6 +379,38 @@ mod tests {
 
         let response = app
             .clone()
+            .oneshot(authorized_request(
+                "GET",
+                "/api/settings/personal",
+                &token,
+                Body::empty(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let profile: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(profile["username"], "alice");
+        assert_eq!(profile["full_name"], "alice");
+
+        let response = app
+            .clone()
+            .oneshot(authorized_request(
+                "PUT",
+                "/api/settings/personal",
+                &token,
+                Body::from(r#"{"full_name":" Alice Example ","personality":" concise "}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let profile: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(profile["full_name"], "Alice Example");
+        assert_eq!(profile["personality"], "concise");
+
+        let response = app
+            .clone()
             .oneshot(json_request(
                 "/api/register",
                 r#"{"username":"alice","password":"secret"}"#,
@@ -467,6 +501,16 @@ mod tests {
         Request::post(uri)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn authorized_request(method: &str, uri: &str, token: &str, body: Body) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
             .unwrap()
     }
 

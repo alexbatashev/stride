@@ -123,6 +123,11 @@ pub struct ServerAgent {
     /// Number of searchable tool categories to preview in the `search_tools`
     /// description.
     pub searchable_tools_preview_limit: Option<usize>,
+    /// Maximum subagent nesting depth. `1` (default) means the root agent may
+    /// spawn subagents but those subagents cannot spawn their own; `N` allows
+    /// chains of up to `N` levels. Raising this multiplies concurrent model
+    /// calls, so operators raise it deliberately.
+    pub max_subagent_depth: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -364,6 +369,15 @@ impl Config {
             .and_then(|agent| agent.searchable_tools_preview_limit)
             .unwrap_or(20)
     }
+
+    pub fn max_subagent_depth(&self) -> usize {
+        self.server
+            .as_ref()
+            .and_then(|server| server.agent.as_ref())
+            .and_then(|agent| agent.max_subagent_depth)
+            .unwrap_or(1)
+            .max(1)
+    }
 }
 
 impl Provider {
@@ -467,6 +481,7 @@ mod tests {
             [server.agent]
             default_subagent_guidelines = "Prefer fast models for search."
             searchable_tools_preview_limit = 12
+            max_subagent_depth = 3
             "#,
         )
         .unwrap();
@@ -479,6 +494,13 @@ mod tests {
             Some("Prefer fast models for search.")
         );
         assert_eq!(cfg.searchable_tools_preview_limit(), 12);
+        assert_eq!(cfg.max_subagent_depth(), 3);
+    }
+
+    #[test]
+    fn max_subagent_depth_defaults_to_one() {
+        let cfg: Config = toml::from_str("providers = {}\nmodels = {}\n").unwrap();
+        assert_eq!(cfg.max_subagent_depth(), 1);
     }
 
     #[test]

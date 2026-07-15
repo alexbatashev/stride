@@ -3,28 +3,574 @@
  * shadcn/ui — MIT License — Copyright (c) 2023 shadcn
  * https://ui.shadcn.com/docs/components/sidebar
  */
-import { Component, css, emit, onMount } from "@frontiers-labs/argon";
+import { Component, css, emit, onMount, state } from "@frontiers-labs/argon";
+import { settings } from "../stores/settings.js";
 import { sidebar } from "../stores/ui.js";
+import { AppAvatar } from "./app-avatar.js";
 import { AppButton } from "./app-button.js";
+import {
+  AppSidebarContent,
+  AppSidebarFooter,
+  AppSidebarGroup,
+  AppSidebarGroupContent,
+  AppSidebarGroupLabel,
+  AppSidebarHeader,
+  AppSidebarMenu,
+  AppSidebarMenuAction,
+  AppSidebarMenuButton,
+  AppSidebarMenuItem,
+  AppSidebarPanel,
+  AppSidebarRail,
+} from "./app-sidebar-primitives.js";
 import { IconArchive } from "./icons/archive.js";
-import { IconBotMessageSquare } from "./icons/bot-message-square.js";
+import { IconMessagesSquare } from "./icons/messages-square.js";
 import { IconChevronDown } from "./icons/chevron-down.js";
 import { IconChevronRight } from "./icons/chevron-right.js";
-import { IconFiles } from "./icons/files.js";
+import { IconChevronsUpDown } from "./icons/chevrons-up-down.js";
+import { IconFolder } from "./icons/folder.js";
 import { IconPanelLeftClose } from "./icons/panel-left-close.js";
 import { IconPanelLeftOpen } from "./icons/panel-left-open.js";
+import { IconPlus } from "./icons/plus.js";
 import { IconSettingsHorizontal } from "./icons/settings-horizontal.js";
-import { IconWorkflow } from "./icons/workflow.js";
+import { IconClock } from "./icons/clock.js";
+import { IconStrideMark } from "./icons/stride-mark.js";
 
-const styles = css`:host{--sidebar-width:260px;--sidebar-width-icon:48px;--sidebar-menu-button-size:32px;display:block;height:100%;width:fit-content;}.root{background:var(--sidebar-bg,var(--secondary));border-right:1px solid var(--sidebar-border,var(--border));box-sizing:border-box;display:flex;flex-direction:column;align-items:stretch;height:100%;overflow:hidden;position:relative;transition:width 200ms linear;width:var(--sidebar-width);}.root.collapsed{width:var(--sidebar-width-icon);}.root.hidden{display:none;}.scrim{border:0;display:none;padding:0;}.header{flex:0 0 auto;width:100%;}.brand{align-items:center;display:flex;gap:8px;padding:8px;}.mark{align-items:center;background:var(--primary);border-radius:8px;color:var(--primary-foreground);display:inline-flex;flex:0 0 auto;font-size:13px;font-weight:700;height:32px;justify-content:center;width:32px;}.brand strong{color:var(--foreground);flex:1;font-size:14px;font-weight:600;min-width:0;}.root.collapsed .brand{padding:8px;}.root.collapsed .brand .mark,.root.collapsed .brand strong{display:none;}.main{flex:1;overflow:auto;padding:8px 0;width:100%;}.root.collapsed .main{overflow:hidden;}.footer{display:flex;flex:0 0 auto;flex-direction:column;gap:4px;padding:8px;width:100%;box-sizing:border-box;}.footer app-button{width:100%;}.root.collapsed .footer,.root.collapsed .groups{display:none;}.nav-item{box-sizing:border-box;display:block;padding:0 8px;width:100%;}.nav-item a{align-items:center;border-radius:6px;box-sizing:border-box;color:var(--sidebar-fg,var(--foreground));display:flex;font-size:14px;font-weight:400;gap:8px;height:32px;line-height:20px;outline:none;overflow:hidden;padding:0 8px;text-align:left;text-decoration:none;transition:background-color 140ms ease,color 140ms ease,width 200ms linear;user-select:none;white-space:nowrap;width:100%;}.nav-item a:hover,.nav-item a[aria-current="page"]{background:var(--sidebar-accent,var(--accent));color:var(--sidebar-accent-fg,var(--accent-foreground));}.nav-item a[aria-current="page"]{font-weight:500;}.nav-item a:focus-visible{box-shadow:0 0 0 2px var(--ring-shadow,rgb(24 24 27 / 12%));}.nav-item .icon{align-items:center;display:inline-flex;flex:0 0 16px;height:16px;justify-content:center;width:16px;}.nav-item .icon>*{height:16px;width:16px;}.nav-item .label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;}.root.collapsed .nav-item{padding:0 8px;}.root.collapsed .nav-item a{height:32px;padding:0 8px;width:var(--sidebar-menu-button-size);}.root.collapsed .nav-item .label{display:none;}.group{width:100%;padding:8px 0;}.group-toggle{align-items:center;background:transparent;border:0;border-radius:6px;box-sizing:border-box;color:var(--muted-foreground);cursor:pointer;display:flex;font:inherit;font-size:12px;font-weight:500;gap:8px;height:28px;line-height:16px;margin:0 8px;outline:none;padding:0 8px;text-align:left;transition:background-color 140ms ease,color 140ms ease;user-select:none;width:calc(100% - 16px);}.group-toggle:hover{background:var(--sidebar-accent,var(--accent));color:var(--sidebar-accent-fg,var(--accent-foreground));}.group-toggle:focus-visible{box-shadow:0 0 0 2px var(--ring-shadow,rgb(24 24 27 / 12%));}.group-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.chevron{align-items:center;color:var(--muted-foreground);display:inline-flex;flex:0 0 16px;height:16px;justify-content:center;opacity:0;transition:opacity 140ms ease;width:16px;}.group-toggle:hover .chevron,.group-toggle:focus-visible .chevron{opacity:1;}.chevron>*{align-items:center;display:inline-flex;height:16px;justify-content:center;width:16px;}.chevron>*>*{height:16px;width:16px;}.chevron .closed-mark,.group.closed .chevron .open-mark{display:none;}.group.closed .chevron .closed-mark{display:inline-flex;}.project-actions{display:none;gap:2px;margin-left:auto;}.group-toggle:hover .project-actions,.group-toggle:focus-within .project-actions{display:inline-flex;}.project-actions span{background:transparent;border:0;border-radius:4px;color:var(--muted-foreground);cursor:pointer;font-size:12px;height:20px;line-height:20px;padding:0 4px;}.project-actions span:hover{background:var(--accent);color:var(--accent-foreground);}.group ul{border-left:1px solid var(--sidebar-border,var(--border));box-sizing:border-box;display:flex;flex-direction:column;gap:2px;list-style-type:none;margin:4px 8px 0 16px;padding:0 0 0 10px;}.group.closed ul{display:none;}.group ul a{align-items:center;border-radius:6px;box-sizing:border-box;color:var(--sidebar-fg,var(--foreground));display:flex;font-size:14px;font-weight:400;height:28px;line-height:20px;outline:none;overflow:hidden;padding:0 8px;text-align:left;text-decoration:none;transition:background-color 140ms ease,color 140ms ease;user-select:none;white-space:nowrap;width:100%;}.group ul a:hover,.group ul a[aria-current="page"]{background:var(--sidebar-accent,var(--accent));color:var(--sidebar-accent-fg,var(--accent-foreground));}.group ul a[aria-current="page"]{font-weight:500;}.group ul a:focus-visible{box-shadow:0 0 0 2px var(--ring-shadow,rgb(24 24 27 / 12%));}.thread-label{display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.run-pulse{background:var(--primary);border-radius:999px;box-shadow:0 0 0 0 color-mix(in srgb,var(--primary) 35%,transparent);display:inline-block;flex:0 0 6px;height:6px;width:6px;animation:run-pulse 1.6s ease-out infinite;}@keyframes run-pulse{70%{box-shadow:0 0 0 5px transparent;}100%{box-shadow:0 0 0 0 transparent;}}.group ul li{position:relative;}.thread-menu{align-items:center;background:var(--sidebar-bg,var(--secondary));border-radius:4px;color:var(--muted-foreground);cursor:pointer;display:none;font-size:16px;height:22px;justify-content:center;line-height:1;position:absolute;right:4px;top:50%;transform:translateY(-50%);user-select:none;width:22px;}.group ul li:hover .thread-menu,.thread-menu[aria-expanded="true"]{display:inline-flex;}.thread-menu:hover{background:var(--accent);color:var(--accent-foreground);}.group ul li:hover a{padding-right:28px;}@media(max-width:767px){.root{display:none;}:host([hydrated]) .root.open{box-shadow:0 18px 48px rgb(0 0 0 / 22%);display:flex;inset:0 auto 0 0;max-width:320px;position:fixed;width:min(84vw,320px);z-index:50;}.scrim{background:rgb(0 0 0 / 36%);display:block;inset:0;position:fixed;z-index:-1;}.nav-item a,.group-toggle,.group ul a{font-size:16px;height:44px;padding:0 12px;}.nav-item .icon{flex-basis:20px;height:20px;width:20px;}.nav-item .icon>*{height:20px;width:20px;}.group ul{padding-left:8px;}.thread-menu{display:inline-flex;height:28px;width:28px;}.group ul li a{padding-right:32px;}}@media(prefers-reduced-motion:reduce){.root,.nav-item a{transition:none;}.run-pulse{animation:none;}}`;
+const styles = css`
+  :host {
+    --sidebar-width: 260px;
+    --sidebar-width-icon: 48px;
+    display: block;
+    height: 100%;
+    width: fit-content;
+  }
+  app-sidebar-panel {
+    --sidebar-width: 260px;
+    --sidebar-width-icon: 48px;
+  }
+  .scrim {
+    border: 0;
+    display: none;
+    padding: 0;
+  }
+  .brand {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+  }
+  .mark {
+    align-items: center;
+    background: var(--primary);
+    border-radius: 8px;
+    color: var(--primary-foreground);
+    display: inline-flex;
+    flex: 0 0 auto;
+    height: 32px;
+    justify-content: center;
+    width: 32px;
+  }
+  .brand strong {
+    color: var(--foreground);
+    flex: 1;
+    font-size: 14px;
+    font-weight: 600;
+    min-width: 0;
+  }
+  app-sidebar-panel[state="collapsed"] .mark,
+  app-sidebar-panel[state="collapsed"] .brand strong,
+  app-sidebar-panel[state="collapsed"] .groups {
+    display: none;
+  }
+  .icon {
+    align-items: center;
+    display: inline-flex;
+    flex: 0 0 16px;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+  .icon > * {
+    height: 16px;
+    width: 16px;
+  }
+  .label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nav-action-item {
+    box-sizing: border-box;
+    list-style: none;
+    padding: 0 8px;
+    width: 100%;
+  }
+  .nav-action {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: var(--sidebar-fg, var(--foreground));
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: 14px;
+    gap: 8px;
+    height: 32px;
+    outline: none;
+    overflow: hidden;
+    padding: 0 8px;
+    text-align: left;
+    white-space: nowrap;
+    width: 100%;
+  }
+  .nav-action:hover,
+  .nav-action:focus-visible {
+    background: var(--sidebar-accent, var(--accent));
+  }
+  .nav-action:focus-visible {
+    box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%));
+  }
+  app-sidebar-panel[state="collapsed"] .nav-action {
+    width: 32px;
+  }
+  app-sidebar-panel[state="collapsed"] .nav-action .label {
+    display: none;
+  }
+  .groups {
+    width: 100%;
+  }
+  .group-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chevron {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: inline-flex;
+    flex: 0 0 16px;
+    height: 16px;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 140ms ease;
+    width: 16px;
+  }
+  app-sidebar-group-label:hover .chevron,
+  app-sidebar-group-label:focus-within .chevron {
+    opacity: 1;
+  }
+  .chevron > *,
+  .chevron > * > * {
+    align-items: center;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+  .chevron .closed-mark,
+  app-sidebar-group.closed .chevron .open-mark {
+    display: none;
+  }
+  app-sidebar-group.closed .chevron .closed-mark {
+    display: inline-flex;
+  }
+  .thread-label {
+    align-items: center;
+    display: flex;
+    gap: 7px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .run-pulse {
+    animation: run-pulse 1.6s ease-out infinite;
+    background: var(--primary);
+    border-radius: 999px;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 35%, transparent);
+    display: inline-block;
+    flex: 0 0 6px;
+    height: 6px;
+    width: 6px;
+  }
+  .thread-menu {
+    background: var(--sidebar-bg, var(--secondary));
+    display: none;
+    position: absolute;
+    right: 4px;
+    top: 3px;
+  }
+  app-sidebar-menu-item:hover .thread-menu,
+  .thread-menu[aria-expanded="true"] {
+    display: inline-flex;
+  }
+  @keyframes run-pulse {
+    70% {
+      box-shadow: 0 0 0 5px transparent;
+    }
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+  @media (max-width: 767px) {
+    :host([hydrated]) app-sidebar-panel[state="open"] .scrim {
+      background: rgb(0 0 0 / 36%);
+      display: block;
+      inset: 0;
+      position: fixed;
+      z-index: -1;
+    }
+    .icon {
+      flex-basis: 20px;
+      height: 20px;
+      width: 20px;
+    }
+    .icon > * {
+      height: 20px;
+      width: 20px;
+    }
+    .thread-menu {
+      display: inline-flex;
+      top: 8px;
+    }
+    .nav-action {
+      font-size: 16px;
+      height: 44px;
+      padding: 0 12px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chevron {
+      transition: none;
+    }
+    .run-pulse {
+      animation: none;
+    }
+  }
+`;
 
-const toggleStyles = css`:host{display:inline-flex;}icon-panel-left-open,icon-panel-left-close{height:16px;width:16px;}.brand-mark{align-items:center;background:var(--primary);border-radius:8px;color:var(--primary-foreground);display:inline-flex;font-size:13px;font-weight:700;height:32px;justify-content:center;width:32px;}.hover-icon{display:none;}.with-brand:hover .brand-mark,.with-brand:focus-within .brand-mark{display:none;}.with-brand:hover .hover-icon,.with-brand:focus-within .hover-icon{align-items:center;display:inline-flex;height:16px;justify-content:center;width:16px;}`;
+const accountFooterStyles = css`
+  .account-footer {
+    display: block;
+    position: relative;
+    width: 100%;
+  }
+
+  .trigger {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    box-sizing: border-box;
+    color: var(--sidebar-fg, var(--foreground));
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    gap: 10px;
+    min-height: 48px;
+    outline: none;
+    padding: 8px;
+    text-align: left;
+    width: 100%;
+  }
+
+  .trigger:hover,
+  .trigger:focus-visible,
+  .trigger[aria-expanded="true"] {
+    background: var(--sidebar-accent, var(--accent));
+  }
+
+  .trigger:focus-visible {
+    box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%));
+  }
+
+  .identity {
+    display: grid;
+    flex: 1;
+    line-height: 1.25;
+    min-width: 0;
+  }
+
+  .name,
+  .username {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .name {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .username {
+    color: var(--muted-foreground);
+    font-size: 12px;
+  }
+
+  .selector {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: inline-flex;
+    justify-content: center;
+    margin-left: auto;
+  }
+
+  .menu {
+    background: var(--popover, var(--background));
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    bottom: calc(100% + 4px);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+    box-sizing: border-box;
+    display: grid;
+    gap: 2px;
+    left: 0;
+    padding: 4px;
+    position: absolute;
+    right: 0;
+    z-index: 80;
+  }
+
+  .menu[hidden] {
+    display: none;
+  }
+
+  .menu a,
+  .menu button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: var(--popover-foreground, var(--foreground));
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: 14px;
+    gap: 8px;
+    height: 34px;
+    outline: none;
+    padding: 0 8px;
+    text-align: left;
+    text-decoration: none;
+    width: 100%;
+  }
+
+  .menu a:hover,
+  .menu a:focus-visible,
+  .menu button:hover,
+  .menu button:focus-visible {
+    background: var(--accent);
+  }
+
+  .menu .icon,
+  .menu .icon > * {
+    align-items: center;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+
+  app-sidebar-panel[state="collapsed"] .account-footer .trigger {
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+    width: 32px;
+  }
+
+  app-sidebar-panel[state="collapsed"] .account-footer .identity,
+  app-sidebar-panel[state="collapsed"] .account-footer .selector {
+    display: none;
+  }
+
+  @media (max-width: 767px) {
+    .trigger {
+      min-height: 52px;
+    }
+
+    .menu a,
+    .menu button {
+      height: 42px;
+      font-size: 16px;
+    }
+  }
+`;
+
+const toggleStyles = css`
+  :host {
+    display: inline-flex;
+  }
+  icon-panel-left-open,
+  icon-panel-left-close {
+    height: 16px;
+    width: 16px;
+  }
+  .brand-mark {
+    align-items: center;
+    background: var(--primary);
+    border-radius: 8px;
+    color: var(--primary-foreground);
+    display: inline-flex;
+    height: 32px;
+    justify-content: center;
+    width: 32px;
+  }
+  .hover-icon {
+    display: none;
+  }
+  .with-brand:hover .brand-mark,
+  .with-brand:focus-within .brand-mark {
+    display: none;
+  }
+  .with-brand:hover .hover-icon,
+  .with-brand:focus-within .hover-icon {
+    align-items: center;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+`;
+
+const navigationItemStyles = css`
+  :host {
+    display: block;
+    width: 100%;
+  }
+  .icon {
+    align-items: center;
+    display: inline-flex;
+    flex: 0 0 16px;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+  .icon > * {
+    height: 16px;
+    width: 16px;
+  }
+  .label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  @media (max-width: 767px) {
+    .icon {
+      flex-basis: 20px;
+      height: 20px;
+      width: 20px;
+    }
+    .icon > * {
+      height: 20px;
+      width: 20px;
+    }
+  }
+`;
+
+const threadGroupStyles = css`
+  :host {
+    display: block;
+    width: 100%;
+  }
+  .group-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chevron {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: inline-flex;
+    flex: 0 0 16px;
+    height: 16px;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 140ms ease;
+    width: 16px;
+  }
+  app-sidebar-group-label:hover .chevron,
+  app-sidebar-group-label:focus-within .chevron {
+    opacity: 1;
+  }
+  .chevron > *,
+  .chevron > * > * {
+    align-items: center;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+  .chevron .closed-mark,
+  app-sidebar-group.closed .chevron .open-mark {
+    display: none;
+  }
+  app-sidebar-group.closed .chevron .closed-mark {
+    display: inline-flex;
+  }
+  .thread-label {
+    align-items: center;
+    display: flex;
+    gap: 7px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .run-pulse {
+    animation: run-pulse 1.6s ease-out infinite;
+    background: var(--primary);
+    border-radius: 999px;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 35%, transparent);
+    display: inline-block;
+    flex: 0 0 6px;
+    height: 6px;
+    width: 6px;
+  }
+  .thread-menu-wrap {
+    display: none;
+    position: absolute;
+    right: 4px;
+    top: 3px;
+  }
+  app-sidebar-menu-item:hover .thread-menu-wrap,
+  .thread-menu-wrap:focus-within {
+    display: inline-flex;
+  }
+  @keyframes run-pulse {
+    70% {
+      box-shadow: 0 0 0 5px transparent;
+    }
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+  @media (max-width: 767px) {
+    .thread-menu-wrap {
+      display: inline-flex;
+      top: 8px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chevron {
+      transition: none;
+    }
+    .run-pulse {
+      animation: none;
+    }
+  }
+`;
 
 export interface SidebarThread {
   id: string;
   title: string;
 }
-
 export interface SidebarProject {
   id: string;
   title: string;
@@ -39,12 +585,23 @@ interface SidebarHost extends HTMLElement {
 interface UserEvent {
   id: string;
   kind:
-    | {type: "thread_created"; thread_id: string; title: string; project_id: string | null}
-    | {type: "thread_renamed"; thread_id: string; title: string}
-    | {type: "thread_archived" | "thread_deleted"; thread_id: string}
-    | {type: "thread_restored" | "resync"; thread_id?: string}
-    | {type: "thread_run_status"; thread_id: string; running: boolean}
-    | {type: "notification"; notification_id: string; title: string; message: string; thread_id: string | null};
+    | {
+        type: "thread_created";
+        thread_id: string;
+        title: string;
+        project_id: string | null;
+      }
+    | { type: "thread_renamed"; thread_id: string; title: string }
+    | { type: "thread_archived" | "thread_deleted"; thread_id: string }
+    | { type: "thread_restored" | "resync"; thread_id?: string }
+    | { type: "thread_run_status"; thread_id: string; running: boolean }
+    | {
+        type: "notification";
+        notification_id: string;
+        title: string;
+        message: string;
+        thread_id: string | null;
+      };
 }
 
 function removeThread(host: SidebarHost, threadId: string): void {
@@ -59,22 +616,30 @@ function applyUserEvent(host: SidebarHost, event: UserEvent): void {
   const kind = event.kind;
   if (kind.type === "thread_created") {
     removeThread(host, kind.thread_id);
-    const thread = {id: kind.thread_id, title: kind.title};
-    const project = kind.project_id ? host.projects.find((candidate) => candidate.id === kind.project_id) : undefined;
-    if (project) {
-      host.projects = host.projects.map((candidate) => candidate.id === project.id
-        ? {...candidate, threads: [thread, ...candidate.threads]}
-        : candidate);
-    } else {
-      host.threads = [thread, ...host.threads];
-    }
+    const thread = { id: kind.thread_id, title: kind.title };
+    const project = kind.project_id
+      ? host.projects.find((candidate) => candidate.id === kind.project_id)
+      : undefined;
+    if (project)
+      host.projects = host.projects.map((candidate) =>
+        candidate.id === project.id
+          ? { ...candidate, threads: [thread, ...candidate.threads] }
+          : candidate,
+      );
+    else host.threads = [thread, ...host.threads];
     return;
   }
   if (kind.type === "thread_renamed") {
-    host.threads = host.threads.map((thread) => thread.id === kind.thread_id ? {...thread, title: kind.title} : thread);
+    host.threads = host.threads.map((thread) =>
+      thread.id === kind.thread_id ? { ...thread, title: kind.title } : thread,
+    );
     host.projects = host.projects.map((project) => ({
       ...project,
-      threads: project.threads.map((thread) => thread.id === kind.thread_id ? {...thread, title: kind.title} : thread),
+      threads: project.threads.map((thread) =>
+        thread.id === kind.thread_id
+          ? { ...thread, title: kind.title }
+          : thread,
+      ),
     }));
     return;
   }
@@ -88,46 +653,228 @@ function applyUserEvent(host: SidebarHost, event: UserEvent): void {
       : sidebar.runningThreads.filter((id) => id !== kind.thread_id);
     return;
   }
-  if (kind.type === "notification") return;
-  void resyncThreads(host);
+  if (kind.type !== "notification") void resyncThreads(host);
 }
 
 async function resyncThreads(host: SidebarHost): Promise<void> {
   const response = await fetch("/api/threads");
   if (!response.ok) return;
-  const threads = await response.json() as {id: string; title: string; project_id: string | null}[];
+  const threads = (await response.json()) as {
+    id: string;
+    title: string;
+    project_id: string | null;
+  }[];
   host.projects = host.projects.map((project) => ({
     ...project,
-    threads: threads.filter((thread) => thread.project_id === project.id).map(({id, title}) => ({id, title})),
+    threads: threads
+      .filter((thread) => thread.project_id === project.id)
+      .map(({ id, title }) => ({ id, title })),
   }));
   const projectIds = new Set(host.projects.map((project) => project.id));
   host.threads = threads
-    .filter((thread) => !thread.project_id || !projectIds.has(thread.project_id))
-    .map(({id, title}) => ({id, title}));
+    .filter(
+      (thread) => !thread.project_id || !projectIds.has(thread.project_id),
+    )
+    .map(({ id, title }) => ({ id, title }));
 }
 
 const MOBILE_QUERY = "(max-width: 767px)";
+const SIDEBAR_STATE_COOKIE = "stride_sidebar_state";
+
+function storedDesktopSidebarStatus(): "open" | "collapsed" {
+  try {
+    const value = document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${SIDEBAR_STATE_COOKIE}=`))
+      ?.slice(SIDEBAR_STATE_COOKIE.length + 1);
+    return value === "collapsed" ? "collapsed" : "open";
+  } catch {
+    return "open";
+  }
+}
+
+function setDesktopSidebarStatus(status: "open" | "collapsed"): void {
+  sidebar.status = status;
+  try {
+    document.cookie = `${SIDEBAR_STATE_COOKIE}=${status}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  } catch {}
+}
 
 function toggleSidebar(): void {
-  const mobile = window.matchMedia(MOBILE_QUERY).matches;
-  if (mobile) {
+  if (window.matchMedia(MOBILE_QUERY).matches)
     sidebar.status = sidebar.status === "open" ? "hidden" : "open";
-  } else {
-    sidebar.status = sidebar.status === "collapsed" ? "open" : "collapsed";
-  }
+  else
+    setDesktopSidebarStatus(
+      sidebar.status === "collapsed" ? "open" : "collapsed",
+    );
+}
+
+export function SidebarNavigationItem({
+  href,
+  label,
+  kind,
+  active = false,
+  collapsed = false,
+}: {
+  href: string;
+  label: string;
+  kind: string;
+  active?: boolean;
+  collapsed?: boolean;
+}): Component {
+  return (
+    <>
+      <style>{navigationItemStyles}</style>
+      <AppSidebarMenuItem>
+        <AppSidebarMenuButton href={href} active={active} collapsed={collapsed}>
+          <span class="icon">
+            {kind === "tasks" ? (
+              <IconMessagesSquare />
+            ) : kind === "files" ? (
+              <IconFolder />
+            ) : kind === "automations" ? (
+              <IconClock />
+            ) : (
+              <IconArchive />
+            )}
+          </span>
+          <span class="label">{label}</span>
+        </AppSidebarMenuButton>
+      </AppSidebarMenuItem>
+    </>
+  );
+}
+
+function profileInitials(fullName: string, username: string): string {
+  const source = fullName.trim() || username.trim();
+  if (source.length === 0) return "?";
+  return source.slice(0, 1).toUpperCase();
+}
+
+export function SidebarThreadGroup({
+  title,
+  threads = [],
+  projectId = "",
+  projectTitle = "",
+}: {
+  title: string;
+  threads?: SidebarThread[];
+  projectId?: string;
+  projectTitle?: string;
+}): Component {
+  let closed = state(false);
+  return (
+    <>
+      <style>{threadGroupStyles}</style>
+      <AppSidebarGroup class={closed ? "closed" : ""}>
+        <AppSidebarGroupLabel on:toggle={() => (closed = !closed)}>
+          <span class="group-title">{title}</span>
+          <span class="chevron" aria-hidden="true">
+            <span class="open-mark">
+              <IconChevronDown />
+            </span>
+            <span class="closed-mark">
+              <IconChevronRight />
+            </span>
+          </span>
+          {projectId !== "" && (
+            <>
+              <AppSidebarMenuAction
+                slot="actions"
+                small
+                title="New thread"
+                on:select={() =>
+                  emit(this, "project-new-thread", {
+                    id: projectId,
+                    title: projectTitle,
+                  })
+                }
+              >
+                +
+              </AppSidebarMenuAction>
+              <AppSidebarMenuAction
+                slot="actions"
+                small
+                title="Rename"
+                on:select={() =>
+                  emit(this, "project-rename", {
+                    id: projectId,
+                    title: projectTitle,
+                  })
+                }
+              >
+                ✎
+              </AppSidebarMenuAction>
+              <AppSidebarMenuAction
+                slot="actions"
+                small
+                title="Delete"
+                on:select={() =>
+                  emit(this, "project-delete", { id: projectId })
+                }
+              >
+                ✕
+              </AppSidebarMenuAction>
+            </>
+          )}
+        </AppSidebarGroupLabel>
+        <AppSidebarGroupContent hidden={closed}>
+          <AppSidebarMenu>
+            {threads.map((thread) => (
+              <AppSidebarMenuItem key={thread.id}>
+                <AppSidebarMenuButton
+                  compact
+                  href={`/threads/${thread.id}`}
+                  active={thread.id === sidebar.activeThread}
+                >
+                  <span class="thread-label">
+                    {sidebar.runningThreads.includes(thread.id) && (
+                      <span class="run-pulse" title="Running" />
+                    )}
+                    {thread.title}
+                  </span>
+                </AppSidebarMenuButton>
+                <span class="thread-menu-wrap">
+                  <AppSidebarMenuAction
+                    title="Thread actions"
+                    aria-label="Thread actions"
+                    on:select={(event: Event) =>
+                      emit(this, "thread-menu", {
+                        id: thread.id,
+                        title: thread.title,
+                        anchor: event.currentTarget as HTMLElement,
+                      })
+                    }
+                  >
+                    ⋯
+                  </AppSidebarMenuAction>
+                </span>
+              </AppSidebarMenuItem>
+            ))}
+          </AppSidebarMenu>
+        </AppSidebarGroupContent>
+      </AppSidebarGroup>
+    </>
+  );
 }
 
 export function AppSidebar({
   projects = [],
   threads = [],
+  username = "",
+  fullName = "",
 }: {
   projects?: SidebarProject[];
   threads?: SidebarThread[];
+  username?: string;
+  fullName?: string;
 }): Component {
+  let accountOpen = state(false);
   onMount(() => {
     const mq = window.matchMedia(MOBILE_QUERY);
     const sync = () => {
-      sidebar.status = mq.matches ? "hidden" : "open";
+      sidebar.status = mq.matches ? "hidden" : storedDesktopSidebarStatus();
     };
     sync();
     mq.addEventListener("change", sync);
@@ -135,11 +882,17 @@ export function AppSidebar({
     let socket: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
+    const closeAccount = (event: Event) => {
+      const footer = this.shadowRoot?.querySelector(".account-footer");
+      if (accountOpen && footer && !event.composedPath().includes(footer)) accountOpen = false;
+    };
+    document.addEventListener("click", closeAccount);
     const connect = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       socket = new WebSocket(`${protocol}//${location.host}/api/events`);
       socket.onopen = () => void resyncThreads(host);
-      socket.onmessage = (event) => applyUserEvent(host, JSON.parse(event.data as string) as UserEvent);
+      socket.onmessage = (event) =>
+        applyUserEvent(host, JSON.parse(event.data as string) as UserEvent);
       socket.onclose = () => {
         if (!stopped) retry = setTimeout(connect, 2000 + Math.random() * 3000);
       };
@@ -148,201 +901,147 @@ export function AppSidebar({
     return () => {
       stopped = true;
       mq.removeEventListener("change", sync);
+      document.removeEventListener("click", closeAccount);
       if (retry) clearTimeout(retry);
       socket?.close();
     };
   });
 
+  const collapsed = sidebar.status === "collapsed";
   return (
     <>
       <style>{styles}</style>
-      <div class={`root ${sidebar.status}`}>
+      <style>{accountFooterStyles}</style>
+      <AppSidebarPanel state={sidebar.status}>
         <button
           class="scrim"
           type="button"
           aria-label="Close sidebar"
-          onClick={() => {
-            sidebar.status = "hidden";
-          }}
+          onClick={() => (sidebar.status = "hidden")}
         ></button>
-        <div class="header">
+        <AppSidebarHeader>
           <div class="brand">
-            <span class="mark">F</span>
+            <span class="mark" aria-hidden="true">
+              <IconStrideMark />
+            </span>
             <strong>S.T.R.I.D.E.</strong>
-            <AppSidebarToggle brand="F" />
+            <AppSidebarToggle brand="stride" />
           </div>
-        </div>
-        <div
-          class="main"
-          onClick={(event: Event) => {
-            const target = event.target as Element;
-            // Nav and thread entries are plain <a href> links — let them navigate.
-            // Only project mutations (need a dialog + API) and group collapsing
-            // are handled here.
-            const action = target.closest<HTMLElement>("[data-action]");
-            if (action) {
-              event.preventDefault();
-              const name = action.dataset.action!;
-              // Thread actions carry the thread id/title and the trigger element
-              // (so a menu can anchor to it); project actions keep their fields.
-              const detail = {
-                id: action.dataset.threadId ?? action.dataset.projectId ?? "",
-                title: action.dataset.threadTitle ?? action.dataset.projectTitle ?? "",
-                anchor: action,
-              };
-              emit(this, name, detail);
-              return;
-            }
-            const toggle = target.closest(".group-toggle");
-            if (toggle) {
-              toggle.closest(".group")!.classList.toggle("closed");
-            }
-          }}
-        >
-          <span class="nav-item">
-            <a href="/threads">
-              <span class="icon"><IconBotMessageSquare /></span>
-              <span class="label">New task</span>
-            </a>
-          </span>
-          <span class="nav-item">
-            <a href="/files" aria-current={sidebar.activePage === "files" ? "page" : "false"}>
-              <span class="icon"><IconFiles /></span>
-              <span class="label">Files</span>
-            </a>
-          </span>
-          <span class="nav-item">
-            <a href="/automations" aria-current={sidebar.activePage === "automations" ? "page" : "false"}>
-              <span class="icon"><IconWorkflow /></span>
-              <span class="label">Automations</span>
-            </a>
-          </span>
-          <span class="nav-item">
-            <a href="/archived" aria-current={sidebar.activePage === "archived" ? "page" : "false"}>
-              <span class="icon"><IconArchive /></span>
-              <span class="label">Archived</span>
-            </a>
-          </span>
-          <span class="nav-item">
-            <a href="/settings" aria-current={sidebar.activePage === "settings" ? "page" : "false"}>
-              <span class="icon"><IconSettingsHorizontal /></span>
-              <span class="label">Settings</span>
-            </a>
-          </span>
+        </AppSidebarHeader>
+        <AppSidebarContent state={sidebar.status}>
+          <AppSidebarMenu>
+            <SidebarNavigationItem
+              href="/threads"
+              label="New task"
+              kind="tasks"
+              collapsed={collapsed}
+            />
+            <SidebarNavigationItem
+              href="/files"
+              label="Files"
+              kind="files"
+              active={sidebar.activePage === "files"}
+              collapsed={collapsed}
+            />
+            <SidebarNavigationItem
+              href="/automations"
+              label="Automations"
+              kind="automations"
+              active={sidebar.activePage === "automations"}
+              collapsed={collapsed}
+            />
+            <li class="nav-action-item">
+              <button class="nav-action" type="button" onClick={() => emit(this, "new-project")}>
+                <span class="icon"><IconPlus /></span>
+                <span class="label">New project</span>
+              </button>
+            </li>
+          </AppSidebarMenu>
           <div class="groups">
             {projects.map((project) => (
-              <div key={project.id} class="group">
-                <button class="group-toggle" type="button">
-                  <span class="group-title">{project.title}</span>
-                  <span class="chevron" aria-hidden="true">
-                    <span class="open-mark"><IconChevronDown /></span>
-                    <span class="closed-mark"><IconChevronRight /></span>
-                  </span>
-                  <span class="project-actions">
-                    <span
-                      role="button"
-                      title="New thread"
-                      data-action="project-new-thread"
-                      data-project-id={project.id}
-                      data-project-title={project.title}
-                    >+</span>
-                    <span
-                      role="button"
-                      title="Rename"
-                      data-action="project-rename"
-                      data-project-id={project.id}
-                      data-project-title={project.title}
-                    >✎</span>
-                    <span
-                      role="button"
-                      title="Delete"
-                      data-action="project-delete"
-                      data-project-id={project.id}
-                    >✕</span>
-                  </span>
-                </button>
-                <ul>
-                  {project.threads.map((thread) => (
-                    <li key={thread.id}>
-                      <a
-                        href={`/threads/${thread.id}`}
-                        data-thread-id={thread.id}
-                        aria-current={thread.id === sidebar.activeThread ? "page" : "false"}
-                      >
-                        <span class="thread-label">
-                          {sidebar.runningThreads.includes(thread.id) && <span class="run-pulse" title="Running" />}
-                          {thread.title}
-                        </span>
-                      </a>
-                      <span
-                        class="thread-menu"
-                        role="button"
-                        title="Thread actions"
-                        aria-label="Thread actions"
-                        data-action="thread-menu"
-                        data-thread-id={thread.id}
-                        data-thread-title={thread.title}
-                      >⋯</span>
-                    </li>
-                  )).join("")}
-                </ul>
-              </div>
-            )).join("")}
-            {threads.length > 0 && <div class="group">
-                <button class="group-toggle" type="button">
-                  <span class="group-title">Threads</span>
-                  <span class="chevron" aria-hidden="true">
-                    <span class="open-mark"><IconChevronDown /></span>
-                    <span class="closed-mark"><IconChevronRight /></span>
-                  </span>
-                </button>
-                <ul>
-                  {threads.map((thread) => (
-                    <li key={thread.id}>
-                      <a
-                        href={`/threads/${thread.id}`}
-                        data-thread-id={thread.id}
-                        aria-current={thread.id === sidebar.activeThread ? "page" : "false"}
-                      >
-                        <span class="thread-label">
-                          {sidebar.runningThreads.includes(thread.id) && <span class="run-pulse" title="Running" />}
-                          {thread.title}
-                        </span>
-                      </a>
-                      <span
-                        class="thread-menu"
-                        role="button"
-                        title="Thread actions"
-                        aria-label="Thread actions"
-                        data-action="thread-menu"
-                        data-thread-id={thread.id}
-                        data-thread-title={thread.title}
-                      >⋯</span>
-                    </li>
-                  )).join("")}
-                </ul>
-              </div>}
+              <SidebarThreadGroup
+                key={project.id}
+                title={project.title}
+                threads={project.threads}
+                projectId={project.id}
+                projectTitle={project.title}
+              />
+            ))}
+            {threads.length > 0 && (
+              <SidebarThreadGroup title="Threads" threads={threads} />
+            )}
           </div>
-        </div>
-        <div
-          class="footer"
-          onClick={(event: Event) => {
-            const button = (event.target as Element).closest<HTMLElement>("[data-action]");
-            if (!button) return;
-            emit(this, button.dataset.action!);
-          }}
-        >
-          <AppButton variant="ghost" data-action="new-project">+ New project</AppButton>
-          <AppButton variant="secondary" data-action="logout">Log out</AppButton>
-        </div>
-      </div>
+        </AppSidebarContent>
+        <AppSidebarFooter>
+          <div class="account-footer">
+            <button
+              class="trigger"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={accountOpen ? "true" : "false"}
+              title={collapsed ? settings.fullName || fullName : "Account menu"}
+              onClick={(event: Event) => {
+                event.stopPropagation();
+                if (sidebar.status === "collapsed")
+                  setDesktopSidebarStatus("open");
+                accountOpen = !accountOpen;
+              }}
+            >
+              <AppAvatar fallback={profileInitials(settings.fullName || fullName, settings.username || username)} />
+              <span class="identity">
+                <span class="name">{settings.fullName || fullName}</span>
+                <span class="username">@{settings.username || username}</span>
+              </span>
+              <span class="selector" aria-hidden="true">
+                <IconChevronsUpDown />
+              </span>
+            </button>
+            <div class="menu" role="menu" hidden={!accountOpen}>
+              <a href="/archived" role="menuitem" onClick={() => (accountOpen = false)}>
+                <span class="icon"><IconArchive /></span>
+                Archived
+              </a>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  accountOpen = false;
+                  settings.open = true;
+                  if (window.matchMedia(MOBILE_QUERY).matches) sidebar.status = "hidden";
+                }}
+              >
+                <span class="icon"><IconSettingsHorizontal /></span>
+                Settings
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  accountOpen = false;
+                  emit(this, "logout");
+                }}
+              >
+                <span class="icon" aria-hidden="true">↪</span>
+                Log out
+              </button>
+            </div>
+          </div>
+        </AppSidebarFooter>
+        <AppSidebarRail
+          collapsed={collapsed}
+          on:toggle={() => toggleSidebar()}
+        />
+      </AppSidebarPanel>
     </>
   );
 }
 
-export function AppSidebarToggle({ brand = "" }: { brand?: string }): Component {
+export function AppSidebarToggle({
+  brand = "",
+}: {
+  brand?: string;
+}): Component {
   const closed = sidebar.status !== "open";
-
   return (
     <>
       <style>{toggleStyles}</style>
@@ -355,8 +1054,12 @@ export function AppSidebarToggle({ brand = "" }: { brand?: string }): Component 
       >
         {brand !== "" && closed ? (
           <span class="with-brand">
-            <span class="brand-mark">{brand}</span>
-            <span class="hover-icon"><IconPanelLeftOpen /></span>
+            <span class="brand-mark" aria-hidden="true">
+              <IconStrideMark />
+            </span>
+            <span class="hover-icon">
+              <IconPanelLeftOpen />
+            </span>
           </span>
         ) : closed ? (
           <IconPanelLeftOpen />

@@ -17,10 +17,28 @@ import {
 } from "../api/threads.js";
 import { sidebar } from "../stores/ui.js";
 import {threadStream} from '../stores/thread-stream.js';
+import {findTranscript, upsertTranscript} from './agent-transcripts.js';
 import {threadView} from '../stores/thread-view.js';
-import type {TimelineMessage} from '../shared/timeline.js';
 import { bindSidebar } from "../pages/sidebar.js";
 import { openThreadMenu, type ThreadMutation } from "../pages/thread-actions.js";
+import { buildClientTimeline, buildSubagentTimeline } from "./chat-timeline.js";
+import { buildChatTurns, buildTimeline } from "../shared/timeline.js";
+import { sidePanel } from "../stores/side-panel.js";
+import { loadSubagents } from "./subagent-data.js";
+
+const SUBAGENT_STREAM_EVENTS = new Set([
+	'message_started',
+	'text_delta',
+	'thinking_delta',
+	'message_committed',
+	'tool_call_started',
+	'tool_call_progress',
+	'tool_call_finished',
+]);
+
+function isSubagentStreamEvent(type: string): boolean {
+	return SUBAGENT_STREAM_EVENTS.has(type);
+}
 
 function resetThreadStream(threadId: string): void {
 	threadStream.threadId = threadId;
@@ -28,11 +46,12 @@ function resetThreadStream(threadId: string): void {
 	threadStream.messages = [];
 	threadStream.toolCalls = [];
 	threadStream.subagents = [];
+	threadStream.agentTranscripts = [];
 	threadStream.pendingApprovals = [];
 	threadStream.pendingQuizzes = [];
 }
 
-type ViewMessage = ThreadMessage & { pending?: boolean; liveToolName?: string };
+type ViewMessage = ThreadMessage & { pending?: boolean; liveToolName?: string; liveToolDetail?: string; liveToolError?: boolean };
 type PendingQuiz = {
 	id: string;
 	questions: QuizQuestion[];
@@ -49,13 +68,22 @@ type PromptEl = HTMLElement & {
 	disabled: boolean;
 	running: boolean;
 	placeholder: string;
-	models: { value: string; label: string }[];
+	models: { value: string; label: string; description: string; vision: boolean }[];
 	selectedModel: string;
+	selectedModelLabel: string;
+	selectedModelReasoningEffort: string;
 };
 
 type ApprovalEl = HTMLElement & { message: string };
 type QuizEl = HTMLElement & { question: string; options: string[] };
-type FileManagerEl = HTMLElement & { threadId: string; open: boolean };
+type SidePanelEl = HTMLElement & { open: boolean; activeTab: string };
+type MobilePanelEl = HTMLElement & { open: boolean; title: string };
+type SubagentViewEl = HTMLElement & {
+	active: boolean;
+	agents: typeof threadStream.subagents;
+	selectedKey: string;
+	transcript: ReturnType<typeof buildSubagentTimeline>;
+};
 
 class ThreadsPageHydrator {
 	private threadId: string;
@@ -64,25 +92,27 @@ class ThreadsPageHydrator {
 	private currentProjectId: string | null = null;
 	private messages: ViewMessage[] = [];
 	private attachedFiles: { name: string; id: string }[] = [];
-	private modelOptions: { value: string; label: string }[] = [];
+	private modelOptions: { value: string; label: string; description: string; vision: boolean }[] = [];
 	private selectedModel = "";
+	private selectedModelLabel = "Choose model";
+	private selectedModelReasoningEffort = "";
 	private modelPersistSeq = 0;
 	private running: boolean;
 	private error = "";
 	private events: WebSocket | null = null;
 	private pendingApproval: { id: string; message: string } | null = null;
 	private pendingQuiz: PendingQuiz | null = null;
+	private submittingQuizId: string | null = null;
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
 	private reconnectAttempts = 0;
-	private readonly messagesEl: HTMLElement;
-	private readonly scrollEl: HTMLElement;
 	private readonly titleEl: HTMLElement;
 	private readonly promptEl: PromptEl;
 	private readonly approvalEl: ApprovalEl;
 	private readonly quizEl: QuizEl;
 	private readonly sidebarEl: SidebarEl;
-	private readonly fileManagerEl: FileManagerEl;
+	private readonly sidePanelEl: SidePanelEl;
+	private readonly mobilePanelEl: MobilePanelEl;
 	private readonly scope: ShadowRoot;
 	private menuButtonEl: HTMLElement | null = null;
 
@@ -91,20 +121,28 @@ class ThreadsPageHydrator {
 		this.scope = root.shadowRoot;
 		threadView.active = false;
 		const initial = JSON.parse(root.dataset.argonServer ?? "{}") as {
-			data?: {selectedModel?: string; running?: boolean};
+			data?: {
+				selectedModel?: string;
+				running?: boolean;
+				models?: { value: string; label: string; description: string; vision: boolean }[];
+				selectedModelLabel?: string;
+				selectedModelReasoningEffort?: string;
+			};
 		};
 		this.threadId = root.dataset.threadId ?? "";
 		resetThreadStream(this.threadId);
 		this.selectedModel = initial.data?.selectedModel ?? "";
+		this.modelOptions = initial.data?.models ?? [];
+		this.selectedModelLabel = initial.data?.selectedModelLabel ?? "Choose model";
+		this.selectedModelReasoningEffort = initial.data?.selectedModelReasoningEffort ?? "";
 		this.running = initial.data?.running ?? false;
-		this.messagesEl = this.mustQuery("[data-messages]");
-		this.scrollEl = this.messagesEl.closest<HTMLElement>(".content") ?? this.messagesEl;
 		this.titleEl = this.mustQuery("[data-current-title]");
 		this.promptEl = this.mustQuery("[data-prompt]");
 		this.approvalEl = this.mustQuery("[data-approval]");
 		this.quizEl = this.mustQuery("[data-quiz]");
 		this.sidebarEl = this.mustQuery("app-sidebar");
-		this.fileManagerEl = this.mustQuery("[data-file-manager]");
+		this.sidePanelEl = this.mustQuery("[data-side-panel]");
+		this.mobilePanelEl = this.mustQuery("[data-mobile-panel]");
 		this.threads = this.readThreads();
 		this.projects = this.sidebarEl.projects.map(({ id, title }) => ({ id, title }));
 		this.currentProjectId = this.threadId
@@ -134,8 +172,10 @@ class ThreadsPageHydrator {
 			if (this.threadId !== threadId) {
 				return;
 			}
+			await loadSubagents(threadId);
+			if (this.threadId !== threadId) return;
+			this.syncSubagentViews();
 			this.syncMessages();
-			this.scrollInitial();
 		} catch (error) {
 			this.handleError(error);
 		}
@@ -174,15 +214,38 @@ class ThreadsPageHydrator {
 
 	private bindEvents() {
 		bindSidebar(this.sidebarEl);
-		this.scope
-			.querySelectorAll<HTMLElement>('[data-action="files"]')
-			.forEach((button) => button.addEventListener("click", () => this.toggleFiles()));
+		const openPanelButton = this.scope.querySelector<HTMLElement>('[data-action="side-panel-open"]');
+		openPanelButton?.addEventListener("click", () => {
+			sidePanel.open = true;
+			openPanelButton.hidden = true;
+		});
+		this.scope.querySelector<HTMLElement>('[data-action="side-panel-close"]')?.addEventListener("click", () => {
+			sidePanel.open = false;
+			if (openPanelButton) openPanelButton.hidden = false;
+		});
 		this.menuButtonEl = this.scope.querySelector<HTMLElement>('[data-action="thread-menu"]');
 		this.menuButtonEl?.addEventListener("click", () => this.openThreadActions());
 		this.syncMenuButton();
-		this.fileManagerEl.addEventListener("files-close", () => {
-			this.fileManagerEl.open = false;
+		this.sidePanelEl.addEventListener("panel-close", () => { sidePanel.open = false; });
+		this.sidePanelEl.addEventListener("tab-change", (event) => {
+			this.setPanelTab((event as CustomEvent<{ value: "files" | "subagents" }>).detail.value);
 		});
+		this.scope.addEventListener("subagent-open", (event) => {
+			const agentKey = (event as CustomEvent<{ agentKey: string }>).detail.agentKey;
+			sidePanel.selectedSubagent = agentKey;
+			if (window.matchMedia("(max-width: 767px)").matches) {
+				this.openMobilePanel("subagents");
+				const mobile = this.scope.querySelector<HTMLElement & { active: boolean; selectedKey: string }>("[data-mobile-subagents]");
+				if (mobile) mobile.selectedKey = agentKey;
+				return;
+			}
+			sidePanel.open = true;
+			if (openPanelButton) openPanelButton.hidden = true;
+			this.setPanelTab("subagents");
+			const desktop = this.scope.querySelector<HTMLElement & { active: boolean; selectedKey: string }>("app-side-panel app-subagent-view");
+			if (desktop) desktop.selectedKey = agentKey;
+		});
+		this.mobilePanelEl.addEventListener("close", () => { this.mobilePanelEl.open = false; });
 		this.promptEl.addEventListener("prompt-submit", (event) =>
 			this.onPromptSubmit(event as CustomEvent<{ value: string; model: string | null }>),
 		);
@@ -205,12 +268,21 @@ class ThreadsPageHydrator {
 		this.approvalEl.addEventListener("approval-response", (event) =>
 			void this.onApprovalResponse(event as CustomEvent<{ approved: boolean }>),
 		);
-		this.quizEl.addEventListener("quiz-response", (event) =>
+		this.scope.addEventListener("quiz-response", (event) =>
 			void this.onQuizResponse(event as CustomEvent<{ answer: string }>),
 		);
 		window.addEventListener("popstate", () => {
 			window.location.href = window.location.pathname;
 		});
+	}
+
+	private setPanelTab(tab: "files" | "subagents") {
+		sidePanel.tab = tab;
+		this.sidePanelEl.dispatchEvent(new CustomEvent("select-tab", { detail: { value: tab } }));
+		const files = this.scope.querySelector<HTMLElement & { paneActive: boolean }>('app-side-panel app-file-explorer');
+		const subagents = this.scope.querySelector<SubagentViewEl>('app-side-panel app-subagent-view');
+		if (files) files.paneActive = tab === "files";
+		if (subagents) subagents.active = tab === "subagents";
 	}
 
 	private openEvents(threadId: string, after?: number) {
@@ -277,26 +349,27 @@ class ThreadsPageHydrator {
 			this.running = event.kind.status === "running";
 			threadStream.running = this.running;
 			const firstApproval = event.kind.pending_approvals[0];
-			const firstQuiz = event.kind.pending_quizzes[0];
 			this.pendingApproval = firstApproval
 				? {
 						id: firstApproval.approval_id,
 						message: firstApproval.message,
 					}
 				: null;
-			this.pendingQuiz = firstQuiz
-				? this.createPendingQuiz(
-						firstQuiz.quiz_id,
-						firstQuiz.questions,
-					)
-				: null;
 			threadStream.pendingApprovals = event.kind.pending_approvals.map((approval) => ({id: approval.approval_id, toolCallId: '', message: approval.message}));
 			threadStream.pendingQuizzes = event.kind.pending_quizzes.map((quiz) => ({id: quiz.quiz_id, questions: quiz.questions}));
+			if (!this.pendingQuiz || !threadStream.pendingQuizzes.some((quiz) => quiz.id === this.pendingQuiz?.id)) {
+				this.pendingQuiz = null;
+				this.activateNextQuiz();
+			}
+			if (this.submittingQuizId && !threadStream.pendingQuizzes.some((quiz) => quiz.id === this.submittingQuizId)) {
+				this.submittingQuizId = null;
+			}
 			this.syncComposer();
 			if (event.kind.in_progress?.content) {
 				const partial = event.kind.in_progress;
 				threadStream.messages = [...threadStream.messages.filter((message) => message.id !== partial.message_id), {
 					id: partial.message_id,
+						seq: Number.MAX_SAFE_INTEGER,
 					content: partial.content,
 					thinking: partial.thinking ?? '',
 					agentPath: [],
@@ -309,7 +382,7 @@ class ThreadsPageHydrator {
 					existing.pending = true;
 					this.updateMessageElement(existing);
 				} else {
-					const message: ViewMessage = {id: partial.message_id, seq: Number.MAX_SAFE_INTEGER, role: 'agent', format: partial.format, content: partial.content, thinking: partial.thinking, tool_call_name: null, pending: true};
+					const message: ViewMessage = {id: partial.message_id, seq: Number.MAX_SAFE_INTEGER, created_at: Date.now(), role: 'agent', format: partial.format, content: partial.content, thinking: partial.thinking, tool_call_name: null, tool_call_id: null, tool_calls: [], pending: true};
 					this.messages.push(message);
 					this.appendMessage(message);
 				}
@@ -321,6 +394,16 @@ class ThreadsPageHydrator {
 			this.running = true;
 			threadStream.running = true;
 			this.syncComposer();
+			return;
+		}
+
+		// Subagent message/tool events flow into per-agent transcript buckets, not
+		// the root chat. The parent tool card still summarizes the child's output.
+		if (event.agent_path.length > 0 && isSubagentStreamEvent(event.kind.type)) {
+			this.applySubagentStreamEvent(event);
+			this.updateSubagentToolCard(event.agent_path[event.agent_path.length - 1]);
+			this.streamSubagentUpdate(event);
+			this.syncSubagentViews();
 			return;
 		}
 
@@ -339,6 +422,7 @@ class ThreadsPageHydrator {
 						...threadStream.messages.filter((message) => message.id !== messageId),
 						{
 							id: messageId,
+						seq: event.seq,
 						content: '',
 						thinking: '',
 						agentPath: event.agent_path,
@@ -349,11 +433,14 @@ class ThreadsPageHydrator {
 						const message: ViewMessage = {
 							id: messageId,
 						seq: event.seq,
+						created_at: Date.now(),
 						role: 'agent',
 						format: 'markdown',
 						content: '',
 						thinking: null,
 						tool_call_name: null,
+						tool_call_id: null,
+						tool_calls: [],
 						pending: true,
 					};
 					this.messages.push(message);
@@ -402,6 +489,8 @@ class ThreadsPageHydrator {
 				...threadStream.toolCalls.filter((tool) => tool.id !== toolCallId),
 				{
 					id: toolCallId,
+					seq: event.seq,
+					createdAt: Date.now(),
 					name: event.kind.name,
 					arguments: event.kind.arguments,
 					result: '',
@@ -442,6 +531,9 @@ class ThreadsPageHydrator {
 
 		if (event.kind.type === 'agent_spawned') {
 			const agentId = event.kind.agent_id;
+			// The spawn event carries the parent's path; the child's own path
+			// appends its id (matches `thread_agents.agent_path`).
+			const agentPath = [...event.agent_path, agentId].join('/');
 			threadStream.subagents = [
 				...threadStream.subagents.filter((child) => child.id !== agentId),
 				{
@@ -451,9 +543,12 @@ class ThreadsPageHydrator {
 					result: '',
 					finished: false,
 					parentToolCallId: event.kind.parent_tool_call_id,
+					agentPath,
+					createdAt: Date.now(),
 				},
 			];
 			this.updateSubagentToolCard(agentId);
+			this.syncSubagentViews();
 			return;
 		}
 
@@ -465,6 +560,7 @@ class ThreadsPageHydrator {
 				child.finished = true;
 				threadStream.subagents = threadStream.subagents.map((candidate) => candidate.id === child.id ? {...child} : candidate);
 				this.updateSubagentToolCard(agentId);
+				this.syncSubagentViews();
 			}
 			return;
 		}
@@ -491,48 +587,53 @@ class ThreadsPageHydrator {
 
 		if (event.kind.type === 'quiz_requested') {
 			const quizId = event.kind.quiz_id;
-			threadStream.pendingQuizzes = [...threadStream.pendingQuizzes.filter((quiz) => quiz.id !== quizId), {id: quizId, questions: event.kind.questions}];
-			this.pendingQuiz = this.createPendingQuiz(quizId, event.kind.questions);
+			const questions = event.kind.questions;
+			if (threadStream.pendingQuizzes.some((quiz) => quiz.id === quizId)) {
+				threadStream.pendingQuizzes = threadStream.pendingQuizzes.map((quiz) => quiz.id === quizId ? {...quiz, questions} : quiz);
+			} else {
+				threadStream.pendingQuizzes = [...threadStream.pendingQuizzes, {id: quizId, questions}];
+			}
+			this.activateNextQuiz();
 			this.syncComposer();
 			return;
 		}
 
 		if (event.kind.type === 'quiz_answered') {
-			const quizId = event.kind.quiz_id;
-			threadStream.pendingQuizzes = threadStream.pendingQuizzes.filter((quiz) => quiz.id !== quizId);
-			if (this.pendingQuiz?.id === quizId) {
-				const next = threadStream.pendingQuizzes[0];
-				this.pendingQuiz = next ? this.createPendingQuiz(next.id, next.questions) : null;
-			}
-			this.syncComposer();
+			this.completeQuiz(event.kind.quiz_id);
 			return;
 		}
 
-		if (event.kind.type === 'run_finished') {
+		if (event.kind.type === 'run_finished' && event.agent_path.length === 0) {
 			this.running = false;
 			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
+			this.submittingQuizId = null;
+			threadStream.pendingQuizzes = [];
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
 
-		if (event.kind.type === 'run_failed') {
+		if (event.kind.type === 'run_failed' && event.agent_path.length === 0) {
 			this.running = false;
 			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
+			this.submittingQuizId = null;
+			threadStream.pendingQuizzes = [];
 			this.syncComposer();
 			this.setError(event.kind.error);
 			void this.refreshAfterRun();
 			return;
 		}
 
-		if (event.kind.type === 'run_cancelled') {
+		if (event.kind.type === 'run_cancelled' && event.agent_path.length === 0) {
 			this.running = false;
 			threadStream.running = false;
 			this.pendingApproval = null;
 			this.pendingQuiz = null;
+			this.submittingQuizId = null;
+			threadStream.pendingQuizzes = [];
 			this.syncComposer();
 			void this.refreshAfterRun();
 		}
@@ -545,14 +646,67 @@ class ThreadsPageHydrator {
 		const content = tool.status === 'running' && !tool.result ? `Running ${tool.name}…` : tool.result;
 		let message = this.messages.find((candidate) => candidate.id === id);
 		if (!message) {
-			message = {id, seq: Number.MAX_SAFE_INTEGER, role: 'tool', format: 'markdown', content, thinking: null, tool_call_name: null, pending: tool.status === 'running', liveToolName: tool.name};
+				message = {id, seq: tool.seq, created_at: tool.createdAt, role: 'tool', format: 'markdown', content, thinking: null, tool_call_name: null, tool_call_id: tool.id, tool_calls: [], pending: tool.status === 'running', liveToolName: tool.name, liveToolDetail: tool.arguments, liveToolError: tool.isError};
 			this.messages.push(message);
 			this.appendMessage(message);
 		} else {
-			message.content = content;
-			message.pending = tool.status === 'running';
+				message.content = content;
+				message.pending = tool.status === 'running';
+				message.liveToolError = tool.isError;
 			this.updateMessageElement(message);
 		}
+	}
+
+	// Routes a live subagent message/tool event into its transcript bucket
+	// (keyed by the agent's full slash-joined path).
+	private applySubagentStreamEvent(event: ThreadEvent) {
+		const key = event.agent_path.join('/');
+		const source = findTranscript(key);
+		const bucket = {
+			key,
+			messages: source ? [...source.messages] : [],
+			toolCalls: source ? [...source.toolCalls] : [],
+		};
+		const kind = event.kind;
+		if (kind.type === 'message_started' && kind.role === 'assistant') {
+			bucket.messages = [
+				...bucket.messages.filter((message) => message.id !== kind.message_id),
+				{id: kind.message_id, seq: event.seq, content: '', thinking: '', agentPath: event.agent_path, committed: false},
+			];
+		} else if (kind.type === 'text_delta' || kind.type === 'thinking_delta') {
+			const message = bucket.messages.find((candidate) => candidate.id === kind.message_id);
+			if (message) {
+				if (kind.type === 'text_delta') message.content += kind.delta;
+				else message.thinking += kind.delta;
+				bucket.messages = bucket.messages.map((candidate) => candidate.id === message.id ? {...message} : candidate);
+			}
+		} else if (kind.type === 'message_committed') {
+			const message = bucket.messages.find((candidate) => candidate.id === kind.message_id);
+			if (message) {
+				message.committed = true;
+				bucket.messages = bucket.messages.map((candidate) => candidate.id === message.id ? {...message} : candidate);
+			}
+		} else if (kind.type === 'tool_call_started') {
+			bucket.toolCalls = [
+				...bucket.toolCalls.filter((tool) => tool.id !== kind.tool_call_id),
+				{id: kind.tool_call_id, seq: event.seq, createdAt: Date.now(), name: kind.name, arguments: kind.arguments, result: '', isError: false, status: 'running', agentPath: event.agent_path},
+			];
+		} else if (kind.type === 'tool_call_progress') {
+			const tool = bucket.toolCalls.find((candidate) => candidate.id === kind.tool_call_id);
+			if (tool) {
+				tool.result = typeof kind.payload === 'string' ? kind.payload : JSON.stringify(kind.payload);
+				bucket.toolCalls = bucket.toolCalls.map((candidate) => candidate.id === tool.id ? {...tool} : candidate);
+			}
+		} else if (kind.type === 'tool_call_finished') {
+			const tool = bucket.toolCalls.find((candidate) => candidate.id === kind.tool_call_id);
+			if (tool) {
+				tool.result = kind.result;
+				tool.isError = kind.is_error;
+				tool.status = 'finished';
+				bucket.toolCalls = bucket.toolCalls.map((candidate) => candidate.id === tool.id ? {...tool} : candidate);
+			}
+		}
+		threadStream.agentTranscripts = upsertTranscript(bucket);
 	}
 
 	private updateSubagentToolCard(agentId: string) {
@@ -560,13 +714,33 @@ class ThreadsPageHydrator {
 		if (!child) return;
 		const tool = threadStream.toolCalls.find((candidate) => candidate.id === child.parentToolCallId);
 		if (!tool) return;
-		const streamed = threadStream.messages
-			.filter((message) => message.agentPath.includes(agentId))
-			.map((message) => message.content)
-			.join('');
+		const bucket = findTranscript(child.agentPath);
+		const streamed = bucket ? bucket.messages.map((message) => message.content).join('') : '';
 		tool.result = child.finished ? child.result : `${child.name} (${child.model})\n${streamed || 'Working…'}`;
 		threadStream.toolCalls = threadStream.toolCalls.map((candidate) => candidate.id === tool.id ? {...tool} : candidate);
 		this.upsertToolCard(tool.id);
+	}
+
+	private syncSubagentViews() {
+		this.scope.querySelectorAll<SubagentViewEl>("app-subagent-view").forEach((view) => {
+			view.agents = [...threadStream.subagents];
+		});
+		this.syncMessages();
+	}
+
+	private streamSubagentUpdate(event: ThreadEvent) {
+		let itemId = "";
+		if (event.kind.type === "text_delta" || event.kind.type === "thinking_delta" || event.kind.type === "message_committed") {
+			itemId = event.kind.message_id;
+		} else if (event.kind.type === "tool_call_started" || event.kind.type === "tool_call_progress" || event.kind.type === "tool_call_finished") {
+			itemId = `tool:${event.kind.tool_call_id}`;
+		}
+		if (!itemId) return;
+		this.scope.querySelectorAll<SubagentViewEl>("app-subagent-view").forEach((view) => {
+			if (!view.active || !view.selectedKey) return;
+			const item = buildSubagentTimeline(view.selectedKey).find((candidate) => candidate.id === itemId);
+			if (item) view.dispatchEvent(new CustomEvent("transcript-update", { detail: { item } }));
+		});
 	}
 
 	private createPendingQuiz(id: string, questions: QuizQuestion[]): PendingQuiz | null {
@@ -575,6 +749,28 @@ class ThreadsPageHydrator {
 		}
 
 		return { id, questions, index: 0, answers: [] };
+	}
+
+	private activateNextQuiz() {
+		if (this.pendingQuiz) return;
+		while (threadStream.pendingQuizzes.length > 0) {
+			const next = threadStream.pendingQuizzes[0];
+			this.pendingQuiz = this.createPendingQuiz(next.id, next.questions);
+			if (this.pendingQuiz) return;
+			threadStream.pendingQuizzes = threadStream.pendingQuizzes.slice(1);
+		}
+	}
+
+	private completeQuiz(quizId: string) {
+		threadStream.pendingQuizzes = threadStream.pendingQuizzes.filter((quiz) => quiz.id !== quizId);
+		if (this.pendingQuiz?.id === quizId) {
+			this.pendingQuiz = null;
+		}
+		if (this.submittingQuizId === quizId) {
+			this.submittingQuizId = null;
+		}
+		this.activateNextQuiz();
+		this.syncComposer();
 	}
 
 	private async refreshAfterRun() {
@@ -610,6 +806,8 @@ class ThreadsPageHydrator {
 			this.modelOptions = models.map((model) => ({
 				value: model.key,
 				label: model.display_name,
+				description: model.description,
+				vision: model.vision,
 			}));
 			if (!this.selectedModel) {
 				this.selectedModel =
@@ -617,6 +815,9 @@ class ThreadsPageHydrator {
 					models[0]?.key ??
 					"";
 			}
+			const selected = models.find((model) => model.key === this.selectedModel) ?? models[0];
+			this.selectedModelLabel = selected?.display_name ?? "Choose model";
+			this.selectedModelReasoningEffort = selected?.reasoning_effort ?? "";
 			this.syncComposer();
 		} catch {
 			this.modelOptions = [];
@@ -665,7 +866,6 @@ class ThreadsPageHydrator {
 				);
 				this.threadId = response.thread_id;
 				this.root.dataset.threadId = this.threadId;
-				this.fileManagerEl.threadId = this.threadId;
 				history.pushState(null, "", `/threads/${response.thread_id}`);
 				const [threads, projects] = await Promise.all([listThreads(), listProjects()]);
 				this.threads = threads;
@@ -689,11 +889,12 @@ class ThreadsPageHydrator {
 			content,
 			thinking: null,
 			tool_call_name: null,
+			tool_call_id: null,
+			tool_calls: [],
 			pending: true,
 		};
 		this.messages.push(message);
 		this.appendMessage(message);
-		this.scrollToBottom();
 	}
 
 	private async loadThread(threadId: string) {
@@ -702,13 +903,13 @@ class ThreadsPageHydrator {
 		this.lastEventSeq = 0;
 		this.pendingApproval = null;
 		this.pendingQuiz = null;
+		this.submittingQuizId = null;
 		this.attachedFiles = [];
 		this.setError("");
 
 		try {
 			this.messages = await listMessages(threadId);
 			this.syncMessages();
-			this.scrollInitial();
 			this.syncTitle();
 			this.openEvents(threadId);
 		} catch (error) {
@@ -734,7 +935,7 @@ class ThreadsPageHydrator {
 	}
 
 	private syncMessages() {
-		threadView.messages = this.messages.map((message) => this.timelineMessage(message));
+		threadView.turns = buildChatTurns(buildTimeline(buildClientTimeline(this.messages)), this.running);
 		threadView.active = true;
 	}
 
@@ -746,54 +947,6 @@ class ThreadsPageHydrator {
 		this.syncMessages();
 	}
 
-	private timelineMessage(message: ViewMessage): TimelineMessage {
-		return {
-			id: message.id,
-			seq: message.seq,
-			role: message.role,
-			messageType: message.liveToolName ? "tool_output" : "",
-			format: message.format,
-			content: message.content || (message.pending ? "Thinking..." : ""),
-			thinking: message.thinking ?? "",
-			toolName: message.liveToolName ?? message.tool_call_name ?? (message.role === "tool" ? "Tool output" : ""),
-		};
-	}
-
-	private scrollInitial() {
-		requestAnimationFrame(() => {
-			if (this.running) {
-				this.scrollToLastMessageStart();
-			} else {
-				this.scrollToLastMessageEnd();
-			}
-		});
-	}
-
-	private scrollToLastMessageStart() {
-		const last = this.lastMessageElement();
-		if (!last) {
-			return;
-		}
-		this.scrollEl.scrollTop = last.offsetTop - this.scrollEl.offsetTop;
-	}
-
-	private scrollToLastMessageEnd() {
-		const last = this.lastMessageElement();
-		if (!last) {
-			return;
-		}
-		this.scrollEl.scrollTop = last.offsetTop - this.scrollEl.offsetTop + last.offsetHeight - this.scrollEl.clientHeight;
-	}
-
-	private scrollToBottom() {
-		requestAnimationFrame(() => {
-			this.scrollEl.scrollTop = this.scrollEl.scrollHeight;
-		});
-	}
-
-	private lastMessageElement(): HTMLElement | null {
-		return this.messagesEl.querySelector<HTMLElement>("app-message[data-message-id]:last-of-type");
-	}
 
 	private syncTitle() {
 		this.titleEl.textContent =
@@ -808,11 +961,13 @@ class ThreadsPageHydrator {
 		threadView.placeholder = this.composerPlaceholder();
 		threadView.models = this.modelOptions;
 		threadView.selectedModel = this.selectedModel;
+		threadView.selectedModelLabel = this.selectedModelLabel;
+		threadView.selectedModelReasoningEffort = this.selectedModelReasoningEffort;
 		threadView.approvalMessage = this.pendingApproval?.message ?? "";
 		threadView.quizQuestion = question?.question ?? "";
 		threadView.quizOptions = question?.options ?? [];
+		threadView.quizSubmitting = this.submittingQuizId === quiz?.id;
 		threadView.error = this.error;
-		this.fileManagerEl.threadId = this.threadId;
 		this.syncMenuButton();
 	}
 
@@ -824,14 +979,9 @@ class ThreadsPageHydrator {
 		return project ? `New thread in ${project.title}` : "Ask S.T.R.I.D.E. anything";
 	}
 
-	private toggleFiles() {
-		this.fileManagerEl.threadId = this.threadId;
-		this.fileManagerEl.open = !this.fileManagerEl.open;
-	}
-
 	private syncMenuButton() {
 		if (this.menuButtonEl) {
-			this.menuButtonEl.style.display = this.threadId ? "inline-block" : "none";
+			this.menuButtonEl.hidden = !this.threadId || !window.matchMedia("(max-width: 767px)").matches;
 		}
 	}
 
@@ -855,7 +1005,20 @@ class ThreadsPageHydrator {
 					this.renderSidebar();
 				}
 			},
+			(tab) => this.openMobilePanel(tab),
 		);
+	}
+
+	private openMobilePanel(tab: "files" | "subagents") {
+		sidePanel.tab = tab;
+		const files = this.scope.querySelector<HTMLElement>("[data-mobile-files]");
+		const subagents = this.scope.querySelector<HTMLElement>("[data-mobile-subagents]");
+		files?.toggleAttribute("hidden", tab !== "files");
+		subagents?.toggleAttribute("hidden", tab !== "subagents");
+		if (files) (files as HTMLElement & { paneActive: boolean }).paneActive = tab === "files";
+		if (subagents) (subagents as HTMLElement & { active: boolean }).active = tab === "subagents";
+		this.mobilePanelEl.title = tab === "files" ? "Files" : "Subagents";
+		this.mobilePanelEl.open = true;
 	}
 
 	private async onStop() {
@@ -883,7 +1046,7 @@ class ThreadsPageHydrator {
 	}
 
 	private async onQuizResponse(event: CustomEvent<{ answer: string }>) {
-		if (!this.threadId || !this.pendingQuiz) return;
+		if (!this.threadId || !this.pendingQuiz || this.submittingQuizId) return;
 
 		const quiz = this.pendingQuiz;
 		quiz.answers[quiz.index] = event.detail.answer;
@@ -894,14 +1057,17 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		this.pendingQuiz = null;
+		this.submittingQuizId = quiz.id;
 		this.syncComposer();
 
 		try {
 			await answerQuiz(this.threadId, quiz.id, quiz.answers);
+			this.completeQuiz(quiz.id);
 		} catch {
-			this.pendingQuiz = quiz;
-			this.setError("Quiz response failed.");
+			if (this.pendingQuiz?.id === quiz.id) {
+				this.submittingQuizId = null;
+				this.setError("Quiz response failed.");
+			}
 		}
 	}
 
