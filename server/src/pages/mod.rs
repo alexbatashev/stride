@@ -5,6 +5,8 @@ pub mod automations;
 pub mod files;
 pub mod settings;
 
+use axum::http::{HeaderMap, header};
+
 use crate::api::threads::{MessageTemplateData, ThreadPageData};
 use crate::components::{
     auth_form::AuthForm,
@@ -16,6 +18,22 @@ use crate::components::{
     timeline::{ChatTurn, TimelineItem, TimelineMessage, WorkSegment},
     ui::Stores as UiStores,
 };
+
+const SIDEBAR_STATE_COOKIE: &str = "stride_sidebar_state";
+
+fn sidebar_status(headers: &HeaderMap) -> &'static str {
+    let collapsed = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|part| {
+                let (name, value) = part.trim().split_once('=')?;
+                (name == SIDEBAR_STATE_COOKIE).then_some(value)
+            })
+        })
+        == Some("collapsed");
+    if collapsed { "collapsed" } else { "open" }
+}
 
 fn argon_thread_page_data(data: ThreadPageData) -> ArgonThreadPageData {
     let running = data.running;
@@ -438,6 +456,7 @@ async fn render_shell_page(
 ) -> Result<String, crate::api::threads::ThreadApiError> {
     let mut ui_stores = UiStores::default();
     ui_stores.sidebar.active_page = page_name.to_string();
+    ui_stores.sidebar.status = sidebar_status(&headers).to_string();
     let settings_stores = SettingsStores::default();
     let stores = ShellRenderStores {
         settings: &settings_stores,
@@ -679,7 +698,8 @@ mod tests {
     async fn threads_page_renders_argon_server_data_and_shared_timeline() {
         let data = super::argon_thread_page_data(sample_data());
         let server = TestPageServer(data);
-        let ui = UiStores::default();
+        let mut ui = UiStores::default();
+        ui.sidebar.status = "collapsed".to_string();
         let thread_view = crate::components::thread_view::Stores::default();
         let side_panel = crate::components::side_panel::Stores::default();
         let settings = SettingsStores::default();
@@ -702,6 +722,8 @@ mod tests {
         assert!(html.contains(r#"<body><threads-page-view data-thread-id="thread-1""#));
         assert!(html.contains(r#"id="threads-page""#));
         assert!(html.contains("<nav><app-sidebar"));
+        assert!(html.contains(r#"<app-sidebar-panel state="collapsed""#));
+        assert!(html.contains(r#"data-collapsed="true""#));
         assert!(html.contains(r#"<template shadowrootmode="open">"#));
         assert!(html.contains("My &lt;Project&gt;"));
         assert!(html.contains("Loose thread"));
@@ -793,6 +815,7 @@ mod tests {
             });
             let mut ui = UiStores::default();
             ui.sidebar.active_page = name.to_string();
+            ui.sidebar.status = "collapsed".to_string();
             let settings = SettingsStores::default();
             let stores = ShellRenderStores {
                 settings: &settings,
@@ -811,8 +834,28 @@ mod tests {
             assert!(html.contains(&format!(r#"id="{name}-page""#)));
             assert!(html.contains(&format!("<{child}></{child}>")));
             assert!(html.contains("<nav><app-sidebar"));
+            assert!(html.contains(r#"<app-sidebar-panel state="collapsed""#));
+            assert!(html.contains(r#"data-collapsed="true""#));
             assert!(html.contains("<app-settings-dialog"));
         }
+    }
+
+    #[test]
+    fn sidebar_status_reads_collapsed_device_cookie() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            axum::http::HeaderValue::from_static(
+                "token=session; stride_sidebar_state=collapsed; theme=dark",
+            ),
+        );
+        assert_eq!(super::sidebar_status(&headers), "collapsed");
+
+        headers.insert(
+            axum::http::header::COOKIE,
+            axum::http::HeaderValue::from_static("stride_sidebar_state=invalid"),
+        );
+        assert_eq!(super::sidebar_status(&headers), "open");
     }
 
     #[test]

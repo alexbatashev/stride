@@ -63,6 +63,7 @@ async fn render_threads(
     let thread_id = thread_id.map(|id| id.to_string()).unwrap_or_default();
     let mut ui_stores = UiStores::default();
     ui_stores.sidebar.active_thread = thread_id.clone();
+    ui_stores.sidebar.status = super::sidebar_status(&headers).to_string();
     let thread_view_stores = ThreadViewStores::default();
     let side_panel_stores = SidePanelStores::default();
     let settings_stores = SettingsStores::default();

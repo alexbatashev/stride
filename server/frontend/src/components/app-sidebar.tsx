@@ -679,11 +679,35 @@ async function resyncThreads(host: SidebarHost): Promise<void> {
 }
 
 const MOBILE_QUERY = "(max-width: 767px)";
+const SIDEBAR_STATE_COOKIE = "stride_sidebar_state";
+
+function storedDesktopSidebarStatus(): "open" | "collapsed" {
+  try {
+    const value = document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${SIDEBAR_STATE_COOKIE}=`))
+      ?.slice(SIDEBAR_STATE_COOKIE.length + 1);
+    return value === "collapsed" ? "collapsed" : "open";
+  } catch {
+    return "open";
+  }
+}
+
+function setDesktopSidebarStatus(status: "open" | "collapsed"): void {
+  sidebar.status = status;
+  try {
+    document.cookie = `${SIDEBAR_STATE_COOKIE}=${status}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  } catch {}
+}
 
 function toggleSidebar(): void {
   if (window.matchMedia(MOBILE_QUERY).matches)
     sidebar.status = sidebar.status === "open" ? "hidden" : "open";
-  else sidebar.status = sidebar.status === "collapsed" ? "open" : "collapsed";
+  else
+    setDesktopSidebarStatus(
+      sidebar.status === "collapsed" ? "open" : "collapsed",
+    );
 }
 
 export function SidebarNavigationItem({
@@ -850,7 +874,7 @@ export function AppSidebar({
   onMount(() => {
     const mq = window.matchMedia(MOBILE_QUERY);
     const sync = () => {
-      sidebar.status = mq.matches ? "hidden" : "open";
+      sidebar.status = mq.matches ? "hidden" : storedDesktopSidebarStatus();
     };
     sync();
     mq.addEventListener("change", sync);
@@ -958,7 +982,8 @@ export function AppSidebar({
               title={collapsed ? settings.fullName || fullName : "Account menu"}
               onClick={(event: Event) => {
                 event.stopPropagation();
-                if (sidebar.status === "collapsed") sidebar.status = "open";
+                if (sidebar.status === "collapsed")
+                  setDesktopSidebarStatus("open");
                 accountOpen = !accountOpen;
               }}
             >

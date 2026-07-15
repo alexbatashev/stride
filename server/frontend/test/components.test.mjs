@@ -18,6 +18,8 @@ before(async () => {
 
 afterEach(() => {
   document.body.replaceChildren();
+  document.cookie = 'stride_sidebar_state=; Path=/; Max-Age=0';
+  window.happyDOM.setURL('about:blank');
 });
 
 function mount(tag, props = {}) {
@@ -223,6 +225,30 @@ test('app-sidebar collapse keeps rail icons left aligned during width transition
   const css = navButtons[0].shadowRoot.querySelector('style').textContent;
   assert.match(css, /:host\(\[data-collapsed="true"\]\) \.control\s*{[^}]*width:\s*32px/s);
   assert.doesNotMatch(css, /justify-content:\s*center/);
+});
+
+test('app-sidebar remembers its desktop rail state across page mounts', async () => {
+  window.happyDOM.setURL('http://localhost/');
+  const first = mount('app-sidebar');
+  await Promise.resolve();
+
+  first.shadowRoot.querySelector('app-sidebar-toggle').shadowRoot.querySelector('app-button').shadowRoot.querySelector('button').click();
+  await Promise.resolve();
+  assert.match(document.cookie, /(?:^|; )stride_sidebar_state=collapsed(?:;|$)/);
+
+  first.remove();
+  const second = mount('app-sidebar');
+  await Promise.resolve();
+  assert.equal(second.shadowRoot.querySelector('app-sidebar-panel').getAttribute('state'), 'collapsed');
+
+  second.shadowRoot.querySelector('app-sidebar-toggle').shadowRoot.querySelector('app-button').shadowRoot.querySelector('button').click();
+  await Promise.resolve();
+  assert.match(document.cookie, /(?:^|; )stride_sidebar_state=open(?:;|$)/);
+
+  second.remove();
+  const third = mount('app-sidebar');
+  await Promise.resolve();
+  assert.equal(third.shadowRoot.querySelector('app-sidebar-panel').getAttribute('state'), 'open');
 });
 
 test('app-message renders html for agent text', async () => {
