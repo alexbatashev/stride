@@ -60,7 +60,7 @@ test('all custom elements register', () => {
     'app-button', 'app-input', 'app-text-input', 'auth-form', 'app-sidebar', 'app-sidebar-toggle',
     'app-chat-view', 'app-message', 'app-message-actions', 'app-spoiler', 'app-tool-activity', 'app-tool-cluster', 'app-work-group', 'auto-markdown', 'app-prompt-input',
     'app-approval-bar', 'app-quiz-bar', 'app-data-table', 'app-file-browser',
-    'app-file-explorer', 'app-side-panel', 'app-subagent-view', 'app-automations', 'app-settings', 'app-settings-dialog', 'app-settings-section', 'icon-arrow-up', 'icon-x',
+    'app-file-explorer', 'app-side-panel', 'app-subagent-view', 'app-automations', 'app-settings', 'app-settings-dialog', 'app-settings-section', 'app-settings-personal', 'icon-arrow-up', 'icon-x',
     'app-badge', 'app-label', 'app-separator', 'app-skeleton', 'app-aspect-ratio',
     'app-card', 'app-avatar', 'app-avatar-group', 'app-avatar-group-count', 'app-alert', 'app-progress', 'app-checkbox',
     'app-switch', 'app-toggle', 'app-textarea', 'app-radio-group', 'app-slider',
@@ -73,7 +73,7 @@ test('all custom elements register', () => {
     'app-sidebar-group-content', 'app-sidebar-menu', 'app-sidebar-menu-item',
     'app-sidebar-menu-button', 'app-sidebar-menu-action', 'app-sidebar-menu-badge',
     'app-sidebar-input', 'app-sidebar-separator', 'app-sidebar-menu-skeleton', 'app-sidebar-rail',
-    'app-settings-memory', 'app-settings-models', 'icon-check', 'icon-terminal',
+    'app-settings-memory', 'app-settings-models', 'icon-check', 'icon-stride-mark', 'icon-terminal',
   ]) {
     assert.ok(customElements.get(tag), `${tag} is not registered`);
   }
@@ -155,13 +155,44 @@ test('app-sidebar renders projects and threads as links', () => {
   assert.match(el.shadowRoot.innerHTML, /Fresh/);
 });
 
-test('app-sidebar footer dispatches logout and new-project', () => {
+test('app-sidebar uses the Stride mark in expanded and collapsed brand states', async () => {
   const el = mount('app-sidebar');
+  assert.equal(el.shadowRoot.querySelector('.mark').textContent, '');
+  assert.equal(el.shadowRoot.querySelector('.mark').firstElementChild.localName, 'icon-stride-mark');
+
+  const toggle = el.shadowRoot.querySelector('app-sidebar-toggle');
+  toggle.shadowRoot.querySelector('app-button').shadowRoot.querySelector('button').click();
+  await Promise.resolve();
+  const toggleMark = toggle.shadowRoot.querySelector('.brand-mark');
+  assert.equal(toggleMark.textContent, '');
+  assert.equal(toggleMark.firstElementChild.localName, 'icon-stride-mark');
+  toggle.shadowRoot.querySelector('app-button').shadowRoot.querySelector('button').click();
+});
+
+test('app-sidebar account footer dispatches logout and new project follows automations', () => {
+  const el = mount('app-sidebar', { username: 'alex', fullName: 'Alex Example' });
   const logout = lastEvent(el, 'logout');
   const newProject = lastEvent(el, 'new-project');
-  for (const action of el.shadowRoot.querySelectorAll('app-sidebar-footer app-button')) {
-    action.shadowRoot.querySelector('button').click();
-  }
+
+  const project = el.shadowRoot.querySelector('.nav-action-item');
+  assert.equal(project.previousElementSibling.localName, 'sidebar-navigation-item');
+  assert.equal(project.previousElementSibling.label, 'Automations');
+  project.querySelector('button').click();
+
+  const account = el.shadowRoot.querySelector('.account-footer');
+  assert.match(account.textContent, /Alex Example/);
+  assert.match(account.textContent, /@alex/);
+  assert.equal(account.querySelector('.selector').children.length, 1);
+  assert.equal(account.querySelector('.selector').firstElementChild.localName, 'icon-chevrons-up-down');
+  account.querySelector('.trigger').click();
+  assert.equal(account.querySelector('.trigger').getAttribute('aria-expanded'), 'true');
+  assert.equal(account.querySelector('.menu').hasAttribute('hidden'), false);
+  account.querySelector('.trigger').click();
+  assert.equal(account.querySelector('.trigger').getAttribute('aria-expanded'), 'false');
+  assert.equal(account.querySelector('.menu').hasAttribute('hidden'), true);
+  account.querySelector('.trigger').click();
+  Array.from(account.querySelectorAll('button')).find((button) => button.textContent.includes('Log out')).click();
+
   assert.equal(logout.count, 1);
   assert.equal(newProject.count, 1);
 });
@@ -210,11 +241,11 @@ test('app-message escaped text stays text in html renderer', async () => {
   assert.match(html.textContent, /a <tag> & more/);
 });
 
-test('app-message decodes escaped html code blocks as text', async () => {
+test('app-message renders canonical html entities in code blocks without another decode pass', async () => {
   const el = mount('app-message', {
     kind: 'agent',
     format: 'html',
-    text: '<pre><code>#include &amp;lt;stdio.h&amp;gt;\n&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;</code></pre>',
+    text: '<pre><code>#include &lt;stdio.h&gt;\n&lt;script&gt;alert(1)&lt;/script&gt;</code></pre>',
   });
   await tick();
   const html = el.shadowRoot.querySelector('auto-markdown');
@@ -762,7 +793,8 @@ test('app-settings switches sections and lists integrations', () => {
   const el = mount('app-settings');
 
   const layout = el.shadowRoot.querySelector('.layout');
-  assert.equal(layout.getAttribute('data-active'), 'connections');
+  assert.equal(layout.getAttribute('data-active'), 'personal');
+  assert.ok(el.shadowRoot.querySelector('app-settings-personal'), 'Personal settings component missing');
   const github = el.shadowRoot.querySelector('app-settings-github');
   assert.ok(github, 'GitHub settings component missing');
   assert.match(github.shadowRoot.innerHTML, /GitHub/);
@@ -788,12 +820,11 @@ test('app-settings switches sections and lists integrations', () => {
 });
 
 test('settings opens from the sidebar without navigation and closes as a controlled dialog', async () => {
-  const sidebar = mount('app-sidebar');
+  const sidebar = mount('app-sidebar', { username: 'alex', fullName: 'Alex Example' });
   await tick();
-  const settingsItem = sidebar.shadowRoot.querySelector('sidebar-settings-item');
-  const control = settingsItem.shadowRoot.querySelector('app-sidebar-menu-button');
-  assert.equal(control.getAttribute('href'), null);
-  control.dispatchEvent(new CustomEvent('select', { bubbles: true, composed: true }));
+  const account = sidebar.shadowRoot.querySelector('.account-footer');
+  account.querySelector('.trigger').click();
+  buttonWithText(account, 'Settings').click();
 
   const dialog = mount('app-settings-dialog');
   await tick();
@@ -815,6 +846,38 @@ test('settings opens from the sidebar without navigation and closes as a control
   await tick();
   assert.equal(primitive.open, false);
   assert.equal(primitive.querySelector('app-settings'), null);
+});
+
+test('app-settings-personal loads and saves profile fields', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input, init = {}) => {
+    requests.push({ input: String(input), init });
+    if ((init.method ?? 'GET') === 'PUT') {
+      const body = JSON.parse(init.body);
+      return Response.json({ username: 'alex', full_name: body.full_name, personality: body.personality });
+    }
+    return Response.json({ username: 'alex', full_name: 'alex', personality: 'Direct and concise.' });
+  };
+  try {
+    const el = mount('app-settings-personal');
+    await tick();
+    const name = el.shadowRoot.querySelector('input[name="full-name"]');
+    const personality = el.shadowRoot.querySelector('textarea[name="personality"]');
+    assert.equal(name.value, 'alex');
+    assert.equal(personality.value, 'Direct and concise.');
+    name.value = 'Alex Example';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    personality.value = 'Thoughtful.';
+    personality.dispatchEvent(new Event('input', { bubbles: true }));
+    el.shadowRoot.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
+    const save = requests.find((request) => request.init.method === 'PUT');
+    assert.deepEqual(JSON.parse(save.init.body), { full_name: 'Alex Example', personality: 'Thoughtful.' });
+    assert.match(el.shadowRoot.textContent, /Saved\./);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('app-settings-email lists accounts and escapes names', async () => {

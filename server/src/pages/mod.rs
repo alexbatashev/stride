@@ -41,6 +41,8 @@ fn argon_thread_page_data(data: ThreadPageData) -> ArgonThreadPageData {
         })
         .collect();
     ArgonThreadPageData {
+        username: data.username,
+        full_name: data.full_name,
         thread_id: data.thread_id,
         current_title: data.current_title,
         selected_model: data.selected_model,
@@ -398,6 +400,8 @@ impl ShellPageViewServer for ShellPageServer {
     async fn load_shell_page(&self, _page: &str) -> Result<ShellPageData, Self::Error> {
         let data = crate::api::threads::thread_page_data(&self.state, &self.headers, None).await?;
         Ok(ShellPageData {
+            username: data.username,
+            full_name: data.full_name,
             projects: data
                 .projects
                 .into_iter()
@@ -594,6 +598,8 @@ mod tests {
 
     fn sample_data() -> ThreadPageData {
         ThreadPageData {
+            username: "alex".to_string(),
+            full_name: "Alex Example".to_string(),
             thread_id: "thread-1".to_string(),
             current_title: "Current thread".to_string(),
             selected_model: "fast".to_string(),
@@ -780,6 +786,8 @@ mod tests {
         ] {
             let data = super::argon_thread_page_data(sample_data());
             let server = TestShellServer(ShellPageData {
+                username: data.username,
+                full_name: data.full_name,
                 projects: data.projects,
                 threads: data.threads,
             });

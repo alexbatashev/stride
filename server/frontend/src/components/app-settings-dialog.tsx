@@ -3,6 +3,7 @@ import { settings } from "../stores/settings.js";
 import { AppDialog } from "./app-dialog.js";
 
 const SECTIONS = new Set([
+  "personal",
   "connections",
   "email",
   "mcp",

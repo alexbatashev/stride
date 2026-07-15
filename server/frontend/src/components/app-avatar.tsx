@@ -71,8 +71,8 @@ export function AppAvatar({
     <>
       <style>{styles}</style>
       <span class="avatar" style="position:relative">
-        <img src={src} alt={alt} style={src ? "" : "display:none"} />
-        <span class="fallback" style={src ? "display:none" : ""}>{fallback}</span>
+        <img src={src} alt={alt} style={src !== "" ? "" : "display:none"} />
+        <span class="fallback" style={src !== "" ? "display:none" : ""}>{fallback}</span>
         <slot name="badge"></slot>
       </span>
     </>

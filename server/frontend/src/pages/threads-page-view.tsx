@@ -16,6 +16,8 @@ import { threadView } from "../stores/thread-view.js";
 import { sidePanel } from "../stores/side-panel.js";
 
 interface ThreadPageData {
+  username: string;
+  fullName: string;
   threadId: string;
   currentTitle: string;
   selectedModel: string;
@@ -80,7 +82,7 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
       <style>{styles}</style>
       <AppSidebarProvider>
         <div class="page">
-          <nav><AppSidebar projects={data.projects} threads={data.threads} /></nav>
+          <nav><AppSidebar projects={data.projects} threads={data.threads} username={data.username} fullName={data.fullName} /></nav>
           <main>
           <header>
             <AppSidebarToggle />

@@ -12,6 +12,7 @@ macro_rules! argon_module {
 }
 
 argon_module!(app_approval_bar);
+argon_module!(app_avatar);
 argon_module!(app_button);
 argon_module!(app_chat_view);
 argon_module!(app_dialog);
@@ -53,6 +54,7 @@ argon_module!(chevron_down);
 argon_module!(chevron_left);
 argon_module!(chevron_right);
 argon_module!(chevron_up);
+argon_module!(chevrons_up_down);
 argon_module!(check);
 argon_module!(copy);
 argon_module!(clock);
@@ -68,6 +70,7 @@ argon_module!(panel_right);
 argon_module!(plus);
 argon_module!(settings_horizontal);
 argon_module!(stop);
+argon_module!(stride_mark);
 argon_module!(terminal);
 argon_module!(trash_2);
 argon_module!(upload);

@@ -191,7 +191,6 @@ export function AutoMarkdown({
         if (content.innerHTML !== rendered.innerHTML) {
           content.replaceChildren(fragment);
         }
-        decodeCodeBlockText(content);
       } else {
         content.innerHTML = renderMarkdown(text);
       }
@@ -548,19 +547,6 @@ function sanitizeMediaSrc(src: string): boolean {
     return ["http:", "https:"].includes(url.protocol) && url.origin === window.location.origin;
   } catch {
     return false;
-  }
-}
-
-function decodeCodeBlockText(root: HTMLElement): void {
-  for (const code of root.querySelectorAll("pre code")) {
-    code.textContent = unescapeHtml(code.textContent ?? "");
-  }
-
-  for (const pre of root.querySelectorAll("pre")) {
-    if (pre.querySelector("code")) {
-      continue;
-    }
-    pre.textContent = unescapeHtml(pre.textContent ?? "");
   }
 }
 

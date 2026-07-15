@@ -82,6 +82,8 @@ pub struct AgentResponse {
 
 #[derive(Serialize)]
 pub struct ThreadPageData {
+    pub username: String,
+    pub full_name: String,
     pub thread_id: String,
     pub current_title: String,
     pub selected_model: String,
@@ -503,6 +505,9 @@ pub async fn thread_page_data(
     thread_id: Option<Uuid>,
 ) -> Result<ThreadPageData, ThreadApiError> {
     let owner = auth::authenticated_user(state, headers).await?;
+    let profile = crate::api::personal::load(state, owner)
+        .await
+        .map_err(|_| ThreadApiError::Internal)?;
     let all_threads = thread_summaries(state, owner).await?;
     let all_projects = project_summaries(state, owner).await?;
     let models = model_registry::list_available_models(&state.config, &state.db, owner)
@@ -560,6 +565,8 @@ pub async fn thread_page_data(
         .collect();
 
     Ok(ThreadPageData {
+        username: profile.username,
+        full_name: profile.full_name,
         thread_id: thread_id.map(|id| id.to_string()).unwrap_or_default(),
         current_title,
         selected_model,

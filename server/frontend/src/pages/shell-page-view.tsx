@@ -5,6 +5,8 @@ import { AppSettingsDialog } from "../components/app-settings-dialog.js";
 import { mountShellPage } from "../components/shell-page-controller.js";
 
 interface ShellPageData {
+  username: string;
+  fullName: string;
   projects: SidebarProject[];
   threads: SidebarThread[];
 }
@@ -33,7 +35,7 @@ export function ShellPageView({ page }: { page: string }): Component {
       <style>{styles}</style>
       <AppSidebarProvider>
         <div class="page">
-          <nav><AppSidebar projects={data.projects} threads={data.threads} /></nav>
+          <nav><AppSidebar projects={data.projects} threads={data.threads} username={data.username} fullName={data.fullName} /></nav>
           <main>
             <div class="mobile-bar"><AppSidebarToggle /></div>
             {page === "files" ? <app-file-browser></app-file-browser>

@@ -8,13 +8,14 @@ async function importComponents(page) {
   await page.waitForFunction(() => customElements.get('app-message') && customElements.get('app-work-group') && customElements.get('app-tool-activity'));
 }
 
-async function renderedMessageHtml(page) {
+async function renderedMessageHtml(page, overrides = {}) {
   await page.setContent('<script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script>');
   await importComponents(page);
-  return page.evaluate(() => {
+  return page.evaluate((overrides) => {
+    const props = { messageId: 'message-1', seq: 1, role: 'agent', kind: 'agent', format: 'markdown', text: 'Ready', pending: false, ...overrides };
     const message = document.createElement('app-message');
-    Object.assign(message, { messageId: 'message-1', seq: 1, role: 'agent', kind: 'agent', format: 'markdown', text: 'Ready', thinking: 'Checking', pending: false });
-    for (const [name, value] of Object.entries({ 'data-message-id': 'message-1', 'data-seq': '1', 'data-role': 'agent', 'data-kind': 'agent', 'data-format': 'markdown', 'data-text': 'Ready', 'data-thinking': 'Checking', 'data-pending': 'false' })) message.setAttribute(name, value);
+    Object.assign(message, props);
+    for (const [name, value] of Object.entries({ 'data-message-id': props.messageId, 'data-seq': props.seq, 'data-role': props.role, 'data-kind': props.kind, 'data-format': props.format, 'data-text': props.text, 'data-pending': props.pending })) message.setAttribute(name, String(value));
     document.body.appendChild(message);
     const escape = (value) => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const serialize = (node) => {
@@ -26,7 +27,7 @@ async function renderedMessageHtml(page) {
       return `<${node.localName}${attrs}>${shadow}${[...node.childNodes].map(serialize).join('')}</${node.localName}>`;
     };
     return serialize(message);
-  });
+  }, overrides);
 }
 
 async function renderedChatHtml(page) {
@@ -105,13 +106,14 @@ async function shadowSnapshot(page, selector) {
 
 async function openSettings(page) {
   await page.waitForFunction(() => {
-    const item = document.querySelector('app-sidebar')?.shadowRoot?.querySelector('sidebar-settings-item');
-    return item?.shadowRoot?.querySelector('app-sidebar-menu-button')?.shadowRoot?.querySelector('button');
+    return document.querySelector('app-sidebar')?.shadowRoot?.querySelector('.account-footer .trigger');
   });
   await page.evaluate(() => {
     const sidebar = document.querySelector('app-sidebar');
-    const item = sidebar.shadowRoot.querySelector('sidebar-settings-item');
-    item.shadowRoot.querySelector('app-sidebar-menu-button').shadowRoot.querySelector('button').click();
+    sidebar.shadowRoot.querySelector('.account-footer .trigger').click();
+    const settings = [...sidebar.shadowRoot.querySelectorAll('.account-footer .menu button')]
+      .find((button) => button.textContent.includes('Settings'));
+    settings.click();
   });
   await page.waitForFunction(() => {
     const host = document.querySelector('app-settings-dialog');
@@ -119,6 +121,25 @@ async function openSettings(page) {
     return dialog?.open && dialog.querySelector('app-settings');
   });
 }
+
+test('account footer trigger toggles its menu closed on the second click', async ({ page }) => {
+  await page.setContent('<script type="application/json" data-argon-stores>{"sidebar":{"activeThread":""}}</script><app-sidebar></app-sidebar>');
+  await importComponents(page);
+
+  const states = await page.evaluate(() => {
+    const sidebar = document.querySelector('app-sidebar');
+    const trigger = sidebar.shadowRoot.querySelector('.account-footer .trigger');
+    const menu = sidebar.shadowRoot.querySelector('.account-footer .menu');
+    trigger.click();
+    const afterOpen = { expanded: trigger.getAttribute('aria-expanded'), hidden: menu.hidden };
+    trigger.click();
+    const afterClose = { expanded: trigger.getAttribute('aria-expanded'), hidden: menu.hidden };
+    return { afterOpen, afterClose };
+  });
+
+  expect(states.afterOpen).toEqual({ expanded: 'true', hidden: false });
+  expect(states.afterClose).toEqual({ expanded: 'false', hidden: true });
+});
 
 test('settings dialog follows the shadcn desktop structure and leaves background work mounted', async ({ page }) => {
   const runtimeErrors = [];
@@ -249,6 +270,26 @@ test('threads page first-paint message hydration has no DOM snapshot diff', asyn
   const after = await shadowSnapshot(page, '[data-messages]');
 
   expect(after).toBe(before);
+});
+
+test('canonical html entities do not change during message hydration', async ({ browser, page }) => {
+  const text = '<p>A &amp; B</p><pre><code>&lt;tag&gt;</code></pre>';
+  const context = await browser.newContext();
+  const source = await context.newPage();
+  const messageHtml = await renderedMessageHtml(source, { format: 'html', text });
+  await context.close();
+  await page.setContent(`<script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script><div data-messages>${messageHtml}</div>`);
+
+  const before = await shadowSnapshot(page, '[data-messages]');
+  await importComponents(page);
+  await page.waitForFunction(() => document.querySelector('app-message')?.hasAttribute('hydrated'));
+  const after = await shadowSnapshot(page, '[data-messages]');
+  const renderedText = await page.locator('app-message').evaluate((message) =>
+    message.shadowRoot.querySelector('.rendered')?.textContent,
+  );
+
+  expect(after).toBe(before);
+  expect(renderedText).toBe('A & B<tag>');
 });
 
 test('nested first-paint work fold hydrates and opens', async ({ browser, page }) => {

@@ -6,6 +6,7 @@
 import { Component, css, emit, onMount, state } from "@frontiers-labs/argon";
 import { settings } from "../stores/settings.js";
 import { sidebar } from "../stores/ui.js";
+import { AppAvatar } from "./app-avatar.js";
 import { AppButton } from "./app-button.js";
 import {
   AppSidebarContent,
@@ -25,11 +26,14 @@ import { IconArchive } from "./icons/archive.js";
 import { IconMessagesSquare } from "./icons/messages-square.js";
 import { IconChevronDown } from "./icons/chevron-down.js";
 import { IconChevronRight } from "./icons/chevron-right.js";
+import { IconChevronsUpDown } from "./icons/chevrons-up-down.js";
 import { IconFolder } from "./icons/folder.js";
 import { IconPanelLeftClose } from "./icons/panel-left-close.js";
 import { IconPanelLeftOpen } from "./icons/panel-left-open.js";
+import { IconPlus } from "./icons/plus.js";
 import { IconSettingsHorizontal } from "./icons/settings-horizontal.js";
 import { IconClock } from "./icons/clock.js";
+import { IconStrideMark } from "./icons/stride-mark.js";
 
 const styles = css`
   :host {
@@ -61,8 +65,6 @@ const styles = css`
     color: var(--primary-foreground);
     display: inline-flex;
     flex: 0 0 auto;
-    font-size: 13px;
-    font-weight: 700;
     height: 32px;
     justify-content: center;
     width: 32px;
@@ -76,7 +78,6 @@ const styles = css`
   }
   app-sidebar-panel[state="collapsed"] .mark,
   app-sidebar-panel[state="collapsed"] .brand strong,
-  app-sidebar-panel[state="collapsed"] app-sidebar-footer,
   app-sidebar-panel[state="collapsed"] .groups {
     display: none;
   }
@@ -97,6 +98,45 @@ const styles = css`
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .nav-action-item {
+    box-sizing: border-box;
+    list-style: none;
+    padding: 0 8px;
+    width: 100%;
+  }
+  .nav-action {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: var(--sidebar-fg, var(--foreground));
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: 14px;
+    gap: 8px;
+    height: 32px;
+    outline: none;
+    overflow: hidden;
+    padding: 0 8px;
+    text-align: left;
+    white-space: nowrap;
+    width: 100%;
+  }
+  .nav-action:hover,
+  .nav-action:focus-visible {
+    background: var(--sidebar-accent, var(--accent));
+  }
+  .nav-action:focus-visible {
+    box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%));
+  }
+  app-sidebar-panel[state="collapsed"] .nav-action {
+    width: 32px;
+  }
+  app-sidebar-panel[state="collapsed"] .nav-action .label {
+    display: none;
   }
   .groups {
     width: 100%;
@@ -196,6 +236,11 @@ const styles = css`
       display: inline-flex;
       top: 8px;
     }
+    .nav-action {
+      font-size: 16px;
+      height: 44px;
+      padding: 0 12px;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     .chevron {
@@ -203,6 +248,155 @@ const styles = css`
     }
     .run-pulse {
       animation: none;
+    }
+  }
+`;
+
+const accountFooterStyles = css`
+  .account-footer {
+    display: block;
+    position: relative;
+    width: 100%;
+  }
+
+  .trigger {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    box-sizing: border-box;
+    color: var(--sidebar-fg, var(--foreground));
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    gap: 10px;
+    min-height: 48px;
+    outline: none;
+    padding: 8px;
+    text-align: left;
+    width: 100%;
+  }
+
+  .trigger:hover,
+  .trigger:focus-visible,
+  .trigger[aria-expanded="true"] {
+    background: var(--sidebar-accent, var(--accent));
+  }
+
+  .trigger:focus-visible {
+    box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%));
+  }
+
+  .identity {
+    display: grid;
+    flex: 1;
+    line-height: 1.25;
+    min-width: 0;
+  }
+
+  .name,
+  .username {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .name {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .username {
+    color: var(--muted-foreground);
+    font-size: 12px;
+  }
+
+  .selector {
+    align-items: center;
+    color: var(--muted-foreground);
+    display: inline-flex;
+    justify-content: center;
+    margin-left: auto;
+  }
+
+  .menu {
+    background: var(--popover, var(--background));
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    bottom: calc(100% + 4px);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+    box-sizing: border-box;
+    display: grid;
+    gap: 2px;
+    left: 0;
+    padding: 4px;
+    position: absolute;
+    right: 0;
+    z-index: 80;
+  }
+
+  .menu[hidden] {
+    display: none;
+  }
+
+  .menu a,
+  .menu button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: var(--popover-foreground, var(--foreground));
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: 14px;
+    gap: 8px;
+    height: 34px;
+    outline: none;
+    padding: 0 8px;
+    text-align: left;
+    text-decoration: none;
+    width: 100%;
+  }
+
+  .menu a:hover,
+  .menu a:focus-visible,
+  .menu button:hover,
+  .menu button:focus-visible {
+    background: var(--accent);
+  }
+
+  .menu .icon,
+  .menu .icon > * {
+    align-items: center;
+    display: inline-flex;
+    height: 16px;
+    justify-content: center;
+    width: 16px;
+  }
+
+  app-sidebar-panel[state="collapsed"] .account-footer .trigger {
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+    width: 32px;
+  }
+
+  app-sidebar-panel[state="collapsed"] .account-footer .identity,
+  app-sidebar-panel[state="collapsed"] .account-footer .selector {
+    display: none;
+  }
+
+  @media (max-width: 767px) {
+    .trigger {
+      min-height: 52px;
+    }
+
+    .menu a,
+    .menu button {
+      height: 42px;
+      font-size: 16px;
     }
   }
 `;
@@ -222,8 +416,6 @@ const toggleStyles = css`
     border-radius: 8px;
     color: var(--primary-foreground);
     display: inline-flex;
-    font-size: 13px;
-    font-weight: 700;
     height: 32px;
     justify-content: center;
     width: 32px;
@@ -530,28 +722,10 @@ export function SidebarNavigationItem({
   );
 }
 
-export function SidebarSettingsItem(): Component {
-  return (
-    <>
-      <style>{navigationItemStyles}</style>
-      <AppSidebarMenuItem>
-        <AppSidebarMenuButton
-          active={settings.open}
-          collapsed={sidebar.status === "collapsed"}
-          on:select={() => {
-            settings.open = true;
-            if (window.matchMedia(MOBILE_QUERY).matches)
-              sidebar.status = "hidden";
-          }}
-        >
-          <span class="icon">
-            <IconSettingsHorizontal />
-          </span>
-          <span class="label">Settings</span>
-        </AppSidebarMenuButton>
-      </AppSidebarMenuItem>
-    </>
-  );
+function profileInitials(fullName: string, username: string): string {
+  const source = fullName.trim() || username.trim();
+  if (source.length === 0) return "?";
+  return source.slice(0, 1).toUpperCase();
 }
 
 export function SidebarThreadGroup({
@@ -664,10 +838,15 @@ export function SidebarThreadGroup({
 export function AppSidebar({
   projects = [],
   threads = [],
+  username = "",
+  fullName = "",
 }: {
   projects?: SidebarProject[];
   threads?: SidebarThread[];
+  username?: string;
+  fullName?: string;
 }): Component {
+  let accountOpen = state(false);
   onMount(() => {
     const mq = window.matchMedia(MOBILE_QUERY);
     const sync = () => {
@@ -679,6 +858,11 @@ export function AppSidebar({
     let socket: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
+    const closeAccount = (event: Event) => {
+      const footer = this.shadowRoot?.querySelector(".account-footer");
+      if (accountOpen && footer && !event.composedPath().includes(footer)) accountOpen = false;
+    };
+    document.addEventListener("click", closeAccount);
     const connect = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       socket = new WebSocket(`${protocol}//${location.host}/api/events`);
@@ -693,6 +877,7 @@ export function AppSidebar({
     return () => {
       stopped = true;
       mq.removeEventListener("change", sync);
+      document.removeEventListener("click", closeAccount);
       if (retry) clearTimeout(retry);
       socket?.close();
     };
@@ -702,6 +887,7 @@ export function AppSidebar({
   return (
     <>
       <style>{styles}</style>
+      <style>{accountFooterStyles}</style>
       <AppSidebarPanel state={sidebar.status}>
         <button
           class="scrim"
@@ -711,9 +897,11 @@ export function AppSidebar({
         ></button>
         <AppSidebarHeader>
           <div class="brand">
-            <span class="mark">F</span>
+            <span class="mark" aria-hidden="true">
+              <IconStrideMark />
+            </span>
             <strong>S.T.R.I.D.E.</strong>
-            <AppSidebarToggle brand="F" />
+            <AppSidebarToggle brand="stride" />
           </div>
         </AppSidebarHeader>
         <AppSidebarContent state={sidebar.status}>
@@ -738,14 +926,12 @@ export function AppSidebar({
               active={sidebar.activePage === "automations"}
               collapsed={collapsed}
             />
-            <SidebarNavigationItem
-              href="/archived"
-              label="Archived"
-              kind="archived"
-              active={sidebar.activePage === "archived"}
-              collapsed={collapsed}
-            />
-            <SidebarSettingsItem />
+            <li class="nav-action-item">
+              <button class="nav-action" type="button" onClick={() => emit(this, "new-project")}>
+                <span class="icon"><IconPlus /></span>
+                <span class="label">New project</span>
+              </button>
+            </li>
           </AppSidebarMenu>
           <div class="groups">
             {projects.map((project) => (
@@ -763,12 +949,58 @@ export function AppSidebar({
           </div>
         </AppSidebarContent>
         <AppSidebarFooter>
-          <AppButton variant="ghost" onClick={() => emit(this, "new-project")}>
-            + New project
-          </AppButton>
-          <AppButton variant="secondary" onClick={() => emit(this, "logout")}>
-            Log out
-          </AppButton>
+          <div class="account-footer">
+            <button
+              class="trigger"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={accountOpen ? "true" : "false"}
+              title={collapsed ? settings.fullName || fullName : "Account menu"}
+              onClick={(event: Event) => {
+                event.stopPropagation();
+                if (sidebar.status === "collapsed") sidebar.status = "open";
+                accountOpen = !accountOpen;
+              }}
+            >
+              <AppAvatar fallback={profileInitials(settings.fullName || fullName, settings.username || username)} />
+              <span class="identity">
+                <span class="name">{settings.fullName || fullName}</span>
+                <span class="username">@{settings.username || username}</span>
+              </span>
+              <span class="selector" aria-hidden="true">
+                <IconChevronsUpDown />
+              </span>
+            </button>
+            <div class="menu" role="menu" hidden={!accountOpen}>
+              <a href="/archived" role="menuitem" onClick={() => (accountOpen = false)}>
+                <span class="icon"><IconArchive /></span>
+                Archived
+              </a>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  accountOpen = false;
+                  settings.open = true;
+                  if (window.matchMedia(MOBILE_QUERY).matches) sidebar.status = "hidden";
+                }}
+              >
+                <span class="icon"><IconSettingsHorizontal /></span>
+                Settings
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  accountOpen = false;
+                  emit(this, "logout");
+                }}
+              >
+                <span class="icon" aria-hidden="true">↪</span>
+                Log out
+              </button>
+            </div>
+          </div>
         </AppSidebarFooter>
         <AppSidebarRail
           collapsed={collapsed}
@@ -797,7 +1029,9 @@ export function AppSidebarToggle({
       >
         {brand !== "" && closed ? (
           <span class="with-brand">
-            <span class="brand-mark">{brand}</span>
+            <span class="brand-mark" aria-hidden="true">
+              <IconStrideMark />
+            </span>
             <span class="hover-icon">
               <IconPanelLeftOpen />
             </span>

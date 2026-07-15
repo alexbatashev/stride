@@ -138,6 +138,29 @@ export type MemorySettings = {
 	memories: Memory[];
 };
 
+export type PersonalSettings = {
+	username: string;
+	full_name: string;
+	personality: string;
+};
+
+export type PersonalSettingsUpdate = {
+	full_name: string;
+	personality: string;
+};
+
+export async function getPersonalSettings(): Promise<PersonalSettings> {
+	return request("/api/settings/personal");
+}
+
+export async function updatePersonalSettings(data: PersonalSettingsUpdate): Promise<PersonalSettings> {
+	return request("/api/settings/personal", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
 export async function getTelegramSettings(): Promise<TelegramSettings> {
 	return request("/api/settings/telegram");
 }

@@ -1486,7 +1486,8 @@ mod tests {
                 api: llm::Mock::new()
                     .with_stream_chunks(vec![vec![
                         text_stream_chunk("<h1", None),
-                        text_stream_chunk(r#">Hello<script>alert(1)</script>"#, Some("stop")),
+                        text_stream_chunk(">Hello &am", None),
+                        text_stream_chunk(r#"p; <script>alert(1)</script>"#, Some("stop")),
                     ]])
                     .into(),
                 token: "-".to_string(),
@@ -1536,7 +1537,10 @@ mod tests {
         let rows = rows.rows();
 
         assert_eq!(rows[1].get_text("role"), Some("agent"));
-        assert_eq!(rows[1].get_text("content"), Some("<h1>Helloalert(1)</h1>"));
+        assert_eq!(
+            rows[1].get_text("content"),
+            Some("<h1>Hello &amp; alert(1)</h1>")
+        );
         assert_eq!(rows[1].get_text("content_format"), Some("html"));
     }
 

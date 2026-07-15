@@ -7,6 +7,7 @@ import { AppSettingsGoogle } from "./app-settings-google.js";
 import { AppSettingsMemory } from "./app-settings-memory.js";
 import { AppSettingsMcp } from "./app-settings-mcp.js";
 import { AppSettingsModels } from "./app-settings-models.js";
+import { AppSettingsPersonal } from "./app-settings-personal.js";
 import { AppSettingsSkills } from "./app-settings-skills.js";
 import { AppSettingsTelegram } from "./app-settings-telegram.js";
 import { AppSettingsThreads } from "./app-settings-threads.js";
@@ -68,6 +69,7 @@ const styles = css`
   .tab:focus-visible { box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%)); outline: none; }
 
   .layout[data-active="connections"] .tab[data-section="connections"],
+  .layout[data-active="personal"] .tab[data-section="personal"],
   .layout[data-active="email"] .tab[data-section="email"],
   .layout[data-active="mcp"] .tab[data-section="mcp"],
   .layout[data-active="files"] .tab[data-section="files"],
@@ -101,6 +103,7 @@ const styles = css`
   .notice:empty { display: none; }
 
   .layout[data-active="connections"] .panel[data-panel="connections"],
+  .layout[data-active="personal"] .panel[data-panel="personal"],
   .layout[data-active="email"] .panel[data-panel="email"],
   .layout[data-active="mcp"] .panel[data-panel="mcp"],
   .layout[data-active="files"] .panel[data-panel="files"],
@@ -129,6 +132,7 @@ const styles = css`
     }
     .tab { align-self: stretch; border-radius: 0; padding: 0 10px; position: relative; }
     .layout[data-active="connections"] .tab[data-section="connections"]::after,
+    .layout[data-active="personal"] .tab[data-section="personal"]::after,
     .layout[data-active="email"] .tab[data-section="email"]::after,
     .layout[data-active="mcp"] .tab[data-section="mcp"]::after,
     .layout[data-active="files"] .tab[data-section="files"]::after,
@@ -147,6 +151,7 @@ export function AppSettings(): Component {
       <div class="root">
           <div class="layout" data-active={settings.activeSection}>
             <nav class="tabs" aria-label="Settings sections">
+              <button type="button" class="tab" data-section="personal" onClick={() => { settings.activeSection = "personal"; }}>Personal</button>
               <button type="button" class="tab" data-section="connections" onClick={() => { settings.activeSection = "connections"; }}>Connections</button>
               <button type="button" class="tab" data-section="email" onClick={() => { settings.activeSection = "email"; }}>Email</button>
               <button type="button" class="tab" data-section="mcp" onClick={() => { settings.activeSection = "mcp"; }}>MCP servers</button>
@@ -159,6 +164,9 @@ export function AppSettings(): Component {
 
             <div class="panels">
               <div class="notice" role="status">{settings.notice}</div>
+              <section class="panel" data-panel="personal">
+                <AppSettingsPersonal />
+              </section>
               <section class="panel" data-panel="connections">
                 <AppSettingsTelegram />
                 <AppSettingsGithub />

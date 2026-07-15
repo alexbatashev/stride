@@ -594,6 +594,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/api/settings/memories", get(api::memories::list))
         .route("/api/settings/memories/{id}", delete(api::memories::delete))
         .route(
+            "/api/settings/personal",
+            get(api::personal::get).put(api::personal::update),
+        )
+        .route(
             "/api/settings/thread-retention",
             get(api::thread_settings::get).put(api::thread_settings::update),
         )
