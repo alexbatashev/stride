@@ -888,20 +888,33 @@ export function AppSidebar({
     };
     document.addEventListener("click", closeAccount);
     const connect = () => {
+      if (retry) {
+        clearTimeout(retry);
+        retry = null;
+      }
+      const previous = socket;
+      socket = null;
+      previous?.close();
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(`${protocol}//${location.host}/api/events`);
-      socket.onopen = () => void resyncThreads(host);
-      socket.onmessage = (event) =>
+      const next = new WebSocket(`${protocol}//${location.host}/api/events`);
+      socket = next;
+      next.onopen = () => void resyncThreads(host);
+      next.onmessage = (event) =>
         applyUserEvent(host, JSON.parse(event.data as string) as UserEvent);
-      socket.onclose = () => {
+      next.onclose = () => {
+        if (socket !== next) return;
+        socket = null;
         if (!stopped) retry = setTimeout(connect, 2000 + Math.random() * 3000);
       };
     };
+    const reconnectOnFocus = () => connect();
+    window.addEventListener("focus", reconnectOnFocus);
     connect();
     return () => {
       stopped = true;
       mq.removeEventListener("change", sync);
       document.removeEventListener("click", closeAccount);
+      window.removeEventListener("focus", reconnectOnFocus);
       if (retry) clearTimeout(retry);
       socket?.close();
     };

@@ -107,6 +107,7 @@ class ThreadsPageHydrator {
 	private refreshSeq = 0;
 	private lastEventSeq = 0;
 	private reconnectAttempts = 0;
+	private eventsReady = false;
 	private readonly titleEl: HTMLElement;
 	private readonly promptEl: PromptEl;
 	private readonly approvalEl: ApprovalEl;
@@ -194,6 +195,7 @@ class ThreadsPageHydrator {
 		}
 
 		if (this.threadId === threadId) {
+			this.eventsReady = true;
 			this.openEvents(threadId);
 		}
 	}
@@ -291,6 +293,11 @@ class ThreadsPageHydrator {
 		);
 		window.addEventListener("popstate", () => {
 			window.location.href = window.location.pathname;
+		});
+		window.addEventListener("focus", () => {
+			if (this.eventsReady && this.threadId) {
+				this.openEvents(this.threadId, this.lastEventSeq > 0 ? this.lastEventSeq : undefined);
+			}
 		});
 	}
 

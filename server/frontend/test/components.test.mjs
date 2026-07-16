@@ -157,6 +157,39 @@ test('app-sidebar renders projects and threads as links', () => {
   assert.match(el.shadowRoot.innerHTML, /Fresh/);
 });
 
+test('app-sidebar reconnects its user stream whenever the window gains focus', () => {
+  const originalWebSocket = globalThis.WebSocket;
+  const sockets = [];
+
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.closed = false;
+      sockets.push(this);
+    }
+
+    close() {
+      this.closed = true;
+      this.onclose?.();
+    }
+  }
+
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const sidebar = mount('app-sidebar');
+    assert.equal(sockets.length, 1);
+
+    window.dispatchEvent(new Event('focus'));
+
+    assert.equal(sockets.length, 2);
+    assert.equal(sockets[0].closed, true);
+    assert.equal(sockets[1].url, 'ws:///api/events');
+    sidebar.remove();
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
 test('app-sidebar uses the Stride mark in expanded and collapsed brand states', async () => {
   const el = mount('app-sidebar');
   assert.equal(el.shadowRoot.querySelector('.mark').textContent, '');
@@ -635,6 +668,75 @@ test('app-quiz-bar submits picked option and custom answer', () => {
 test('app-quiz-bar disables every answer control while submitting', () => {
   const el = mount('app-quiz-bar', { question: 'Pick one', options: ['Alpha'], disabled: true });
   assert.ok(Array.from(el.shadowRoot.querySelectorAll('input, button')).every((control) => control.disabled));
+});
+
+test('threads page reconnects its event stream from the last sequence on focus', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  const sockets = [];
+
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.closed = false;
+      sockets.push(this);
+    }
+
+    close() {
+      this.closed = true;
+      this.onclose?.();
+    }
+  }
+
+  globalThis.WebSocket = FakeWebSocket;
+  globalThis.fetch = async (input) => {
+    const path = String(input);
+    if (path === '/api/models' || path.endsWith('/messages') || path.endsWith('/agents')) {
+      return new Response('[]', { status: 200 });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+
+  try {
+    const root = document.createElement('div');
+    root.dataset.threadId = 'thread-1';
+    root.dataset.argonServer = JSON.stringify({ data: { running: true, models: [] } });
+    const scope = root.attachShadow({ mode: 'open' });
+    scope.innerHTML = `
+      <span data-current-title>Thread</span>
+      <app-prompt-input data-prompt></app-prompt-input>
+      <app-approval-bar data-approval></app-approval-bar>
+      <app-quiz-bar data-quiz></app-quiz-bar>
+      <app-sidebar></app-sidebar>
+      <app-side-panel data-side-panel></app-side-panel>
+      <app-dialog data-mobile-panel></app-dialog>
+    `;
+    const sidebar = scope.querySelector('app-sidebar');
+    sidebar.projects = [];
+    sidebar.threads = [{ id: 'thread-1', title: 'Thread' }];
+
+    const { mountThreadsPage } = await import('../dist/argon/components/threads-page-controller.js');
+    mountThreadsPage(root);
+    await tick();
+    await tick();
+    assert.equal(sockets.length, 1);
+
+    sockets[0].onmessage({ data: JSON.stringify({
+      seq: 7,
+      thread_id: 'thread-1',
+      run_id: 'run-1',
+      agent_path: [],
+      kind: { type: 'snapshot', status: 'running', in_progress: null, pending_approvals: [], pending_quizzes: [] },
+    }) });
+    window.dispatchEvent(new Event('focus'));
+
+    assert.equal(sockets.length, 2);
+    assert.equal(sockets[0].closed, true);
+    assert.equal(sockets[1].url, 'ws:///api/threads/thread-1/events?after=7');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  }
 });
 
 test('threads page keeps quizzes in arrival order and advances after submission', async () => {
