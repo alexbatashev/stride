@@ -319,13 +319,13 @@ test('nested first-paint work fold hydrates and opens', async ({ browser, page }
   });
 });
 
-test('model picker opens above its trigger within the viewport', async ({ page }) => {
+test('model picker opens above its trigger at a bounded width within the viewport', async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 480 });
   await page.setContent(`<!doctype html>
     <html lang="en">
       <head>
         <script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script>
-        <style>body { align-items: flex-end; display: flex; justify-content: center; margin: 0; min-height: 100vh; }</style>
+        <style>body { align-items: flex-end; box-sizing: border-box; display: flex; justify-content: flex-end; margin: 0; min-height: 100vh; padding: 16px; }</style>
       </head>
       <body><app-model-picker></app-model-picker></body>
     </html>`);
@@ -336,7 +336,7 @@ test('model picker opens above its trigger within the viewport', async ({ page }
     picker.models = Array.from({ length: 20 }, (_, index) => ({
       value: `model-${index}`,
       label: `Model ${index}`,
-      description: `Description ${index}`,
+      description: `A deliberately long model description ${index} that must not expand the picker across the viewport`,
       vision: false,
     }));
     await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -346,13 +346,23 @@ test('model picker opens above its trigger within the viewport', async ({ page }
     return {
       popupBottom: popup.bottom,
       popupTop: popup.top,
+      popupLeft: popup.left,
+      popupRight: popup.right,
+      popupWidth: popup.width,
       triggerTop: trigger.top,
+      triggerRight: trigger.right,
+      viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
     };
   });
 
   expect(geometry.popupBottom).toBeLessThanOrEqual(geometry.triggerTop);
   expect(geometry.popupTop).toBeGreaterThanOrEqual(0);
+  expect(geometry.popupLeft).toBeGreaterThanOrEqual(0);
+  expect(geometry.popupWidth).toBeLessThanOrEqual(420);
+  expect(geometry.popupWidth).toBeLessThan(geometry.viewportWidth);
+  expect(geometry.popupRight).toBe(geometry.triggerRight);
+  expect(geometry.popupRight).toBeLessThanOrEqual(geometry.viewportWidth);
   expect(geometry.popupBottom).toBeLessThanOrEqual(geometry.viewportHeight);
 
   await page.locator('body').click({ position: { x: 8, y: 8 } });

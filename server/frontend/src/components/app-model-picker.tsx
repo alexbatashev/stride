@@ -15,7 +15,7 @@ const styles = css`
   .trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .effort { color: var(--prompt-muted, #a0a0a0); font-weight: 400; }
   .trigger app-button icon-chevron-down { color: var(--prompt-muted, #a0a0a0); height: 18px; margin-left: 2px; width: 18px; }
-  .popup { background: var(--popover, #292929); border: 1px solid var(--prompt-control-border, #3a3a3a); border-radius: 12px; bottom: calc(100% + 8px); box-shadow: 0 16px 36px rgb(0 0 0 / 30%); box-sizing: border-box; display: none; max-height: min(360px, 50vh); min-width: min(340px, calc(100vw - 32px)); overflow-y: auto; padding: 4px; position: absolute; right: 0; width: max-content; z-index: 30; }
+  .popup { background: var(--popover, #292929); border: 1px solid var(--prompt-control-border, #3a3a3a); border-radius: 12px; bottom: calc(100% + 8px); box-shadow: 0 16px 36px rgb(0 0 0 / 30%); box-sizing: border-box; display: none; max-height: min(360px, 50vh); min-width: min(340px, calc(100vw - 32px)); overflow-y: auto; padding: 4px; position: absolute; right: 0; width: min(420px, calc(100vw - 32px)); z-index: 30; }
   :host([open]) .popup { display: block; }
   .empty { color: var(--muted-foreground); font-size: 0.8125rem; padding: 10px; }
   :host([disabled]) { opacity: 0.5; pointer-events: none; }
