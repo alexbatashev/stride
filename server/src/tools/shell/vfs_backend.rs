@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bashkit::{DirEntry, FileType, FsBackend, Metadata, Result};
 
-use crate::vfs::{self, EntryKind, MountedVfs};
+use crate::vfs::{self, EntryKind, MountedVfs, VfsError};
 
 /// Bashkit storage backend backed by the mounted VFS. Bashkit's `PosixFs`
 /// wraps this to provide POSIX path semantics; here we only translate raw
@@ -184,16 +184,13 @@ fn epoch(seconds: i64) -> SystemTime {
 
 /// Translates a VFS error into a bashkit filesystem error, preserving the
 /// read-only and not-found distinctions the shell surfaces to the user.
-fn map_err(err: anyhow::Error) -> bashkit::Error {
-    let message = err.to_string();
-    let kind = if message.contains("read-only") {
-        ErrorKind::PermissionDenied
-    } else if message.contains("not found") {
-        ErrorKind::NotFound
-    } else {
-        ErrorKind::Other
+fn map_err(err: VfsError) -> bashkit::Error {
+    let kind = match err {
+        VfsError::ReadOnly | VfsError::PermissionDenied => ErrorKind::PermissionDenied,
+        VfsError::NotFound => ErrorKind::NotFound,
+        VfsError::NotADirectory | VfsError::IsADirectory | VfsError::Storage(_) => ErrorKind::Other,
     };
-    std::io::Error::new(kind, message).into()
+    std::io::Error::new(kind, err.to_string()).into()
 }
 
 fn not_found(path: &str) -> bashkit::Error {

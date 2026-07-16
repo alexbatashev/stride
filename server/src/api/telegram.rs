@@ -36,7 +36,7 @@ use crate::{
         thread_events_topic,
     },
     tools::telegram::{TELEGRAM_MESSAGE_LIMIT, TELEGRAM_RICH_MESSAGE_LIMIT, split_message},
-    vfs::{WORKSPACE_MOUNT, WritableArea},
+    vfs::{AGENT_HOME, USER_HOME, WritableArea},
 };
 
 /// How long a streamed Telegram draft waits before the next update is pushed.
@@ -489,7 +489,7 @@ async fn thread_writable_area(
         && let Some(title) = project_title(&state.db, pid).await
         && let Ok(prefix) = vfs.ensure_project_dir(user_id, &title).await
     {
-        let root = format!("/{prefix}");
+        let root = format!("{USER_HOME}/{prefix}");
         return Some((WritableArea::ProjectDir(prefix), root));
     }
     let workspace_id = vfs
@@ -498,7 +498,7 @@ async fn thread_writable_area(
         .ok()?;
     Some((
         WritableArea::Workspace(workspace_id),
-        format!("/{WORKSPACE_MOUNT}"),
+        AGENT_HOME.to_string(),
     ))
 }
 

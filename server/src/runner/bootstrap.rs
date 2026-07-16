@@ -354,7 +354,7 @@ pub(crate) async fn ensure_runner(
     .map_err(AgentPoolError::Internal)?;
 
     if let Some((provider, area)) = python_workspace {
-        let fs = MountedVfs::new(provider.clone(), user_id, area.clone())
+        let fs = MountedVfs::from_writable_area(provider.clone(), user_id, area.clone())
             .with_writable_dirs(writable_extra.clone());
         if vision {
             agent.register_tool(AttachImageTool {
@@ -371,7 +371,7 @@ pub(crate) async fn ensure_runner(
             python: python.as_ref().map(|tool| tool.service()),
             writable_root: writable_root
                 .clone()
-                .unwrap_or_else(|| format!("/{}", crate::vfs::WORKSPACE_MOUNT)),
+                .unwrap_or_else(|| crate::vfs::AGENT_HOME.to_string()),
         });
         agent.allow_tool("ocr");
         if let Some(bot_token) = telegram_bot_token
@@ -730,8 +730,8 @@ async fn resolve_writable_area(
 /// The absolute path the agent uses to reach its writable directory.
 fn writable_root_path(area: &WritableArea) -> String {
     match area {
-        WritableArea::Workspace(_) => format!("/{}", crate::vfs::WORKSPACE_MOUNT),
-        WritableArea::ProjectDir(prefix) => format!("/{prefix}"),
+        WritableArea::Workspace(_) => crate::vfs::AGENT_HOME.to_string(),
+        WritableArea::ProjectDir(prefix) => format!("{}/{prefix}", crate::vfs::USER_HOME),
     }
 }
 

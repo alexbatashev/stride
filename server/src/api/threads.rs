@@ -1367,7 +1367,7 @@ async fn prepare_message(
         return Ok((build_content(content, file_paths), Vec::new()));
     };
 
-    let fs = crate::vfs::MountedVfs::new(vfs.clone(), owner, area);
+    let fs = crate::vfs::MountedVfs::from_writable_area(vfs.clone(), owner, area);
     let public_url = state.config.public_url();
 
     let mut images = Vec::new();
@@ -1895,8 +1895,10 @@ async fn thread_writable_area(
 /// directory.
 fn writable_root_path(area: &crate::vfs::WritableArea) -> String {
     match area {
-        crate::vfs::WritableArea::Workspace(_) => format!("/{}", crate::vfs::WORKSPACE_MOUNT),
-        crate::vfs::WritableArea::ProjectDir(prefix) => format!("/{prefix}"),
+        crate::vfs::WritableArea::Workspace(_) => crate::vfs::AGENT_HOME.to_string(),
+        crate::vfs::WritableArea::ProjectDir(prefix) => {
+            format!("{}/{prefix}", crate::vfs::USER_HOME)
+        }
     }
 }
 

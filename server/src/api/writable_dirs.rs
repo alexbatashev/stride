@@ -15,7 +15,6 @@ use crate::{
     ServerState,
     api::auth::{self, AuthError},
     db::writable_dirs,
-    vfs::WORKSPACE_MOUNT,
 };
 
 #[derive(Debug)]
@@ -71,10 +70,11 @@ pub struct NewWritableDir {
     pub path: String,
 }
 
-/// Normalizes a user-entered directory into a clean global prefix: strips the
-/// leading slash, drops empty and `.` segments, and rejects `..` traversal or
-/// the special `~workspace` mount. The result addresses a node in the user's
-/// global files.
+/// Normalizes a user-entered directory into a clean global prefix (relative to
+/// the user's tree). Accepts absolute `/home/user/...` grant paths and legacy
+/// relative paths; drops empty and `.` segments; rejects `..` traversal, the
+/// `/home/agent` workspace, and anything outside `/home/user`. The result
+/// addresses a node in the user's global files.
 pub fn normalize_dir(input: &str) -> Result<String, String> {
     let segments: Vec<&str> = input
         .split('/')
@@ -87,10 +87,19 @@ pub fn normalize_dir(input: &str) -> Result<String, String> {
     if segments.is_empty() {
         return Err("path must not be empty".to_string());
     }
-    if segments[0] == WORKSPACE_MOUNT {
-        return Err("the thread workspace is always writable".to_string());
+    let relative = if segments[0] == "home" {
+        match segments.get(1).copied() {
+            Some("agent") => return Err("the thread workspace is always writable".to_string()),
+            Some("user") => &segments[2..],
+            _ => return Err("path must be under /home/user".to_string()),
+        }
+    } else {
+        &segments[..]
+    };
+    if relative.is_empty() {
+        return Err("path must not be the whole user tree".to_string());
     }
-    Ok(segments.join("/"))
+    Ok(relative.join("/"))
 }
 
 pub async fn list(
@@ -205,10 +214,21 @@ mod tests {
     }
 
     #[test]
+    fn normalize_accepts_absolute_user_paths() {
+        assert_eq!(normalize_dir("/home/user/Documents").unwrap(), "Documents");
+        assert_eq!(
+            normalize_dir("/home/user/Projects/Acme").unwrap(),
+            "Projects/Acme"
+        );
+    }
+
+    #[test]
     fn normalize_rejects_traversal_empty_and_workspace() {
         assert!(normalize_dir("a/../b").is_err());
         assert!(normalize_dir("   ").is_err());
         assert!(normalize_dir("/").is_err());
-        assert!(normalize_dir(&format!("/{WORKSPACE_MOUNT}/x")).is_err());
+        assert!(normalize_dir("/home/agent/x").is_err());
+        assert!(normalize_dir("/home/other/x").is_err());
+        assert!(normalize_dir("/home/user").is_err());
     }
 }

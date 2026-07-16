@@ -2,7 +2,7 @@ mod local;
 mod mounted;
 
 pub use local::LocalFileProvider;
-pub use mounted::{MountedVfs, WORKSPACE_MOUNT, WritableArea};
+pub use mounted::{AGENT_HOME, MountedVfs, USER_HOME, VfsError, WritableArea};
 
 use std::sync::Arc;
 
@@ -1727,9 +1727,9 @@ mod tests {
             .await
             .unwrap();
 
-        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::ProjectDir(prefix));
+        let fs = MountedVfs::new(vfs.clone(), owner, None, Some(prefix));
         // Writing inside the project folder works.
-        fs.write_bytes("/Projects/Acme/out.txt", b"ok", None)
+        fs.write_bytes("/home/user/Projects/Acme/out.txt", b"ok", None)
             .await
             .unwrap();
         assert_eq!(
@@ -1740,11 +1740,14 @@ mod tests {
         );
         // The rest of the namespace is readable but not writable.
         assert_eq!(
-            fs.read_bytes("/personal/notes.txt").await.unwrap().0,
+            fs.read_bytes("/home/user/personal/notes.txt")
+                .await
+                .unwrap()
+                .0,
             b"secret"
         );
         assert!(
-            fs.write_bytes("/personal/notes.txt", b"x", None)
+            fs.write_bytes("/home/user/personal/notes.txt", b"x", None)
                 .await
                 .is_err()
         );
@@ -1759,14 +1762,14 @@ mod tests {
             .await
             .unwrap();
 
-        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::ProjectDir(prefix))
+        let fs = MountedVfs::new(vfs.clone(), owner, None, Some(prefix))
             .with_writable_dirs(vec!["Documents".to_string()]);
 
         // The configured directory and its children are writable.
-        fs.write_bytes("/Documents/new.txt", b"hi", None)
+        fs.write_bytes("/home/user/Documents/new.txt", b"hi", None)
             .await
             .unwrap();
-        fs.write_bytes("/Documents/sub/deep.txt", b"deep", None)
+        fs.write_bytes("/home/user/Documents/sub/deep.txt", b"deep", None)
             .await
             .unwrap();
         assert_eq!(
@@ -1778,7 +1781,11 @@ mod tests {
 
         // A sibling outside the configured directory stays read-only.
         vfs.write_global(owner, "Other/x.txt", "ro").await.unwrap();
-        assert!(fs.write_bytes("/Other/x.txt", b"no", None).await.is_err());
+        assert!(
+            fs.write_bytes("/home/user/Other/x.txt", b"no", None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1790,15 +1797,15 @@ mod tests {
             .await
             .unwrap();
 
-        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::Workspace(ws))
+        let fs = MountedVfs::new(vfs.clone(), owner, Some(ws), None)
             .with_writable_dirs(vec!["Notes".to_string()]);
 
         // The workspace mount is writable as before.
-        fs.write_bytes("/~workspace/a.txt", b"ws", None)
+        fs.write_bytes("/home/agent/a.txt", b"ws", None)
             .await
             .unwrap();
         // The extra global directory is writable too, routed to global files.
-        fs.write_bytes("/Notes/todo.txt", b"todo", None)
+        fs.write_bytes("/home/user/Notes/todo.txt", b"todo", None)
             .await
             .unwrap();
         assert_eq!(
@@ -1807,7 +1814,11 @@ mod tests {
         );
         // Other global paths remain read-only.
         vfs.write_global(owner, "Secret/s.txt", "ro").await.unwrap();
-        assert!(fs.write_bytes("/Secret/s.txt", b"no", None).await.is_err());
+        assert!(
+            fs.write_bytes("/home/user/Secret/s.txt", b"no", None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

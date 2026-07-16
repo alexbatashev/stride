@@ -152,7 +152,7 @@ mod tests {
             .get_or_create_workspace(Uuid::now_v7(), None, owner)
             .await
             .unwrap();
-        let mounted = MountedVfs::new(vfs, owner, crate::vfs::WritableArea::Workspace(ws));
+        let mounted = MountedVfs::new(vfs, owner, Some(ws), None);
         (EmulatedShellBackend::new(mounted.clone()), mounted)
     }
 
@@ -176,7 +176,7 @@ mod tests {
         let sh = EmulatedShellBackend::new(mounted).with_python(Arc::new(EchoPython));
 
         let write = sh
-            .run("echo \"print('hi')\" > /~workspace/script.py", None)
+            .run("echo \"print('hi')\" > /home/agent/script.py", None)
             .await;
         assert!(
             write.success,
@@ -184,7 +184,7 @@ mod tests {
             write.stdout, write.stderr
         );
 
-        let result = sh.run("python /~workspace/script.py", None).await;
+        let result = sh.run("python /home/agent/script.py", None).await;
         assert!(
             result.success,
             "out={:?} err={:?}",
@@ -242,12 +242,12 @@ mod tests {
     async fn every_command_is_auto_approved() {
         let (sh, _) = backend().await;
         assert!(sh.is_safe("ls"));
-        assert!(sh.is_safe("rm -rf /~workspace/file"));
+        assert!(sh.is_safe("rm -rf /home/agent/file"));
         assert!(sh.is_safe("echo data > out.txt"));
     }
 
     #[tokio::test]
-    async fn workspace_mount_is_listed_at_root() {
+    async fn home_is_listed_at_root() {
         let (sh, _) = backend().await;
         let result = sh.run("ls /", None).await;
         assert!(
@@ -256,7 +256,7 @@ mod tests {
             result.stdout, result.stderr
         );
         assert!(
-            result.stdout.contains("~workspace"),
+            result.stdout.contains("home"),
             "out={:?} err={:?}",
             result.stdout,
             result.stderr

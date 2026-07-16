@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use execenv::FileSystemBackend;
 use uuid::Uuid;
 
-use crate::vfs::{EntryKind, Vfs, WORKSPACE_MOUNT, WritableArea};
+use crate::vfs::{AGENT_HOME, EntryKind, USER_HOME, Vfs, WritableArea};
 
 /// Presents the user's whole filesystem to the Python sandbox: the global files
 /// are mounted read-only at `/`, and the thread's writable area is mounted
@@ -45,8 +45,8 @@ impl VfsExecFileSystem {
         host_dir: PathBuf,
     ) -> Self {
         let writable_root = match &area {
-            WritableArea::Workspace(_) => format!("/{WORKSPACE_MOUNT}"),
-            WritableArea::ProjectDir(prefix) => format!("/{prefix}"),
+            WritableArea::Workspace(_) => AGENT_HOME.to_string(),
+            WritableArea::ProjectDir(prefix) => format!("{USER_HOME}/{prefix}"),
         };
         let extra = disjoint_extra(&area, writable_extra)
             .into_iter()
