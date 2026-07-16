@@ -15,7 +15,7 @@ const styles = css`
     background: var(--background, #fff);
     border: 1px solid var(--border, #e4e4e7);
     border-radius: 16px;
-    bottom: 16px;
+    bottom: var(--composer-clearance, 160px);
     box-sizing: border-box;
     color: var(--foreground, #18181b);
     cursor: pointer;

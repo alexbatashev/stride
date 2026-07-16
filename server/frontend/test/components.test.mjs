@@ -157,6 +157,39 @@ test('app-sidebar renders projects and threads as links', () => {
   assert.match(el.shadowRoot.innerHTML, /Fresh/);
 });
 
+test('app-sidebar reconnects its user stream whenever the window gains focus', () => {
+  const originalWebSocket = globalThis.WebSocket;
+  const sockets = [];
+
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.closed = false;
+      sockets.push(this);
+    }
+
+    close() {
+      this.closed = true;
+      this.onclose?.();
+    }
+  }
+
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const sidebar = mount('app-sidebar');
+    assert.equal(sockets.length, 1);
+
+    window.dispatchEvent(new Event('focus'));
+
+    assert.equal(sockets.length, 2);
+    assert.equal(sockets[0].closed, true);
+    assert.equal(sockets[1].url, 'ws:///api/events');
+    sidebar.remove();
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
 test('app-sidebar uses the Stride mark in expanded and collapsed brand states', async () => {
   const el = mount('app-sidebar');
   assert.equal(el.shadowRoot.querySelector('.mark').textContent, '');
@@ -454,6 +487,57 @@ test('app-prompt-input submits on Enter and clears', () => {
   assert.equal(textarea.value, '');
 });
 
+test('app-message-scroller keeps the scroll-to-end button above the composer', () => {
+  const el = mount('app-message-scroller');
+  const styles = el.shadowRoot.querySelector('style').textContent;
+
+  assert.match(styles, /\.to-end\s*\{[\s\S]*bottom:\s*var\(--composer-clearance,\s*160px\)/);
+});
+
+test('app-prompt-input renders attachment states and emits removal intent', () => {
+  const el = mount('app-prompt-input', {
+    attachments: [
+      { key: 'upload-1', id: '', name: 'research.pdf', size: 1536, state: 'uploading' },
+      { key: 'upload-2', id: 'staged-2', name: 'notes.txt', size: 42, state: 'done' },
+      { key: 'upload-3', id: '', name: 'broken.csv', size: 100, state: 'error' },
+    ],
+  });
+  const removed = lastEvent(el, 'attachment-remove');
+  const group = el.shadowRoot.querySelector('[aria-label="Attached files"]');
+  const attachments = [...group.querySelectorAll('app-attachment')];
+
+  assert.equal(group.getAttribute('role'), 'group');
+  assert.equal(attachments.length, 3);
+  assert.equal(attachments[0].getAttribute('state'), 'uploading');
+  assert.match(attachments[0].shadowRoot.textContent, /research\.pdfUploading · 2 KB/);
+  assert.match(attachments[1].shadowRoot.textContent, /notes\.txtTXT · 42 B/);
+  assert.match(attachments[2].shadowRoot.textContent, /Upload failed\. Remove and try again\./);
+
+  const remove = attachments[1].querySelector('app-button');
+  assert.equal(remove.getAttribute('aria-label'), 'Remove notes.txt');
+  remove.shadowRoot.querySelector('button').click();
+  assert.deepEqual(removed.detail, { key: 'upload-2' });
+});
+
+test('app-prompt-input waits for attachment upload before submitting', () => {
+  const el = mount('app-prompt-input', {
+    attachments: [{ key: 'upload-1', id: '', name: 'research.pdf', size: 1536, state: 'uploading' }],
+  });
+  const submitted = lastEvent(el, 'prompt-submit');
+  const textarea = el.shadowRoot.querySelector('textarea');
+  textarea.value = 'summarize this';
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+  assert.equal(submitted.count, 0);
+  assert.equal(textarea.value, 'summarize this');
+  assert.equal(el.shadowRoot.querySelector('.primary-action app-button').hasAttribute('disabled'), true);
+
+  el.attachments = [{ key: 'upload-1', id: 'staged-1', name: 'research.pdf', size: 1536, state: 'done' }];
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  assert.equal(submitted.count, 1);
+});
+
 test('app-prompt-input populates model picker when models prop updates', () => {
   const el = mount('app-prompt-input');
   const picker = () => el.shadowRoot.querySelector('app-model-picker');
@@ -586,6 +670,75 @@ test('app-quiz-bar disables every answer control while submitting', () => {
   assert.ok(Array.from(el.shadowRoot.querySelectorAll('input, button')).every((control) => control.disabled));
 });
 
+test('threads page reconnects its event stream from the last sequence on focus', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  const sockets = [];
+
+  class FakeWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.closed = false;
+      sockets.push(this);
+    }
+
+    close() {
+      this.closed = true;
+      this.onclose?.();
+    }
+  }
+
+  globalThis.WebSocket = FakeWebSocket;
+  globalThis.fetch = async (input) => {
+    const path = String(input);
+    if (path === '/api/models' || path.endsWith('/messages') || path.endsWith('/agents')) {
+      return new Response('[]', { status: 200 });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+
+  try {
+    const root = document.createElement('div');
+    root.dataset.threadId = 'thread-1';
+    root.dataset.argonServer = JSON.stringify({ data: { running: true, models: [] } });
+    const scope = root.attachShadow({ mode: 'open' });
+    scope.innerHTML = `
+      <span data-current-title>Thread</span>
+      <app-prompt-input data-prompt></app-prompt-input>
+      <app-approval-bar data-approval></app-approval-bar>
+      <app-quiz-bar data-quiz></app-quiz-bar>
+      <app-sidebar></app-sidebar>
+      <app-side-panel data-side-panel></app-side-panel>
+      <app-dialog data-mobile-panel></app-dialog>
+    `;
+    const sidebar = scope.querySelector('app-sidebar');
+    sidebar.projects = [];
+    sidebar.threads = [{ id: 'thread-1', title: 'Thread' }];
+
+    const { mountThreadsPage } = await import('../dist/argon/components/threads-page-controller.js');
+    mountThreadsPage(root);
+    await tick();
+    await tick();
+    assert.equal(sockets.length, 1);
+
+    sockets[0].onmessage({ data: JSON.stringify({
+      seq: 7,
+      thread_id: 'thread-1',
+      run_id: 'run-1',
+      agent_path: [],
+      kind: { type: 'snapshot', status: 'running', in_progress: null, pending_approvals: [], pending_quizzes: [] },
+    }) });
+    window.dispatchEvent(new Event('focus'));
+
+    assert.equal(sockets.length, 2);
+    assert.equal(sockets[0].closed, true);
+    assert.equal(sockets[1].url, 'ws:///api/threads/thread-1/events?after=7');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
 test('threads page keeps quizzes in arrival order and advances after submission', async () => {
   const originalFetch = globalThis.fetch;
   const originalWebSocket = globalThis.WebSocket;
@@ -678,6 +831,89 @@ test('threads page keeps quizzes in arrival order and advances after submission'
 
     sendEvent(5, { type: 'quiz_answered', quiz_id: 'quiz-1' });
     assert.equal(threadView.quizQuestion, 'Second quiz');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
+test('threads page exposes staged uploads to the composer and sends their ids', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  let releaseUpload;
+  let sentMessage;
+
+  class FakeWebSocket {
+    close() {}
+  }
+
+  globalThis.WebSocket = FakeWebSocket;
+  globalThis.fetch = async (input, init = {}) => {
+    const path = String(input);
+    if (path === '/api/models' || path.endsWith('/messages') || path.endsWith('/agents')) {
+      if (init.method === 'POST') {
+        sentMessage = JSON.parse(init.body);
+        return new Response(JSON.stringify({ thread_id: 'thread-1' }), { status: 200 });
+      }
+      return new Response('[]', { status: 200 });
+    }
+    if (path === '/api/uploads') {
+      return new Promise((resolve) => {
+        releaseUpload = () => resolve(new Response(JSON.stringify({
+          files: [{ id: 'staged-1', name: 'research.pdf', size: 1536 }],
+        }), { status: 200 }));
+      });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+
+  try {
+    const root = document.createElement('div');
+    root.dataset.threadId = 'thread-1';
+    root.dataset.argonServer = JSON.stringify({ data: { running: false, models: [] } });
+    const scope = root.attachShadow({ mode: 'open' });
+    scope.innerHTML = `
+      <span data-current-title>Thread</span>
+      <app-prompt-input data-prompt></app-prompt-input>
+      <app-approval-bar data-approval></app-approval-bar>
+      <app-quiz-bar data-quiz></app-quiz-bar>
+      <app-sidebar></app-sidebar>
+      <app-side-panel data-side-panel></app-side-panel>
+      <app-dialog data-mobile-panel></app-dialog>
+    `;
+    const sidebar = scope.querySelector('app-sidebar');
+    sidebar.projects = [];
+    sidebar.threads = [{ id: 'thread-1', title: 'Thread' }];
+
+    const { mountThreadsPage } = await import('../dist/argon/components/threads-page-controller.js');
+    const { threadView } = await import('../dist/argon/stores/thread-view.js');
+    mountThreadsPage(root);
+    await tick();
+    await tick();
+
+    const prompt = scope.querySelector('[data-prompt]');
+    prompt.dispatchEvent(new CustomEvent('files-attach', {
+      bubbles: true,
+      composed: true,
+      detail: { files: [new File(['pdf'], 'research.pdf', { type: 'application/pdf' })] },
+    }));
+    assert.equal(threadView.attachments.length, 1);
+    assert.equal(threadView.attachments[0].state, 'uploading');
+
+    releaseUpload();
+    await tick();
+    assert.deepEqual(threadView.attachments.map(({ id, name, state }) => ({ id, name, state })), [
+      { id: 'staged-1', name: 'research.pdf', state: 'done' },
+    ]);
+
+    prompt.dispatchEvent(new CustomEvent('prompt-submit', {
+      bubbles: true,
+      composed: true,
+      detail: { value: 'summarize this', model: null },
+    }));
+    await tick();
+    assert.deepEqual(sentMessage.staged_uploads, ['staged-1']);
+    assert.deepEqual(threadView.attachments, []);
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.WebSocket = originalWebSocket;

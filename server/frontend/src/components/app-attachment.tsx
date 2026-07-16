@@ -15,6 +15,14 @@ const styles = css`
   :host([state="error"]) .media { background: var(--destructive-muted); color: var(--destructive); }
   .content { flex: 1; line-height: 1.25; max-width: 100%; min-width: 0; }
   .title { display: block; font-weight: 500; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  :host([state="uploading"]) .title,
+  :host([state="processing"]) .title {
+    animation: attachment-shimmer 1.5s linear infinite;
+    background: linear-gradient(90deg, var(--card-foreground) 20%, color-mix(in oklab, var(--card-foreground) 35%, transparent) 50%, var(--card-foreground) 80%);
+    background-clip: text;
+    background-size: 200% 100%;
+    color: transparent;
+  }
   .description { color: var(--muted-foreground); display: block; font-size: 0.75rem; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   :host([state="error"]) .description { color: color-mix(in oklab, var(--destructive) 80%, transparent); }
   .actions { align-items: center; display: flex; flex: 0 0 auto; position: relative; z-index: 2; }
@@ -27,6 +35,20 @@ const styles = css`
   :host([orientation="vertical"]) .media { flex-basis: auto; width: 100%; }
   :host([orientation="vertical"]) .actions { position: absolute; right: 12px; top: 12px; }
   ::slotted(img[slot="media"]) { height: 100%; object-fit: cover; width: 100%; }
+
+  @keyframes attachment-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :host([state="uploading"]) .title,
+    :host([state="processing"]) .title {
+      animation: none;
+      background: none;
+      color: inherit;
+    }
+  }
 `;
 
 export function AppAttachment({ title = "", description = "" }: { title?: string; description?: string }): Component {

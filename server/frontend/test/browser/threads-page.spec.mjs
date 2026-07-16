@@ -360,6 +360,31 @@ test('model picker opens above its trigger within the viewport', async ({ page }
   expect(open).toBe(false);
 });
 
+test('agent iframes fill the message column', async ({ page }) => {
+  await page.setContent('<script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script>');
+  await importComponents(page);
+  const dimensions = await page.evaluate(async () => {
+    const message = document.createElement('app-message');
+    const props = { kind: 'agent', format: 'html', text: '<iframe src="/widget"></iframe>' };
+    Object.assign(message, props);
+    for (const [name, value] of Object.entries(props)) message.setAttribute(`data-${name}`, value);
+    document.body.appendChild(message);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const column = message.shadowRoot.querySelector('.agent');
+    const frame = message.shadowRoot.querySelector('auto-markdown').querySelector('iframe');
+    return {
+      borderTopWidth: getComputedStyle(frame).borderTopWidth,
+      columnWidth: column.getBoundingClientRect().width,
+      frameWidth: frame.getBoundingClientRect().width,
+      minHeight: getComputedStyle(frame).minHeight,
+    };
+  });
+
+  expect(dimensions.borderTopWidth).toBe('0px');
+  expect(dimensions.frameWidth).toBe(dimensions.columnWidth);
+  expect(dimensions.minHeight).toBe('0px');
+});
+
 test('streamed tool disclosure stays open and mounted through 100 updates', async ({ page }) => {
   await page.setContent('<script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script><app-tool-activity data-title="Ran command" data-detail="ls -la" data-content="token 0" data-status="running" data-is-error="false"></app-tool-activity>');
   await importComponents(page);
