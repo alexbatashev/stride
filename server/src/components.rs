@@ -12,6 +12,7 @@ macro_rules! argon_module {
 }
 
 argon_module!(app_approval_bar);
+argon_module!(app_attachment);
 argon_module!(app_avatar);
 argon_module!(app_button);
 argon_module!(app_chat_view);
@@ -42,6 +43,7 @@ argon_module!(side_panel);
 argon_module!(ui);
 argon_module!(timeline);
 argon_module!(model_option);
+argon_module!(prompt_attachment);
 argon_module!(thread_view);
 argon_module!(threads_page_view);
 argon_module!(shell_page_view);

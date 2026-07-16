@@ -7,7 +7,7 @@ import { AppWorkGroup } from "./app-work-group.js";
 const styles = css`
   :host { display: block; height: 100%; min-height: 0; width: 100%; }
   app-message-scroller { height: 100%; }
-  .transcript { box-sizing: border-box; margin: 0 auto; max-width: 768px; min-height: 100%; padding: 12px 16px 120px; width: 100%; }
+  .transcript { box-sizing: border-box; margin: 0 auto; max-width: 768px; min-height: 100%; padding: 12px 16px var(--composer-clearance, 160px); width: 100%; }
   .turn { min-width: 0; }
   .turn + .turn { margin-top: 4px; }
   .user-row { padding-bottom: 16px; }
@@ -16,7 +16,7 @@ const styles = css`
   .empty { align-content: center; display: grid; flex: 1; justify-items: center; min-height: 100%; padding-bottom: 96px; text-align: center; }
   .empty h2 { color: var(--foreground); font-size: clamp(28px, 4vw, 40px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.08; margin: 0 0 12px; }
   .empty p { color: var(--muted-foreground); font-size: 0.9375rem; line-height: 1.5; margin: 0; max-width: 420px; }
-  @media (max-width: 767px) { .transcript { padding: 10px 12px 112px; } }
+  @media (max-width: 767px) { .transcript { padding: 10px 12px var(--composer-clearance, 152px); } }
 `;
 
 export function AppChatView({ turns = [], emptyTitle = "What are we working on?", emptyDescription = "Start a thread and S.T.R.I.D.E. will keep the context here." }: { turns?: ChatTurn[]; emptyTitle?: string; emptyDescription?: string }): Component {

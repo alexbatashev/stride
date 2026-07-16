@@ -5,16 +5,21 @@
 import { Component, css, effect, emit, ref, state } from "@frontiers-labs/argon";
 import { transcribeAudio } from "../api/threads.js";
 import type { ModelOption } from "../shared/model-option.js";
+import type { PromptAttachment } from "../shared/prompt-attachment.js";
+import { AppAttachment } from "./app-attachment.js";
 import { AppButton } from "./app-button.js";
 import { AppModelPicker } from "./app-model-picker.js";
 import { IconArrowUp } from "./icons/arrow-up.js";
+import { IconFile } from "./icons/file.js";
 import { IconMic } from "./icons/mic.js";
 import { IconPlus } from "./icons/plus.js";
 import { IconStop } from "./icons/stop.js";
+import { IconX } from "./icons/x.js";
 
 const styles = css`
   :host {
-    display: inline-block;
+    display: flex;
+    flex-direction: column;
     max-width: 870px;
     width: 100%;
     height: fit-content;
@@ -76,6 +81,27 @@ const styles = css`
     opacity: 0.5;
   }
 
+  .attachments {
+    display: flex;
+    gap: 8px;
+    margin: 0 0 8px;
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 2px 20px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: thin;
+  }
+
+  .attachments app-attachment {
+    flex: 0 0 auto;
+    max-width: min(240px, calc(100vw - 80px));
+    scroll-snap-align: start;
+  }
+
+  .attachment-file-icon { color: var(--muted-foreground); height: 18px; width: 18px; }
+  .attachment-remove { --foreground: var(--muted-foreground); }
+  .attachment-remove:hover { --foreground: var(--foreground); }
+
   .toolbar {
     align-items: center;
     display: grid;
@@ -130,6 +156,8 @@ const styles = css`
       width: 100%;
     }
 
+    .attachments { padding-inline: 16px; }
+
     .toolbar {
       gap: 12px;
     }
@@ -138,9 +166,9 @@ const styles = css`
   }
 `;
 
-function submitPrompt(host: HTMLElement, textarea: HTMLTextAreaElement): void {
+function submitPrompt(host: HTMLElement, textarea: HTMLTextAreaElement, uploadPending = false): boolean {
   const value = textarea.value.trim();
-  if (!value || textarea.disabled) return;
+  if (!value || textarea.disabled || uploadPending) return false;
   textarea.value = "";
   textarea.style.height = "";
   const model = host.getAttribute("data-selected-model") ?? "";
@@ -151,6 +179,38 @@ function submitPrompt(host: HTMLElement, textarea: HTMLTextAreaElement): void {
       detail: { value, model: model || null },
     }),
   );
+  return true;
+}
+
+function formatFileSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  if (size < 10 * 1024 * 1024) return `${Math.round(size / (1024 * 1024) * 10) / 10} MB`;
+  return `${Math.round(size / (1024 * 1024))} MB`;
+}
+
+function attachmentType(name: string): string {
+  const normalized = name.toLowerCase();
+  if (normalized.endsWith(".pdf")) return "PDF";
+  if (normalized.endsWith(".csv")) return "CSV";
+  if (normalized.endsWith(".zip")) return "ZIP";
+  if (normalized.endsWith(".txt")) return "TXT";
+  if (normalized.endsWith(".md")) return "MD";
+  if (normalized.endsWith(".json")) return "JSON";
+  if (normalized.endsWith(".png")) return "PNG";
+  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg")) return "JPG";
+  if (normalized.endsWith(".webp")) return "WEBP";
+  return "File";
+}
+
+function attachmentDescription(attachment: PromptAttachment): string {
+  if (attachment.state === "uploading") return `Uploading · ${formatFileSize(attachment.size)}`;
+  if (attachment.state === "error") return "Upload failed. Remove and try again.";
+  return `${attachmentType(attachment.name)} · ${formatFileSize(attachment.size)}`;
+}
+
+function hasPendingUpload(attachments: PromptAttachment[]): boolean {
+  return attachments.some((attachment) => attachment.state === "uploading");
 }
 
 function emitModelChange(host: HTMLElement, value: string): void {
@@ -193,6 +253,7 @@ export function AppPromptInput({
   selectedModel = "",
   selectedModelLabel = "Choose model",
   selectedModelReasoningEffort = "",
+  attachments = [],
 }: {
   disabled?: boolean;
   running?: boolean;
@@ -201,6 +262,7 @@ export function AppPromptInput({
   selectedModel?: string;
   selectedModelLabel?: string;
   selectedModelReasoningEffort?: string;
+  attachments?: PromptAttachment[];
 }): Component {
   const input = ref<HTMLTextAreaElement>();
   let recording = state(false);
@@ -209,8 +271,8 @@ export function AppPromptInput({
   let recorder: MediaRecorder | false = false;
   const chunks: Blob[] = [];
   const blocked = disabled || running || transcribing;
-  const actionDisabled = transcribing || (!recording && disabled);
   const hasDraft = draft.trim() !== "";
+  const actionDisabled = transcribing || (!recording && (disabled || hasPendingUpload(attachments)));
 
   effect(() => {
     if (selectedModel) {
@@ -223,11 +285,36 @@ export function AppPromptInput({
   return (
     <>
       <style>{styles}</style>
+      {attachments.length > 0 && (
+        <div class="attachments" role="group" aria-label="Attached files" tabIndex="0">
+          {attachments.map((attachment) => (
+            <AppAttachment
+              key={attachment.key}
+              state={attachment.state}
+              size="sm"
+              title={attachment.name}
+              description={attachmentDescription(attachment)}
+            >
+              <IconFile slot="media" class="attachment-file-icon" />
+              <AppButton
+                slot="actions"
+                class="attachment-remove"
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`Remove ${attachment.name}`}
+                title={`Remove ${attachment.name}`}
+                onClick={() => emit(this, "attachment-remove", { key: attachment.key })}
+              >
+                <IconX />
+              </AppButton>
+            </AppAttachment>
+          )).join("")}
+        </div>
+      )}
       <form
         onSubmit={(event: SubmitEvent) => {
           event.preventDefault();
-          submitPrompt(this, root.querySelector("textarea")!);
-          draft = "";
+          if (submitPrompt(this, root.querySelector("textarea")!, hasPendingUpload(attachments))) draft = "";
         }}
       >
         <input
@@ -256,8 +343,7 @@ export function AppPromptInput({
           onKeyDown={(event: KeyboardEvent) => {
             if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
             event.preventDefault();
-            submitPrompt(this, event.currentTarget as HTMLTextAreaElement);
-            draft = "";
+            if (submitPrompt(this, event.currentTarget as HTMLTextAreaElement, hasPendingUpload(attachments))) draft = "";
           }}
         ></textarea>
         <div class="toolbar">
@@ -277,8 +363,7 @@ export function AppPromptInput({
                   return;
                 }
                 if (hasDraft) {
-                  submitPrompt(this, root.querySelector("textarea")!);
-                  draft = "";
+                  if (submitPrompt(this, root.querySelector("textarea")!, hasPendingUpload(attachments))) draft = "";
                   return;
                 }
                 if (transcribing) return;

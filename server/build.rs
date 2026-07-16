@@ -93,6 +93,7 @@ fn compile_ssr_modules(frontend: &Path, out_dir: &str) {
             "compile",
             "src/shared/timeline.ts",
             "src/shared/model-option.ts",
+            "src/shared/prompt-attachment.ts",
             "--shared",
             "--out-dir",
             out_dir,

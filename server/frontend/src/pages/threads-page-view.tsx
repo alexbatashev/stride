@@ -41,7 +41,7 @@ const styles = css`
   }
   .page { display: flex; height: 100%; width: 100%; }
   nav { height: 100%; }
-  main { align-items: stretch; display: flex; flex: 1; flex-direction: column; height: 100%; min-width: 0; }
+  main { align-items: stretch; display: flex; flex: 1; flex-direction: column; height: 100%; min-width: 0; overflow: hidden; position: relative; }
   header { align-items: center; border-bottom: 1px solid var(--border); box-sizing: border-box; display: flex; height: 48px; padding: 8px; width: 100%; }
   header app-sidebar-toggle { display: none; }
   .toolbar-spacer { flex: 1; }
@@ -49,14 +49,17 @@ const styles = css`
   .panel-button[hidden] { display: none; }
   .thread-menu-button { margin-left: 4px; }
   .content { flex: 1; min-height: 0; width: 100%; }
+  .composer-layer { align-items: center; bottom: 0; box-sizing: border-box; display: flex; flex-direction: column; left: 50%; padding: 0 0 12px; position: absolute; transform: translateX(-50%); width: min(870px, calc(100% - 32px)); z-index: 10; }
+  .composer-layer app-prompt-input, .composer-layer app-approval-bar, .composer-layer app-quiz-bar { width: min(870px, 100%); }
   app-side-panel:not([open]) { display: none; }
   app-chat-view { height: 100%; }
-  .error { color: var(--destructive); font-size: 13px; margin: 10px auto 0; max-width: 860px; }
+  .error { color: var(--destructive); font-size: 13px; margin: 0 auto 6px; max-width: 860px; }
   .error:empty { display: none; }
   @media (max-width: 767px) {
     header app-sidebar-toggle { display: inline-flex; }
     header { justify-content: space-between; }
     .panel-button { display: none; }
+    .composer-layer { padding-bottom: 8px; width: calc(100% - 24px); }
   }
   @media (min-width: 768px) {
     .thread-menu-button { display: none; }
@@ -94,20 +97,22 @@ export function ThreadsPageView({ threadId = "" }: { threadId?: string }): Compo
           <section class="content">
             <AppChatView turns={turns} />
           </section>
-          <AppPromptInput
-            style="margin: auto"
-            data-prompt
-            hidden={threadView.approvalMessage !== "" || threadView.quizQuestion !== ""}
-            running={running}
-            placeholder={placeholder}
-            models={models}
-            selectedModel={selectedModel}
-            selectedModelLabel={selectedModelLabel}
-            selectedModelReasoningEffort={selectedModelReasoningEffort}
-          />
-          <AppApprovalBar style="margin: auto" data-approval hidden={threadView.approvalMessage === ""} message={threadView.approvalMessage} />
-          <AppQuizBar style="margin: auto" data-quiz hidden={threadView.quizQuestion === ""} question={threadView.quizQuestion} options={threadView.quizOptions} disabled={threadView.quizSubmitting} />
-          <div class="error" data-error>{threadView.error}</div>
+          <div class="composer-layer" data-composer-layer>
+            <div class="error" data-error>{threadView.error}</div>
+            <AppPromptInput
+              data-prompt
+              hidden={threadView.approvalMessage !== "" || threadView.quizQuestion !== ""}
+              running={running}
+              placeholder={placeholder}
+              models={models}
+              selectedModel={selectedModel}
+              selectedModelLabel={selectedModelLabel}
+              selectedModelReasoningEffort={selectedModelReasoningEffort}
+              attachments={threadView.attachments}
+            />
+            <AppApprovalBar data-approval hidden={threadView.approvalMessage === ""} message={threadView.approvalMessage} />
+            <AppQuizBar data-quiz hidden={threadView.quizQuestion === ""} question={threadView.quizQuestion} options={threadView.quizOptions} disabled={threadView.quizSubmitting} />
+          </div>
         </main>
         <app-side-panel open={sidePanel.open} tabs='[{"value":"files","label":"Files"},{"value":"subagents","label":"Subagents"}]' data-active-tab={sidePanel.tab} data-side-panel>
           <AppButton slot="header-action" variant="ghost" size="icon-sm" title="Close side panel" aria-label="Close side panel" data-action="side-panel-close"><IconPanelRight /></AppButton>

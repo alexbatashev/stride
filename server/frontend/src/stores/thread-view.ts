@@ -1,5 +1,6 @@
 import { store } from "@frontiers-labs/argon";
 import type { ModelOption } from "../shared/model-option.js";
+import type { PromptAttachment } from "../shared/prompt-attachment.js";
 import type { ChatTurn } from "../shared/timeline.js";
 
 export const threadView = store({
@@ -11,6 +12,7 @@ export const threadView = store({
   selectedModel: "",
   selectedModelLabel: "Choose model",
   selectedModelReasoningEffort: "",
+  attachments: [] as PromptAttachment[],
   approvalMessage: "",
   quizQuestion: "",
   quizOptions: [] as string[],

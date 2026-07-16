@@ -7,7 +7,7 @@ const styles = css`
   .row { display: flex; min-width: 0; width: 100%; }
   .row.user { justify-content: flex-end; }
   .message { min-width: 0; overflow-wrap: anywhere; }
-  .agent { padding: 2px 4px; width: 100%; }
+  .agent { padding: 2px 0; width: 100%; }
   .rendered p { margin: 0 0 0.75em; }
   .rendered p:last-child { margin-bottom: 0; }
   .rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { font-weight: 600; line-height: 1.3; margin: 0.5em 0 0.25em; }
@@ -26,6 +26,7 @@ const styles = css`
   .rendered th, .rendered td { border: 1px solid var(--border); max-inline-size: 24rem; min-inline-size: 10rem; overflow-wrap: break-word; padding: 0.4em 0.75em; text-align: left; vertical-align: top; white-space: normal; }
   .rendered th { background: var(--muted); font-weight: 600; }
   .rendered img, .rendered video, .rendered audio, .rendered iframe { display: block; height: auto; max-width: 100%; }
+  .rendered iframe { border: 0; box-sizing: border-box; overflow: hidden; width: 100%; }
   .rendered a { color: var(--primary); text-decoration: none; }
   .rendered a:hover { text-decoration: underline; }
   .user .message { background: var(--message-user-bg); border: 1px solid color-mix(in oklab, var(--message-user-bg) 82%, var(--border)); border-radius: 16px; color: var(--message-user-fg); max-width: min(80%, 640px); padding: 12px; }

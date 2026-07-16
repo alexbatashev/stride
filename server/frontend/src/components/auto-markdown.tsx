@@ -147,9 +147,8 @@ const styles = css`
   }
 
   iframe {
-    border: 1px solid var(--border, #d0d0d0);
+    border: 0;
     overflow: hidden;
-    min-height: 320px;
     width: 100%;
   }
 
@@ -559,6 +558,12 @@ type WidgetHeightMessage = {
 function connectWidgetFrames(root: HTMLElement): () => void {
   const frames = [...root.querySelectorAll("iframe")];
   for (const frame of frames) {
+    frame.style.border = "0";
+    frame.style.boxSizing = "border-box";
+    frame.style.display = "block";
+    frame.style.maxWidth = "100%";
+    frame.style.overflow = "hidden";
+    frame.style.width = "100%";
     frame.setAttribute("scrolling", "no");
   }
 
@@ -570,7 +575,7 @@ function connectWidgetFrames(root: HTMLElement): () => void {
     if (!frame) {
       return;
     }
-    const height = Math.max(320, Math.min(4000, Math.ceil(event.data.height)));
+    const height = Math.max(0, Math.min(4000, Math.ceil(event.data.height)));
     frame.style.height = `${height}px`;
   };
 

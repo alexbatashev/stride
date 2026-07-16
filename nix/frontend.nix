@@ -46,7 +46,7 @@ stdenv.mkDerivation (finalAttrs: {
     icons=(src/components/icons/*.tsx)
     node_modules/.bin/argon compile "''${stores[@]}" "''${ssr[@]}" "''${icons[@]}" \
       --rust --out-dir ssr-out --flat
-    node_modules/.bin/argon compile src/shared/timeline.ts src/shared/model-option.ts \
+    node_modules/.bin/argon compile src/shared/timeline.ts src/shared/model-option.ts src/shared/prompt-attachment.ts \
       --shared --out-dir ssr-out --flat
     node_modules/.bin/argon compile src/pages/threads-page-view.tsx src/pages/shell-page-view.tsx \
       --rust --async-server --out-dir ssr-out --flat

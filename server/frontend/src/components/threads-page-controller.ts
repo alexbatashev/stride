@@ -25,6 +25,7 @@ import { buildClientTimeline, buildSubagentTimeline } from "./chat-timeline.js";
 import { buildChatTurns, buildTimeline } from "../shared/timeline.js";
 import { sidePanel } from "../stores/side-panel.js";
 import { loadSubagents } from "./subagent-data.js";
+import type { PromptAttachment } from "../shared/prompt-attachment.js";
 
 const SUBAGENT_STREAM_EVENTS = new Set([
 	'message_started',
@@ -91,7 +92,7 @@ class ThreadsPageHydrator {
 	private projects: ProjectSummary[];
 	private currentProjectId: string | null = null;
 	private messages: ViewMessage[] = [];
-	private attachedFiles: { name: string; id: string }[] = [];
+	private attachedFiles: PromptAttachment[] = [];
 	private modelOptions: { value: string; label: string; description: string; vision: boolean }[] = [];
 	private selectedModel = "";
 	private selectedModelLabel = "Choose model";
@@ -114,6 +115,7 @@ class ThreadsPageHydrator {
 	private readonly sidePanelEl: SidePanelEl;
 	private readonly mobilePanelEl: MobilePanelEl;
 	private readonly scope: ShadowRoot;
+	private composerResizeObserver: ResizeObserver | null = null;
 	private menuButtonEl: HTMLElement | null = null;
 
 	constructor(private readonly root: HTMLElement) {
@@ -143,6 +145,17 @@ class ThreadsPageHydrator {
 		this.sidebarEl = this.mustQuery("app-sidebar");
 		this.sidePanelEl = this.mustQuery("[data-side-panel]");
 		this.mobilePanelEl = this.mustQuery("[data-mobile-panel]");
+		const composerLayer = this.scope.querySelector<HTMLElement>("[data-composer-layer]");
+		const chatView = this.scope.querySelector<HTMLElement>("app-chat-view");
+		if (composerLayer && chatView) {
+			const syncComposerClearance = () => {
+				const height = Math.ceil(composerLayer.getBoundingClientRect().height);
+				chatView.style.setProperty("--composer-clearance", `${height + 16}px`);
+			};
+			this.composerResizeObserver = new ResizeObserver(syncComposerClearance);
+			this.composerResizeObserver.observe(composerLayer);
+			syncComposerClearance();
+		}
 		this.threads = this.readThreads();
 		this.projects = this.sidebarEl.projects.map(({ id, title }) => ({ id, title }));
 		this.currentProjectId = this.threadId
@@ -265,6 +278,11 @@ class ThreadsPageHydrator {
 		this.promptEl.addEventListener("files-attach", (event) =>
 			void this.onFilesAttach(event as CustomEvent<{ files: File[] }>),
 		);
+		this.promptEl.addEventListener("attachment-remove", (event) => {
+			const key = (event as CustomEvent<{ key: string }>).detail.key;
+			this.attachedFiles = this.attachedFiles.filter((file) => file.key !== key);
+			this.syncComposer();
+		});
 		this.approvalEl.addEventListener("approval-response", (event) =>
 			void this.onApprovalResponse(event as CustomEvent<{ approved: boolean }>),
 		);
@@ -847,7 +865,9 @@ class ThreadsPageHydrator {
 			return;
 		}
 
-		const stagedUploads = this.attachedFiles.map((f) => f.id);
+		const stagedUploads = this.attachedFiles
+			.filter((file) => file.state === "done")
+			.map((file) => file.id);
 		this.attachedFiles = [];
 		this.error = "";
 		this.running = true;
@@ -963,6 +983,7 @@ class ThreadsPageHydrator {
 		threadView.selectedModel = this.selectedModel;
 		threadView.selectedModelLabel = this.selectedModelLabel;
 		threadView.selectedModelReasoningEffort = this.selectedModelReasoningEffort;
+		threadView.attachments = this.attachedFiles.map((file) => ({ ...file }));
 		threadView.approvalMessage = this.pendingApproval?.message ?? "";
 		threadView.quizQuestion = question?.question ?? "";
 		threadView.quizOptions = question?.options ?? [];
@@ -1073,18 +1094,33 @@ class ThreadsPageHydrator {
 
 	private async onFilesAttach(event: CustomEvent<{ files: File[] }>) {
 		const { files } = event.detail;
-		const label = files.length === 1 ? files[0].name : `${files.length} files`;
-		this.flash(`Uploading ${label}…`);
+		const pending = files.map((file) => ({
+			key: crypto.randomUUID(),
+			id: "",
+			name: file.name,
+			size: file.size,
+			state: "uploading" as const,
+		}));
+		this.attachedFiles.push(...pending);
+		this.syncComposer();
 
 		try {
 			const staged = await stageUploads(files);
-			for (const f of staged) {
-				this.attachedFiles.push({ name: f.name, id: f.id });
+			for (const [index, file] of staged.entries()) {
+				const attachment = this.attachedFiles.find((candidate) => candidate.key === pending[index]?.key);
+				if (!attachment) continue;
+				attachment.id = file.id;
+				attachment.name = file.name;
+				attachment.size = file.size;
+				attachment.state = "done";
 			}
-			const count = this.attachedFiles.length;
-			this.flash(`${count} file${count === 1 ? "" : "s"} attached`);
+			this.syncComposer();
 		} catch {
-			this.flash("Upload failed.");
+			for (const file of pending) {
+				const attachment = this.attachedFiles.find((candidate) => candidate.key === file.key);
+				if (attachment) attachment.state = "error";
+			}
+			this.syncComposer();
 		}
 	}
 
