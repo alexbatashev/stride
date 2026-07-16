@@ -268,8 +268,8 @@ export function AppPromptInput({
   let recording = state(false);
   let transcribing = state(false);
   let draft = state("");
-  let recorder: MediaRecorder | false = false;
-  const chunks: Blob[] = [];
+  let recorder = state(false as MediaRecorder | false);
+  let chunks = state([] as Blob[]);
   const blocked = disabled || running || transcribing;
   const hasDraft = draft.trim() !== "";
   const actionDisabled = transcribing || (!recording && (disabled || hasPendingUpload(attachments)));
@@ -362,7 +362,7 @@ export function AppPromptInput({
                   emit(this, "prompt-stop");
                   return;
                 }
-                if (hasDraft) {
+                if (draft.trim() !== "") {
                   if (submitPrompt(this, root.querySelector("textarea")!, hasPendingUpload(attachments))) draft = "";
                   return;
                 }

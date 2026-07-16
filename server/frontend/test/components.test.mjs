@@ -627,12 +627,55 @@ test('app-prompt-input swaps its primary action for stop while running', () => {
   assert.ok(el.shadowRoot.querySelector('textarea').disabled);
 });
 
-test('app-prompt-input uses its primary action for voice recording', () => {
-  const el = mount('app-prompt-input');
-  const mic = el.shadowRoot.querySelector('.primary-action app-button');
-  assert.ok(mic);
-  assert.equal(mic.getAttribute('aria-pressed'), 'false');
-  assert.equal(mic.hasAttribute('disabled'), false);
+test('app-prompt-input starts voice recording from its primary action', async () => {
+  const originalMediaRecorder = globalThis.MediaRecorder;
+  const originalMediaDevices = navigator.mediaDevices;
+  let requestedAudio;
+  let started = 0;
+
+  class FakeMediaRecorder {
+    static isTypeSupported() {
+      return true;
+    }
+
+    constructor() {
+      this.mimeType = 'audio/webm';
+    }
+
+    start() {
+      started += 1;
+    }
+  }
+
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    value: {
+      getUserMedia: async (constraints) => {
+        requestedAudio = constraints;
+        return { getTracks: () => [] };
+      },
+    },
+  });
+  globalThis.MediaRecorder = FakeMediaRecorder;
+
+  try {
+    const el = mount('app-prompt-input');
+    const mic = el.shadowRoot.querySelector('.primary-action app-button');
+    assert.ok(mic);
+    assert.equal(mic.getAttribute('aria-pressed'), 'false');
+    assert.equal(mic.hasAttribute('disabled'), false);
+    mic.shadowRoot.querySelector('button').click();
+    await tick();
+    assert.deepEqual(requestedAudio, { audio: true });
+    assert.equal(started, 1);
+    assert.equal(mic.getAttribute('aria-pressed'), 'true');
+  } finally {
+    globalThis.MediaRecorder = originalMediaRecorder;
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: originalMediaDevices,
+    });
+  }
 });
 
 test('app-text-input exposes a focus control for page controllers', () => {
