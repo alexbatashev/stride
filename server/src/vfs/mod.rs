@@ -2,6 +2,8 @@ mod local;
 mod mounted;
 
 pub use local::LocalFileProvider;
+#[allow(unused_imports)]
+pub use mounted::stat::{StatMeta, gid_name, uid_name};
 pub use mounted::{AGENT_HOME, MountedVfs, USER_HOME, VfsError, WritableArea};
 
 use std::sync::Arc;

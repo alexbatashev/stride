@@ -4,25 +4,30 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bashkit::{Bash, PosixFs};
+use bashkit::{Bash, FileSystem, InMemoryFs, MountableFs, PosixFs};
 use stride_agent::tools::shell::{ShellBackend, ShellResult};
 
 use crate::vfs::MountedVfs;
 use vfs_backend::VfsBackend;
 
-/// Working directory the shell starts in: the writable workspace mount.
-const DEFAULT_CWD: &str = "/~workspace";
+/// Working directory the shell starts in: the writable thread workspace.
+const DEFAULT_CWD: &str = "/home/agent";
 
-const DESCRIPTION: &str = "Execute a bash command against the workspace file system. \
-Default workdir is /~workspace. Use this tool to inspect filesystem or contents of file with \
-the help of standard UNIX tools, like cat, grep, ls, rg, sed, diff, mkdir, cp and others.";
+/// Ephemeral scratch mount, backed by memory and never persisted to the VFS.
+const TMP_MOUNT: &str = "/tmp";
+
+const DESCRIPTION: &str = "Execute a bash command against a POSIX file system with standard \
+UNIX tools (cat, grep, ls, rg, sed, diff, mkdir, cp and others). Layout: /home/agent is the \
+thread workspace, read-write and the default working directory; /home/user is the user's files, \
+read-only except for directories explicitly granted to this thread (which are read-write); /tmp \
+is read-write scratch that is discarded when the command finishes.";
 
 /// Shell backend that runs bashkit over the mounted VFS.
 pub struct EmulatedShellBackend {
     fs: MountedVfs,
     /// When set, `python`/`python3` run through execenv's interpreter instead of
     /// bashkit's built-in (Monty) one. Shared with the agent's `python` tool so
-    /// scripts see the same runtime and `/~workspace` sync.
+    /// scripts see the same runtime and `/home/agent` sync.
     python: Option<Arc<dyn execenv::ExecutionService>>,
     /// When set, exposes a `typst` command. The tuple is the Typst package cache
     /// directory, the font directories to scan, and whether package downloads may
@@ -67,8 +72,7 @@ impl ShellBackend for EmulatedShellBackend {
 
     async fn run(&self, command: &str, working_directory: Option<&str>) -> ShellResult {
         let cwd = working_directory.unwrap_or(DEFAULT_CWD);
-        let fs: Arc<dyn bashkit::FileSystem> =
-            Arc::new(PosixFs::new(VfsBackend::new(self.fs.clone())));
+        let fs: Arc<dyn FileSystem> = Arc::new(mount_filesystem(self.fs.clone()));
         let mut builder = Bash::builder().fs(fs).cwd(cwd);
         if let Some(service) = &self.python {
             builder = builder
@@ -112,6 +116,18 @@ impl ShellBackend for EmulatedShellBackend {
     }
 }
 
+/// Builds the shell's namespace: the mounted VFS at the root with an ephemeral
+/// in-memory `/tmp` on top. The `/tmp` tree lives only for this command and is
+/// never written back to the VFS.
+fn mount_filesystem(vfs: MountedVfs) -> MountableFs {
+    let root: Arc<dyn FileSystem> = Arc::new(PosixFs::new(VfsBackend::new(vfs)));
+    let mountable = MountableFs::new(root);
+    mountable
+        .mount(TMP_MOUNT, Arc::new(InMemoryFs::new()))
+        .expect("tmp mount point is absolute");
+    mountable
+}
+
 #[cfg(test)]
 mod tests {
     use minisql::{ConnectionPool, Value};
@@ -121,7 +137,7 @@ mod tests {
     use crate::db;
     use crate::vfs::{AnyFileProvider, LocalFileProvider, Vfs};
 
-    async fn backend() -> (EmulatedShellBackend, MountedVfs) {
+    async fn mounted_with_grant(grant: Option<String>) -> MountedVfs {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         db.initialize_database(db::get_migrations()).await.unwrap();
 
@@ -152,7 +168,14 @@ mod tests {
             .get_or_create_workspace(Uuid::now_v7(), None, owner)
             .await
             .unwrap();
-        let mounted = MountedVfs::new(vfs, owner, Some(ws), None);
+        if let Some(prefix) = &grant {
+            vfs.create_dir_global(owner, prefix).await.unwrap();
+        }
+        MountedVfs::new(vfs, owner, Some(ws), grant)
+    }
+
+    async fn backend() -> (EmulatedShellBackend, MountedVfs) {
+        let mounted = mounted_with_grant(None).await;
         (EmulatedShellBackend::new(mounted.clone()), mounted)
     }
 
@@ -260,6 +283,131 @@ mod tests {
             "out={:?} err={:?}",
             result.stdout,
             result.stderr
+        );
+    }
+
+    #[tokio::test]
+    async fn default_cwd_is_agent_home() {
+        let (sh, _) = backend().await;
+        let result = sh.run("pwd", None).await;
+        assert!(
+            result.success,
+            "out={:?} err={:?}",
+            result.stdout, result.stderr
+        );
+        assert_eq!(result.stdout, "/home/agent\n");
+    }
+
+    #[tokio::test]
+    async fn write_to_agent_home_succeeds() {
+        let (sh, _) = backend().await;
+        let write = sh.run("echo hi > /home/agent/a.txt", None).await;
+        assert!(
+            write.success,
+            "out={:?} err={:?}",
+            write.stdout, write.stderr
+        );
+        let read = sh.run("cat /home/agent/a.txt", None).await;
+        assert_eq!(read.stdout, "hi\n");
+    }
+
+    #[tokio::test]
+    async fn write_to_user_home_is_denied() {
+        let (sh, _) = backend().await;
+        let result = sh.run("echo nope > /home/user/blocked.txt", None).await;
+        assert!(
+            !result.success,
+            "out={:?} err={:?}",
+            result.stdout, result.stderr
+        );
+        assert!(
+            result.stderr.to_lowercase().contains("read-only"),
+            "out={:?} err={:?}",
+            result.stdout,
+            result.stderr
+        );
+    }
+
+    #[tokio::test]
+    async fn write_to_granted_subtree_succeeds() {
+        let mounted = mounted_with_grant(Some("Projects/Acme".to_string())).await;
+        let sh = EmulatedShellBackend::new(mounted);
+        let write = sh
+            .run("echo out > /home/user/Projects/Acme/out.txt", None)
+            .await;
+        assert!(
+            write.success,
+            "out={:?} err={:?}",
+            write.stdout, write.stderr
+        );
+        let read = sh.run("cat /home/user/Projects/Acme/out.txt", None).await;
+        assert_eq!(read.stdout, "out\n");
+    }
+
+    #[tokio::test]
+    async fn tmp_roundtrip_is_ephemeral() {
+        let (sh, _) = backend().await;
+        let session = sh
+            .run(
+                "mkdir /tmp/d && echo scratch > /tmp/d/f.txt && cat /tmp/d/f.txt && ls /tmp",
+                None,
+            )
+            .await;
+        assert!(
+            session.success,
+            "out={:?} err={:?}",
+            session.stdout, session.stderr
+        );
+        assert!(
+            session.stdout.contains("scratch"),
+            "out={:?} err={:?}",
+            session.stdout,
+            session.stderr
+        );
+
+        let next = sh.run("cat /tmp/d/f.txt", None).await;
+        assert!(
+            !next.success,
+            "tmp must not persist across commands: out={:?} err={:?}",
+            next.stdout, next.stderr
+        );
+    }
+
+    #[tokio::test]
+    async fn tmp_is_listed_at_root() {
+        let (sh, _) = backend().await;
+        let result = sh.run("ls /", None).await;
+        assert!(
+            result.stdout.contains("tmp"),
+            "out={:?} err={:?}",
+            result.stdout,
+            result.stderr
+        );
+    }
+
+    #[tokio::test]
+    async fn ls_long_shows_synthetic_modes() {
+        let (sh, _) = backend().await;
+        sh.run("echo hi > /home/agent/a.txt", None).await;
+        let agent = sh.run("ls -l /home/agent", None).await;
+        assert!(
+            agent.stdout.contains("-rw-r--r--"),
+            "out={:?} err={:?}",
+            agent.stdout,
+            agent.stderr
+        );
+
+        let mounted = mounted_with_grant(Some("Projects/Acme".to_string())).await;
+        let granted = EmulatedShellBackend::new(mounted);
+        granted
+            .run("echo out > /home/user/Projects/Acme/out.txt", None)
+            .await;
+        let listing = granted.run("ls -l /home/user/Projects/Acme", None).await;
+        assert!(
+            listing.stdout.contains("-rw-rw-r--"),
+            "out={:?} err={:?}",
+            listing.stdout,
+            listing.stderr
         );
     }
 }

@@ -89,7 +89,7 @@ impl FsBackend for VfsBackend {
         let path = to_str(path);
         let segments = segments(&path);
         let Some((name, parents)) = segments.split_last() else {
-            return Ok(dir_metadata(0));
+            return Ok(dir_metadata(0, self.fs.stat_meta(&path, true).mode));
         };
         let entry = self
             .fs
@@ -99,16 +99,22 @@ impl FsBackend for VfsBackend {
             .into_iter()
             .find(|e| &e.name == name)
             .ok_or_else(|| not_found(&path))?;
-        Ok(metadata_of(&entry))
+        let is_dir = matches!(entry.kind, EntryKind::Directory);
+        Ok(metadata_of(&entry, self.fs.stat_meta(&path, is_dir).mode))
     }
 
     async fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
-        let entries = self.fs.list(&to_str(path)).await.map_err(map_err)?;
+        let base = to_str(path);
+        let entries = self.fs.list(&base).await.map_err(map_err)?;
         Ok(entries
             .into_iter()
-            .map(|e| DirEntry {
-                name: e.name.clone(),
-                metadata: metadata_of(&e),
+            .map(|e| {
+                let is_dir = matches!(e.kind, EntryKind::Directory);
+                let mode = self.fs.stat_meta(&join_path(&base, &e.name), is_dir).mode;
+                DirEntry {
+                    name: e.name.clone(),
+                    metadata: metadata_of(&e, mode),
+                }
             })
             .collect())
     }
@@ -155,24 +161,33 @@ fn segments(path: &str) -> Vec<String> {
         .collect()
 }
 
-fn metadata_of(entry: &vfs::DirEntry) -> Metadata {
-    match entry.kind {
-        EntryKind::Directory => dir_metadata(entry.updated_at),
-        EntryKind::File => Metadata {
-            file_type: FileType::File,
-            size: entry.size.unwrap_or(0).max(0) as u64,
-            mode: 0o644,
-            modified: epoch(entry.updated_at),
-            created: epoch(entry.updated_at),
-        },
+fn join_path(base: &str, name: &str) -> String {
+    if base.ends_with('/') {
+        format!("{base}{name}")
+    } else {
+        format!("{base}/{name}")
     }
 }
 
-fn dir_metadata(updated_at: i64) -> Metadata {
+fn metadata_of(entry: &vfs::DirEntry, mode: u32) -> Metadata {
+    let (file_type, size) = match entry.kind {
+        EntryKind::Directory => (FileType::Directory, 0),
+        EntryKind::File => (FileType::File, entry.size.unwrap_or(0).max(0) as u64),
+    };
+    Metadata {
+        file_type,
+        size,
+        mode,
+        modified: epoch(entry.updated_at),
+        created: epoch(entry.updated_at),
+    }
+}
+
+fn dir_metadata(updated_at: i64, mode: u32) -> Metadata {
     Metadata {
         file_type: FileType::Directory,
         size: 0,
-        mode: 0o755,
+        mode,
         modified: epoch(updated_at),
         created: epoch(updated_at),
     }

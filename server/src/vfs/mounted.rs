@@ -128,10 +128,10 @@ impl MountTable {
 }
 
 /// Synthetic unix presentation metadata. No mode bits are stored; `ls -l`/`stat`
-/// derive uid/gid/mode from the mount rules. Consumed by the shell and execenv
-/// layers in stages 2-3; unit-tested here.
-#[allow(dead_code)]
-mod stat {
+/// derive uid/gid/mode from the mount rules. The shell consumes `mode` (bashkit
+/// renders only permission bits); `uid_name`/`gid_name` are surfaced by the
+/// execenv presentation layer in stage 3.
+pub(crate) mod stat {
     use super::{Location, MountTable};
 
     /// Stable numeric ids for the synthetic unix identities the agent sees.
@@ -146,12 +146,17 @@ mod stat {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct StatMeta {
+        /// Surfaced by the execenv presentation layer in stage 3.
+        #[allow(dead_code)]
         pub uid: u32,
+        /// Surfaced by the execenv presentation layer in stage 3.
+        #[allow(dead_code)]
         pub gid: u32,
         pub mode: u32,
     }
 
     /// Maps a synthetic uid to its user name.
+    #[allow(dead_code)]
     pub fn uid_name(uid: u32) -> &'static str {
         match uid {
             UID_AGENT => "agent",
@@ -161,6 +166,7 @@ mod stat {
     }
 
     /// Maps a synthetic gid to its group name.
+    #[allow(dead_code)]
     pub fn gid_name(gid: u32) -> &'static str {
         match gid {
             GID_AGENT => "agent",
@@ -217,7 +223,7 @@ mod stat {
     }
 
     /// Synthetic uid/gid/mode for `path`, derived from mount rules only.
-    pub fn meta_for(table: &MountTable, path: &str, is_dir: bool) -> StatMeta {
+    pub(super) fn meta_for(table: &MountTable, path: &str, is_dir: bool) -> StatMeta {
         area_of(&table.resolve(path)).meta(is_dir)
     }
 }
@@ -268,8 +274,7 @@ impl MountedVfs {
     }
 
     /// Synthetic uid/gid/mode for `path`, derived from mount rules only.
-    /// Consumed by `ls -l`/`stat` in later stages.
-    #[allow(dead_code)]
+    /// The shell's `ls -l`/`stat` consume the `mode` bits.
     pub fn stat_meta(&self, path: &str, is_dir: bool) -> stat::StatMeta {
         stat::meta_for(&self.table, path, is_dir)
     }
