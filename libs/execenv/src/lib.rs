@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 use stride_agent::{AgentConfig, Tool, ToolDesc, ToolRegistry};
 use tokio::sync::{mpsc, oneshot};
 
+mod artifacts;
+pub use artifacts::{ArtifactKind, ArtifactSpec, ArtifactStore};
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ResourceUsage {
     pub memory_bytes: Option<u64>,
@@ -122,6 +125,14 @@ const DEFUSEDXML_URL: &str = "https://files.pythonhosted.org/packages/07/6c/aa3f
 const CPYTHON_STDLIB_URL: &str =
     "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/cpython-wasi.tar.gz";
 
+#[cfg(feature = "eryx")]
+const CPYTHON_STDLIB: ArtifactSpec = ArtifactSpec {
+    name: "cpython-stdlib",
+    url: CPYTHON_STDLIB_URL,
+    sha256: "114b09fc99ee38f3f6dcdb3b4e6743e44d362f08e2ca91bacffd9ff44b33e996",
+    kind: ArtifactKind::TarGz,
+};
+
 // Native (wasm32-wasip1) packages built against eryx-runtime's exact toolchain
 // (wasi-sdk-27 + CPython 3.14) and published by frontiers-labs/wasi-wheels.
 const NUMPY_URL: &str =
@@ -139,26 +150,6 @@ const MATPLOTLIB_URL: &str =
 const LXML_URL: &str =
     "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/lxml-wasi.tar.gz";
 
-#[derive(Clone, Copy)]
-enum ArchiveKind {
-    /// tar.gz whose root unpacks directly into site-packages. Used by the
-    /// native packages (numpy, Pillow, pandas, ...).
-    TarGz,
-    /// PEP 427 wheel (a zip) whose entries unpack into site-packages.
-    Wheel,
-}
-
-struct WasiPackage {
-    /// Stable key used for the per-package install marker.
-    name: &'static str,
-    url: &'static str,
-    kind: ArchiveKind,
-    /// Module to bake into the pre-initialized snapshot. Only native packages
-    /// benefit; pure-Python ones load lazily from site-packages at runtime.
-    #[cfg_attr(not(feature = "eryx"), allow(dead_code))]
-    preinit_import: Option<&'static str>,
-}
-
 // Native packages (numpy, Pillow, pandas, matplotlib, ...) are built against
 // eryx-runtime's exact toolchain (wasi-sdk-27 + CPython 3.14) and published by
 // frontiers-labs/wasi-wheels. Their `.so` files are baked into the preinit
@@ -167,302 +158,302 @@ struct WasiPackage {
 // frontiers-labs builds fix that. Only numpy is imported at preinit time; the
 // rest load lazily so a failure surfaces at `import` in user code rather than
 // breaking the whole runtime.
-const WASI_PACKAGES: &[WasiPackage] = &[
-    WasiPackage {
+const WASI_PACKAGES: &[ArtifactSpec] = &[
+    ArtifactSpec {
         name: "beautifulsoup4",
         url: BS4_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "soupsieve",
         url: SOUPSIEVE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "e7e6b0769c8f51ed59acab6e994b00621096cfb1c640a7509295987388fbaf65",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "requests",
         url: REQUESTS_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "urllib3",
         url: URLLIB3_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "certifi",
         url: CERTIFI_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "idna",
         url: IDNA_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "markdown",
         url: MARKDOWN_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "e91464b71ae3ee7afd3017d9f358ef0baf158fd9a298db92f1d4761133824c36",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "python-dateutil",
         url: DATEUTIL_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "961d03dc3453ebbc59dbdea9e4e11c5651520a876d0f4db161e8674aae935da9",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "six",
         url: SIX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+        kind: ArtifactKind::Zip,
     },
     // typing-extensions is a runtime dependency of beautifulsoup4 4.15.
-    WasiPackage {
+    ArtifactSpec {
         name: "typing-extensions",
         url: TYPING_EXTENSIONS_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
+        kind: ArtifactKind::Zip,
     },
     // charset-normalizer is requests' optional encoding detector; without it
     // requests imports but warns on every run.
-    WasiPackage {
+    ArtifactSpec {
         name: "charset-normalizer",
         url: CHARSET_NORMALIZER_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "3dce51d0f5e7951f8bb4900c257dad282f49190fdbebecd4ba99bcc41fef404d",
+        kind: ArtifactKind::Zip,
     },
     // pandas runtime deps.
-    WasiPackage {
+    ArtifactSpec {
         name: "pytz",
         url: PYTZ_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "04156e608bee23d3792fd45c94ae47fae1036688e75032eea2e3bf0323d1f126",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "tzdata",
         url: TZDATA_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7",
+        kind: ArtifactKind::Zip,
     },
     // matplotlib runtime deps.
-    WasiPackage {
+    ArtifactSpec {
         name: "cycler",
         url: CYCLER_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "fonttools",
         url: FONTTOOLS_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "445af2eab030a16b9171ea8bdda7ebf7d96bda2df88ee182a464252f6e05e20d",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "pyparsing",
         url: PYPARSING_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "packaging",
         url: PACKAGING_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",
+        kind: ArtifactKind::Zip,
     },
     // Task-oriented pure-Python packages.
-    WasiPackage {
+    ArtifactSpec {
         name: "pypdf",
         url: PYPDF_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "c6e3f86afb625791510b02ad5480e94b63970bb957df75d44657c282ecc52224",
+        kind: ArtifactKind::Zip,
     },
     // pdfminer.six must precede pdfplumber (its dependency); both are pure-Python.
-    WasiPackage {
+    ArtifactSpec {
         name: "pdfminer.six",
         url: PDFMINER_SIX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "366585ba97e80dffa8f00cebe303d2f381884d8637af4ce422f1df3ef38111a9",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "pdfplumber",
         url: PDFPLUMBER_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "7741ea81bf165b474b153e6789d10d18e06b6ddcf3ec84289c3ef2fed6802580",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "openpyxl",
         url: OPENPYXL_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2",
+        kind: ArtifactKind::Zip,
     },
     // et-xmlfile is openpyxl's XML streaming writer dependency.
-    WasiPackage {
+    ArtifactSpec {
         name: "et-xmlfile",
         url: ET_XMLFILE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa",
+        kind: ArtifactKind::Zip,
     },
     // markdownify turns fetched HTML into Markdown; it reuses beautifulsoup4.
-    WasiPackage {
+    ArtifactSpec {
         name: "markdownify",
         url: MARKDOWNIFY_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "3f02d3cc52714084d6e589f70397b6fc9f2f3a8531481bf35e8cc39f975e186a",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "tabulate",
         url: TABULATE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3",
+        kind: ArtifactKind::Zip,
     },
     // icalendar parses/builds .ics; it relies on python-dateutil and tzdata.
-    WasiPackage {
+    ArtifactSpec {
         name: "icalendar",
         url: ICALENDAR_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "690f30aa50a76cbf854db5ad52654705db9c5cd0e1b152222f5d4b7854b60667",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "tzlocal",
         url: TZLOCAL_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "24ce97bb58e2a973f7640ec2553ab4e6f6d5a0d0d1aa9dc43bca21d89e1feb82",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "humanize",
         url: HUMANIZE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "b1186eb9f5a9749cd9cb8565aee77919dd7c8d076161cf44d70e59e3301e1769",
+        kind: ArtifactKind::Zip,
     },
     // httpx is a modern HTTP client; httpcore, h11 and anyio are its transport
     // stack. It reuses the existing certifi and idna wheels.
-    WasiPackage {
+    ArtifactSpec {
         name: "httpx",
         url: HTTPX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "httpcore",
         url: HTTPCORE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "h11",
         url: H11_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "anyio",
         url: ANYIO_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "dd9b7a2a9799ed6552fde617b2c5df02b7fdd7d88392fc48101e51bae46164d9",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "babel",
         url: BABEL_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "e2b422b277c2b9a9630c1d7903c2a00d0830c409c59ac8cae9081c92f1aeba35",
+        kind: ArtifactKind::Zip,
     },
     // email-validator checks address syntax; dnspython is its resolver backend.
-    WasiPackage {
+    ArtifactSpec {
         name: "email-validator",
         url: EMAIL_VALIDATOR_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "80f13f623413e6b197ae73bb10bf4eb0908faf509ad8362c5edeb0be7fd450b4",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "dnspython",
         url: DNSPYTHON_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "01d9bbc4a2d76bf0db7c1f729812ded6d912bd318d3b1cf81d30c0f845dbf3af",
+        kind: ArtifactKind::Zip,
     },
     // Office-document authoring.
-    WasiPackage {
+    ArtifactSpec {
         name: "python-docx",
         url: PYTHON_DOCX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "python-pptx",
         url: PYTHON_PPTX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba",
+        kind: ArtifactKind::Zip,
     },
     // xlsxwriter is python-pptx's chart-data writer dependency.
-    WasiPackage {
+    ArtifactSpec {
         name: "xlsxwriter",
         url: XLSXWRITER_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "fpdf2",
         url: FPDF2_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "d391fc508a3ce02fc43a577c830cda4fe6f37646f2d143d489839940932fbc19",
+        kind: ArtifactKind::Zip,
     },
     // defusedxml is fpdf2's hardened XML parser dependency.
-    WasiPackage {
+    ArtifactSpec {
         name: "defusedxml",
         url: DEFUSEDXML_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61",
+        kind: ArtifactKind::Zip,
     },
     // Native packages (wasm32-wasip1). Their `.so` files are baked into the
     // preinit snapshot. numpy is imported at preinit to warm the snapshot; the
     // others load lazily.
-    WasiPackage {
+    ArtifactSpec {
         name: "numpy",
         url: NUMPY_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: Some("numpy"),
+        sha256: "72d0386b9c501753c60f30d4fa90c3bcc3bce2e967214447d89a8e8f0587307b",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "pillow",
         url: PILLOW_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "f88a7aa1af8abb1d3b9dc16c879522f3af7bc3acb6a64b369834df992271cf47",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "kiwisolver",
         url: KIWISOLVER_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "8c69b069ffb5c79c5ee534e08cd225d049f0ab083298424880859618ba455c0a",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "contourpy",
         url: CONTOURPY_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "b8d828ba0fbcd70f3c263d0e12614f32a25c89de9482ab659446896e31fe15df",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "pandas",
         url: PANDAS_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "6aaf491a4df1146d67bba3297f5287beb103fdbbc975c40d1a916c3226805d4e",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "matplotlib",
         url: MATPLOTLIB_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "f46f78fd9b3302d0f711f96d8da74da26e9a2b5bb8b9e205ece40c15c65dabd6",
+        kind: ArtifactKind::TarGz,
     },
     // lxml is a native libxml2/libxslt-backed XML/HTML parser. It loads lazily.
-    WasiPackage {
+    ArtifactSpec {
         name: "lxml",
         url: LXML_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "cfe08cc81e88c7e89155797c98cf307355ce216b2e4ce9917e999b0ec5f6d1d8",
+        kind: ArtifactKind::TarGz,
     },
 ];
 
@@ -499,7 +490,8 @@ fn installed_packages_list() -> String {
 fn preinit_imports() -> Vec<&'static str> {
     WASI_PACKAGES
         .iter()
-        .filter_map(|pkg| pkg.preinit_import)
+        .filter(|pkg| pkg.name == "numpy")
+        .map(|_| "numpy")
         .collect()
 }
 
@@ -878,12 +870,11 @@ pub async fn ensure_wasi_dependencies(cache_dir: &Path) -> anyhow::Result<WasiDe
     tokio::fs::create_dir_all(cache_dir).await?;
     let deps_dir = cache_dir.join("deps");
     let site_packages = deps_dir.join("site-packages");
-    let markers = deps_dir.join(".installed");
     tokio::fs::create_dir_all(&site_packages).await?;
-    tokio::fs::create_dir_all(&markers).await?;
+    let store = ArtifactStore::new(&deps_dir);
 
     for pkg in WASI_PACKAGES {
-        install_package(pkg, &deps_dir, &site_packages, &markers).await?;
+        store.ensure_into(pkg, &site_packages).await?;
     }
 
     Ok(WasiDependencies { site_packages })
@@ -896,139 +887,19 @@ pub async fn ensure_wasi_dependencies(cache_dir: &Path) -> anyhow::Result<WasiDe
 async fn ensure_cpython_stdlib(cache_dir: &Path) -> anyhow::Result<PathBuf> {
     let runtime_dir = cache_dir.join("runtime");
     let stdlib = runtime_dir.join("cpython").join("lib").join("python3.14");
-    let marker = runtime_dir.join(".stdlib");
-    tokio::fs::create_dir_all(&runtime_dir).await?;
-
-    let installed = tokio::fs::read_to_string(&marker).await.ok();
-    if installed.as_deref() == Some(CPYTHON_STDLIB_URL) && stdlib.join("encodings").exists() {
-        return Ok(stdlib);
-    }
-
-    let archive = runtime_dir.join("cpython-wasi.tar.gz");
-    let _ = tokio::fs::remove_file(&archive).await;
-    download(CPYTHON_STDLIB_URL, &archive).await?;
-    extract_tar_gz(&archive, &runtime_dir).await?;
-    tokio::fs::write(&marker, CPYTHON_STDLIB_URL).await?;
+    ArtifactStore::new(&runtime_dir)
+        .ensure_into(&CPYTHON_STDLIB, &runtime_dir)
+        .await?;
+    anyhow::ensure!(
+        stdlib.join("encodings").exists(),
+        "CPython stdlib artifact does not contain encodings"
+    );
     Ok(stdlib)
-}
-
-async fn install_package(
-    pkg: &WasiPackage,
-    deps_dir: &Path,
-    site_packages: &Path,
-    markers: &Path,
-) -> anyhow::Result<()> {
-    let marker = markers.join(pkg.name);
-    let installed = tokio::fs::read_to_string(&marker).await.ok();
-    if installed.as_deref() == Some(pkg.url) {
-        return Ok(());
-    }
-
-    // First install or the source URL changed: fetch fresh. The cached archive
-    // is removed first because different sources can share a filename (both
-    // dicej and bkmashiro publish `numpy-wasi.tar.gz`).
-    let archive = deps_dir.join(archive_file_name(pkg));
-    let _ = tokio::fs::remove_file(&archive).await;
-    download(pkg.url, &archive).await?;
-    match pkg.kind {
-        ArchiveKind::TarGz => extract_tar_gz(&archive, site_packages).await?,
-        ArchiveKind::Wheel => extract_zip(&archive, site_packages).await?,
-    }
-    tokio::fs::write(&marker, pkg.url).await?;
-    Ok(())
-}
-
-fn archive_file_name(pkg: &WasiPackage) -> &'static str {
-    pkg.url.rsplit('/').next().unwrap_or(pkg.name)
 }
 
 #[derive(Clone, Debug)]
 pub struct WasiDependencies {
     pub site_packages: PathBuf,
-}
-
-async fn download(url: &str, path: &Path) -> anyhow::Result<()> {
-    let bytes = tokio::time::timeout(Duration::from_secs(60), fetch(url)).await??;
-    tokio::fs::write(path, bytes).await?;
-    Ok(())
-}
-
-const MAX_REDIRECTS: usize = 10;
-
-async fn fetch(url: &str) -> anyhow::Result<bytes::Bytes> {
-    use http_body_util::{BodyExt, Empty};
-    use hyper::header::LOCATION;
-
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()?
-        .https_or_http()
-        .enable_http1()
-        .build();
-    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-        .build::<_, Empty<bytes::Bytes>>(https);
-
-    let mut url = url.to_string();
-    for _ in 0..MAX_REDIRECTS {
-        let req = hyper::Request::builder()
-            .uri(&url)
-            .header(hyper::header::USER_AGENT, "stride-execenv/0.1")
-            .body(Empty::<bytes::Bytes>::new())?;
-        let res = client.request(req).await?;
-        let status = res.status();
-
-        if status.is_redirection() {
-            let location = res
-                .headers()
-                .get(LOCATION)
-                .ok_or_else(|| anyhow::anyhow!("redirect {status} without location header"))?
-                .to_str()?;
-            url = resolve_redirect(&url, location)?;
-            continue;
-        }
-
-        anyhow::ensure!(status.is_success(), "download failed with status {status}");
-        return Ok(res.into_body().collect().await?.to_bytes());
-    }
-
-    anyhow::bail!("too many redirects")
-}
-
-fn resolve_redirect(base: &str, location: &str) -> anyhow::Result<String> {
-    if location.starts_with("http://") || location.starts_with("https://") {
-        return Ok(location.to_string());
-    }
-    let base: hyper::Uri = base.parse()?;
-    let scheme = base.scheme_str().unwrap_or("https");
-    let authority = base
-        .authority()
-        .ok_or_else(|| anyhow::anyhow!("base url missing authority"))?;
-    let sep = if location.starts_with('/') { "" } else { "/" };
-    Ok(format!("{scheme}://{authority}{sep}{location}"))
-}
-
-async fn extract_tar_gz(archive: &Path, target: &Path) -> anyhow::Result<()> {
-    let archive = archive.to_path_buf();
-    let target = target.to_path_buf();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let file = std::fs::File::open(archive)?;
-        let decoder = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(decoder);
-        archive.unpack(target)?;
-        Ok(())
-    })
-    .await?
-}
-
-async fn extract_zip(archive: &Path, target: &Path) -> anyhow::Result<()> {
-    let archive = archive.to_path_buf();
-    let target = target.to_path_buf();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let file = std::fs::File::open(archive)?;
-        let mut zip = zip::ZipArchive::new(file)?;
-        zip.extract(target)?;
-        Ok(())
-    })
-    .await?
 }
 
 #[cfg(feature = "eryx")]
@@ -1829,21 +1700,10 @@ mod tests {
         let url = NUMPY_URL;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("numpy-wasi.tar.gz");
-        download(url, &path).await.unwrap();
+        artifacts::download(url, &path).await.unwrap();
         let bytes = tokio::fs::read(&path).await.unwrap();
         assert!(bytes.len() > 1024, "got {} bytes", bytes.len());
         assert_eq!(&bytes[..2], &[0x1f, 0x8b], "not a gzip stream");
-    }
-
-    #[test]
-    fn archive_file_name_uses_last_url_segment() {
-        let pkg = WasiPackage {
-            name: "demo",
-            url: "https://example.com/path/demo-1.0-py3-none-any.whl",
-            kind: ArchiveKind::Wheel,
-            preinit_import: None,
-        };
-        assert_eq!(archive_file_name(&pkg), "demo-1.0-py3-none-any.whl");
     }
 
     #[test]
@@ -1860,11 +1720,7 @@ mod tests {
                 "{} url not https",
                 pkg.name
             );
-            assert!(
-                !archive_file_name(pkg).is_empty(),
-                "{} has empty archive name",
-                pkg.name
-            );
+            assert_eq!(pkg.sha256.len(), 64, "{} has invalid sha256", pkg.name);
         }
     }
 

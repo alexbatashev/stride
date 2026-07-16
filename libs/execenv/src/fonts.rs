@@ -24,10 +24,11 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 
+use crate::{ArtifactKind, ArtifactSpec, ArtifactStore};
+
 /// Where a font family's files come from.
 enum FontSource {
-    /// A plain zip archive unpacked into the family directory.
-    Zip,
+    Pinned(&'static ArtifactSpec),
     /// A Google Fonts `download/list` JSON manifest; font files are pulled
     /// individually from the `fonts.gstatic.com` URLs it lists.
     GoogleManifest,
@@ -46,8 +47,15 @@ struct FontPackage {
 // family and covers a wide Unicode range, so it is the reliable baseline that
 // keeps plotting working even if the Google Fonts families below fail to fetch.
 const DEJAVU_URL: &str = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip";
+const DEJAVU: ArtifactSpec = ArtifactSpec {
+    name: "dejavu",
+    url: DEJAVU_URL,
+    sha256: "7576310b219e04159d35ff61dd4a4ec4cdba4f35c00e002a136f00e96a908b0a",
+    kind: ArtifactKind::Zip,
+};
 
-// Google Fonts families served as JSON manifests by the `download/list` endpoint.
+// Google Fonts manifests and their referenced files have no stable upstream
+// hashes. They are the documented unpinned exception and retain URL-only markers.
 // Spaces are percent-encoded. Roboto, Open Sans, Lato and Montserrat are popular
 // Latin UI families; the Noto trio adds broad script and monospace coverage.
 const ROBOTO_URL: &str = "https://fonts.google.com/download/list?family=Roboto";
@@ -62,7 +70,7 @@ const FONT_PACKAGES: &[FontPackage] = &[
     FontPackage {
         name: "dejavu",
         url: DEJAVU_URL,
-        source: FontSource::Zip,
+        source: FontSource::Pinned(&DEJAVU),
     },
     FontPackage {
         name: "roboto",
@@ -162,30 +170,32 @@ pub async fn ensure_fonts(cache_dir: &Path) -> anyhow::Result<PathBuf> {
 }
 
 async fn install_font(pkg: &FontPackage, fonts_dir: &Path, markers: &Path) -> anyhow::Result<()> {
+    if let FontSource::Pinned(spec) = pkg.source {
+        return ArtifactStore::new(fonts_dir)
+            .ensure_best_effort(spec)
+            .await
+            .map(|_| ())
+            .ok_or_else(|| anyhow::anyhow!("font artifact is unavailable"));
+    }
+
     let marker = markers.join(pkg.name);
     if tokio::fs::read_to_string(&marker).await.ok().as_deref() == Some(pkg.url) {
         return Ok(());
     }
 
     let target = fonts_dir.join(pkg.name);
-    let _ = tokio::fs::remove_dir_all(&target).await;
-    tokio::fs::create_dir_all(&target).await?;
+    let staging = fonts_dir.join(".downloads").join(pkg.name);
+    let _ = tokio::fs::remove_dir_all(&staging).await;
+    tokio::fs::create_dir_all(&staging).await?;
 
     match pkg.source {
-        FontSource::Zip => install_zip(pkg, fonts_dir, &target).await?,
-        FontSource::GoogleManifest => install_google_family(pkg, fonts_dir, &target).await?,
+        FontSource::Pinned(_) => unreachable!(),
+        FontSource::GoogleManifest => install_google_family(pkg, fonts_dir, &staging).await?,
     }
 
+    let _ = tokio::fs::remove_dir_all(&target).await;
+    tokio::fs::rename(staging, target).await?;
     tokio::fs::write(&marker, pkg.url).await?;
-    Ok(())
-}
-
-async fn install_zip(pkg: &FontPackage, fonts_dir: &Path, target: &Path) -> anyhow::Result<()> {
-    let archive = fonts_dir.join(format!("{}.zip", pkg.name));
-    let _ = tokio::fs::remove_file(&archive).await;
-    crate::download(pkg.url, &archive).await?;
-    crate::extract_zip(&archive, target).await?;
-    let _ = tokio::fs::remove_file(&archive).await;
     Ok(())
 }
 
@@ -198,7 +208,7 @@ async fn install_google_family(
     // switched to JSON, so the cache is left clean.
     let _ = tokio::fs::remove_file(fonts_dir.join(format!("{}.zip", pkg.name))).await;
 
-    let raw = tokio::time::timeout(Duration::from_secs(60), crate::fetch(pkg.url))
+    let raw = tokio::time::timeout(Duration::from_secs(60), crate::artifacts::fetch(pkg.url))
         .await
         .context("google fonts manifest fetch timed out")??;
     let manifest: GoogleFontManifest = serde_json::from_slice(strip_xssi_prefix(raw.as_ref()))
@@ -211,7 +221,7 @@ async fn install_google_family(
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        crate::download(&file.url, &dest).await?;
+        crate::artifacts::download(&file.url, &dest).await?;
     }
     Ok(())
 }
@@ -265,7 +275,7 @@ mod tests {
         assert!(
             FONT_PACKAGES
                 .iter()
-                .any(|pkg| pkg.name == "dejavu" && matches!(pkg.source, FontSource::Zip)),
+                .any(|pkg| pkg.name == "dejavu" && matches!(pkg.source, FontSource::Pinned(_))),
             "DejaVu must ship as the matplotlib default fallback"
         );
     }
