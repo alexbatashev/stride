@@ -8,7 +8,7 @@ import { IconArrowDown } from "./icons/arrow-down.js";
 const styles = css`
   :host { display: block; height: 100%; min-height: 0; width: 100%; }
   .root { display: flex; height: 100%; min-height: 0; overflow: hidden; position: relative; width: 100%; }
-  .viewport { contain: content; height: 100%; min-height: 0; min-width: 0; overscroll-behavior: contain; overflow-y: auto; scrollbar-gutter: stable; width: 100%; }
+  .viewport { box-sizing: border-box; contain: content; height: 100%; min-height: 0; min-width: 0; overscroll-behavior: contain; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; width: 100%; }
   .content { display: flex; flex-direction: column; gap: 32px; min-height: 100%; }
   .to-end {
     align-items: center;

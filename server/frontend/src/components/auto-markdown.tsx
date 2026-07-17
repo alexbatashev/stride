@@ -178,7 +178,25 @@ export function AutoMarkdown({
   format?: string;
 }): Component {
   effect(() => {
-    let cleanup: (() => void) | undefined;
+    let cleanupFrames: (() => void) | undefined;
+    let connectedFrames: HTMLIFrameElement[] = [];
+    let contentObserver: MutationObserver | undefined;
+    let hostObserver: MutationObserver | undefined;
+    const postProcess = (content: HTMLElement) => {
+      const needsTableWrap = [...content.querySelectorAll("table")]
+        .some((table) => !table.parentElement?.classList.contains("table-wrap"));
+      if (needsTableWrap) {
+        wrapTables(content);
+      }
+      const frames = [...content.querySelectorAll("iframe")];
+      const framesChanged = frames.length !== connectedFrames.length
+        || frames.some((frame, index) => frame !== connectedFrames[index]);
+      if (framesChanged) {
+        cleanupFrames?.();
+        connectedFrames = frames;
+        cleanupFrames = connectWidgetFrames(content);
+      }
+    };
     const render = () => {
       const content = this.firstElementChild as HTMLElement | undefined;
       if (!content) return false;
@@ -193,19 +211,23 @@ export function AutoMarkdown({
       } else {
         content.innerHTML = renderMarkdown(text);
       }
-      wrapTables(content);
-      cleanup = connectWidgetFrames(content);
+      postProcess(content);
+      contentObserver?.disconnect();
+      contentObserver = new MutationObserver(() => postProcess(content));
+      contentObserver.observe(content, { childList: true, subtree: true });
       return true;
     };
-    if (render()) return cleanup;
-    const observer = new MutationObserver(() => {
-      if (!render()) return;
-      observer.disconnect();
-    });
-    observer.observe(this, { childList: true });
+    if (!render()) {
+      hostObserver = new MutationObserver(() => {
+        if (!render()) return;
+        hostObserver?.disconnect();
+      });
+      hostObserver.observe(this, { childList: true });
+    }
     return () => {
-      observer.disconnect();
-      cleanup?.();
+      hostObserver?.disconnect();
+      contentObserver?.disconnect();
+      cleanupFrames?.();
     };
   });
   return (

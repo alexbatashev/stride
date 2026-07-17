@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const componentsBundle = fileURLToPath(new URL('../../dist/components.js', import.meta.url));
@@ -30,10 +31,10 @@ async function renderedMessageHtml(page, overrides = {}) {
   }, overrides);
 }
 
-async function renderedChatHtml(page) {
+async function renderedChatHtml(page, answerOverrides = {}) {
   await page.setContent('<script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script>');
   await importComponents(page);
-  return page.evaluate(() => {
+  return page.evaluate((answerOverrides) => {
     const chat = document.createElement('app-chat-view');
     const turns = [{
       id: 'turn-1',
@@ -45,7 +46,7 @@ async function renderedChatHtml(page) {
       startedAt: 0,
       segments: [{ id: 'segment-1', commentary: 'Checking the files', tools: [{ id: 'tool-1', seq: 1, createdAt: 1, role: 'tool', kind: 'tool_activity', format: 'markdown', text: 'README.md', thinking: '', toolName: 'Ran command', toolDetail: 'ls', status: 'finished', isError: false, pending: false }] }],
       hasAnswer: true,
-      answer: { id: 'answer-1', seq: 2, createdAt: 2, role: 'agent', kind: 'agent', format: 'markdown', text: 'Done', thinking: '', toolName: '', toolDetail: '', status: 'finished', isError: false, pending: false },
+      answer: { id: 'answer-1', seq: 2, createdAt: 2, role: 'agent', kind: 'agent', format: 'markdown', text: 'Done', thinking: '', toolName: '', toolDetail: '', status: 'finished', isError: false, pending: false, ...answerOverrides },
     }];
     chat.turns = turns;
     chat.setAttribute('data-turns', JSON.stringify(turns));
@@ -60,7 +61,7 @@ async function renderedChatHtml(page) {
       return `<${node.localName}${attrs}>${shadow}${[...node.childNodes].map(serialize).join('')}</${node.localName}>`;
     };
     return serialize(chat);
-  });
+  }, answerOverrides);
 }
 
 async function shadowSnapshot(page, selector) {
@@ -317,6 +318,73 @@ test('nested first-paint work fold hydrates and opens', async ({ browser, page }
     commentary: expect.stringContaining('Checking the files'),
     tool: expect.stringContaining('Ran command'),
   });
+});
+
+test('server-rendered wide tables scroll locally without overflowing the mobile interface', async ({ browser, page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const table = '<table><thead><tr><th>State update</th><th>Classic LSTM</th><th>Mamba S6</th><th>mLSTM</th><th>sLSTM</th></tr></thead><tbody><tr><td>Parallel over sequence at train?</td><td>nonlinear recurrent network</td><td>associative scan with recompute</td><td>closed parallel matrix form</td><td>sequential BPTT with fused kernels</td></tr></tbody></table>';
+  const context = await browser.newContext();
+  const source = await context.newPage();
+  const hydratedChatHtml = await renderedChatHtml(source, { format: 'html', text: table });
+  await context.close();
+  const serverChatHtml = hydratedChatHtml
+    .replace('<div class="table-wrap"><table>', '<table>')
+    .replace('</table></div>', '</table>');
+  expect(serverChatHtml).not.toBe(hydratedChatHtml);
+
+  const bundle = await readFile(componentsBundle);
+  await page.route('http://stride.test/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/components.js') {
+      await route.fulfill({ body: bundle, contentType: 'text/javascript' });
+      return;
+    }
+    await route.fulfill({
+      body: `<!doctype html><html><head><style>html, body { height: 100%; margin: 0; width: 100%; } app-chat-view { display: block; height: 100%; width: 100%; }</style><script type="application/json" data-argon-stores>{"sidebar":{"activeThread":"thread-1"}}</script><link rel="modulepreload" href="/components.js"><script type="module" src="/components.js"></script></head><body>${serverChatHtml}</body></html>`,
+      contentType: 'text/html',
+    });
+  });
+  await page.goto('http://stride.test/');
+  await page.waitForFunction(() => {
+    const chat = document.querySelector('app-chat-view');
+    const message = chat?.shadowRoot?.querySelector('app-message-scroller')?.querySelector('app-message');
+    return message?.shadowRoot?.querySelector('auto-markdown')?.hasAttribute('hydrated');
+  });
+  await page.evaluate(() => {
+    const chat = document.querySelector('app-chat-view');
+    const message = chat.shadowRoot.querySelector('app-message-scroller').querySelector('app-message');
+    const rendered = message.shadowRoot.querySelector('auto-markdown').querySelector('.rendered');
+    rendered.innerHTML = chat.turns[0].answer.text;
+  });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+  const geometry = await page.evaluate(() => {
+    const chat = document.querySelector('app-chat-view');
+    const scroller = chat.shadowRoot.querySelector('app-message-scroller');
+    const viewport = scroller.shadowRoot.querySelector('.viewport');
+    const message = scroller.querySelector('app-message');
+    const markdown = message.shadowRoot.querySelector('auto-markdown');
+    const tableElement = markdown.querySelector('table');
+    const wrapper = tableElement.parentElement;
+    const messageRect = message.getBoundingClientRect();
+    const wrapperRect = wrapper.getBoundingClientRect();
+    return {
+      documentWidth: document.documentElement.scrollWidth,
+      messageRight: messageRect.right,
+      tableParentClass: wrapper.className,
+      viewportOverflowX: getComputedStyle(viewport).overflowX,
+      windowWidth: window.innerWidth,
+      wrapperClientWidth: wrapper.clientWidth,
+      wrapperRight: wrapperRect.right,
+      wrapperScrollWidth: wrapper.scrollWidth,
+    };
+  });
+
+  expect(geometry.tableParentClass).toBe('table-wrap');
+  expect(geometry.wrapperScrollWidth).toBeGreaterThan(geometry.wrapperClientWidth);
+  expect(geometry.wrapperRight).toBeLessThanOrEqual(geometry.messageRight);
+  expect(geometry.viewportOverflowX).toBe('hidden');
+  expect(geometry.documentWidth).toBe(geometry.windowWidth);
 });
 
 test('model picker opens above its trigger at a bounded width within the viewport', async ({ page }) => {
