@@ -53,9 +53,10 @@ pub(crate) fn build_system_prompt(
         }
         _ => String::new(),
     };
+    let user_home = crate::vfs::USER_HOME;
     let writable_extra = writable_extra
         .iter()
-        .map(|dir| format!("`/{dir}`"))
+        .map(|dir| format!("`{user_home}/{dir}`"))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -85,7 +86,7 @@ Interactive widgets:
 - Widget HTML must load `/static/common.css` and `/static/widget-frame.js`; use bundled scripts in `/static/vendor/` when D3, Observable Plot, Decimal, or Dagre is needed.
 - Name widget files with URL-safe ASCII names such as `sorting-widget.html` to avoid broken iframe URLs.{/if}
 {if let (Some(id), Some(root)) = (thread_id, writable_root)}
-File system: list `/` to see the user's files. Your writable directory is `{root}` — write all outputs you create there; everything else under `/` is read-only (this applies in the shell and the Python sandbox alike). Files in it are downloadable via `{base_url}/api/threads/{id}/files/<path>` where `<path>` is relative to your writable directory (drop the leading `{root}/`). {file_link_example}{if let Some(public_url) = public_url} For HTML media tags such as iframe/img/video/audio, the src must be absolute: `{public_url}/api/threads/{id}/files/<path>`. For example, if you create `{root}/sorting-widget.html`, embed it as `<iframe src="{public_url}/api/threads/{id}/files/sorting-widget.html"></iframe>`. Do not use a relative `/api/threads/...` iframe src, do not use `/static/...` for generated files, and do not include the `{root}/` prefix in the URL path.{/if}{if !writable_extra.is_empty()} The user also granted write access to these directories and everything under them: {writable_extra}. You may create and edit files there too.{/if}{/if}{if telegram}
+File system: `{root}` is your workspace — read-write and your working directory; write all outputs you create there. The user's files live under `{user_home}` (read-only); list it to browse them. `/tmp` is scratch space, cleared between runs. This layout is identical in the shell and the Python sandbox. Files in your workspace are downloadable via `{base_url}/api/threads/{id}/files/<path>` where `<path>` is relative to `{root}` (drop the leading `{root}/`). {file_link_example}{if let Some(public_url) = public_url} For HTML media tags such as iframe/img/video/audio, the src must be absolute: `{public_url}/api/threads/{id}/files/<path>`. For example, if you create `{root}/sorting-widget.html`, embed it as `<iframe src="{public_url}/api/threads/{id}/files/sorting-widget.html"></iframe>`. Do not use a relative `/api/threads/...` iframe src, do not use `/static/...` for generated files, and do not include the `{root}/` prefix in the URL path.{/if}{if !writable_extra.is_empty()} The user also granted write access to these directories and everything under them: {writable_extra}. You may create and edit files there too.{/if}{/if}{if telegram}
 
 This conversation happens over Telegram. The user can send you files; they are downloaded into an `uploads/` folder in your writable directory and noted in their message with their full path. When you produce a file for the user, deliver it with the `send_telegram_file` tool so it arrives as a native Telegram attachment.{if public_url.is_some()} You may also include a download link, but Telegram markdown only renders absolute links, so always use the full `https://` download URL shown above.{/if}{/if}{if let Some(p) = personality}
 
@@ -123,7 +124,7 @@ mod tests {
             "BASE",
             None,
             Some(id),
-            Some("/~workspace"),
+            Some("/home/agent"),
             &[],
             true,
             Some("https://stride.example.com"),
@@ -146,7 +147,7 @@ mod tests {
             "BASE",
             None,
             Some(id),
-            Some("/~workspace"),
+            Some("/home/agent"),
             &[],
             false,
             Some("https://stride.example.com"),

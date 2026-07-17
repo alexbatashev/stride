@@ -176,6 +176,7 @@ enum SnapshotKind {
 pub enum ThreadApiError {
     Auth(AuthError),
     BadRequest,
+    Forbidden,
     NotFound,
     Conflict,
     Internal,
@@ -186,9 +187,22 @@ impl IntoResponse for ThreadApiError {
         match self {
             ThreadApiError::Auth(error) => error.into_response(),
             ThreadApiError::BadRequest => StatusCode::BAD_REQUEST.into_response(),
+            ThreadApiError::Forbidden => StatusCode::FORBIDDEN.into_response(),
             ThreadApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
             ThreadApiError::Conflict => StatusCode::CONFLICT.into_response(),
             ThreadApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+}
+
+impl From<crate::vfs::VfsError> for ThreadApiError {
+    fn from(error: crate::vfs::VfsError) -> Self {
+        use crate::vfs::VfsError;
+        match error {
+            VfsError::NotFound => ThreadApiError::NotFound,
+            VfsError::ReadOnly | VfsError::PermissionDenied => ThreadApiError::Forbidden,
+            VfsError::NotADirectory | VfsError::IsADirectory => ThreadApiError::BadRequest,
+            VfsError::Storage(_) => ThreadApiError::Internal,
         }
     }
 }
@@ -1231,11 +1245,9 @@ async fn prepare_message(
     let Some(ref vfs) = state.vfs else {
         return Ok((build_content(content, file_paths), Vec::new()));
     };
-    let Ok(area) = thread_writable_area(state, thread_id, owner).await else {
+    let Ok(fs) = thread_mount(state, thread_id, owner).await else {
         return Ok((build_content(content, file_paths), Vec::new()));
     };
-
-    let fs = crate::vfs::MountedVfs::new(vfs.clone(), owner, area);
     let public_url = state.config.public_url();
 
     let mut images = Vec::new();
@@ -1432,20 +1444,15 @@ pub async fn list_files(
     Query(query): Query<FilesQuery>,
     headers: HeaderMap,
 ) -> Result<Json<WorkspaceListResponse>, ThreadApiError> {
-    let Some(ref vfs) = state.vfs else {
-        return Err(ThreadApiError::NotFound);
-    };
-
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let area = thread_writable_area(&state, thread_id, owner).await?;
-    let path = clean_workspace_path(query.path.as_deref());
-    let entries = vfs
-        .area_list(&area, owner, &path)
-        .await
-        .map_err(|_| ThreadApiError::NotFound)?
+    let fs = thread_mount(&state, thread_id, owner).await?;
+    let path = absolute_path(query.path.as_deref(), crate::vfs::AGENT_HOME);
+    let entries = fs
+        .list(&path)
+        .await?
         .into_iter()
         .map(|entry| {
-            let entry_path = join_workspace_path(&path, &entry.name);
+            let entry_path = join_absolute_path(&path, &entry.name);
             WorkspaceEntry {
                 name: entry.name,
                 path: entry_path,
@@ -1469,21 +1476,16 @@ pub async fn list_file_versions(
     Query(query): Query<VersionsQuery>,
     headers: HeaderMap,
 ) -> Result<Json<FileVersionsResponse>, ThreadApiError> {
-    let Some(ref vfs) = state.vfs else {
-        return Err(ThreadApiError::NotFound);
-    };
-
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let area = thread_writable_area(&state, thread_id, owner).await?;
-    let path = clean_workspace_path(Some(&query.path));
-    if path.is_empty() {
+    let fs = thread_mount(&state, thread_id, owner).await?;
+    let path = absolute_path(Some(&query.path), crate::vfs::AGENT_HOME);
+    if path == "/" {
         return Err(ThreadApiError::BadRequest);
     }
 
-    let versions = vfs
-        .area_list_versions(&area, owner, &path)
-        .await
-        .map_err(|_| ThreadApiError::NotFound)?
+    let versions = fs
+        .list_versions(&path)
+        .await?
         .into_iter()
         .map(|version| FileVersionResponse {
             version: version.version,
@@ -1502,20 +1504,14 @@ pub async fn restore_file_version(
     headers: HeaderMap,
     Json(request): Json<RestoreVersionRequest>,
 ) -> Result<StatusCode, ThreadApiError> {
-    let Some(ref vfs) = state.vfs else {
-        return Err(ThreadApiError::NotFound);
-    };
-
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let area = thread_writable_area(&state, thread_id, owner).await?;
-    let path = clean_workspace_path(Some(&request.path));
-    if path.is_empty() || request.version < 0 {
+    let fs = thread_mount(&state, thread_id, owner).await?;
+    let path = absolute_path(Some(&request.path), crate::vfs::AGENT_HOME);
+    if path == "/" || request.version < 0 {
         return Err(ThreadApiError::BadRequest);
     }
 
-    vfs.area_restore_version(&area, owner, &path, request.version)
-        .await
-        .map_err(|_| ThreadApiError::NotFound)?;
+    fs.restore_version(&path, request.version).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1526,20 +1522,14 @@ pub async fn create_directory(
     headers: HeaderMap,
     Json(request): Json<CreateDirectoryRequest>,
 ) -> Result<StatusCode, ThreadApiError> {
-    let Some(ref vfs) = state.vfs else {
-        return Err(ThreadApiError::NotFound);
-    };
-
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let area = thread_writable_area(&state, thread_id, owner).await?;
-    let path = clean_workspace_path(Some(&request.path));
-    if path.is_empty() {
+    let fs = thread_mount(&state, thread_id, owner).await?;
+    let path = absolute_path(Some(&request.path), crate::vfs::AGENT_HOME);
+    if path == "/" {
         return Err(ThreadApiError::BadRequest);
     }
 
-    vfs.area_create_dir(&area, owner, &path)
-        .await
-        .map_err(|_| ThreadApiError::BadRequest)?;
+    fs.create_dir(&path).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1551,14 +1541,9 @@ pub async fn upload_file(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<UploadResponse>, ThreadApiError> {
-    let Some(ref vfs) = state.vfs else {
-        return Err(ThreadApiError::Internal);
-    };
-
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let area = thread_writable_area(&state, thread_id, owner).await?;
-    let root = writable_root_path(&area);
-    let directory = clean_workspace_path(query.path.as_deref());
+    let fs = thread_mount(&state, thread_id, owner).await?;
+    let directory = absolute_path(query.path.as_deref(), crate::vfs::AGENT_HOME);
 
     let mut uploaded = Vec::new();
 
@@ -1584,19 +1569,11 @@ pub async fn upload_file(
             .map_err(|_| ThreadApiError::BadRequest)?;
         let size = bytes.len();
 
-        let path = join_workspace_path(&directory, &name);
+        let path = join_absolute_path(&directory, &name);
 
-        vfs.area_write_bytes(&area, owner, &path, &bytes, mime_type.as_deref())
-            .await
-            .map_err(|_| ThreadApiError::Internal)?;
+        fs.write_bytes(&path, &bytes, mime_type.as_deref()).await?;
 
-        // Reference uploaded files under the thread's writable root so the agent
-        // reads them from there, not the read-only global root.
-        uploaded.push(UploadedFile {
-            path: format!("{root}/{path}"),
-            name,
-            size,
-        });
+        uploaded.push(UploadedFile { path, name, size });
     }
 
     Ok(Json(UploadResponse { files: uploaded }))
@@ -1607,20 +1584,14 @@ pub async fn delete_file(
     Path((thread_id, path)): Path<(Uuid, String)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ThreadApiError> {
-    let Some(ref vfs) = state.vfs else {
-        return Err(ThreadApiError::NotFound);
-    };
-
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let area = thread_writable_area(&state, thread_id, owner).await?;
-    let path = clean_workspace_path(Some(&path));
-    if path.is_empty() {
+    let fs = thread_mount(&state, thread_id, owner).await?;
+    let path = absolute_path(Some(&path), crate::vfs::AGENT_HOME);
+    if path == "/" {
         return Err(ThreadApiError::BadRequest);
     }
 
-    vfs.area_delete(&area, owner, &path)
-        .await
-        .map_err(|_| ThreadApiError::NotFound)?;
+    fs.delete(&path).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1631,25 +1602,17 @@ pub async fn download_file(
     Query(query): Query<DownloadQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ThreadApiError> {
-    let Some(ref vfs) = state.vfs else {
-        return Err(ThreadApiError::NotFound);
-    };
-
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let area = thread_writable_area(&state, thread_id, owner).await?;
-    let path = clean_workspace_path(Some(&path));
+    let fs = thread_mount(&state, thread_id, owner).await?;
+    let path = absolute_path(Some(&path), crate::vfs::AGENT_HOME);
 
     let (bytes, mime_type) = if let Some(version) = query.version {
         if version < 0 {
             return Err(ThreadApiError::BadRequest);
         }
-        vfs.area_read_version(&area, owner, &path, version)
-            .await
-            .map_err(|_| ThreadApiError::NotFound)?
+        fs.read_version(&path, version).await?
     } else {
-        vfs.area_read_bytes(&area, owner, &path)
-            .await
-            .map_err(|_| ThreadApiError::NotFound)?
+        fs.read_bytes(&path).await?
     };
 
     super::file_response(&path, bytes, mime_type).map_err(|_| ThreadApiError::Internal)
@@ -1671,8 +1634,7 @@ async fn materialize_staged_uploads(
         return Ok(Vec::new());
     };
 
-    let area = thread_writable_area(state, thread_id, owner).await?;
-    let root = writable_root_path(&area);
+    let fs = thread_mount(state, thread_id, owner).await?;
 
     let mut paths = Vec::new();
     for &id in staged_ids {
@@ -1683,29 +1645,25 @@ async fn materialize_staged_uploads(
                 continue;
             }
         };
-        let rel = join_workspace_path("uploads", &staged.name);
-        vfs.area_write_bytes(
-            &area,
-            owner,
-            &rel,
-            &staged.bytes,
-            staged.mime_type.as_deref(),
-        )
-        .await
-        .map_err(|_| ThreadApiError::Internal)?;
-        paths.push(format!("{root}/{rel}"));
+        let path = join_absolute_path(
+            &join_absolute_path(crate::vfs::AGENT_HOME, "uploads"),
+            &staged.name,
+        );
+        fs.write_bytes(&path, &staged.bytes, staged.mime_type.as_deref())
+            .await?;
+        paths.push(path);
     }
     Ok(paths)
 }
 
-/// Resolves a thread's writable area: a project thread writes into the
-/// project's folder in the owner's global files; an ungrouped thread keeps its
-/// own standalone workspace.
-async fn thread_writable_area(
+/// Builds a thread's mounted namespace view: its workspace at `/home/agent`, the
+/// user's global tree at `/home/user` (with the project folder and configured
+/// directories writable on top). File endpoints address this by absolute path.
+async fn thread_mount(
     state: &ServerState,
     thread_id: Uuid,
     owner: Uuid,
-) -> Result<crate::vfs::WritableArea, ThreadApiError> {
+) -> Result<crate::vfs::MountedVfs, ThreadApiError> {
     let Some(ref vfs) = state.vfs else {
         return Err(ThreadApiError::NotFound);
     };
@@ -1732,46 +1690,55 @@ async fn thread_writable_area(
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string());
 
-    if let Some(title) = title {
-        let prefix = vfs
-            .ensure_project_dir(owner, &title)
-            .await
-            .map_err(|_| ThreadApiError::Internal)?;
-        return Ok(crate::vfs::WritableArea::ProjectDir(prefix));
-    }
-
     let workspace_id = vfs
         .get_or_create_workspace(thread_id, None, owner)
         .await
         .map_err(|_| ThreadApiError::Internal)?;
-    Ok(crate::vfs::WritableArea::Workspace(workspace_id))
+
+    let project_grant = if let Some(title) = title {
+        Some(
+            vfs.ensure_project_dir(owner, &title)
+                .await
+                .map_err(|_| ThreadApiError::Internal)?,
+        )
+    } else {
+        None
+    };
+
+    let extra = crate::api::writable_dirs::writable_prefixes(&state.db, owner).await;
+    Ok(
+        crate::vfs::MountedVfs::new(vfs.clone(), owner, Some(workspace_id), project_grant)
+            .with_writable_dirs(extra),
+    )
 }
 
-/// The absolute path the agent and download URLs use for a thread's writable
-/// directory.
-fn writable_root_path(area: &crate::vfs::WritableArea) -> String {
-    match area {
-        crate::vfs::WritableArea::Workspace(_) => format!("/{}", crate::vfs::WORKSPACE_MOUNT),
-        crate::vfs::WritableArea::ProjectDir(prefix) => format!("/{prefix}"),
+/// Normalizes an untrusted path into a canonical absolute path in the mounted
+/// namespace, stripping `.`/`..`/empty segments. An empty input yields `default`.
+fn absolute_path(path: Option<&str>, default: &str) -> String {
+    let segments: Vec<&str> = path
+        .unwrap_or_default()
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
+        .collect();
+    if segments.is_empty() {
+        default.to_string()
+    } else {
+        format!("/{}", segments.join("/"))
     }
 }
 
-fn clean_workspace_path(path: Option<&str>) -> String {
-    let raw = path.unwrap_or_default().trim_start_matches('/');
-    let path = raw.strip_prefix("~workspace").unwrap_or(raw);
-
-    path.split('/')
+/// Joins a file or directory name onto an absolute parent path.
+fn join_absolute_path(parent: &str, name: &str) -> String {
+    let name: Vec<&str> = name
+        .split('/')
         .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn join_workspace_path(parent: &str, name: &str) -> String {
-    let name = clean_workspace_path(Some(name));
-    if parent.is_empty() {
-        name
+        .collect();
+    if name.is_empty() {
+        parent.to_string()
+    } else if parent == "/" {
+        format!("/{}", name.join("/"))
     } else {
-        format!("{parent}/{name}")
+        format!("{parent}/{}", name.join("/"))
     }
 }
 
@@ -1957,13 +1924,13 @@ mod tests {
         let result = build_content(
             "hello".to_string(),
             vec![
-                "/~workspace/a.txt".to_string(),
-                "/~workspace/b.pdf".to_string(),
+                "/home/agent/a.txt".to_string(),
+                "/home/agent/b.pdf".to_string(),
             ],
         );
         assert_eq!(
             result,
-            "hello\n\nAttached files:\n- /~workspace/a.txt\n- /~workspace/b.pdf"
+            "hello\n\nAttached files:\n- /home/agent/a.txt\n- /home/agent/b.pdf"
         );
     }
 
@@ -1974,14 +1941,29 @@ mod tests {
     }
 
     #[test]
-    fn clean_workspace_path_accepts_legacy_workspace_prefix() {
+    fn absolute_path_normalizes_and_defaults() {
         assert_eq!(
-            clean_workspace_path(Some("/~workspace/reports/a.pdf")),
-            "reports/a.pdf"
+            absolute_path(Some("/home/agent/reports/a.pdf"), crate::vfs::AGENT_HOME),
+            "/home/agent/reports/a.pdf"
         );
         assert_eq!(
-            clean_workspace_path(Some("/reports/a.pdf")),
-            "reports/a.pdf"
+            absolute_path(Some("home/agent/../agent/a.pdf"), crate::vfs::AGENT_HOME),
+            "/home/agent/agent/a.pdf"
         );
+        assert_eq!(absolute_path(None, crate::vfs::AGENT_HOME), "/home/agent");
+        assert_eq!(
+            absolute_path(Some(""), crate::vfs::AGENT_HOME),
+            "/home/agent"
+        );
+    }
+
+    #[test]
+    fn join_absolute_path_appends_segments() {
+        assert_eq!(
+            join_absolute_path("/home/agent", "a.txt"),
+            "/home/agent/a.txt"
+        );
+        assert_eq!(join_absolute_path("/", "a.txt"), "/a.txt");
+        assert_eq!(join_absolute_path("/home/agent", ""), "/home/agent");
     }
 }

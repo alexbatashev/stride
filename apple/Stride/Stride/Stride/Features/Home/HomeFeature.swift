@@ -10,7 +10,7 @@ struct HomeFeature {
         var selection: SidebarSelection = .local
         var selectedThreadID: String?
         var chat: ChatFeature.State?
-        var files = FilesFeature.State(scope: .global)
+        var files = FilesFeature.State(threadID: nil)
         var automations = AutomationsFeature.State()
         var searchText = ""
         var isLoading = false

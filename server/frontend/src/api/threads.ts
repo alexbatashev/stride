@@ -187,7 +187,9 @@ export async function answerQuiz(threadId: string, quizId: string, answers: stri
 	});
 }
 
-export async function listWorkspaceFiles(threadId: string, path = ''): Promise<WorkspaceList> {
+export const AGENT_HOME = '/home/agent';
+
+export async function listWorkspaceFiles(threadId: string, path = AGENT_HOME): Promise<WorkspaceList> {
 	return request(`/api/threads/${threadId}/files?path=${encodeURIComponent(path)}`);
 }
 
@@ -245,7 +247,7 @@ export async function stageUploads(files: File[]): Promise<StagedUpload[]> {
 	return data.files;
 }
 
-export async function uploadFiles(threadId: string, files: File[], path = ''): Promise<UploadedFile[]> {
+export async function uploadFiles(threadId: string, files: File[], path = AGENT_HOME): Promise<UploadedFile[]> {
 	const token = readToken();
 	const headers = new Headers();
 	headers.set('Accept', 'application/json');

@@ -114,7 +114,7 @@ pub struct SendTelegramFileTool {
 
 #[derive(ToolDesc)]
 struct SendTelegramFileParams {
-    /// Absolute workspace path of the file to send, e.g. "/~workspace/report.pdf".
+    /// Absolute workspace path of the file to send, e.g. "/home/agent/report.pdf".
     path: String,
     /// Optional caption shown beneath the file in Telegram.
     caption: Option<String>,
@@ -547,9 +547,9 @@ mod tests {
 
     #[test]
     fn file_name_from_path_takes_basename() {
-        assert_eq!(file_name_from_path("/~workspace/report.pdf"), "report.pdf");
+        assert_eq!(file_name_from_path("/home/agent/report.pdf"), "report.pdf");
         assert_eq!(file_name_from_path("plain.txt"), "plain.txt");
-        assert_eq!(file_name_from_path("/~workspace/"), "file");
+        assert_eq!(file_name_from_path("/home/agent/"), "file");
     }
 
     #[test]

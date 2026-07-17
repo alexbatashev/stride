@@ -54,7 +54,7 @@ pub struct OcrTool {
     /// Shared Python interpreter, used to read PDFs. `None` when the Python tool
     /// is disabled, in which case only image inputs are supported.
     pub python: Option<Arc<dyn ExecutionService>>,
-    /// Absolute guest path of the writable area (e.g. `/~workspace`) where the
+    /// Absolute guest path of the writable area (e.g. `/home/agent`) where the
     /// default output file is written.
     pub writable_root: String,
 }
@@ -62,7 +62,7 @@ pub struct OcrTool {
 #[derive(ToolDesc)]
 struct OcrParams {
     /// Absolute path to the document in the file system: an image (png, jpg,
-    /// webp, tiff) or a PDF, e.g. "/~workspace/scan.pdf" or "/Invoices/bill.jpg".
+    /// webp, tiff) or a PDF, e.g. "/home/agent/scan.pdf" or "/home/user/Invoices/bill.jpg".
     path: String,
     /// Optional absolute path to write the Markdown to. Defaults to
     /// "<writable-root>/ocr/<name>.md".
@@ -649,19 +649,19 @@ mod tests {
     #[test]
     fn default_output_strips_extension_under_writable_root() {
         assert_eq!(
-            default_output_path("/~workspace", "/Invoices/bill.pdf"),
-            "/~workspace/ocr/bill.md"
+            default_output_path("/home/agent", "/home/user/Invoices/bill.pdf"),
+            "/home/agent/ocr/bill.md"
         );
         assert_eq!(
-            default_output_path("/Projects/Acme/", "/x/scan.tiff"),
-            "/Projects/Acme/ocr/scan.md"
+            default_output_path("/home/user/Projects/Acme/", "/x/scan.tiff"),
+            "/home/user/Projects/Acme/ocr/scan.md"
         );
     }
 
     #[test]
     fn pdf_script_injects_a_valid_python_string_literal() {
-        let script = pdf_script("/~workspace/a\"b.pdf");
-        assert!(script.contains(r#"PATH = "/~workspace/a\"b.pdf""#));
+        let script = pdf_script("/home/agent/a\"b.pdf");
+        assert!(script.contains(r#"PATH = "/home/agent/a\"b.pdf""#));
         assert!(script.contains(&format!("MAX_PAGES = {MAX_PAGES}")));
         assert!(!script.contains("__OCR_PATH__"));
         assert!(!script.contains("__OCR_MAX_PAGES__"));

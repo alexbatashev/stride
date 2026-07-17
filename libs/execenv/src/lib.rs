@@ -41,6 +41,9 @@ mod fonts;
 #[cfg(feature = "eryx")]
 const FONTS_GUEST_DIR: &str = "/usr/share/fonts";
 
+/// Default working directory and writable workspace mount inside the guest.
+pub const AGENT_HOME: &str = "/home/agent";
+
 #[cfg(feature = "bashkit")]
 mod bashkit_cmd;
 #[cfg(feature = "bashkit")]
@@ -620,7 +623,7 @@ impl DirectOsFileSystem {
         std::fs::create_dir_all(&host_dir)?;
         Ok(Self {
             host_dir,
-            guest_dir: "/~workspace".to_string(),
+            guest_dir: crate::AGENT_HOME.to_string(),
             read_only: false,
         })
     }
@@ -778,8 +781,10 @@ impl Tool for PythonTool {
     fn definition(&self) -> LlmTool {
         let mut description = format!(
             "Execute a Python script in a sandbox and return stdout and stderr. \
-            The writable workspace is mounted at /~workspace; write outputs there. \
-            /tmp is writable scratch. matplotlib uses the Agg backend. \
+            The thread workspace is mounted read-write at /home/agent (the default \
+            working directory); write outputs there. The user's files are at \
+            /home/user, read-only except for granted subtrees. /tmp is writable \
+            ephemeral scratch. matplotlib uses the Agg backend. \
             Open-source fonts (DejaVu, Roboto, Open Sans, Lato, Montserrat and \
             the Noto Sans/Serif/Mono families) are mounted read-only under \
             /usr/share/fonts; matplotlib picks them up automatically. For \
@@ -1906,7 +1911,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
                 .unwrap()
-                .guest_dir("/~workspace"),
+                .guest_dir("/home/agent"),
         );
         let config = PythonToolConfig {
             cache_dir: cache.path().to_path_buf(),
@@ -1966,9 +1971,13 @@ mod tests {
         let root = tmp.path().join("root");
         let rw = tmp.path().join("rw");
         // The read-only world, including a read-only copy of the project folder.
-        std::fs::create_dir_all(root.join("Projects/Acme")).unwrap();
+        std::fs::create_dir_all(root.join("home/user/Projects/Acme")).unwrap();
         std::fs::write(root.join("other.txt"), "GLOBALDATA").unwrap();
-        std::fs::write(root.join("Projects/Acme/existing.txt"), "ROOTCOPY").unwrap();
+        std::fs::write(
+            root.join("home/user/Projects/Acme/existing.txt"),
+            "ROOTCOPY",
+        )
+        .unwrap();
         // The writable mirror of the project folder, mounted on top.
         std::fs::create_dir_all(&rw).unwrap();
         std::fs::write(rw.join("existing.txt"), "RWCOPY").unwrap();
@@ -1976,7 +1985,7 @@ mod tests {
         let fs = Arc::new(TwoMountFs {
             root,
             rw: rw.clone(),
-            guest_rw: "/Projects/Acme".to_string(),
+            guest_rw: "/home/user/Projects/Acme".to_string(),
         });
         let config = PythonToolConfig {
             cache_dir: cache.path().to_path_buf(),
@@ -1994,9 +2003,9 @@ mod tests {
 
         let script = concat!(
             "print('READ_GLOBAL', open('/other.txt').read())\n",
-            "print('READ_NESTED', open('/Projects/Acme/existing.txt').read())\n",
-            "open('/Projects/Acme/new.txt', 'w').write('NEW')\n",
-            "print('WROTE_RW', open('/Projects/Acme/new.txt').read())\n",
+            "print('READ_NESTED', open('/home/user/Projects/Acme/existing.txt').read())\n",
+            "open('/home/user/Projects/Acme/new.txt', 'w').write('NEW')\n",
+            "print('WROTE_RW', open('/home/user/Projects/Acme/new.txt').read())\n",
             "try:\n",
             "    open('/blocked.txt', 'w').write('x')\n",
             "    print('RO_WRITE_UNEXPECTED')\n",
@@ -2039,7 +2048,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
                 .unwrap()
-                .guest_dir("/~workspace"),
+                .guest_dir("/home/agent"),
         );
         let config = PythonToolConfig {
             cache_dir,
@@ -2084,7 +2093,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
                 .unwrap()
-                .guest_dir("/~workspace"),
+                .guest_dir("/home/agent"),
         );
         let config = PythonToolConfig {
             cache_dir,
@@ -2098,7 +2107,7 @@ mod tests {
         let tool = PythonTool::new(config.clone(), fs).await.unwrap();
 
         // Exercises native imports, a writable /tmp (matplotlib font cache lands
-        // there) and saving a figure into the /~workspace mount.
+        // there) and saving a figure into the /home/agent mount.
         let script = "import numpy as np\n\
              import pandas as pd\n\
              from PIL import Image\n\
@@ -2109,7 +2118,7 @@ mod tests {
              rows = len(pd.DataFrame({'a': [1, 2, 3]}))\n\
              size = Image.new('RGB', (4, 2)).size\n\
              plt.plot([1, 2, 3], [3, 1, 2])\n\
-             plt.savefig('/~workspace/sample_plot.png')\n\
+             plt.savefig('/home/agent/sample_plot.png')\n\
              print(total, rows, size[0])";
         let result = tool
             .execute(
@@ -2126,7 +2135,7 @@ mod tests {
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["stdout"].as_str().unwrap().trim(), "10 3 4");
         let png = workspace.path().join("workspace").join("sample_plot.png");
-        assert!(png.exists(), "savefig did not write to /~workspace");
+        assert!(png.exists(), "savefig did not write to /home/agent");
     }
 
     #[cfg(all(feature = "eryx", feature = "typst"))]
@@ -2143,7 +2152,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(ws_dir.clone())
                 .unwrap()
-                .guest_dir("/~workspace"),
+                .guest_dir("/home/agent"),
         );
         let config = PythonToolConfig {
             cache_dir,
@@ -2160,8 +2169,8 @@ mod tests {
         // ship it to the host compiler over the callback bridge, decode the
         // returned PDF bytes and write them back to the mounted workspace.
         let script = "import typst\n\
-             await typst.compile('/~workspace/doc.typ', output='/~workspace/doc.pdf')\n\
-             data = await typst.compile('/~workspace/doc.typ')\n\
+             await typst.compile('/home/agent/doc.typ', output='/home/agent/doc.pdf')\n\
+             data = await typst.compile('/home/agent/doc.typ')\n\
              print(len(data), data[:5].decode('latin1'))";
         let result = tool
             .execute(

@@ -29,8 +29,8 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-MD_PATH = "/~workspace/ocr/king.md"          # <- the ocr tool's output
-OUT_PATH = "/~workspace/king.docx"           # <- where to write the .docx
+MD_PATH = "/home/agent/ocr/king.md"          # <- the ocr tool's output
+OUT_PATH = "/home/agent/king.docx"           # <- where to write the .docx
 
 INLINE = re.compile(r"(\*\*.+?\*\*|\*.+?\*|`.+?`)")
 IMAGE = re.compile(r"^!\[(.*?)\]\((.+?)\)\s*$")

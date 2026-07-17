@@ -15,7 +15,6 @@ use crate::{
     ServerState,
     api::auth::{self, AuthError},
     db::writable_dirs,
-    vfs::WORKSPACE_MOUNT,
 };
 
 #[derive(Debug)]
@@ -71,10 +70,10 @@ pub struct NewWritableDir {
     pub path: String,
 }
 
-/// Normalizes a user-entered directory into a clean global prefix: strips the
-/// leading slash, drops empty and `.` segments, and rejects `..` traversal or
-/// the special `~workspace` mount. The result addresses a node in the user's
-/// global files.
+/// Normalizes a user-entered directory into an absolute `/home/user/...` grant
+/// path. Accepts absolute `/home/user/...` paths and bare relative paths; drops
+/// empty and `.` segments; rejects `..` traversal, the `/home/agent` workspace,
+/// and anything outside `/home/user`.
 pub fn normalize_dir(input: &str) -> Result<String, String> {
     let segments: Vec<&str> = input
         .split('/')
@@ -87,10 +86,19 @@ pub fn normalize_dir(input: &str) -> Result<String, String> {
     if segments.is_empty() {
         return Err("path must not be empty".to_string());
     }
-    if segments[0] == WORKSPACE_MOUNT {
-        return Err("the thread workspace is always writable".to_string());
+    let relative = if segments[0] == "home" {
+        match segments.get(1).copied() {
+            Some("agent") => return Err("the thread workspace is always writable".to_string()),
+            Some("user") => &segments[2..],
+            _ => return Err("path must be under /home/user".to_string()),
+        }
+    } else {
+        &segments[..]
+    };
+    if relative.is_empty() {
+        return Err("path must not be the whole user tree".to_string());
     }
-    Ok(segments.join("/"))
+    Ok(format!("{}/{}", crate::vfs::USER_HOME, relative.join("/")))
 }
 
 pub async fn list(
@@ -181,15 +189,21 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Loads a user's configured writable directories as normalized global
-/// prefixes. Failures degrade to an empty list so a transient database error
-/// never silently widens write access.
+/// Loads a user's configured writable directories as global prefixes relative to
+/// `/home/user`, the form the mount layer consumes. Rows are stored as absolute
+/// `/home/user/...` paths. Failures degrade to an empty list so a transient
+/// database error never silently widens write access.
 pub async fn writable_prefixes(db: &ConnectionPool, owner: Uuid) -> Vec<String> {
+    let prefix = format!("{}/", crate::vfs::USER_HOME);
     writable_dirs::select()
         .where_(writable_dirs::owner.eq(owner))
         .all(db)
         .await
-        .map(|rows| rows.into_iter().map(|row| row.path).collect())
+        .map(|rows| {
+            rows.into_iter()
+                .filter_map(|row| row.path.strip_prefix(&prefix).map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -199,9 +213,27 @@ mod tests {
 
     #[test]
     fn normalize_strips_slashes_and_dot_segments() {
-        assert_eq!(normalize_dir("/Documents/").unwrap(), "Documents");
-        assert_eq!(normalize_dir("Notes//Personal").unwrap(), "Notes/Personal");
-        assert_eq!(normalize_dir("./a/./b").unwrap(), "a/b");
+        assert_eq!(
+            normalize_dir("/Documents/").unwrap(),
+            "/home/user/Documents"
+        );
+        assert_eq!(
+            normalize_dir("Notes//Personal").unwrap(),
+            "/home/user/Notes/Personal"
+        );
+        assert_eq!(normalize_dir("./a/./b").unwrap(), "/home/user/a/b");
+    }
+
+    #[test]
+    fn normalize_accepts_absolute_user_paths() {
+        assert_eq!(
+            normalize_dir("/home/user/Documents").unwrap(),
+            "/home/user/Documents"
+        );
+        assert_eq!(
+            normalize_dir("/home/user/Projects/Acme").unwrap(),
+            "/home/user/Projects/Acme"
+        );
     }
 
     #[test]
@@ -209,6 +241,8 @@ mod tests {
         assert!(normalize_dir("a/../b").is_err());
         assert!(normalize_dir("   ").is_err());
         assert!(normalize_dir("/").is_err());
-        assert!(normalize_dir(&format!("/{WORKSPACE_MOUNT}/x")).is_err());
+        assert!(normalize_dir("/home/agent/x").is_err());
+        assert!(normalize_dir("/home/other/x").is_err());
+        assert!(normalize_dir("/home/user").is_err());
     }
 }

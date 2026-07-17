@@ -2,7 +2,9 @@ mod local;
 mod mounted;
 
 pub use local::LocalFileProvider;
-pub use mounted::{MountedVfs, WORKSPACE_MOUNT, WritableArea};
+#[allow(unused_imports)]
+pub use mounted::stat::{StatMeta, gid_name, uid_name};
+pub use mounted::{AGENT_HOME, MountedVfs, USER_HOME, VfsError};
 
 use std::sync::Arc;
 
@@ -319,136 +321,6 @@ impl Vfs {
                 // destination so callers always get a usable folder.
                 self.create_dir_global(owner, &new_prefix).await?;
                 Ok(new_prefix)
-            }
-        }
-    }
-
-    /// Lists a writable area at `rel` (relative to its root). Routes to the
-    /// standalone workspace or the project's global subtree.
-    pub async fn area_list(
-        &self,
-        area: &WritableArea,
-        owner: Uuid,
-        rel: &str,
-    ) -> anyhow::Result<Vec<DirEntry>> {
-        match area {
-            WritableArea::Workspace(id) => self.list(*id, rel).await,
-            WritableArea::ProjectDir(prefix) => {
-                self.list_global(owner, &join_under(prefix, rel)).await
-            }
-        }
-    }
-
-    /// Reads raw bytes and mime type from a writable area at `rel`.
-    pub async fn area_read_bytes(
-        &self,
-        area: &WritableArea,
-        owner: Uuid,
-        rel: &str,
-    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
-        match area {
-            WritableArea::Workspace(id) => self.read_bytes(*id, rel).await,
-            WritableArea::ProjectDir(prefix) => {
-                self.read_bytes_global(owner, &join_under(prefix, rel))
-                    .await
-            }
-        }
-    }
-
-    pub async fn area_read_version(
-        &self,
-        area: &WritableArea,
-        owner: Uuid,
-        rel: &str,
-        version: i64,
-    ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
-        match area {
-            WritableArea::Workspace(id) => self.read_version(*id, rel, version).await,
-            WritableArea::ProjectDir(prefix) => {
-                self.read_version_global(owner, &join_under(prefix, rel), version)
-                    .await
-            }
-        }
-    }
-
-    pub async fn area_list_versions(
-        &self,
-        area: &WritableArea,
-        owner: Uuid,
-        rel: &str,
-    ) -> anyhow::Result<Vec<FileVersion>> {
-        match area {
-            WritableArea::Workspace(id) => self.list_versions(*id, rel).await,
-            WritableArea::ProjectDir(prefix) => {
-                self.list_versions_global(owner, &join_under(prefix, rel))
-                    .await
-            }
-        }
-    }
-
-    pub async fn area_restore_version(
-        &self,
-        area: &WritableArea,
-        owner: Uuid,
-        rel: &str,
-        version: i64,
-    ) -> anyhow::Result<()> {
-        match area {
-            WritableArea::Workspace(id) => self.restore_version(*id, rel, version).await,
-            WritableArea::ProjectDir(prefix) => {
-                self.restore_version_global(owner, &join_under(prefix, rel), version)
-                    .await
-            }
-        }
-    }
-
-    /// Writes raw bytes to a writable area at `rel`.
-    pub async fn area_write_bytes(
-        &self,
-        area: &WritableArea,
-        owner: Uuid,
-        rel: &str,
-        content: &[u8],
-        mime_type: Option<&str>,
-    ) -> anyhow::Result<()> {
-        match area {
-            WritableArea::Workspace(id) => {
-                self.write_bytes(*id, rel, content, mime_type, owner).await
-            }
-            WritableArea::ProjectDir(prefix) => {
-                self.write_bytes_global(owner, &join_under(prefix, rel), content, mime_type)
-                    .await
-            }
-        }
-    }
-
-    /// Creates a directory (and parents) in a writable area at `rel`.
-    pub async fn area_create_dir(
-        &self,
-        area: &WritableArea,
-        owner: Uuid,
-        rel: &str,
-    ) -> anyhow::Result<()> {
-        match area {
-            WritableArea::Workspace(id) => self.create_dir(*id, rel, owner).await,
-            WritableArea::ProjectDir(prefix) => {
-                self.create_dir_global(owner, &join_under(prefix, rel))
-                    .await
-            }
-        }
-    }
-
-    /// Deletes a file or directory tree in a writable area at `rel`.
-    pub async fn area_delete(
-        &self,
-        area: &WritableArea,
-        owner: Uuid,
-        rel: &str,
-    ) -> anyhow::Result<()> {
-        match area {
-            WritableArea::Workspace(id) => self.delete(*id, rel).await,
-            WritableArea::ProjectDir(prefix) => {
-                self.delete_global(owner, &join_under(prefix, rel)).await
             }
         }
     }
@@ -1366,15 +1238,6 @@ fn split_path(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
 
-/// Joins a writable-root-relative path under a project's global prefix.
-fn join_under(prefix: &str, rel: &str) -> String {
-    if rel.is_empty() {
-        prefix.to_string()
-    } else {
-        format!("{prefix}/{rel}")
-    }
-}
-
 fn opt_uuid(id: Option<Uuid>) -> Value {
     id.map(Value::Uuid).unwrap_or(Value::Null)
 }
@@ -1691,24 +1554,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn area_methods_route_to_project_subtree() {
+    async fn mounted_project_grant_writes_by_absolute_path() {
         let (vfs, owner) = setup_vfs().await;
+        let vfs = Arc::new(vfs);
         let prefix = vfs.ensure_project_dir(owner, "Acme").await.unwrap();
-        let area = WritableArea::ProjectDir(prefix);
-
-        vfs.area_write_bytes(&area, owner, "out.txt", b"data", None)
+        let workspace = vfs
+            .get_or_create_workspace(Uuid::now_v7(), None, owner)
             .await
             .unwrap();
-        // The file lands in the project's folder in global files.
+        let fs = MountedVfs::new(vfs.clone(), owner, Some(workspace), Some(prefix));
+
+        fs.write_bytes("/home/user/Projects/Acme/out.txt", b"data", None)
+            .await
+            .unwrap();
         assert_eq!(
             vfs.read_global(owner, "Projects/Acme/out.txt")
                 .await
                 .unwrap(),
             "data"
         );
-        // Listing the area root shows it relative to the project folder.
-        let names: Vec<_> = vfs
-            .area_list(&area, owner, "")
+        let names: Vec<_> = fs
+            .list("/home/user/Projects/Acme")
             .await
             .unwrap()
             .into_iter()
@@ -1727,9 +1593,9 @@ mod tests {
             .await
             .unwrap();
 
-        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::ProjectDir(prefix));
+        let fs = MountedVfs::new(vfs.clone(), owner, None, Some(prefix));
         // Writing inside the project folder works.
-        fs.write_bytes("/Projects/Acme/out.txt", b"ok", None)
+        fs.write_bytes("/home/user/Projects/Acme/out.txt", b"ok", None)
             .await
             .unwrap();
         assert_eq!(
@@ -1740,11 +1606,14 @@ mod tests {
         );
         // The rest of the namespace is readable but not writable.
         assert_eq!(
-            fs.read_bytes("/personal/notes.txt").await.unwrap().0,
+            fs.read_bytes("/home/user/personal/notes.txt")
+                .await
+                .unwrap()
+                .0,
             b"secret"
         );
         assert!(
-            fs.write_bytes("/personal/notes.txt", b"x", None)
+            fs.write_bytes("/home/user/personal/notes.txt", b"x", None)
                 .await
                 .is_err()
         );
@@ -1759,14 +1628,14 @@ mod tests {
             .await
             .unwrap();
 
-        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::ProjectDir(prefix))
+        let fs = MountedVfs::new(vfs.clone(), owner, None, Some(prefix))
             .with_writable_dirs(vec!["Documents".to_string()]);
 
         // The configured directory and its children are writable.
-        fs.write_bytes("/Documents/new.txt", b"hi", None)
+        fs.write_bytes("/home/user/Documents/new.txt", b"hi", None)
             .await
             .unwrap();
-        fs.write_bytes("/Documents/sub/deep.txt", b"deep", None)
+        fs.write_bytes("/home/user/Documents/sub/deep.txt", b"deep", None)
             .await
             .unwrap();
         assert_eq!(
@@ -1778,7 +1647,11 @@ mod tests {
 
         // A sibling outside the configured directory stays read-only.
         vfs.write_global(owner, "Other/x.txt", "ro").await.unwrap();
-        assert!(fs.write_bytes("/Other/x.txt", b"no", None).await.is_err());
+        assert!(
+            fs.write_bytes("/home/user/Other/x.txt", b"no", None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1790,15 +1663,15 @@ mod tests {
             .await
             .unwrap();
 
-        let fs = MountedVfs::new(vfs.clone(), owner, WritableArea::Workspace(ws))
+        let fs = MountedVfs::new(vfs.clone(), owner, Some(ws), None)
             .with_writable_dirs(vec!["Notes".to_string()]);
 
         // The workspace mount is writable as before.
-        fs.write_bytes("/~workspace/a.txt", b"ws", None)
+        fs.write_bytes("/home/agent/a.txt", b"ws", None)
             .await
             .unwrap();
         // The extra global directory is writable too, routed to global files.
-        fs.write_bytes("/Notes/todo.txt", b"todo", None)
+        fs.write_bytes("/home/user/Notes/todo.txt", b"todo", None)
             .await
             .unwrap();
         assert_eq!(
@@ -1807,7 +1680,11 @@ mod tests {
         );
         // Other global paths remain read-only.
         vfs.write_global(owner, "Secret/s.txt", "ro").await.unwrap();
-        assert!(fs.write_bytes("/Secret/s.txt", b"no", None).await.is_err());
+        assert!(
+            fs.write_bytes("/home/user/Secret/s.txt", b"no", None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -370,10 +370,9 @@ migrations! {
     }
 
     user_writable_directories {
-        // Personal global directories a user has marked writable for the agent.
-        // `path` is a normalized global prefix (no leading slash); the directory
-        // and all of its descendants become writable in addition to the thread's
-        // own workspace or project folder.
+        // Personal directories a user has marked writable for the agent. `path`
+        // is an absolute `/home/user/...` path; the directory and all of its
+        // descendants become writable in addition to the thread's own workspace.
         table writable_dirs {
             id: Uuid [PrimaryKey],
             owner: Uuid,
@@ -546,6 +545,10 @@ migrations! {
 
         raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_seq ON thread_events(thread_id, seq)";
         raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_run ON thread_events(thread_id, run_id)";
+    }
+
+    writable_dirs_absolute {
+        raw "UPDATE writable_dirs SET path = '/home/user/' || path WHERE path NOT LIKE '/home/user/%'";
     }
 }
 

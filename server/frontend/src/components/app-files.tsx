@@ -1,15 +1,23 @@
 import { Component, effect, emit, onMount } from "@frontiers-labs/argon";
 import {
+  USER_HOME,
   createDirectory,
   deleteEntry,
   renameEntry,
   uploadFiles,
 } from "../api/files.js";
 import {
+  AGENT_HOME,
   createWorkspaceDirectory,
   deleteWorkspaceEntry,
   uploadFiles as uploadWorkspaceFiles,
 } from "../api/threads.js";
+
+function parentPath(path: string, root: string): string {
+  if (path === root || !path.startsWith(`${root}/`)) return root;
+  const parent = path.split("/").slice(0, -1).join("/");
+  return parent.length < root.length ? root : parent;
+}
 import { files } from "../stores/file-state.js";
 import { AppDataTable } from "./app-data-table.js";
 import { bindMenuDismiss, browserLoad, closePreview, fileActions, fileName, handleFileDialogClose, handleFileMenuSelect, handleFileRowAction, handleSelectionChange, managerLoad, openMenu, restoreVersionAndReload, type FileItem, type FileMenuTarget, type FileVersionItem, type ManagerHost, type VersionHost } from "./app-files-support.js";
@@ -26,7 +34,7 @@ import { IconX } from "./icons/x.js";
 // ── File browser (the /files page) ────────────────────────────────────────────
 
 export function AppFileBrowser({
-  path = "",
+  path = USER_HOME,
   entries = [],
   loading = false,
   error = "",
@@ -75,7 +83,7 @@ export function AppFileBrowser({
     const root = this.shadowRoot!;
     root.querySelector('[data-tool="rename"]')?.toggleAttribute("disabled", files.selected.length !== 1);
     root.querySelector('[data-tool="remove"]')?.toggleAttribute("disabled", files.selected.length === 0);
-    root.querySelector('[data-tool="up"]')?.toggleAttribute("disabled", !path);
+    root.querySelector('[data-tool="up"]')?.toggleAttribute("disabled", path === USER_HOME);
   });
 
   return (
@@ -172,13 +180,13 @@ export function AppFileBrowser({
           aria-label="Up one level"
           data-tool="up"
           onClick={() => {
-            this.path = (this.path as string).split("/").slice(0, -1).join("/");
+            this.path = parentPath(this.path as string, USER_HOME);
             void browserLoad(this);
           }}
         >
           <IconChevronLeft />
         </button>
-        <span>/{path}</span>
+        <span>{path}</span>
       </div>
       <div class="error">{error}</div>
       <AppDataTable
@@ -278,7 +286,7 @@ export function AppFileBrowser({
 export function AppFileManager({
   threadId = "",
   open = false,
-  path = "",
+  path = AGENT_HOME,
   entries = [],
   loading = false,
   error = "",
@@ -329,7 +337,7 @@ export function AppFileManager({
     if (this._loadedThread !== threadId) {
       this._loadedThread = threadId;
       this._loadedKey = "";
-      this.path = "";
+      this.path = AGENT_HOME;
       this.entries = [];
       files.selected = [];
     }
@@ -345,7 +353,7 @@ export function AppFileManager({
     root.querySelector('[data-tool="folder"]')?.toggleAttribute("disabled", !threadId);
     root.querySelector('[data-tool="upload"]')?.toggleAttribute("disabled", !threadId);
     root.querySelector('[data-tool="remove"]')?.toggleAttribute("disabled", files.selected.length === 0);
-    root.querySelector('[data-tool="up"]')?.toggleAttribute("disabled", !path);
+    root.querySelector('[data-tool="up"]')?.toggleAttribute("disabled", path === AGENT_HOME);
   });
 
   return (
@@ -444,14 +452,14 @@ export function AppFileManager({
             aria-label="Up one level"
             data-tool="up"
             onClick={() => {
-              this.path = (this.path as string).split("/").slice(0, -1).join("/");
+              this.path = parentPath(this.path as string, AGENT_HOME);
               this._loadedKey = "";
               void managerLoad(this);
             }}
           >
             <IconChevronLeft />
           </button>
-          <span>/{path}</span>
+          <span>{path}</span>
         </div>
         <div class="error">{error}</div>
         <AppDataTable

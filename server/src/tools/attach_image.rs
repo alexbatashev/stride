@@ -25,7 +25,7 @@ pub struct AttachImageTool {
 #[derive(ToolDesc)]
 struct AttachImageParams {
     /// Absolute path to an image file in the file system, e.g.
-    /// "/~workspace/screenshot.png" or "/photos/diagram.jpg".
+    /// "/home/agent/screenshot.png" or "/home/user/photos/diagram.jpg".
     path: String,
 }
 

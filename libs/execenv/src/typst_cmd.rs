@@ -8,7 +8,7 @@
 //! ```bash
 //! typst compile report.typ                 # -> report.pdf
 //! typst compile report.typ out.png --ppi 300
-//! typst compile report.typ --format svg --root /~workspace
+//! typst compile report.typ --format svg --root /home/agent
 //! ```
 
 use std::collections::BTreeMap;
@@ -339,7 +339,7 @@ mod tests {
     fn bash_with_typst(fs: Arc<dyn FileSystem>) -> Bash {
         Bash::builder()
             .fs(fs)
-            .cwd("/~workspace")
+            .cwd("/home/agent")
             .builtin(
                 "typst",
                 Box::new(TypstBuiltin::new(None, Vec::new(), false)),
@@ -349,8 +349,8 @@ mod tests {
 
     async fn workspace(main: &str) -> Arc<InMemoryFs> {
         let fs = Arc::new(InMemoryFs::new());
-        fs.mkdir(Path::new("/~workspace"), true).await.unwrap();
-        fs.write_file(Path::new("/~workspace/report.typ"), main.as_bytes())
+        fs.mkdir(Path::new("/home/agent"), true).await.unwrap();
+        fs.write_file(Path::new("/home/agent/report.typ"), main.as_bytes())
             .await
             .unwrap();
         fs
@@ -363,7 +363,7 @@ mod tests {
         let result = bash.exec("typst compile report.typ").await.unwrap();
         assert_eq!(result.exit_code, 0, "stderr={}", result.stderr);
         let pdf = fs
-            .read_file(Path::new("/~workspace/report.pdf"))
+            .read_file(Path::new("/home/agent/report.pdf"))
             .await
             .unwrap();
         assert_eq!(&pdf[..5], b"%PDF-");
@@ -379,7 +379,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.exit_code, 0, "stderr={}", result.stderr);
         let png = fs
-            .read_file(Path::new("/~workspace/out.png"))
+            .read_file(Path::new("/home/agent/out.png"))
             .await
             .unwrap();
         assert_eq!(&png[..4], &[0x89, 0x50, 0x4e, 0x47]);
@@ -395,7 +395,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.exit_code, 0, "stderr={}", result.stderr);
         let svg = fs
-            .read_file(Path::new("/~workspace/doc.out"))
+            .read_file(Path::new("/home/agent/doc.out"))
             .await
             .unwrap();
         assert!(svg.starts_with(b"<svg") || svg.windows(4).any(|w| w == b"<svg"));
@@ -404,7 +404,7 @@ mod tests {
     #[tokio::test]
     async fn resolves_local_import() {
         let fs = workspace("#import \"inc.typ\": who\nHello #who").await;
-        fs.write_file(Path::new("/~workspace/inc.typ"), b"#let who = [there]")
+        fs.write_file(Path::new("/home/agent/inc.typ"), b"#let who = [there]")
             .await
             .unwrap();
         let mut bash = bash_with_typst(fs.clone());
@@ -415,7 +415,7 @@ mod tests {
     #[tokio::test]
     async fn missing_input_fails() {
         let fs = Arc::new(InMemoryFs::new());
-        fs.mkdir(Path::new("/~workspace"), true).await.unwrap();
+        fs.mkdir(Path::new("/home/agent"), true).await.unwrap();
         let mut bash = bash_with_typst(fs);
         let result = bash.exec("typst compile nope.typ").await.unwrap();
         assert_ne!(result.exit_code, 0);
