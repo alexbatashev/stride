@@ -221,3 +221,6 @@ preinit = true
 max_runtime_seconds = 30
 max_memory_bytes = 134217728
 network = "Blocked"
+
+[tools.commands]
+enabled = ["pandoc"]

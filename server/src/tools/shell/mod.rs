@@ -1,6 +1,5 @@
 mod vfs_backend;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -29,10 +28,7 @@ pub struct EmulatedShellBackend {
     /// bashkit's built-in (Monty) one. Shared with the agent's `python` tool so
     /// scripts see the same runtime and `/home/agent` sync.
     python: Option<Arc<dyn execenv::ExecutionService>>,
-    /// When set, exposes a `typst` command. The tuple is the Typst package cache
-    /// directory, the font directories to scan, and whether package downloads may
-    /// use the network.
-    typst: Option<(Option<PathBuf>, Vec<PathBuf>, bool)>,
+    commands: Option<Arc<execenv::CommandRouter>>,
 }
 
 impl EmulatedShellBackend {
@@ -40,7 +36,7 @@ impl EmulatedShellBackend {
         Self {
             fs,
             python: None,
-            typst: None,
+            commands: None,
         }
     }
 
@@ -50,16 +46,8 @@ impl EmulatedShellBackend {
         self
     }
 
-    /// Expose a `typst` command that compiles workspace documents. `package_cache`
-    /// caches downloaded `@preview` packages; `font_paths` are scanned for extra
-    /// fonts; `allow_network` gates downloads.
-    pub fn with_typst(
-        mut self,
-        package_cache: Option<PathBuf>,
-        font_paths: Vec<PathBuf>,
-        allow_network: bool,
-    ) -> Self {
-        self.typst = Some((package_cache, font_paths, allow_network));
+    pub fn with_commands(mut self, router: Arc<execenv::CommandRouter>) -> Self {
+        self.commands = Some(router);
         self
     }
 }
@@ -85,15 +73,17 @@ impl ShellBackend for EmulatedShellBackend {
                     Box::new(execenv::PythonBuiltin::new(service.clone())),
                 );
         }
-        if let Some((package_cache, font_paths, allow_network)) = &self.typst {
-            builder = builder.builtin(
-                "typst",
-                Box::new(execenv::TypstBuiltin::new(
-                    package_cache.clone(),
-                    font_paths.clone(),
-                    *allow_network,
-                )),
-            );
+        if let Some(router) = &self.commands {
+            for (name, description) in router.catalog() {
+                builder = builder.builtin(
+                    name,
+                    Box::new(execenv::CommandBuiltin::new(
+                        router.clone(),
+                        name,
+                        description,
+                    )),
+                );
+            }
         }
         let mut bash = builder.build();
         match bash.exec(command).await {

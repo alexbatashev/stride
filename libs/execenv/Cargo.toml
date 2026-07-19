@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-eryx = ["dep:eryx", "dep:tempfile"]
+eryx = ["dep:eryx", "dep:tempfile", "dep:wasmtime", "dep:wasmtime-wasi", "dep:wasmparser"]
 bashkit = ["dep:bashkit"]
 typst = [
     "dep:typst",
@@ -39,6 +39,9 @@ tempfile = { version = "3", optional = true }
 tokio = { version = "1.52.3", features = ["fs", "macros", "sync", "time"] }
 tracing = "0.1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+wasmtime = { version = "44.0.3", features = ["winch"], optional = true }
+wasmtime-wasi = { version = "44.0.3", optional = true }
+wasmparser = { version = "0.246.2", optional = true }
 
 # Typst document compiler (feature `typst`). Pulls a large native dependency
 # tree, so it is opt-in and gated behind the feature.
@@ -59,3 +62,4 @@ optional = true
 
 [dev-dependencies]
 tempfile = "3"
+wat = "1"

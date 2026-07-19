@@ -1,0 +1,232 @@
+name: Execenv preview release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Pre-release tag, for example execenv-phase4-v1
+        required: true
+        type: string
+      title:
+        description: Release title
+        required: true
+        default: Stride execenv preview
+        type: string
+
+concurrency:
+  group: execenv-preview-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  PANDOC_SHA256: 48d9ceed3ef805f6acc28e6f58c2439cdeb1f71864244fffcc155e2c045aa7fc
+  PANDOC_URL: https://haskell-wasm.github.io/pandoc-wasm/pandoc.wasm
+
+jobs:
+  pandoc:
+    name: Pin Pandoc WASM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "release tag must contain only letters, numbers, dots, underscores, and hyphens" >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release '$RELEASE_TAG' already exists; choose a new tag" >&2
+            exit 1
+          fi
+
+      - name: Download and verify Pandoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          curl --fail --location --retry 3 "$PANDOC_URL" --output release/pandoc.wasm
+          echo "$PANDOC_SHA256  release/pandoc.wasm" | sha256sum --check --strict
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pandoc-wasm
+          path: release/pandoc.wasm
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: pandoc
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: Linux x86_64
+            asset: linux-x86_64
+            binary: server
+          - os: macos-15-intel
+            label: macOS x86_64
+            asset: macos-x86_64
+            binary: server
+          - os: macos-15
+            label: macOS arm64
+            asset: macos-arm64
+            binary: server
+          - os: windows-2022
+            label: Windows x86_64
+            asset: windows-x86_64
+            binary: server.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y capnproto libssl-dev
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install capnp
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install capnproto
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: server/frontend/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Disable rust-lld (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo "RUSTFLAGS=-Clinker-features=-lld" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: execenv-preview-${{ matrix.asset }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pandoc-wasm
+          path: pandoc-source
+
+      - name: Build Stride server
+        run: cargo build --locked --release -p server
+
+      - name: Compile and exercise the Pandoc cache
+        shell: bash
+        env:
+          PANDOC_WASM: ${{ github.workspace }}/pandoc-source/pandoc.wasm
+          PANDOC_CACHE: ${{ runner.temp }}/pandoc-cache
+        run: |
+          set -euo pipefail
+          cargo test --locked --release -p execenv --all-features --test command_runner \
+            pandoc_prints_version -- --ignored --nocapture
+          cargo test --locked --release -p execenv --all-features --test command_runner \
+            pandoc_converts_markdown_to_html -- --ignored --nocapture
+
+      - name: Package server and compiled command cache
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+          BINARY: ${{ matrix.binary }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/release"
+          bundle_dir="$RUNNER_TEMP/stride-server-$ASSET"
+          mkdir -p "$release_dir" "$bundle_dir"
+          cp "target/release/$BINARY" "$bundle_dir/"
+          cp server/config.toml.example "$bundle_dir/"
+          cp LICENSE-APACHE LICENSE-MIT "$bundle_dir/"
+          cp -R server/frontend/dist "$bundle_dir/frontend"
+          tar -czf "$release_dir/stride-server-$ASSET.tar.gz" \
+            -C "$RUNNER_TEMP" "stride-server-$ASSET"
+
+          cache_files=("$RUNNER_TEMP/pandoc-cache"/pandoc-*.cwasm)
+          cache_file="${cache_files[0]}"
+          test -f "$cache_file"
+          tar -czf "$release_dir/pandoc-cache-wasmtime44-$ASSET.tar.gz" \
+            -C "$(dirname "$cache_file")" "$(basename "$cache_file")"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset }}
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    name: Publish pre-release
+    needs: [pandoc, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pandoc-wasm
+          path: release
+
+      - name: Create checksums and release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum ./* > SHA256SUMS
+          cd ..
+
+          notes=release-notes.md
+          repository_url="https://github.com/$GITHUB_REPOSITORY"
+          {
+            echo "Built from commit [$GITHUB_SHA]($repository_url/commit/$GITHUB_SHA)."
+            echo
+            echo "The Pandoc module is pinned to \`$PANDOC_SHA256\`."
+            echo
+            echo "### Assets"
+            echo
+            while IFS= read -r asset; do
+              name="$(basename "$asset")"
+              echo "- [$name]($repository_url/releases/download/$RELEASE_TAG/$name)"
+            done < <(find release -maxdepth 1 -type f -printf '%p\n' | sort)
+            echo
+            echo "Each \`pandoc-cache-wasmtime44-*\` archive contains the validated content-addressed \`.cwasm\` file for that target. Extract it into the configured \`commands/compiled\` cache directory."
+          } > "$notes"
+
+      - name: Publish pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TITLE: ${{ inputs.title }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TITLE" \
+            --notes-file release-notes.md \
+            --prerelease \
+            --latest=false

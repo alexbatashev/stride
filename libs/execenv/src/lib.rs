@@ -1,9 +1,11 @@
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
+use anyhow::Context as _;
 use async_trait::async_trait;
 use llm::{Function, Tool as LlmTool};
 use serde::{Deserialize, Serialize};
@@ -33,6 +35,22 @@ impl ResourceObserver for NoopResourceObserver {}
 pub use eryx::VolumeMount;
 
 #[cfg(feature = "eryx")]
+mod command;
+#[cfg(feature = "eryx")]
+pub use command::{
+    CommandHandler, CommandOutput, CommandRouter, CommandSpec, ExecInvocation, NativeCommand,
+    PANDOC, PreparedCommand, WasiCommandRunner,
+};
+
+#[cfg(feature = "eryx")]
+mod execution_hub;
+
+#[cfg(all(feature = "eryx", feature = "bashkit"))]
+mod command_builtin;
+#[cfg(all(feature = "eryx", feature = "bashkit"))]
+pub use command_builtin::CommandBuiltin;
+
+#[cfg(feature = "eryx")]
 mod fonts;
 
 /// Guest path the shared font cache is mounted at. matplotlib's font manager
@@ -57,7 +75,11 @@ pub use typst_doc::{CompileRequest, TypstFormat, compile as typst_compile};
 #[cfg(all(feature = "bashkit", feature = "typst"))]
 mod typst_cmd;
 #[cfg(all(feature = "bashkit", feature = "typst"))]
+pub use typst_cmd::TYPST_DESCRIPTION;
+#[cfg(all(feature = "bashkit", feature = "typst"))]
 pub use typst_cmd::TypstBuiltin;
+#[cfg(all(feature = "bashkit", feature = "typst", feature = "eryx"))]
+pub use typst_cmd::TypstCommand;
 
 #[cfg(all(feature = "eryx", feature = "typst"))]
 mod typst_bridge;
@@ -611,6 +633,41 @@ pub trait FileSystemBackend: Send + Sync {
     }
 }
 
+pub struct ExecutionWorkspace {
+    fs: Arc<dyn FileSystemBackend>,
+    lock: tokio::sync::Mutex<()>,
+}
+
+impl ExecutionWorkspace {
+    pub fn new(fs: Arc<dyn FileSystemBackend>) -> Self {
+        Self {
+            fs,
+            lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    #[cfg(feature = "eryx")]
+    pub fn volumes(&self) -> Vec<VolumeMount> {
+        self.fs.volumes()
+    }
+
+    pub async fn execute<T, F, Fut>(&self, operation: F) -> anyhow::Result<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = anyhow::Result<T>>,
+    {
+        let _guard = self.lock.lock().await;
+        self.fs.before_execute().await?;
+        let result = operation().await;
+        let after = self.fs.after_execute().await;
+        match (result, after) {
+            (Ok(output), Ok(())) => Ok(output),
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err).context("sync execution filesystem after execute"),
+        }
+    }
+}
+
 pub struct DirectOsFileSystem {
     #[cfg_attr(not(feature = "eryx"), allow(dead_code))]
     host_dir: PathBuf,
@@ -676,9 +733,16 @@ impl PythonTool {
         config: PythonToolConfig,
         fs: Arc<dyn FileSystemBackend>,
     ) -> anyhow::Result<Self> {
+        Self::new_with_workspace(config, Arc::new(ExecutionWorkspace::new(fs))).await
+    }
+
+    pub async fn new_with_workspace(
+        config: PythonToolConfig,
+        workspace: Arc<ExecutionWorkspace>,
+    ) -> anyhow::Result<Self> {
         let service: Arc<dyn ExecutionService> = match config.backend {
             BackendKind::Mock => Arc::new(MockExecutionService),
-            BackendKind::Eryx => make_eryx_service(config, fs).await?,
+            BackendKind::Eryx => make_eryx_service(config, workspace).await?,
         };
         Ok(Self {
             service,
@@ -912,23 +976,23 @@ mod eryx_backend {
     use std::{
         collections::HashMap,
         path::PathBuf,
-        sync::{Arc, Mutex, OnceLock, mpsc},
+        sync::{Arc, Mutex, OnceLock},
     };
 
     use anyhow::Context;
     use async_trait::async_trait;
     use serde_json::json;
-    use tokio::sync::{OnceCell, oneshot};
+    use tokio::sync::OnceCell;
 
     use crate::{
         ERYX_RUNTIME_CACHE_VERSION, ExecutionLimits, ExecutionOutput, ExecutionService,
-        FileSystemBackend, HostToolCall, NetworkAccess, PythonToolConfig, PythonToolSpec,
-        ensure_wasi_dependencies,
+        ExecutionWorkspace, HostToolCall, NetworkAccess, PythonToolConfig, PythonToolSpec,
+        ensure_wasi_dependencies, execution_hub::ExecutionHub,
     };
 
     pub struct EryxExecutionService {
         config: PythonToolConfig,
-        fs: Arc<dyn FileSystemBackend>,
+        workspace: Arc<ExecutionWorkspace>,
         runtime: Arc<OnceCell<PreinitRuntime>>,
         hub: Arc<ExecutionHub>,
     }
@@ -936,13 +1000,13 @@ mod eryx_backend {
     impl EryxExecutionService {
         pub async fn new(
             config: PythonToolConfig,
-            fs: Arc<dyn FileSystemBackend>,
+            workspace: Arc<ExecutionWorkspace>,
         ) -> anyhow::Result<Self> {
             let runtime = runtime_cell(&config);
-            let hub = execution_hub(&config);
+            let hub = crate::execution_hub::execution_hub(config.threads);
             Ok(Self {
                 config,
-                fs,
+                workspace,
                 runtime,
                 hub,
             })
@@ -951,7 +1015,7 @@ mod eryx_backend {
 
     pub(super) async fn prepare_runtime(config: PythonToolConfig) -> anyhow::Result<()> {
         let runtime = runtime_cell(&config);
-        let hub = execution_hub(&config);
+        let hub = crate::execution_hub::execution_hub(config.threads);
         runtime
             .get_or_try_init(|| hub.prepare(config.clone()))
             .await
@@ -968,7 +1032,7 @@ mod eryx_backend {
                 runtime: Arc::new(runtime.clone()),
                 script: script.to_string(),
                 limits: self.config.limits.clone(),
-                volumes: self.fs.volumes(),
+                volumes: self.workspace.volumes(),
                 network: self.config.network.clone(),
                 package_cache: self.config.cache_dir.join("typst-packages"),
                 fonts_dir: runtime.fonts_dir.clone(),
@@ -976,25 +1040,11 @@ mod eryx_backend {
         }
     }
 
-    fn join_results(
-        result: anyhow::Result<ExecutionOutput>,
-        after: anyhow::Result<()>,
-    ) -> anyhow::Result<ExecutionOutput> {
-        match (result, after) {
-            (Ok(output), Ok(())) => Ok(output),
-            (Err(err), _) => Err(err),
-            (Ok(_), Err(err)) => Err(err).context("sync eryx filesystem after execute"),
-        }
-    }
-
     #[async_trait]
     impl ExecutionService for EryxExecutionService {
         async fn execute_python(&self, script: &str) -> anyhow::Result<ExecutionOutput> {
             let request = self.prepared_request(script).await?;
-            self.fs.before_execute().await?;
-            let result = self.hub.execute(request).await;
-            let after = self.fs.after_execute().await;
-            join_results(result, after)
+            self.workspace.execute(|| self.hub.execute(request)).await
         }
 
         async fn execute_python_with_tools(
@@ -1004,13 +1054,9 @@ mod eryx_backend {
             calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
         ) -> anyhow::Result<ExecutionOutput> {
             let request = self.prepared_request(script).await?;
-            self.fs.before_execute().await?;
-            let result = self
-                .hub
-                .execute_with_tools(request, tools.to_vec(), calls)
-                .await;
-            let after = self.fs.after_execute().await;
-            join_results(result, after)
+            self.workspace
+                .execute(|| self.hub.execute_with_tools(request, tools.to_vec(), calls))
+                .await
         }
     }
 
@@ -1032,28 +1078,6 @@ mod eryx_backend {
         runtimes
             .entry(key)
             .or_insert_with(|| Arc::new(OnceCell::new()))
-            .clone()
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct HubKey {
-        cache_dir: PathBuf,
-        preinit: bool,
-        threads: usize,
-    }
-
-    fn execution_hub(config: &PythonToolConfig) -> Arc<ExecutionHub> {
-        let threads = config.threads.max(1);
-        let key = HubKey {
-            cache_dir: config.cache_dir.clone(),
-            preinit: config.preinit,
-            threads,
-        };
-        static HUBS: OnceLock<Mutex<HashMap<HubKey, Arc<ExecutionHub>>>> = OnceLock::new();
-        let hubs = HUBS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut hubs = hubs.lock().expect("execenv hub registry poisoned");
-        hubs.entry(key)
-            .or_insert_with(|| Arc::new(ExecutionHub::new(threads)))
             .clone()
     }
 
@@ -1183,30 +1207,10 @@ mod eryx_backend {
         })
     }
 
-    struct ExecutionHub {
-        tx: mpsc::Sender<ExecutionJob>,
-    }
-
     impl ExecutionHub {
-        fn new(threads: usize) -> Self {
-            let (tx, rx) = mpsc::channel();
-            let rx = Arc::new(Mutex::new(rx));
-            for idx in 0..threads {
-                let rx = rx.clone();
-                std::thread::Builder::new()
-                    .name(format!("stride-eryx-{idx}"))
-                    .spawn(move || worker_loop(rx))
-                    .expect("eryx worker thread");
-            }
-            Self { tx }
-        }
-
         async fn execute(&self, request: ExecutionRequest) -> anyhow::Result<ExecutionOutput> {
-            let (tx, rx) = oneshot::channel();
-            self.tx
-                .send(ExecutionJob::Execute { request, tx })
-                .map_err(|_| anyhow::anyhow!("eryx execution queue stopped"))?;
-            rx.await.context("eryx worker stopped")?
+            self.run(move |runtime| runtime.block_on(execute_request(request)))
+                .await?
         }
 
         async fn execute_with_tools(
@@ -1215,42 +1219,16 @@ mod eryx_backend {
             tools: Vec<PythonToolSpec>,
             calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
         ) -> anyhow::Result<ExecutionOutput> {
-            let (tx, rx) = oneshot::channel();
-            self.tx
-                .send(ExecutionJob::ExecuteWithTools {
-                    request,
-                    tools,
-                    calls,
-                    tx,
-                })
-                .map_err(|_| anyhow::anyhow!("eryx execution queue stopped"))?;
-            rx.await.context("eryx worker stopped")?
+            self.run(move |runtime| {
+                runtime.block_on(execute_request_with_tools(request, tools, calls))
+            })
+            .await?
         }
 
         async fn prepare(&self, config: PythonToolConfig) -> anyhow::Result<PreinitRuntime> {
-            let (tx, rx) = oneshot::channel();
-            self.tx
-                .send(ExecutionJob::Prepare { config, tx })
-                .map_err(|_| anyhow::anyhow!("eryx execution queue stopped"))?;
-            rx.await.context("eryx worker stopped")?
+            self.run(move |runtime| runtime.block_on(build_runtime(config)))
+                .await?
         }
-    }
-
-    enum ExecutionJob {
-        Prepare {
-            config: PythonToolConfig,
-            tx: oneshot::Sender<anyhow::Result<PreinitRuntime>>,
-        },
-        Execute {
-            request: ExecutionRequest,
-            tx: oneshot::Sender<anyhow::Result<ExecutionOutput>>,
-        },
-        ExecuteWithTools {
-            request: ExecutionRequest,
-            tools: Vec<PythonToolSpec>,
-            calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
-            tx: oneshot::Sender<anyhow::Result<ExecutionOutput>>,
-        },
     }
 
     struct ExecutionRequest {
@@ -1279,43 +1257,6 @@ mod eryx_backend {
             volumes.push(eryx::VolumeMount::read_only(dir, crate::FONTS_GUEST_DIR));
         }
         volumes.push(scratch.volume());
-    }
-
-    fn worker_loop(rx: Arc<Mutex<mpsc::Receiver<ExecutionJob>>>) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("eryx worker runtime");
-
-        loop {
-            let job = {
-                let rx = rx.lock().expect("eryx execution queue poisoned");
-                rx.recv()
-            };
-            let Ok(job) = job else {
-                break;
-            };
-            match job {
-                ExecutionJob::Prepare { config, tx } => {
-                    let result = runtime.block_on(build_runtime(config));
-                    let _ = tx.send(result);
-                }
-                ExecutionJob::Execute { request, tx } => {
-                    let result = runtime.block_on(execute_request(request));
-                    let _ = tx.send(result);
-                }
-                ExecutionJob::ExecuteWithTools {
-                    request,
-                    tools,
-                    calls,
-                    tx,
-                } => {
-                    let result =
-                        runtime.block_on(execute_request_with_tools(request, tools, calls));
-                    let _ = tx.send(result);
-                }
-            }
-        }
     }
 
     /// The always-on built-in Python modules (currently just `typst`) attached
@@ -1678,17 +1619,17 @@ pub async fn prepare_eryx_runtime(_config: PythonToolConfig) -> anyhow::Result<(
 #[cfg(feature = "eryx")]
 async fn make_eryx_service(
     config: PythonToolConfig,
-    fs: Arc<dyn FileSystemBackend>,
+    workspace: Arc<ExecutionWorkspace>,
 ) -> anyhow::Result<Arc<dyn ExecutionService>> {
     Ok(Arc::new(
-        eryx_backend::EryxExecutionService::new(config, fs).await?,
+        eryx_backend::EryxExecutionService::new(config, workspace).await?,
     ))
 }
 
 #[cfg(not(feature = "eryx"))]
 async fn make_eryx_service(
     _config: PythonToolConfig,
-    _fs: Arc<dyn FileSystemBackend>,
+    _workspace: Arc<ExecutionWorkspace>,
 ) -> anyhow::Result<Arc<dyn ExecutionService>> {
     anyhow::bail!("execenv was built without the eryx feature")
 }

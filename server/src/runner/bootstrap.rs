@@ -339,18 +339,34 @@ pub(crate) async fn ensure_runner(
         agent.allow_tool("send_telegram_message");
     }
     let python_mount = vfs.map(|provider| (provider, workspace_mount, project_grant));
-
-    // Build the Python interpreter first so the shell can expose it as a
-    // `python` command sharing the same runtime and workspace.
-    let python = python_tool(
-        &tools,
-        thread_id,
-        python_mount.clone(),
-        writable_extra.clone(),
-        user_id,
-    )
-    .await
-    .map_err(AgentPoolError::Internal)?;
+    let python_cfg = tools
+        .python
+        .as_ref()
+        .map(python_tool_config)
+        .unwrap_or_default();
+    let host_dir = python_cfg
+        .cache_dir
+        .join("workspaces")
+        .join(thread_id.as_simple().to_string());
+    let exec_fs: Arc<dyn execenv::FileSystemBackend> =
+        if let Some((provider, workspace, grant)) = python_mount.as_ref() {
+            Arc::new(VfsExecFileSystem::new(
+                provider.clone(),
+                user_id,
+                *workspace,
+                grant.clone(),
+                writable_extra.clone(),
+                host_dir,
+            ))
+        } else {
+            Arc::new(execenv::DirectOsFileSystem::new(host_dir).map_err(AgentPoolError::Internal)?)
+        };
+    let exec_workspace = Arc::new(execenv::ExecutionWorkspace::new(exec_fs));
+    let python = python_tool(&tools, python_cfg.clone(), exec_workspace.clone())
+        .await
+        .map_err(AgentPoolError::Internal)?;
+    let commands =
+        command_router(&tools, &python_cfg, exec_workspace).map_err(AgentPoolError::Internal)?;
 
     if let Some((provider, workspace, grant)) = python_mount {
         let fs = MountedVfs::new(provider.clone(), user_id, workspace, grant)
@@ -390,16 +406,9 @@ pub(crate) async fn ensure_runner(
         if let Some(tool) = &python {
             shell = shell.with_python(tool.service());
         }
-        let python_cfg = tools
-            .python
-            .as_ref()
-            .map(python_tool_config)
-            .unwrap_or_default();
-        shell = shell.with_typst(
-            Some(python_cfg.cache_dir.join("typst-packages")),
-            vec![python_cfg.cache_dir.join("fonts")],
-            matches!(python_cfg.network, execenv::NetworkAccess::Allowed),
-        );
+        if let Some(router) = commands {
+            shell = shell.with_commands(router);
+        }
         agent.register_tool(ShellTool::new(shell));
     }
 
@@ -461,10 +470,8 @@ fn configure_agent_tools(
 
 async fn python_tool(
     tools: &Tools,
-    thread_id: Uuid,
-    mount: Option<(Arc<Vfs>, Option<Uuid>, Option<String>)>,
-    writable_extra: Vec<String>,
-    user_id: Uuid,
+    config: execenv::PythonToolConfig,
+    workspace: Arc<execenv::ExecutionWorkspace>,
 ) -> anyhow::Result<Option<execenv::PythonTool>> {
     let Some(python) = tools.python.as_ref() else {
         return Ok(None);
@@ -473,28 +480,45 @@ async fn python_tool(
         return Ok(None);
     }
 
-    let config = python_tool_config(python);
-    let cache_dir = config.cache_dir.clone();
-    let fs: Arc<dyn execenv::FileSystemBackend> = if let Some((vfs, workspace, grant)) = mount {
-        Arc::new(VfsExecFileSystem::new(
-            vfs,
-            user_id,
-            workspace,
-            grant,
-            writable_extra,
-            cache_dir
-                .join("workspaces")
-                .join(thread_id.as_simple().to_string()),
-        ))
-    } else {
-        Arc::new(execenv::DirectOsFileSystem::new(
-            cache_dir
-                .join("workspaces")
-                .join(thread_id.as_simple().to_string()),
-        )?)
-    };
+    execenv::PythonTool::new_with_workspace(config, workspace)
+        .await
+        .map(Some)
+}
 
-    execenv::PythonTool::new(config, fs).await.map(Some)
+fn command_router(
+    tools: &Tools,
+    runtime: &execenv::PythonToolConfig,
+    workspace: Arc<execenv::ExecutionWorkspace>,
+) -> anyhow::Result<Option<Arc<execenv::CommandRouter>>> {
+    let mut router = execenv::CommandRouter::new(workspace);
+    router.register_native(
+        "typst",
+        execenv::TYPST_DESCRIPTION,
+        Arc::new(execenv::TypstCommand::new(
+            Some(runtime.cache_dir.join("typst-packages")),
+            vec![runtime.cache_dir.join("fonts")],
+            matches!(runtime.network, execenv::NetworkAccess::Allowed),
+        )),
+    );
+    let Some(config) = tools.commands.as_ref() else {
+        return Ok(Some(Arc::new(router)));
+    };
+    let runner = Arc::new(execenv::WasiCommandRunner::with_threads(
+        runtime.cache_dir.join("commands/compiled"),
+        runtime.threads,
+    )?);
+    let artifacts = execenv::ArtifactStore::new(runtime.cache_dir.join("commands/artifacts"));
+    for name in &config.enabled {
+        match name.as_str() {
+            "pandoc" => router.register_wasi_spec(
+                execenv::PANDOC.clone(),
+                runner.clone(),
+                artifacts.clone(),
+            ),
+            other => anyhow::bail!("unknown command in tools.commands.enabled: {other}"),
+        }
+    }
+    Ok(Some(Arc::new(router)))
 }
 
 pub(crate) fn python_tool_config(python: &Python) -> execenv::PythonToolConfig {
@@ -888,7 +912,7 @@ pub(crate) async fn load_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Firecrawl, WebSearch};
+    use crate::config::{Commands, Firecrawl, WebSearch};
     use stride_agent::{AgentConfig, ModelRegistry};
 
     #[test]
@@ -922,6 +946,7 @@ mod tests {
                     api_url: Some("https://firecrawl.example.com".to_string()),
                 }),
                 python: None,
+                commands: None,
             },
             &["default".to_string()],
             "",
@@ -981,6 +1006,7 @@ mod tests {
                 api_url: Some("https://firecrawl.example.com".to_string()),
             }),
             python: None,
+            commands: None,
         });
 
         let names: Vec<_> = registry
@@ -991,5 +1017,30 @@ mod tests {
 
         assert!(names.contains(&"web_search".to_string()));
         assert!(names.contains(&"firecrawl".to_string()));
+    }
+
+    #[test]
+    fn command_config_controls_downloaded_catalog() {
+        let host = tempfile::tempdir().unwrap();
+        let fs = Arc::new(execenv::DirectOsFileSystem::new(host.path().to_path_buf()).unwrap());
+        let workspace = Arc::new(execenv::ExecutionWorkspace::new(fs));
+        let tools = Tools {
+            commands: Some(Commands {
+                enabled: vec!["pandoc".to_string()],
+            }),
+            ..Default::default()
+        };
+
+        let router = command_router(&tools, &execenv::PythonToolConfig::default(), workspace)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            router.catalog(),
+            vec![
+                ("pandoc", execenv::PANDOC.description),
+                ("typst", execenv::TYPST_DESCRIPTION),
+            ]
+        );
     }
 }

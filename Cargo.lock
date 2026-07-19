@@ -2071,6 +2071,10 @@ dependencies = [
  "typst-pdf",
  "typst-render",
  "typst-svg",
+ "wasmparser 0.246.2",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wat",
  "zip",
 ]
 

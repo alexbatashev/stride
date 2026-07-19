@@ -18,6 +18,8 @@ use std::sync::Arc;
 use bashkit::{Builtin, BuiltinContext, ExecResult, async_trait};
 
 use crate::typst_doc::{self, CompileRequest, TypstFormat};
+#[cfg(feature = "eryx")]
+use crate::{CommandOutput, ExecInvocation, NativeCommand, VolumeMount};
 
 /// Refuse to slurp a pathologically large project tree into memory.
 const MAX_PROJECT_BYTES: usize = 64 * 1024 * 1024;
@@ -35,6 +37,11 @@ const USAGE: &str = "usage: typst <command> [options]\n\
      --root         project root directory (default: the input's directory)\n  \
      --input k=v    expose a value through sys.inputs\n  \
      -V, --version  print version\n";
+
+pub const TYPST_DESCRIPTION: &str = "typst: compile a Typst document from the workspace to PDF/SVG/PNG \
+     (typst compile report.typ [out.pdf] [--format pdf|svg|png] [--ppi N] \
+     [--root DIR]). Fonts are bundled; @preview packages download when \
+     network is enabled. Writes the output file into the workspace.";
 
 /// Compiles Typst documents from the workspace. Construct with the package
 /// cache directory and whether network package downloads are allowed.
@@ -58,6 +65,146 @@ impl TypstBuiltin {
     }
 }
 
+#[cfg(feature = "eryx")]
+pub struct TypstCommand {
+    package_cache: Option<PathBuf>,
+    font_paths: Vec<PathBuf>,
+    allow_network: bool,
+}
+
+#[cfg(feature = "eryx")]
+impl TypstCommand {
+    pub fn new(
+        package_cache: Option<PathBuf>,
+        font_paths: Vec<PathBuf>,
+        allow_network: bool,
+    ) -> Self {
+        Self {
+            package_cache,
+            font_paths,
+            allow_network,
+        }
+    }
+
+    async fn compile(
+        &self,
+        invocation: &ExecInvocation,
+        mounts: &[VolumeMount],
+    ) -> Result<CommandOutput, String> {
+        let options = CompileArgs::parse(&invocation.argv[2..])?;
+        let cwd = Path::new(&invocation.cwd);
+        let input_guest = normalize_guest_path(&resolve_path(cwd, &options.input))?;
+        let root_guest = match &options.root {
+            Some(root) => normalize_guest_path(&resolve_path(cwd, root))?,
+            None => input_guest
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/")),
+        };
+        let Some(main_rel) = relative_key(&input_guest, &root_guest) else {
+            return Err(format!(
+                "input '{}' is not inside root '{}'",
+                input_guest.display(),
+                root_guest.display()
+            ));
+        };
+        let root_host = resolve_host_path(&root_guest, mounts, false)?;
+        let files = gather_host_project(&root_host).await?;
+        if !files.contains_key(&main_rel) {
+            return Err(format!("can't open input file '{}'", input_guest.display()));
+        }
+
+        let output_guest = options
+            .output
+            .as_ref()
+            .map(|output| normalize_guest_path(&resolve_path(cwd, output)))
+            .transpose()?
+            .unwrap_or_else(|| {
+                default_output(&input_guest, options.format.unwrap_or(TypstFormat::Pdf))
+            });
+        let format = options
+            .format
+            .or_else(|| format_of(&output_guest))
+            .unwrap_or(TypstFormat::Pdf);
+        let output_host = resolve_host_path(&output_guest, mounts, true)?;
+        let request = CompileRequest {
+            files,
+            main: main_rel,
+            format,
+            ppi: options.ppi.unwrap_or(typst_doc::DEFAULT_PPI),
+            sys_inputs: options.inputs,
+            package_cache: self.package_cache.clone(),
+            font_paths: self.font_paths.clone(),
+            allow_network: self.allow_network,
+        };
+        let compile = tokio::task::spawn_blocking(move || typst_doc::compile(request));
+        let bytes = match tokio::time::timeout(MAX_COMPILE_TIME, compile).await {
+            Ok(Ok(Ok(bytes))) => bytes,
+            Ok(Ok(Err(error))) => return Err(format!("{error:#}")),
+            Ok(Err(error)) => return Err(format!("compiler panicked: {error}")),
+            Err(_) => return Err("compilation timed out".to_string()),
+        };
+        if let Some(parent) = output_host.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| format!("can't create '{}': {error}", parent.display()))?;
+        }
+        tokio::fs::write(&output_host, &bytes)
+            .await
+            .map_err(|error| format!("can't write '{}': {error}", output_guest.display()))?;
+        Ok(CommandOutput {
+            stdout: format!(
+                "Compiled {} -> {} ({} bytes)\n",
+                input_guest.display(),
+                output_guest.display(),
+                bytes.len()
+            )
+            .into_bytes(),
+            ..Default::default()
+        })
+    }
+}
+
+#[cfg(feature = "eryx")]
+#[async_trait]
+impl NativeCommand for TypstCommand {
+    async fn run(
+        &self,
+        invocation: &ExecInvocation,
+        mounts: &[VolumeMount],
+    ) -> anyhow::Result<CommandOutput> {
+        let response = match invocation.argv.get(1).map(String::as_str) {
+            Some("--version" | "-V") => CommandOutput {
+                stdout: b"typst 0.15.0 (execenv)\n".to_vec(),
+                ..Default::default()
+            },
+            Some("--help" | "-h") | None => CommandOutput {
+                stdout: USAGE.as_bytes().to_vec(),
+                ..Default::default()
+            },
+            Some("compile" | "c") => match self.compile(invocation, mounts).await {
+                Ok(output) => output,
+                Err(error) => CommandOutput {
+                    returncode: 1,
+                    stderr: format!("typst: {error}\n").into_bytes(),
+                    ..Default::default()
+                },
+            },
+            Some("query" | "q") => CommandOutput {
+                returncode: 1,
+                stderr: b"typst: query is not supported yet\n".to_vec(),
+                ..Default::default()
+            },
+            Some(other) => CommandOutput {
+                returncode: 2,
+                stderr: format!("typst: unknown command '{other}'\n{USAGE}").into_bytes(),
+                ..Default::default()
+            },
+        };
+        Ok(response)
+    }
+}
+
 #[async_trait]
 impl Builtin for TypstBuiltin {
     async fn execute(&self, ctx: BuiltinContext<'_>) -> bashkit::Result<ExecResult> {
@@ -77,12 +224,7 @@ impl Builtin for TypstBuiltin {
     }
 
     fn llm_hint(&self) -> Option<&'static str> {
-        Some(
-            "typst: compile a Typst document from the workspace to PDF/SVG/PNG \
-             (typst compile report.typ [out.pdf] [--format pdf|svg|png] [--ppi N] \
-             [--root DIR]). Fonts are bundled; @preview packages download when \
-             network is enabled. Writes the output file into the workspace.",
-        )
+        Some(TYPST_DESCRIPTION)
     }
 }
 
@@ -294,6 +436,82 @@ async fn gather_project(
     }
 
     Ok(files)
+}
+
+#[cfg(feature = "eryx")]
+async fn gather_host_project(root: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut files = BTreeMap::new();
+    let mut total = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let mut entries = tokio::fs::read_dir(&directory)
+            .await
+            .map_err(|error| format!("can't read directory '{}': {error}", directory.display()))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|error| format!("can't read directory '{}': {error}", directory.display()))?
+        {
+            let file_type = entry
+                .file_type()
+                .await
+                .map_err(|error| format!("can't inspect '{}': {error}", entry.path().display()))?;
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() {
+                let bytes = tokio::fs::read(entry.path())
+                    .await
+                    .map_err(|error| format!("can't read '{}': {error}", entry.path().display()))?;
+                total = total.saturating_add(bytes.len());
+                if total > MAX_PROJECT_BYTES {
+                    return Err("project is too large to compile".to_string());
+                }
+                if let Some(key) = relative_key(&entry.path(), root) {
+                    files.insert(key, bytes);
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
+#[cfg(feature = "eryx")]
+fn normalize_guest_path(path: &Path) -> Result<PathBuf, String> {
+    let mut normalized = PathBuf::from("/");
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir | std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(format!("path escapes sandbox: '{}'", path.display()));
+                }
+            }
+            std::path::Component::Prefix(_) => {
+                return Err(format!("invalid guest path: '{}'", path.display()));
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+#[cfg(feature = "eryx")]
+fn resolve_host_path(guest: &Path, mounts: &[VolumeMount], write: bool) -> Result<PathBuf, String> {
+    let mount = mounts
+        .iter()
+        .filter_map(|mount| {
+            let guest_root = Path::new(&mount.guest_path);
+            guest
+                .strip_prefix(guest_root)
+                .ok()
+                .map(|relative| (mount, relative))
+        })
+        .max_by_key(|(mount, _)| mount.guest_path.len())
+        .ok_or_else(|| format!("path is not mounted: '{}'", guest.display()))?;
+    if write && mount.0.read_only {
+        return Err(format!("path is read-only: '{}'", guest.display()));
+    }
+    Ok(mount.0.host_path.join(mount.1))
 }
 
 /// Path of `path` relative to `root`, as a forward-slash string. `None` if
