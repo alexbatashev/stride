@@ -290,7 +290,7 @@ export function AppSettingsModels(): Component {
   return (
     <>
       <style>{styles}</style>
-      <app-card title="Server models" description="Add chat models in config.toml under [models.&lt;key&gt;]. Set display_name for labels in the composer and description for this list. Reserved keys embeddings, transcription, title_generator, expert, and explorer are internal and not shown here.">
+      <app-settings-section title="Server models" description="Add chat models in config.toml under [models.&lt;key&gt;]. Set display_name for labels in the composer and description for this list. Reserved keys embeddings, transcription, title_generator, expert, and explorer are internal and not shown here.">
         {configModelViews.length > 0
           ? (
             <div class="model-list">
@@ -307,9 +307,9 @@ export function AppSettingsModels(): Component {
           )
           : <p class="muted">{loaded ? "No server models are configured." : "Loading models..."}</p>}
         <p class="muted">Example: duplicate a [models.*] block in config.toml.example, set display_name and description, then restart the server.</p>
-      </app-card>
+      </app-settings-section>
 
-      <app-card title="Providers" description="Add your own LLM provider credentials. Models you define below will use these providers.">
+      <app-settings-section title="Providers" description="Add your own LLM provider credentials. Models you define below will use these providers.">
         {providerViews.length > 0
           ? (
             <div class="model-list">
@@ -382,7 +382,7 @@ export function AppSettingsModels(): Component {
           }}
         >
           <div class="grid">
-            <label>Name<input name="name" required placeholder="my_openai" autocomplete="off" pattern="[A-Za-z0-9_-]+" /></label>
+            <label>Name<input name="name" required placeholder="my_openai" autocomplete="off" pattern="[A-Za-z0-9_](?:[A-Za-z0-9_]|-)*" /></label>
             <label>Kind<select name="kind" required>
               <option value="openai">OpenAI</option>
               <option value="openrouter">OpenRouter</option>
@@ -393,11 +393,11 @@ export function AppSettingsModels(): Component {
             <label class="full">URL<input name="url" type="url" required placeholder="https://api.openai.com/v1" autocomplete="off" /></label>
             <label class="full">API token<input name="token" type="password" required autocomplete="off" /></label>
           </div>
-          <div class="actions"><app-button>Add provider</app-button></div>
+          <div class="actions"><app-button type="submit">Add provider</app-button></div>
         </form>
-      </app-card>
+      </app-settings-section>
 
-      <app-card title="Personal models" description="Define models that use your providers. The registry key is internal; display_name is shown in the composer and description appears here.">
+      <app-settings-section title="Personal models" description="Define models that use your providers. The registry key is internal; display_name is shown in the composer and description appears here.">
         {userModelViews.length > 0
           ? (
             <div class="model-list">
@@ -470,7 +470,7 @@ export function AppSettingsModels(): Component {
           }}
         >
           <div class="grid">
-            <label>Registry key<input name="name" required placeholder="my_sonnet" autocomplete="off" pattern="[A-Za-z0-9_-]+" /></label>
+            <label>Registry key<input name="name" required placeholder="my_sonnet" autocomplete="off" pattern="[A-Za-z0-9_](?:[A-Za-z0-9_]|-)*" /></label>
             <label>Display name<input name="display_name" placeholder="Claude Sonnet" autocomplete="off" /></label>
             <label class="full">Description<textarea name="description" placeholder="When to use this model." rows="2"></textarea></label>
             <label>Model slug<input name="slug" required placeholder="claude-sonnet-4-20250514" autocomplete="off" /></label>
@@ -487,11 +487,11 @@ export function AppSettingsModels(): Component {
             </select></label>
             <label class="checkbox-row"><app-checkbox name="vision" value="on" /> Supports vision</label>
           </div>
-          <div class="actions"><app-button>Add model</app-button></div>
+          <div class="actions"><app-button type="submit">Add model</app-button></div>
         </form>
-      </app-card>
+      </app-settings-section>
 
-      <app-card title="Subagent settings" description="Control which models the main agent can use when spawning subagents, and add guidance on when to pick each one. Users without saved settings inherit the server default routing guide from config.">
+      <app-settings-section title="Subagent settings" description="Control which models the main agent can use when spawning subagents, and add guidance on when to pick each one. Users without saved settings inherit the server default routing guide from config.">
         <p class="muted">Allowed subagent models</p>
         <div class="checkbox-list">
           {subagentModelViews.map((model) => (
@@ -556,7 +556,7 @@ export function AppSettingsModels(): Component {
           {agentSettingsSaved ? <span class="saved">Saved.</span> : ""}
         </div>
         <p class="error">{agentSettingsError}</p>
-      </app-card>
+      </app-settings-section>
 
       <p class="error">{error}</p>
     </>

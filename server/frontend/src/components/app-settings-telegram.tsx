@@ -124,7 +124,7 @@ export function AppSettingsTelegram({
   return (
     <>
       <style>{styles}</style>
-      <app-card title="Telegram" description="Connect your Telegram account with the S.T.R.I.D.E. bot.">
+      <app-settings-section title="Telegram" description="Connect your Telegram account with the S.T.R.I.D.E. bot.">
         <div class="status-row">
           {connected
             ? <app-badge>Connected</app-badge>
@@ -153,7 +153,7 @@ export function AppSettingsTelegram({
           )
           : ""}
         <p class="error">{error}</p>
-      </app-card>
+      </app-settings-section>
     </>
   );
 }

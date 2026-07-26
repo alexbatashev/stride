@@ -66,6 +66,7 @@ impl StreamingMessageSanitizer for PlainTextSanitizer {
 pub struct HtmlFormattingSanitizer {
     output: String,
     pending_tag: String,
+    pending_entity: String,
     open_tags: Vec<String>,
     public_url: Option<String>,
 }
@@ -91,6 +92,28 @@ impl HtmlFormattingSanitizer {
     }
 
     fn push_char(&mut self, c: char) {
+        if !self.pending_entity.is_empty() {
+            if c == ';' {
+                self.pending_entity.push(c);
+                if is_html_character_reference(&self.pending_entity) {
+                    self.output.push_str(&self.pending_entity);
+                } else {
+                    escape_text_into(&self.pending_entity, &mut self.output);
+                }
+                self.pending_entity.clear();
+                return;
+            }
+            if is_entity_char(c) && self.pending_entity.len() < 32 {
+                self.pending_entity.push(c);
+                return;
+            }
+
+            escape_text_into(&self.pending_entity, &mut self.output);
+            self.pending_entity.clear();
+            self.push_char(c);
+            return;
+        }
+
         if !self.pending_tag.is_empty() {
             self.pending_tag.push(c);
             if self.pending_tag.len() == 2 && !can_start_tag(c) {
@@ -107,10 +130,10 @@ impl HtmlFormattingSanitizer {
             return;
         }
 
-        if c == '<' {
-            self.pending_tag.push(c);
-        } else {
-            escape_char_into(c, &mut self.output);
+        match c {
+            '<' => self.pending_tag.push(c),
+            '&' => self.pending_entity.push(c),
+            c => escape_char_into(c, &mut self.output),
         }
     }
 
@@ -235,11 +258,18 @@ impl StreamingMessageSanitizer for HtmlFormattingSanitizer {
 
     fn snapshot(&self) -> String {
         let mut output = self.output.clone();
+        if !self.pending_entity.is_empty() {
+            escape_text_into(&self.pending_entity, &mut output);
+        }
         self.close_open_tags_into(&mut output);
         output
     }
 
     fn finish(&mut self) -> String {
+        if !self.pending_entity.is_empty() {
+            escape_text_into(&self.pending_entity, &mut self.output);
+            self.pending_entity.clear();
+        }
         if !self.pending_tag.is_empty() {
             escape_text_into(&self.pending_tag, &mut self.output);
             self.pending_tag.clear();
@@ -327,7 +357,7 @@ fn parse_attr_value(mut input: &str, target: &str) -> Option<String> {
         let (value, rest) = read_attr_value(input);
         input = rest;
         if name == target {
-            return Some(value);
+            return Some(decode_html_attr_entities(&value));
         }
     }
     None
@@ -415,6 +445,68 @@ fn is_attr_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':')
 }
 
+fn is_entity_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '#'
+}
+
+fn is_html_character_reference(value: &str) -> bool {
+    let Some(body) = value
+        .strip_prefix('&')
+        .and_then(|value| value.strip_suffix(';'))
+    else {
+        return false;
+    };
+    if let Some(number) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X")) {
+        return !number.is_empty() && number.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    if let Some(number) = body.strip_prefix('#') {
+        return !number.is_empty() && number.chars().all(|c| c.is_ascii_digit());
+    }
+    !body.is_empty() && body.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+fn decode_html_attr_entities(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(index) = rest.find('&') {
+        output.push_str(&rest[..index]);
+        rest = &rest[index..];
+        let Some(end) = rest.find(';') else {
+            output.push_str(rest);
+            return output;
+        };
+        let entity = &rest[..=end];
+        if let Some(decoded) = decode_html_character_reference(entity) {
+            output.push(decoded);
+        } else {
+            output.push_str(entity);
+        }
+        rest = &rest[end + 1..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn decode_html_character_reference(value: &str) -> Option<char> {
+    let body = value.strip_prefix('&')?.strip_suffix(';')?;
+    match body {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" | "#39" => Some('\''),
+        _ => {
+            let codepoint =
+                if let Some(number) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X")) {
+                    u32::from_str_radix(number, 16).ok()?
+                } else {
+                    body.strip_prefix('#')?.parse::<u32>().ok()?
+                };
+            char::from_u32(codepoint)
+        }
+    }
+}
+
 fn is_safe_href(href: &str) -> bool {
     let href = href.trim();
     if href.is_empty() || href.chars().any(|c| c.is_control()) {
@@ -489,6 +581,24 @@ mod tests {
     }
 
     #[test]
+    fn preserves_character_references_and_is_idempotent() {
+        let input = "<p>A &amp; B &mdash; &#39; &#x3C;</p><pre><code>&lt;tag&gt;</code></pre>";
+        let once = HtmlFormattingSanitizer::sanitize_complete(input);
+        let twice = HtmlFormattingSanitizer::sanitize_complete(&once);
+        assert_eq!(once, input);
+        assert_eq!(twice, once);
+    }
+
+    #[test]
+    fn preserves_character_references_split_across_chunks() {
+        let mut sanitizer = HtmlFormattingSanitizer::default();
+        sanitizer.push_str("A &am");
+        assert_eq!(sanitizer.snapshot(), "A &amp;am");
+        sanitizer.push_str("p; B");
+        assert_eq!(sanitizer.finish(), "A &amp; B");
+    }
+
+    #[test]
     fn keeps_safe_links_and_removes_unsafe_links() {
         let html = HtmlFormattingSanitizer::sanitize_complete(
             r#"<a href="javascript:alert(1)">bad</a> <a href="/files?a=1&b=2">good</a>"#,
@@ -496,6 +606,17 @@ mod tests {
         assert_eq!(
             html,
             r#"<a>bad</a> <a href="/files?a=1&amp;b=2" rel="noopener noreferrer" target="_blank">good</a>"#
+        );
+    }
+
+    #[test]
+    fn decodes_link_entities_before_validation_and_canonicalizes_attributes() {
+        let html = HtmlFormattingSanitizer::sanitize_complete(
+            r#"<a href="/files?a=1&amp;b=2">good</a><a href="javascript&#58;alert(1)">bad</a>"#,
+        );
+        assert_eq!(
+            html,
+            r#"<a href="/files?a=1&amp;b=2" rel="noopener noreferrer" target="_blank">good</a><a>bad</a>"#
         );
     }
 

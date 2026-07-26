@@ -64,6 +64,11 @@ pub struct AuthorizeResponse {
 }
 
 #[derive(Deserialize)]
+pub struct AuthorizeParams {
+    return_to: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct CallbackParams {
     code: Option<String>,
     state: Option<String>,
@@ -134,6 +139,7 @@ pub async fn settings(
 pub async fn authorize(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
+    Query(params): Query<AuthorizeParams>,
 ) -> Result<Json<AuthorizeResponse>, GitHubApiError> {
     let user_id = auth::authenticated_user(&state, &headers).await?;
     let github = github_config(&state).ok_or(GitHubApiError::NotConfigured)?;
@@ -144,7 +150,7 @@ pub async fn authorize(
 
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    let token = hex::encode(bytes);
+    let token = oauth_state(&hex::encode(bytes), params.return_to.as_deref());
 
     // Drop any stale states for this user before recording the new one so the
     // table cannot grow with abandoned flows.
@@ -177,13 +183,48 @@ pub async fn callback(
     State(state): State<Arc<ServerState>>,
     Query(params): Query<CallbackParams>,
 ) -> Redirect {
+    let return_to = return_path_from_state(params.state.as_deref());
     match complete(&state, params).await {
-        Ok(()) => Redirect::to("/settings"),
+        Ok(()) => Redirect::to(&settings_return_url(&return_to, "github", "connected")),
         Err(error) => {
             tracing::warn!(%error, "GitHub OAuth callback failed");
-            Redirect::to("/settings?github=error")
+            Redirect::to(&settings_return_url(&return_to, "github", "error"))
         }
     }
+}
+
+fn oauth_state(token: &str, return_to: Option<&str>) -> String {
+    match return_to.filter(|path| valid_return_path(path)) {
+        Some(path) => format!("{token}:{path}"),
+        None => token.to_string(),
+    }
+}
+
+fn return_path_from_state(state: Option<&str>) -> String {
+    state
+        .and_then(|value| value.split_once(':').map(|(_, path)| path))
+        .filter(|path| valid_return_path(path))
+        .unwrap_or("/threads")
+        .to_string()
+}
+
+fn valid_return_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.starts_with("//")
+        && !path.contains('\\')
+        && path.len() <= 2048
+        && !path.chars().any(char::is_control)
+}
+
+fn settings_return_url(return_to: &str, provider: &str, status: &str) -> String {
+    let (path, fragment) = return_to.split_once('#').unwrap_or((return_to, ""));
+    let separator = if path.contains('?') { '&' } else { '?' };
+    let suffix = if fragment.is_empty() {
+        String::new()
+    } else {
+        format!("#{fragment}")
+    };
+    format!("{path}{separator}settings=open&section=connections&{provider}={status}{suffix}")
 }
 
 pub async fn disconnect(
@@ -436,5 +477,28 @@ mod tests {
             "https%3A%2F%2Fhost%2Fapi%2Fsettings%2Fgithub%2Fcallback"
         );
         assert_eq!(encode("Az0-._~"), "Az0-._~");
+    }
+
+    #[test]
+    fn oauth_state_restores_only_internal_settings_paths() {
+        let state = oauth_state("token", Some("/threads/one?view=chat"));
+        assert_eq!(
+            return_path_from_state(Some(&state)),
+            "/threads/one?view=chat"
+        );
+        assert_eq!(oauth_state("token", Some("https://example.com")), "token");
+        assert_eq!(oauth_state("token", Some("//example.com")), "token");
+        assert_eq!(
+            return_path_from_state(Some("forged:https://example.com")),
+            "/threads"
+        );
+    }
+
+    #[test]
+    fn oauth_return_reopens_connections_without_losing_query_or_fragment() {
+        assert_eq!(
+            settings_return_url("/files?folder=Notes#today", "github", "connected"),
+            "/files?folder=Notes&settings=open&section=connections&github=connected#today"
+        );
     }
 }

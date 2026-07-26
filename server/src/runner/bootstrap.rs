@@ -225,6 +225,7 @@ pub(crate) async fn ensure_runner(
         &tools,
         &agent_settings.subagent_allowed_models,
         &agent_settings.subagent_guidelines,
+        server_config.max_subagent_depth(),
     );
     // The Python sandbox tool set is built from the same place as scheduled
     // automations (`scriptable_tool_registry`), so scripts behave identically in
@@ -447,6 +448,7 @@ fn configure_agent_tools(
     tools: &Tools,
     allowed_models: &[String],
     guidelines: &str,
+    max_subagent_depth: usize,
 ) {
     agent.register_tool(QuizTool);
 
@@ -454,6 +456,7 @@ fn configure_agent_tools(
         subagent_tool_registry(tools),
         allowed_models.to_vec(),
         guidelines,
+        max_subagent_depth,
     ));
     agent.allow_tool(SUBAGENT_NAME);
 
@@ -979,6 +982,7 @@ mod tests {
             },
             &["default".to_string()],
             "",
+            1,
         );
 
         let names: Vec<_> = agent
@@ -1006,7 +1010,7 @@ mod tests {
             Vec::new(),
         );
 
-        configure_agent_tools(&agent, &Tools::default(), &["default".to_string()], "");
+        configure_agent_tools(&agent, &Tools::default(), &["default".to_string()], "", 1);
 
         let mut names: Vec<_> = agent
             .tool_definitions()

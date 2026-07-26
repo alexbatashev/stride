@@ -5,33 +5,474 @@ pub mod automations;
 pub mod files;
 pub mod settings;
 
-use crate::api::threads::ThreadPageData;
+use axum::http::{HeaderMap, header};
+
+use crate::api::threads::{MessageTemplateData, ThreadPageData};
 use crate::components::{
-    app_approval_bar::AppApprovalBar,
-    app_button::AppButton,
-    app_message::AppMessage,
-    app_prompt_input::{AppPromptInput, Models},
-    app_quiz_bar::AppQuizBar,
-    app_sidebar::{
-        AppSidebar, AppSidebarToggle, RenderStores as SidebarRenderStores, SidebarProject,
-        SidebarThread,
-    },
     auth_form::AuthForm,
+    settings::Stores as SettingsStores,
+    shell_page_view::{
+        RenderStores as ShellRenderStores, ShellPageData, ShellPageView, ShellPageViewServer,
+    },
+    threads_page_view::{DocumentOpts as ArgonDocumentOpts, ThreadPageData as ArgonThreadPageData},
+    timeline::{ChatTurn, TimelineItem, TimelineMessage, WorkSegment},
     ui::Stores as UiStores,
 };
 
-fn ui_stores_for(data: &ThreadPageData, active_page: &str) -> UiStores {
-    let mut stores = UiStores::default();
-    stores.sidebar.active_thread = data.thread_id.clone();
-    stores.sidebar.active_project = data
-        .projects
+const SIDEBAR_STATE_COOKIE: &str = "stride_sidebar_state";
+
+fn sidebar_status(headers: &HeaderMap) -> &'static str {
+    let collapsed = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|part| {
+                let (name, value) = part.trim().split_once('=')?;
+                (name == SIDEBAR_STATE_COOKIE).then_some(value)
+            })
+        })
+        == Some("collapsed");
+    if collapsed { "collapsed" } else { "open" }
+}
+
+fn argon_thread_page_data(data: ThreadPageData) -> ArgonThreadPageData {
+    let running = data.running;
+    let selected_model = data
+        .models
         .iter()
-        .flat_map(|project| project.threads.iter())
-        .find(|thread| thread.id == data.thread_id)
-        .and_then(|thread| thread.project_id.clone())
+        .find(|model| model.key == data.selected_model)
+        .or_else(|| data.models.first());
+    let selected_model_label = selected_model
+        .map(|model| model.display_name.clone())
+        .unwrap_or_else(|| "Choose model".to_string());
+    let selected_model_reasoning_effort = selected_model
+        .and_then(|model| model.reasoning_effort.clone())
         .unwrap_or_default();
-    stores.sidebar.active_page = active_page.to_string();
-    stores
+    let models = data
+        .models
+        .into_iter()
+        .map(|model| crate::components::model_option::ModelOption {
+            value: model.key,
+            label: model.display_name,
+            description: model.description,
+            vision: model.vision,
+        })
+        .collect();
+    ArgonThreadPageData {
+        username: data.username,
+        full_name: data.full_name,
+        thread_id: data.thread_id,
+        current_title: data.current_title,
+        selected_model: data.selected_model,
+        models,
+        selected_model_label,
+        selected_model_reasoning_effort,
+        running,
+        projects: data
+            .projects
+            .into_iter()
+            .map(|project| crate::components::app_sidebar::SidebarProject {
+                id: project.id,
+                title: project.title,
+                threads: project
+                    .threads
+                    .into_iter()
+                    .map(|thread| crate::components::app_sidebar::SidebarThread {
+                        id: thread.id,
+                        title: thread.title,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        threads: data
+            .ungrouped_threads
+            .into_iter()
+            .map(|thread| crate::components::app_sidebar::SidebarThread {
+                id: thread.id,
+                title: thread.title,
+            })
+            .collect(),
+        turns: chat_turns(
+            crate::components::timeline::build_timeline(&chat_timeline(data.messages)),
+            running,
+        ),
+    }
+}
+
+fn empty_timeline_item(id: String) -> TimelineItem {
+    TimelineItem {
+        id,
+        seq: 0.0,
+        created_at: 0.0,
+        role: "agent".to_string(),
+        kind: "agent".to_string(),
+        format: "markdown".to_string(),
+        text: String::new(),
+        thinking: String::new(),
+        tool_name: String::new(),
+        tool_detail: String::new(),
+        status: "finished".to_string(),
+        is_error: false,
+        pending: false,
+        subagent_key: None,
+    }
+}
+
+fn work_label(started_at: f64, finished_at: f64) -> String {
+    if started_at <= 0.0 || finished_at <= started_at {
+        return "Worked".to_string();
+    }
+    let seconds = ((finished_at - started_at) / 1000.0).round().max(1.0) as u64;
+    format!("Worked for {seconds}s")
+}
+
+fn chat_turn(items: &[TimelineItem], running: bool, index: usize) -> ChatTurn {
+    let user_index = items.iter().position(|item| item.kind == "user");
+    let answer_index = items
+        .iter()
+        .rposition(|item| item.kind == "agent" && !item.text.is_empty());
+    let fallback_id = format!("turn-{index}");
+    let user = user_index
+        .map(|item_index| items[item_index].clone())
+        .unwrap_or_else(|| empty_timeline_item(format!("{fallback_id}-user")));
+    let answer = answer_index
+        .map(|item_index| items[item_index].clone())
+        .unwrap_or_else(|| empty_timeline_item(format!("{fallback_id}-answer")));
+    let mut segments = Vec::new();
+    let mut commentary = String::new();
+    let mut tools = Vec::new();
+    let mut segment_index = 0;
+
+    for (item_index, item) in items.iter().enumerate() {
+        if item.kind == "tool_activity" || item.kind == "tool_output" {
+            tools.push(item.clone());
+            continue;
+        }
+        if item.kind != "agent" {
+            continue;
+        }
+        let mut next_commentary = item.thinking.clone();
+        if Some(item_index) != answer_index && !item.text.is_empty() {
+            if !next_commentary.is_empty() {
+                next_commentary.push_str("\n\n");
+            }
+            next_commentary.push_str(&item.text);
+        }
+        if next_commentary.is_empty() {
+            continue;
+        }
+        if !commentary.is_empty() || !tools.is_empty() {
+            segments.push(WorkSegment {
+                id: format!("{fallback_id}-work-{segment_index}"),
+                commentary,
+                tools,
+            });
+            segment_index += 1;
+        }
+        commentary = next_commentary;
+        tools = Vec::new();
+    }
+
+    if !commentary.is_empty() || !tools.is_empty() {
+        segments.push(WorkSegment {
+            id: format!("{fallback_id}-work-{segment_index}"),
+            commentary,
+            tools,
+        });
+    }
+
+    let first = items.first().unwrap_or(&user);
+    let last = items.last().unwrap_or(&answer);
+    let started_at = if user.created_at > 0.0 {
+        user.created_at
+    } else {
+        first.created_at
+    };
+    let finished_at = if answer.created_at > 0.0 {
+        answer.created_at
+    } else {
+        last.created_at
+    };
+    ChatTurn {
+        id: user_index.map_or(fallback_id, |_| user.id.clone()),
+        has_user: user_index.is_some(),
+        user,
+        has_work: running || !segments.is_empty(),
+        segments,
+        has_answer: answer_index.is_some(),
+        answer,
+        running,
+        started_at,
+        work_label: work_label(started_at, finished_at),
+    }
+}
+
+fn chat_turns(messages: Vec<TimelineItem>, running: bool) -> Vec<ChatTurn> {
+    let mut turns = Vec::new();
+    let mut start = 0;
+    for index in 0..messages.len() {
+        if messages[index].kind != "user" || index == start {
+            continue;
+        }
+        turns.push(chat_turn(&messages[start..index], false, turns.len()));
+        start = index;
+    }
+    if start < messages.len() {
+        turns.push(chat_turn(&messages[start..], running, turns.len()));
+    }
+    turns
+}
+
+fn chat_timeline(messages: Vec<MessageTemplateData>) -> Vec<TimelineMessage> {
+    use std::collections::{HashMap, HashSet};
+
+    let outputs: HashMap<_, _> = messages
+        .iter()
+        .filter_map(|message| {
+            message.tool_call_id.as_ref().map(|id| {
+                (
+                    id.clone(),
+                    (message.id.clone(), message.format, message.content.clone()),
+                )
+            })
+        })
+        .collect();
+    let mut consumed = HashSet::new();
+    let mut timeline = Vec::new();
+
+    for message in messages {
+        if !message.tool_calls.is_empty() {
+            if !message.content.is_empty() || message.thinking.is_some() {
+                timeline.push(content_timeline_message(&message, "agent"));
+            }
+            for call in message.tool_calls {
+                let output = outputs.get(&call.id);
+                if let Some((id, _, _)) = output {
+                    consumed.insert(id.clone());
+                }
+                if is_subagent_tool(&call.name) {
+                    continue;
+                }
+                timeline.push(tool_timeline_message(
+                    format!("tool:{}", call.id),
+                    message.seq,
+                    message.created_at,
+                    output.map_or("markdown", |(_, format, _)| *format),
+                    output.map_or_else(String::new, |(_, _, content)| content.clone()),
+                    &tool_activity_label(&call.name),
+                    &summarize_tool_arguments(&call.arguments),
+                ));
+            }
+            continue;
+        }
+        if consumed.contains(&message.id) {
+            continue;
+        }
+        let kind = if message.role == "tool" {
+            "tool_activity"
+        } else {
+            message.message_type
+        };
+        timeline.push(if kind == "tool_activity" {
+            tool_timeline_message(
+                message.id,
+                message.seq,
+                message.created_at,
+                message.format,
+                message.content,
+                message.tool_name.as_deref().unwrap_or_default(),
+                "",
+            )
+        } else {
+            content_timeline_message(&message, kind)
+        });
+    }
+    timeline
+}
+
+fn content_timeline_message(message: &MessageTemplateData, message_type: &str) -> TimelineMessage {
+    let content = if message.format == "html" {
+        stride_agent::HtmlFormattingSanitizer::sanitize_complete(&message.content)
+    } else {
+        message.content.clone()
+    };
+    TimelineMessage {
+        id: message.id.clone(),
+        seq: message.seq as f64,
+        created_at: message.created_at as f64,
+        role: message.role.to_string(),
+        message_type: message_type.to_string(),
+        format: message.format.to_string(),
+        content,
+        thinking: message.thinking.clone().unwrap_or_default(),
+        tool_name: String::new(),
+        tool_detail: String::new(),
+        pending: false,
+        status: "finished".to_string(),
+        is_error: false,
+        subagent_key: None,
+    }
+}
+
+fn tool_timeline_message(
+    id: String,
+    seq: u64,
+    created_at: i64,
+    format: &str,
+    content: String,
+    tool_name: &str,
+    tool_detail: &str,
+) -> TimelineMessage {
+    TimelineMessage {
+        id,
+        seq: seq as f64,
+        created_at: created_at as f64,
+        role: "tool".to_string(),
+        message_type: "tool_activity".to_string(),
+        format: format.to_string(),
+        content,
+        thinking: String::new(),
+        tool_name: tool_name.to_string(),
+        tool_detail: tool_detail.to_string(),
+        pending: false,
+        status: "finished".to_string(),
+        is_error: false,
+        subagent_key: None,
+    }
+}
+
+fn is_subagent_tool(name: &str) -> bool {
+    let normalized = name.to_lowercase().replace('-', "_");
+    normalized.contains("subagent") || normalized.contains("spawn_agent")
+}
+
+fn tool_activity_label(name: &str) -> String {
+    let normalized = name.to_lowercase().replace('-', "_");
+    if normalized.contains("command") || normalized.contains("shell") || normalized.contains("exec")
+    {
+        return "Ran command".to_string();
+    }
+    if normalized.contains("read_file") || normalized.ends_with("read") {
+        return "Read file".to_string();
+    }
+    if normalized.contains("apply_patch")
+        || normalized.contains("write")
+        || normalized.contains("edit")
+    {
+        return "Changed files".to_string();
+    }
+    if normalized.contains("search") || normalized.contains("find") || normalized.ends_with("rg") {
+        return "Searched files".to_string();
+    }
+    name.replace('_', " ")
+}
+
+fn summarize_tool_arguments(arguments: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return String::new();
+    };
+    ["path", "command", "query", "url"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn argon_document_opts(title: &str, store_payload: &str) -> ArgonDocumentOpts {
+    let common_css = crate::assets::url("common.css");
+    let components_js = crate::assets::url("components.js");
+    let api_js = crate::assets::url("api.js");
+    let store_script = format!(
+        r#"<script type="application/json" data-argon-stores>{}</script>"#,
+        json_script_escape(store_payload)
+    );
+    ArgonDocumentOpts {
+        title: title.to_string(),
+        head: format!(
+            r#"<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="{common_css}"><link rel="modulepreload" href="{components_js}">{store_script}"#
+        ),
+        assets: format!(
+            r#"<script type="module" src="{components_js}"></script><script type="module" src="{api_js}"></script>"#
+        ),
+    }
+}
+
+fn combine_store_snapshots(snapshots: &[String]) -> String {
+    let entries = snapshots
+        .iter()
+        .filter_map(|snapshot| snapshot.strip_prefix('{')?.strip_suffix('}'))
+        .filter(|snapshot| !snapshot.is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{{entries}}}")
+}
+
+struct ShellPageServer {
+    state: std::sync::Arc<crate::ServerState>,
+    headers: axum::http::HeaderMap,
+}
+
+impl ShellPageViewServer for ShellPageServer {
+    type Error = crate::api::threads::ThreadApiError;
+
+    async fn load_shell_page(&self, _page: &str) -> Result<ShellPageData, Self::Error> {
+        let data = crate::api::threads::thread_page_data(&self.state, &self.headers, None).await?;
+        Ok(ShellPageData {
+            username: data.username,
+            full_name: data.full_name,
+            projects: data
+                .projects
+                .into_iter()
+                .map(|project| crate::components::app_sidebar::SidebarProject {
+                    id: project.id,
+                    title: project.title,
+                    threads: project
+                        .threads
+                        .into_iter()
+                        .map(|thread| crate::components::app_sidebar::SidebarThread {
+                            id: thread.id,
+                            title: thread.title,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            threads: data
+                .ungrouped_threads
+                .into_iter()
+                .map(|thread| crate::components::app_sidebar::SidebarThread {
+                    id: thread.id,
+                    title: thread.title,
+                })
+                .collect(),
+        })
+    }
+}
+
+async fn render_shell_page(
+    state: std::sync::Arc<crate::ServerState>,
+    headers: axum::http::HeaderMap,
+    page_name: &str,
+    title: &str,
+) -> Result<String, crate::api::threads::ThreadApiError> {
+    let mut ui_stores = UiStores::default();
+    ui_stores.sidebar.active_page = page_name.to_string();
+    ui_stores.sidebar.status = sidebar_status(&headers).to_string();
+    let settings_stores = SettingsStores::default();
+    let stores = ShellRenderStores {
+        settings: &settings_stores,
+        ui: &ui_stores,
+    };
+    let server = ShellPageServer { state, headers };
+    let page = ShellPageView::new(page_name).attr("id", format!("{page_name}-page"));
+    let store_payload =
+        combine_store_snapshots(&[ui_stores.snapshot_json(), settings_stores.snapshot_json()]);
+    let opts = argon_document_opts(title, &store_payload);
+    let opts = crate::components::shell_page_view::DocumentOpts {
+        title: opts.title,
+        head: opts.head,
+        assets: opts.assets,
+    };
+    page.render_document(&server, &stores, &opts).await
 }
 
 fn html_escape(value: &str) -> String {
@@ -47,74 +488,6 @@ fn html_escape(value: &str) -> String {
         }
     }
     out
-}
-
-fn html_unescape_text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let after = &rest[amp + 1..];
-        if let Some(semi) = after.find(';') {
-            let entity = &after[..semi];
-            if entity.len() <= 12
-                && let Some(decoded) = decode_html_entity(entity)
-            {
-                out.push(decoded);
-                rest = &after[semi + 1..];
-                continue;
-            }
-        }
-        out.push('&');
-        rest = &rest[amp + 1..];
-    }
-
-    out.push_str(rest);
-    out
-}
-
-fn decode_html_entity(entity: &str) -> Option<char> {
-    match entity {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" | "#39" => Some('\''),
-        _ => {
-            let hex = entity
-                .strip_prefix("#x")
-                .or_else(|| entity.strip_prefix("#X"));
-            if let Some(hex) = hex {
-                return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
-            }
-            entity
-                .strip_prefix('#')
-                .and_then(|dec| dec.parse::<u32>().ok())
-                .and_then(char::from_u32)
-        }
-    }
-}
-
-// Adds page-specific host attributes (class, data-*) to a rendered component.
-// Argon escapes '>' inside attribute values, so the first '>' closes the host tag.
-fn with_attrs(rendered: &str, attrs: &str) -> String {
-    rendered.replacen('>', &format!(" {attrs}>"), 1)
-}
-
-const NAVIGATE_SCRIPT: &str = r#"<script type="module">
-    document.addEventListener('navigate', (e) => {
-        window.location.href = e.detail.path === '/login' ? '/auth/login' : e.detail.path;
-    });
-</script>"#;
-
-// A `<script type="module">` tag for a built page bundle, cache-busted with the
-// asset's content hash. Page modules build their page_script() through this.
-pub(super) fn module_script(rel: &str) -> String {
-    format!(
-        r#"<script type="module" src="{}"></script>"#,
-        crate::assets::url(rel)
-    )
 }
 
 fn json_script_escape(value: &str) -> String {
@@ -202,427 +575,63 @@ pub fn render_auth_page(mode: &str) -> String {
     render_page(title, "", r#"id="auth-page""#, &body)
 }
 
-fn render_sidebar(data: &ThreadPageData, ui_stores: &UiStores) -> String {
-    let projects = data.projects.iter().map(|project| SidebarProject {
-        id: project.id.clone(),
-        title: project.title.clone(),
-        threads: project
-            .threads
-            .iter()
-            .map(|thread| SidebarThread {
-                id: thread.id.clone(),
-                title: thread.title.clone(),
-            })
-            .collect(),
-    });
-    let ungrouped = data.ungrouped_threads.iter().map(|thread| SidebarThread {
-        id: thread.id.clone(),
-        title: thread.title.clone(),
-    });
-    let sidebar = AppSidebar::new(projects, ungrouped);
-    let stores = SidebarRenderStores { ui: ui_stores };
-    format!("<nav>{}</nav>", sidebar.render(&stores))
-}
-
-fn render_messages(data: &ThreadPageData) -> String {
-    if data.thread_id.is_empty() || data.messages.is_empty() {
-        return r#"<div class="empty" data-empty>
-                <h2>What are we working on?</h2>
-                <p>Start a thread and S.T.R.I.D.E. will keep the context here.</p>
-            </div>"#
-            .to_string();
-    }
-
-    data.messages
-        .iter()
-        .map(|message| {
-            let content = if message.format == "markdown" {
-                html_unescape_text(&message.content)
-            } else {
-                message.content.clone()
-            };
-            let thinking = message
-                .thinking
-                .as_deref()
-                .map(html_unescape_text)
-                .unwrap_or_default();
-            AppMessage::new(
-                &message.id,
-                message.seq as f64,
-                message.role,
-                message.message_type,
-                message.format,
-                content,
-                thinking,
-                message.tool_name.as_deref().unwrap_or_default().to_string(),
-            )
-            .render()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-const THREADS_STYLE: &str = r#"<style>
-    #threads-page > main > header {
-        border-bottom: 1px solid var(--border);
-        box-sizing: border-box;
-        display: flex;
-        justify-content: flex-end;
-    }
-
-    #threads-page > main > header app-sidebar-toggle {
-        display: none;
-    }
-
-    #threads-page .toolbar-spacer {
-        flex: 1;
-    }
-
-    #threads-page .files-button {
-        min-width: 72px;
-    }
-
-    #threads-page .thread-menu-button {
-        display: none;
-        margin-left: 4px;
-    }
-
-    #threads-page .empty {
-        align-content: center;
-        display: grid;
-        justify-items: center;
-        min-height: 100%;
-        padding-bottom: 96px;
-        text-align: center;
-    }
-
-    #threads-page .empty h2 {
-        color: var(--foreground);
-        font-size: clamp(28px, 4vw, 40px);
-        font-weight: 700;
-        line-height: 1.08;
-        margin: 0 0 12px;
-    }
-
-    #threads-page .empty p {
-        color: var(--muted-foreground);
-        font-size: 15px;
-        line-height: 1.5;
-        margin: 0;
-        max-width: 420px;
-    }
-
-    #threads-page .error {
-        color: var(--destructive);
-        font-size: 13px;
-        margin: 10px auto 0;
-        max-width: 860px;
-    }
-
-    #threads-page .error:empty {
-        display: none;
-    }
-
-    @media (max-width: 767px) {
-        #threads-page > main > header app-sidebar-toggle {
-            display: inline-flex;
-        }
-
-        #threads-page > main > header {
-            justify-content: space-between;
-        }
-    }
-</style>"#;
-
-pub fn render_threads_page(data: &ThreadPageData) -> String {
-    let ui_stores = ui_stores_for(data, "");
-    let sidebar = render_sidebar(data, &ui_stores);
-    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
-    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
-    let files_button = with_attrs(
-        &AppButton::new().render(),
-        r#"variant="ghost" size="sm" class="files-button" data-action="files""#,
-    );
-    // The slot content goes in the host's light DOM, after the shadow template.
-    let files_button = files_button.replacen("</app-button>", "Files</app-button>", 1);
-    let menu_button = with_attrs(
-        &AppButton::new().render(),
-        r#"variant="ghost" size="icon-sm" class="thread-menu-button" title="Thread actions" aria-label="Thread actions" data-action="thread-menu""#,
-    );
-    let menu_button = menu_button.replacen("</app-button>", "⋯</app-button>", 1);
-    let messages = render_messages(data);
-    let placeholder = if data.thread_id.is_empty() {
-        "Ask S.T.R.I.D.E. anything"
-    } else {
-        "Message S.T.R.I.D.E."
-    };
-    let prompt = with_attrs(
-        &AppPromptInput::new(
-            false,
-            data.running,
-            placeholder,
-            Vec::<Models>::new(),
-            &data.selected_model,
-        )
-        .render(),
-        r#"style="margin: auto" data-prompt"#,
-    );
-    let approval = with_attrs(
-        &AppApprovalBar::new("").render(),
-        r#"style="margin: auto" data-approval hidden"#,
-    );
-    let quiz = with_attrs(
-        &AppQuizBar::new("", Vec::<String>::new()).render(),
-        r#"style="margin: auto" data-quiz hidden"#,
-    );
-    let current_title = html_escape(&data.current_title);
-    let thread_id = html_escape(&data.thread_id);
-    let selected_model = html_escape(&data.selected_model);
-
-    let body = format!(
-        r#"{THREADS_STYLE}
-{sidebar}
-<main>
-    <header>
-        {toggle}
-        <span class="toolbar-spacer"></span>
-        {files_button}
-        {menu_button}
-        <span data-current-title hidden>{current_title}</span>
-    </header>
-    <section class="content">
-        <div class="wrapper" data-messages>
-            {messages}
-        </div>
-    </section>
-    {prompt}
-    {approval}
-    {quiz}
-    <div class="error" data-error></div>
-</main>
-<app-file-manager data-file-manager data-thread-id="{thread_id}"></app-file-manager>
-{NAVIGATE_SCRIPT}"#,
-    );
-
-    let body_attrs = format!(
-        r#"id="threads-page" data-thread-id="{thread_id}" data-selected-model="{selected_model}" data-running="{running}""#,
-        running = data.running,
-    );
-    render_page_with_store_payload(
-        "S.T.R.I.D.E.",
-        &agent::page_script(),
-        &body_attrs,
-        &body,
-        &ui_stores.snapshot_json(),
-    )
-}
-
-const FILES_STYLE: &str = r#"<style>
-    #files-page > main {
-        display: flex;
-        flex-direction: column;
-        min-height: 0;
-        min-width: 0;
-    }
-
-    #files-page app-file-browser {
-        flex: 1;
-        min-height: 0;
-    }
-
-    #files-page .mobile-bar {
-        display: none;
-    }
-
-    @media (max-width: 767px) {
-        #files-page .mobile-bar {
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            padding: 8px 12px;
-        }
-    }
-</style>"#;
-
-pub fn render_files_page(data: &ThreadPageData) -> String {
-    let ui_stores = ui_stores_for(data, "files");
-    let sidebar = render_sidebar(data, &ui_stores);
-    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
-    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
-    let body = format!(
-        r#"{FILES_STYLE}
-{sidebar}
-<main>
-    <div class="mobile-bar">{toggle}</div>
-    <app-file-browser></app-file-browser>
-</main>
-{NAVIGATE_SCRIPT}"#,
-    );
-    render_page_with_store_payload(
-        "Files - S.T.R.I.D.E.",
-        &files::page_script(),
-        r#"id="files-page""#,
-        &body,
-        &ui_stores.snapshot_json(),
-    )
-}
-
-const AUTOMATIONS_STYLE: &str = r#"<style>
-    #automations-page > main {
-        display: flex;
-        flex-direction: column;
-        min-height: 0;
-        min-width: 0;
-    }
-
-    #automations-page app-automations {
-        flex: 1;
-        min-height: 0;
-    }
-
-    #automations-page .mobile-bar {
-        display: none;
-    }
-
-    @media (max-width: 767px) {
-        #automations-page .mobile-bar {
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            padding: 8px 12px;
-        }
-    }
-</style>"#;
-
-pub fn render_automations_page(data: &ThreadPageData) -> String {
-    let ui_stores = ui_stores_for(data, "automations");
-    let sidebar = render_sidebar(data, &ui_stores);
-    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
-    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
-    let body = format!(
-        r#"{AUTOMATIONS_STYLE}
-{sidebar}
-<main>
-    <div class="mobile-bar">{toggle}</div>
-    <app-automations></app-automations>
-</main>
-{NAVIGATE_SCRIPT}"#,
-    );
-    render_page_with_store_payload(
-        "Automations - S.T.R.I.D.E.",
-        &automations::page_script(),
-        r#"id="automations-page""#,
-        &body,
-        &ui_stores.snapshot_json(),
-    )
-}
-
-pub fn render_archived_page(data: &ThreadPageData) -> String {
-    let ui_stores = ui_stores_for(data, "archived");
-    let sidebar = render_sidebar(data, &ui_stores);
-    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
-    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
-    let body = format!(
-        r#"<style>
-    #archived-page > main {{
-        display: flex;
-        flex-direction: column;
-        min-height: 0;
-        min-width: 0;
-    }}
-
-    #archived-page app-archived-threads {{
-        flex: 1;
-        min-height: 0;
-    }}
-
-    #archived-page .mobile-bar {{
-        display: none;
-    }}
-
-    @media (max-width: 767px) {{
-        #archived-page .mobile-bar {{
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            padding: 8px 12px;
-        }}
-    }}
-</style>
-{sidebar}
-<main>
-    <div class="mobile-bar">{toggle}</div>
-    <app-archived-threads></app-archived-threads>
-</main>
-{NAVIGATE_SCRIPT}"#,
-    );
-
-    render_page_with_store_payload(
-        "Archived - S.T.R.I.D.E.",
-        &archived::page_script(),
-        r#"id="archived-page""#,
-        &body,
-        &ui_stores.snapshot_json(),
-    )
-}
-
-pub fn render_settings_page(data: &ThreadPageData) -> String {
-    let ui_stores = ui_stores_for(data, "settings");
-    let sidebar = render_sidebar(data, &ui_stores);
-    let sidebar_stores = SidebarRenderStores { ui: &ui_stores };
-    let toggle = AppSidebarToggle::new("").render(&sidebar_stores);
-
-    let body = format!(
-        r#"<style>
-    #settings-page > main {{
-        display: flex;
-        flex-direction: column;
-        min-height: 0;
-        min-width: 0;
-    }}
-
-    #settings-page app-settings {{
-        flex: 1;
-        min-height: 0;
-    }}
-
-    #settings-page .mobile-bar {{
-        display: none;
-    }}
-
-    @media (max-width: 767px) {{
-        #settings-page .mobile-bar {{
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            padding: 8px 12px;
-        }}
-    }}
-</style>
-{sidebar}
-<main>
-    <div class="mobile-bar">{toggle}</div>
-    <app-settings></app-settings>
-</main>
-{NAVIGATE_SCRIPT}"#,
-    );
-
-    render_page_with_store_payload(
-        "Settings - S.T.R.I.D.E.",
-        &settings::page_script(),
-        r#"id="settings-page""#,
-        &body,
-        &ui_stores.snapshot_json(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use crate::api::threads::{
         MessageTemplateData, ProjectTemplateData, ThreadPageData, ThreadTemplateData,
+        ToolCallResponse,
     };
+    use crate::components::{
+        settings::Stores as SettingsStores,
+        shell_page_view::{
+            RenderStores as ShellRenderStores, ShellPageData, ShellPageView, ShellPageViewServer,
+        },
+        threads_page_view::{
+            RenderStores, ThreadPageData as ArgonThreadPageData, ThreadsPageView,
+            ThreadsPageViewServer,
+        },
+        ui::Stores as UiStores,
+    };
+
+    struct TestPageServer(ArgonThreadPageData);
+    struct TestShellServer(ShellPageData);
+
+    impl ThreadsPageViewServer for TestPageServer {
+        type Error = std::convert::Infallible;
+
+        async fn load_thread_page(
+            &self,
+            _thread_id: &str,
+        ) -> Result<ArgonThreadPageData, Self::Error> {
+            Ok(self.0.clone())
+        }
+    }
+
+    impl ShellPageViewServer for TestShellServer {
+        type Error = std::convert::Infallible;
+
+        async fn load_shell_page(&self, _page: &str) -> Result<ShellPageData, Self::Error> {
+            Ok(self.0.clone())
+        }
+    }
 
     fn sample_data() -> ThreadPageData {
         ThreadPageData {
+            username: "alex".to_string(),
+            full_name: "Alex Example".to_string(),
             thread_id: "thread-1".to_string(),
             current_title: "Current thread".to_string(),
             selected_model: "fast".to_string(),
+            models: vec![crate::model_registry::ModelSummary {
+                key: "fast".to_string(),
+                slug: "fast-model".to_string(),
+                display_name: "Fast".to_string(),
+                description: "".to_string(),
+                source: "config",
+                provider: "test".to_string(),
+                vision: false,
+                reasoning_effort: Some("high".to_string()),
+            }],
             running: true,
             projects: vec![ProjectTemplateData {
                 id: "project-1".to_string(),
@@ -642,10 +651,13 @@ mod tests {
                 MessageTemplateData {
                     id: "message-1".to_string(),
                     seq: 1,
+                    created_at: 1_000,
                     role: "tool",
                     format: "markdown",
                     message_type: "tool_output",
                     tool_name: Some("Tool output".to_string()),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
                     content: "done".to_string(),
                     thinking: None,
                     has_thinking: false,
@@ -653,21 +665,27 @@ mod tests {
                 MessageTemplateData {
                     id: "message-2".to_string(),
                     seq: 2,
+                    created_at: 2_000,
                     role: "agent",
                     format: "html",
                     message_type: "agent",
                     tool_name: None,
-                    content: "hello & <world>".to_string(),
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                    content: "<p onclick=\"bad()\">hello & <strong>world</strong></p><script>bad</script>".to_string(),
                     thinking: None,
                     has_thinking: false,
                 },
                 MessageTemplateData {
                     id: "message-3".to_string(),
                     seq: 3,
+                    created_at: 3_000,
                     role: "agent",
                     format: "markdown",
                     message_type: "agent",
                     tool_name: None,
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
                     content: "Here&#39;s Research &amp; Web".to_string(),
                     thinking: Some("A &amp; B".to_string()),
                     has_thinking: true,
@@ -676,97 +694,168 @@ mod tests {
         }
     }
 
-    #[test]
-    fn threads_page_renders_shell_components_and_messages() {
-        let html = super::render_threads_page(&sample_data());
-
-        assert!(
-            html.contains(
-                r#"<body id="threads-page" data-thread-id="thread-1" data-selected-model="fast" data-running="true">"#
+    #[tokio::test]
+    async fn threads_page_renders_argon_server_data_and_shared_timeline() {
+        let data = super::argon_thread_page_data(sample_data());
+        let server = TestPageServer(data);
+        let mut ui = UiStores::default();
+        ui.sidebar.status = "collapsed".to_string();
+        let thread_view = crate::components::thread_view::Stores::default();
+        let side_panel = crate::components::side_panel::Stores::default();
+        let settings = SettingsStores::default();
+        let stores = RenderStores {
+            settings: &settings,
+            side_panel: &side_panel,
+            thread_view: &thread_view,
+            ui: &ui,
+        };
+        let page = ThreadsPageView::new("thread-1").attr("id", "threads-page");
+        let html = page
+            .render_document(
+                &server,
+                &stores,
+                &crate::components::threads_page_view::DocumentOpts::default(),
             )
-        );
-        // Server-side shadow DOM for the chrome that should paint before JS.
+            .await
+            .unwrap();
+
+        assert!(html.contains(r#"<body><threads-page-view data-thread-id="thread-1""#));
+        assert!(html.contains(r#"id="threads-page""#));
         assert!(html.contains("<nav><app-sidebar"));
+        assert!(html.contains(r#"<app-sidebar-panel state="collapsed""#));
+        assert!(html.contains(r#"data-collapsed="true""#));
         assert!(html.contains(r#"<template shadowrootmode="open">"#));
-        assert!(html.contains(r#""activeThread":"thread-1""#));
-        assert!(html.contains(r#""activeProject":"project-1""#));
         assert!(html.contains("My &lt;Project&gt;"));
         assert!(html.contains("Loose thread"));
-        // Messages arrive as hydrated app-message components. Tool output is
-        // folded into a spoiler, so its content rides in the hydration
-        // attribute; agent text paints inside the shadow DOM markdown view.
-        assert!(html.contains(r#"data-message-id="message-1""#));
-        assert!(html.contains(r#"data-kind="tool_output""#));
-        assert!(html.contains(r#"data-message-id="message-2""#));
-        assert!(html.contains("hello &amp; &lt;world&gt;"));
+        assert!(html.contains(r#"data-activity-id="message-1""#));
+        assert!(html.contains("<app-tool-activity"));
+        assert!(html.contains("<app-work-group"));
+        assert!(html.contains(r#"data-label="Worked for 2s""#));
+        assert!(!html.contains(r#"data-message-id="message-2""#));
+        assert!(
+            html.contains(
+                "&lt;p&gt;hello &amp;amp; &lt;strong&gt;world&lt;/strong&gt;&lt;/p&gt;bad"
+            )
+        );
+        assert!(!html.contains("onclick"));
+        assert!(!html.contains("<script>bad</script>"));
         assert!(html.contains(r#"data-message-id="message-3""#));
         assert!(html.contains("Here's Research &amp; Web"));
         assert!(html.contains("A &amp; B"));
-        assert!(!html.contains("Here&amp;#39;s"));
-        assert!(!html.contains("&amp;amp; Web"));
-        // Composer state mirrors the running flag.
         assert!(html.contains(r#"data-running="true""#));
         assert!(html.contains(r#"data-prompt"#));
+        assert!(html.contains(r#"data-selected-model-label="Fast""#));
+        assert!(html.contains(r#"data-selected-model-reasoning-effort="high""#));
+        assert!(html.contains(r#"&quot;label&quot;:&quot;Fast&quot;"#));
         assert!(html.contains(r#"data-approval hidden"#));
         assert!(html.contains(r#"data-quiz hidden"#));
-        assert!(html.contains(r#"<app-file-manager data-file-manager data-thread-id="thread-1">"#));
-        assert!(html.contains("/static/pages/threads-page.js"));
-        assert!(!html.contains("lit.js"));
+        assert!(html.contains(r#"<app-side-panel"#));
+        assert!(html.contains("<app-file-explorer"));
+        assert!(html.contains(r#"slot="files""#));
+        assert!(html.contains("<app-subagent-view"));
+        assert!(html.contains(r#"slot="subagents""#));
     }
 
     #[test]
-    fn threads_page_without_thread_shows_empty_state() {
-        let mut data = sample_data();
-        data.thread_id = String::new();
-        data.messages = Vec::new();
-        let html = super::render_threads_page(&data);
+    fn chat_timeline_merges_tool_calls_with_outputs_and_excludes_subagents() {
+        let message = |id: &str, seq, role, content: &str| MessageTemplateData {
+            id: id.to_string(),
+            seq,
+            created_at: seq as i64 * 1_000,
+            role,
+            format: "markdown",
+            message_type: role,
+            tool_name: None,
+            tool_call_id: None,
+            tool_calls: Vec::new(),
+            content: content.to_string(),
+            thinking: None,
+            has_thinking: false,
+        };
+        let mut assistant = message("assistant", 1, "agent", "");
+        assistant.tool_calls = vec![
+            ToolCallResponse {
+                id: "call-1".to_string(),
+                name: "shell".to_string(),
+                arguments: r#"{"command":"ls -la"}"#.to_string(),
+            },
+            ToolCallResponse {
+                id: "call-2".to_string(),
+                name: "collaboration.spawn_agent".to_string(),
+                arguments: "{}".to_string(),
+            },
+        ];
+        let mut output = message("output", 2, "tool", "files");
+        output.tool_call_id = Some("call-1".to_string());
+        let mut child = message("child", 3, "tool", "child result");
+        child.tool_call_id = Some("call-2".to_string());
 
-        assert!(html.contains("What are we working on?"));
-        assert!(html.contains("Ask S.T.R.I.D.E. anything"));
+        let timeline = super::chat_timeline(vec![assistant, output, child]);
+
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].id, "tool:call-1");
+        assert_eq!(timeline[0].tool_name, "Ran command");
+        assert_eq!(timeline[0].tool_detail, "ls -la");
+        assert_eq!(timeline[0].content, "files");
+    }
+
+    #[tokio::test]
+    async fn shell_pages_render_as_argon_components() {
+        for (name, child) in [
+            ("files", "app-file-browser"),
+            ("automations", "app-automations"),
+            ("archived", "app-archived-threads"),
+        ] {
+            let data = super::argon_thread_page_data(sample_data());
+            let server = TestShellServer(ShellPageData {
+                username: data.username,
+                full_name: data.full_name,
+                projects: data.projects,
+                threads: data.threads,
+            });
+            let mut ui = UiStores::default();
+            ui.sidebar.active_page = name.to_string();
+            ui.sidebar.status = "collapsed".to_string();
+            let settings = SettingsStores::default();
+            let stores = ShellRenderStores {
+                settings: &settings,
+                ui: &ui,
+            };
+            let html = ShellPageView::new(name)
+                .attr("id", format!("{name}-page"))
+                .render_document(
+                    &server,
+                    &stores,
+                    &crate::components::shell_page_view::DocumentOpts::default(),
+                )
+                .await
+                .unwrap();
+
+            assert!(html.contains(&format!(r#"id="{name}-page""#)));
+            assert!(html.contains(&format!("<{child}></{child}>")));
+            assert!(html.contains("<nav><app-sidebar"));
+            assert!(html.contains(r#"<app-sidebar-panel state="collapsed""#));
+            assert!(html.contains(r#"data-collapsed="true""#));
+            assert!(html.contains("<app-settings-dialog"));
+        }
     }
 
     #[test]
-    fn files_page_renders_browser_and_active_nav() {
-        let html = super::render_files_page(&sample_data());
+    fn sidebar_status_reads_collapsed_device_cookie() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            axum::http::HeaderValue::from_static(
+                "token=session; stride_sidebar_state=collapsed; theme=dark",
+            ),
+        );
+        assert_eq!(super::sidebar_status(&headers), "collapsed");
 
-        assert!(html.contains(r#"<body id="files-page">"#));
-        assert!(html.contains(r#"<app-file-browser></app-file-browser>"#));
-        // The Files nav item is marked active inside the SSR shadow DOM.
-        assert!(html.contains(r#"href="/files" aria-current="page""#));
-        assert!(html.contains(r#""activePage":"files""#));
-        assert!(html.contains("/static/pages/files-page.js"));
-    }
-
-    #[test]
-    fn automations_page_renders_list_shell() {
-        let html = super::render_automations_page(&sample_data());
-
-        assert!(html.contains(r#"<body id="automations-page">"#));
-        assert!(html.contains("<app-automations></app-automations>"));
-        assert!(html.contains(r#"href="/automations" aria-current="page""#));
-        assert!(html.contains("/static/pages/automations-page.js"));
-    }
-
-    #[test]
-    fn archived_page_renders_list_shell() {
-        let html = super::render_archived_page(&sample_data());
-
-        assert!(html.contains(r#"<body id="archived-page">"#));
-        assert!(html.contains("<app-archived-threads></app-archived-threads>"));
-        assert!(html.contains(r#"href="/archived" aria-current="page""#));
-        assert!(html.contains("/static/pages/archived-page.js"));
-    }
-
-    #[test]
-    fn settings_page_renders_app_settings_shell() {
-        let html = super::render_settings_page(&sample_data());
-
-        assert!(html.contains(r#"<body id="settings-page">"#));
-        // The settings UI is a single client-hydrated Argon component.
-        assert!(html.contains("<app-settings></app-settings>"));
-        assert!(html.contains(r#"href="/settings" aria-current="page""#));
-        assert!(html.contains(r#""activePage":"settings""#));
-        assert!(html.contains("/static/pages/settings-page.js"));
+        headers.insert(
+            axum::http::header::COOKIE,
+            axum::http::HeaderValue::from_static("stride_sidebar_state=invalid"),
+        );
+        assert_eq!(super::sidebar_status(&headers), "open");
     }
 
     #[test]

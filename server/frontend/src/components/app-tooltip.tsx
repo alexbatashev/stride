@@ -23,7 +23,7 @@ const styles = css`
     left: 50%;
     line-height: 1.3;
     opacity: 0;
-    padding: 5px 8px;
+    padding: 6px 12px;
     pointer-events: none;
     position: absolute;
     transform: translateX(-50%) translateY(2px);
@@ -43,6 +43,8 @@ const styles = css`
   .tip:empty {
     display: none;
   }
+
+  .tip::after { background: var(--primary); border-radius: 2px; bottom: -4px; content: ""; height: 8px; left: 50%; position: absolute; transform: translateX(-50%) rotate(45deg); width: 8px; z-index: -1; }
 `;
 
 export function AppTooltip({ text = "" }: { text?: string }): Component {

@@ -13,7 +13,7 @@ const styles = css`
     align-items: center;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: var(--radius-md, 8px);
     box-sizing: border-box;
     color: var(--foreground, #18181b);
     cursor: pointer;
@@ -21,10 +21,10 @@ const styles = css`
     font: inherit;
     font-size: 0.875rem;
     font-weight: 500;
-    gap: 6px;
-    height: 32px;
+    gap: 8px;
+    height: 36px;
     justify-content: center;
-    min-width: 32px;
+    min-width: 36px;
     outline: none;
     padding: 0 10px;
     transition:
@@ -46,6 +46,10 @@ const styles = css`
   :host([variant="outline"]) button {
     border-color: var(--border, #e4e4e7);
   }
+
+  :host([position="first"]) button { border-radius: var(--radius-md, 8px) 0 0 var(--radius-md, 8px); }
+  :host([position="middle"]) button { border-radius: 0; }
+  :host([position="last"]) button { border-radius: 0 var(--radius-md, 8px) var(--radius-md, 8px) 0; }
 
   button[aria-pressed="true"] {
     background: var(--accent, #f4f4f5);

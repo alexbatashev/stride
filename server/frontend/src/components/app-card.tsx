@@ -12,24 +12,24 @@ const styles = css`
   .card {
     background: var(--card, #ffffff);
     border: 1px solid var(--border, #e4e4e7);
-    border-radius: 12px;
+    border-radius: var(--radius-xl, 14px);
     box-shadow: 0 1px 2px rgb(0 0 0 / 5%);
     color: var(--card-foreground, #18181b);
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    padding: 20px 0;
+    gap: 24px;
+    padding: 24px 0;
   }
 
   .header,
   .content,
   .footer {
-    padding: 0 20px;
+    padding: 0 24px;
   }
 
   .header {
     display: grid;
-    gap: 4px;
+    gap: 8px;
   }
 
   .title {

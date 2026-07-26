@@ -10,7 +10,7 @@
   pnpm_10,
   # sha256 of the offline pnpm store. Regenerate with `lib.fakeHash` and read
   # the expected value from the build error after bumping pnpm-lock.yaml.
-  pnpmDepsHash ? "sha256-TLbJb4K15ClVIJbQYu8W3r0ixhaZdHF8CZC6nAkbV8Y=",
+  pnpmDepsHash ? "sha256-p/v3rw7trPRQ0EogA8MUyx2hJES4RBv6sA/8j9L49yU=",
 }:
 let
   pnpm = pnpm_10;
@@ -46,6 +46,10 @@ stdenv.mkDerivation (finalAttrs: {
     icons=(src/components/icons/*.tsx)
     node_modules/.bin/argon compile "''${stores[@]}" "''${ssr[@]}" "''${icons[@]}" \
       --rust --out-dir ssr-out --flat
+    node_modules/.bin/argon compile src/shared/timeline.ts src/shared/model-option.ts src/shared/prompt-attachment.ts \
+      --shared --out-dir ssr-out --flat
+    node_modules/.bin/argon compile src/pages/threads-page-view.tsx src/pages/shell-page-view.tsx \
+      --rust --async-server --out-dir ssr-out --flat
 
     runHook postBuild
   '';

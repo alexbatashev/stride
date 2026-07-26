@@ -399,7 +399,7 @@ export function AppSettingsMemory(): Component {
   return (
     <>
       <style>{styles}</style>
-      <app-card
+      <app-settings-section
         title="Memory palace"
         description="Review durable memories your agents can recall across threads. New memories are still created by asking the agent to remember something."
       >
@@ -443,10 +443,10 @@ export function AppSettingsMemory(): Component {
           <span class="muted">{loaded ? "Showing saved memory structure." : "Loading memories..."}</span>
         </div>
         <p class="error">{error}</p>
-      </app-card>
+      </app-settings-section>
 
       <div class="memory-workspace">
-        <app-card title="Palace map" description="Wings hold rooms; rooms hold individual memories. Empty rooms stay visible so the structure is easy to audit.">
+        <app-settings-section title="Palace map" description="Wings hold rooms; rooms hold individual memories. Empty rooms stay visible so the structure is easy to audit.">
           {wings.length > 0
             ? (
               <div class="memory-map">
@@ -469,10 +469,10 @@ export function AppSettingsMemory(): Component {
               </div>
             )
             : <p class="muted">{loaded ? "No memory wings yet." : "Loading palace map..."}</p>}
-        </app-card>
+        </app-settings-section>
 
         <div class="panels">
-          <app-card title="Memory ledger" description="Search titles, summaries, rooms, and original contents. Removing a memory deletes the saved drawer and its search card.">
+          <app-settings-section title="Memory ledger" description="Search titles, summaries, rooms, and original contents. Removing a memory deletes the saved drawer and its search card.">
             <div class="memory-tools">
               <label class="memory-search">
                 <input
@@ -506,9 +506,9 @@ export function AppSettingsMemory(): Component {
                 </div>
               )
               : <p class="muted">{loaded ? "No memories match this search." : "Loading memories..."}</p>}
-          </app-card>
+          </app-settings-section>
 
-          <app-card title="Selected memory" description="Inspect the stored summary, original content, source, and search keywords before removing anything.">
+          <app-settings-section title="Selected memory" description="Inspect the stored summary, original content, source, and search keywords before removing anything.">
             {selectedMemory
               ? (
                 <div class="memory-detail">
@@ -549,7 +549,7 @@ export function AppSettingsMemory(): Component {
                 </div>
               )
               : <p class="muted">{loaded ? "Select a memory to inspect it." : "Loading selected memory..."}</p>}
-          </app-card>
+          </app-settings-section>
         </div>
       </div>
     </>

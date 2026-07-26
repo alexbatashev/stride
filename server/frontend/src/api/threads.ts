@@ -55,11 +55,25 @@ export type ArchivedThread = {
 export type ThreadMessage = {
 	id: string;
 	seq: number;
+	created_at?: number;
 	role: 'system' | 'agent' | 'user' | 'tool';
 	format: 'markdown' | 'html';
 	content: string;
 	thinking: string | null;
 	tool_call_name: string | null;
+	tool_call_id: string | null;
+	tool_calls: {id: string; name: string; arguments: string}[];
+};
+
+export type ThreadAgent = {
+	agent_id: string;
+	agent_path: string;
+	parent_tool_call_id: string | null;
+	name: string;
+	model: string;
+	result: string | null;
+	finished: boolean;
+	created_at: number;
 };
 
 export type SendMessageResponse = {
@@ -155,6 +169,14 @@ export async function updateThreadModel(threadId: string, model: string | null):
 
 export async function listMessages(threadId: string): Promise<ThreadMessage[]> {
 	return request(`/api/threads/${threadId}/messages`);
+}
+
+export async function listAgents(threadId: string): Promise<ThreadAgent[]> {
+	return request(`/api/threads/${threadId}/agents`);
+}
+
+export async function listAgentMessages(threadId: string, agentId: string): Promise<ThreadMessage[]> {
+	return request(`/api/threads/${threadId}/agents/${agentId}/messages`);
 }
 
 export async function sendMessage(

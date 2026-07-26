@@ -7,12 +7,15 @@ import { join, relative } from 'node:path';
 // dist/components.js — the shared, cacheable script every page loads.
 const componentsDir = 'src/components';
 const iconsDir = join(componentsDir, 'icons');
+const pagesDir = 'src/pages';
+const sharedDir = 'src/shared';
 const storesDir = 'src/stores';
 const argonOut = 'dist/argon';
 const vendorDir = 'dist/vendor';
 mkdirSync('dist', { recursive: true });
 mkdirSync(vendorDir, { recursive: true });
 rmSync(argonOut, { recursive: true, force: true });
+rmSync('dist/pages', { recursive: true, force: true });
 mkdirSync(argonOut, { recursive: true });
 
 const tsxIn = (dir) =>
@@ -25,8 +28,14 @@ const tsIn = (dir) =>
     .filter((f) => f.endsWith('.ts'))
     .sort()
     .map((f) => join(dir, f));
-const componentFiles = [...tsxIn(componentsDir), ...tsxIn(iconsDir)];
-const componentSupportFiles = [...tsIn(componentsDir), ...tsIn(iconsDir)];
+const pageComponentFiles = tsxIn(pagesDir);
+const componentFiles = [...tsxIn(componentsDir), ...tsxIn(iconsDir), ...pageComponentFiles];
+const componentSupportFiles = [
+  ...tsIn(componentsDir),
+  ...tsIn(iconsDir),
+  'src/pages/sidebar.ts',
+  'src/pages/thread-actions.ts',
+];
 const storeFiles = readdirSync(storesDir)
   .filter((f) => f.endsWith('.ts'))
   .sort()
@@ -42,6 +51,13 @@ const result = spawnSync(
   { stdio: 'inherit' },
 );
 if (result.status !== 0) throw new Error('argon --js failed');
+
+const sharedResult = spawnSync(
+  './node_modules/.bin/argon',
+  ['compile', ...tsIn(sharedDir), '--shared', '--out-dir', argonOut, '--root', 'src'],
+  { stdio: 'inherit' },
+);
+if (sharedResult.status !== 0) throw new Error('argon --shared failed');
 
 const entry = join(argonOut, 'components-entry.js');
 writeFileSync(
@@ -127,11 +143,4 @@ await Promise.all([
   ...vendorBuilds.flatMap(([entryPoint, filename, globalName = filename]) =>
     buildVendor(entryPoint, filename, globalName),
   ),
-  esbuild.build({
-    entryPoints: ['src/pages/threads-page.ts', 'src/pages/files-page.ts', 'src/pages/automations-page.ts', 'src/pages/settings-page.ts', 'src/pages/archived-page.ts'],
-    bundle: true,
-    format: 'esm',
-    minify: true,
-    outdir: 'dist/pages',
-  }),
 ]);

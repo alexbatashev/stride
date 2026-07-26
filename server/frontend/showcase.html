@@ -5,12 +5,6 @@
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>S.T.R.I.D.E. component showcase</title>
         <link rel="stylesheet" href="/static/common.css" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link
-            href="https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,100..900;1,100..900&display=swap"
-            rel="stylesheet"
-        />
         <script type="module" src="/static/components.js"></script>
         <style>
             .gallery {
@@ -42,7 +36,7 @@
         </nav>
         <main>
             <header><app-sidebar-toggle></app-sidebar-toggle></header>
-            <section class="content">
+            <section class="content" tabindex="0" aria-label="Component showcase">
                 <div class="wrapper">
                     <app-message
                         data-message-id="1"
@@ -65,6 +59,52 @@
 
                     <div class="gallery">
                         <h2>shadcn components</h2>
+
+                        <app-marker variant="separator">Core controls</app-marker>
+
+                        <div class="row">
+                            <app-button>Button</app-button>
+                            <app-button variant="secondary">Secondary</app-button>
+                            <app-button variant="outline">Outline</app-button>
+                            <app-button variant="ghost">Ghost</app-button>
+                            <app-button variant="destructive">Delete</app-button>
+                            <app-button data-open-dialog="dialog">Open dialog</app-button>
+                            <app-button data-open-dialog="alert">Open alert</app-button>
+                            <app-kbd>⌘ K</app-kbd>
+                            <app-spinner></app-spinner>
+                        </div>
+
+                        <div class="row" style="align-items:flex-start">
+                            <app-input data-placeholder="Input"></app-input>
+                            <app-combobox
+                                style="width:220px"
+                                data-placeholder="Search framework"
+                                data-options='[{"value":"argon","label":"Argon"},{"value":"react","label":"React"},{"value":"swiftui","label":"SwiftUI"}]'
+                            ></app-combobox>
+                            <app-toggle-group
+                                variant="outline"
+                                data-kind="single"
+                                data-value='["left"]'
+                                data-options='[{"value":"left","label":"Left"},{"value":"center","label":"Center"},{"value":"right","label":"Right"}]'
+                            ></app-toggle-group>
+                        </div>
+
+                        <div class="row">
+                            <app-attachment data-title="quarterly-plan.pdf" data-description="1.8 MB · Uploaded">
+                                <span slot="media">PDF</span>
+                                <app-button slot="actions" size="icon-xs" variant="ghost" aria-label="Remove">×</app-button>
+                            </app-attachment>
+                            <app-attachment state="uploading" size="sm" data-title="research.csv" data-description="Uploading · 68%">
+                                <app-spinner slot="media"></app-spinner>
+                            </app-attachment>
+                        </div>
+
+                        <app-marker variant="border">Message scroller</app-marker>
+                        <app-message-scroller style="height:220px;border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
+                            <app-card data-title="First message" data-description="Scroll position remains anchored while content streams."></app-card>
+                            <app-card data-title="Second message" data-description="The jump button appears when the reader leaves the end."></app-card>
+                            <app-card data-title="Third message" data-description="New content does not steal the reader’s position."></app-card>
+                        </app-message-scroller>
 
                         <div class="row">
                             <app-badge>Default</app-badge>
@@ -110,7 +150,11 @@
                         <app-progress data-value="60"></app-progress>
 
                         <div class="row">
-                            <app-avatar data-fallback="FR"></app-avatar>
+                            <app-avatar-group>
+                                <app-avatar data-fallback="FR"></app-avatar>
+                                <app-avatar data-fallback="UI"></app-avatar>
+                                <app-avatar-group-count>+3</app-avatar-group-count>
+                            </app-avatar-group>
                             <app-skeleton style="width: 120px; height: 40px"></app-skeleton>
                             <app-separator orientation="vertical"></app-separator>
                             <app-tooltip data-text="Tooltip content">
@@ -138,6 +182,40 @@
 
                         <app-pagination data-total="10" data-page="3"></app-pagination>
 
+                        <app-marker variant="separator">Tables</app-marker>
+                        <div style="overflow-x:auto">
+                            <table>
+                                <caption>Recent tasks</caption>
+                                <thead><tr><th>Task</th><th>Status</th><th>Updated</th></tr></thead>
+                                <tbody>
+                                    <tr><td>Review inbox</td><td>Running</td><td>Now</td></tr>
+                                    <tr><td>Plan the week</td><td>Ready</td><td>2 min ago</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <app-data-table data-rows='[{"path":"/notes","name":"notes","kind":"directory","sizeLabel":"—","updatedLabel":"Today"},{"path":"/brief.md","name":"brief.md","kind":"file","sizeLabel":"4 KB","updatedLabel":"Yesterday"}]'></app-data-table>
+
+                        <app-marker variant="separator">Sidebar primitives</app-marker>
+                        <app-sidebar-panel preview style="--sidebar-width:260px">
+                            <app-sidebar-header><app-sidebar-input data-placeholder="Search tasks"></app-sidebar-input></app-sidebar-header>
+                            <app-sidebar-separator></app-sidebar-separator>
+                            <app-sidebar-content>
+                                <app-sidebar-group>
+                                    <app-sidebar-group-label>Workspace</app-sidebar-group-label>
+                                    <app-sidebar-group-content>
+                                        <app-sidebar-menu>
+                                            <app-sidebar-menu-item><app-sidebar-menu-button active>Tasks</app-sidebar-menu-button><app-sidebar-menu-badge>8</app-sidebar-menu-badge></app-sidebar-menu-item>
+                                            <app-sidebar-menu-item><app-sidebar-menu-button>Files</app-sidebar-menu-button></app-sidebar-menu-item>
+                                            <app-sidebar-menu-item><app-sidebar-menu-skeleton></app-sidebar-menu-skeleton></app-sidebar-menu-item>
+                                        </app-sidebar-menu>
+                                    </app-sidebar-group-content>
+                                </app-sidebar-group>
+                            </app-sidebar-content>
+                            <app-sidebar-footer><app-sidebar-menu-button>Account</app-sidebar-menu-button></app-sidebar-footer>
+                            <app-sidebar-rail></app-sidebar-rail>
+                        </app-sidebar-panel>
+
                         <div class="row">
                             <app-popover align="end">
                                 <app-button slot="trigger" variant="outline">Open popover</app-button>
@@ -148,6 +226,14 @@
                                 <div>The semi-autonomous agentic system.</div>
                             </app-hover-card>
                         </div>
+
+                        <app-dialog data-dialog-id="showcase-dialog" data-title="Edit profile" data-description="Make changes to your profile here.">
+                            <app-input data-placeholder="Display name"></app-input>
+                            <app-button slot="footer" variant="outline">Cancel</app-button>
+                            <app-button slot="footer">Save changes</app-button>
+                        </app-dialog>
+                        <app-alert-dialog data-title="Delete task?" data-description="This action cannot be undone." data-action-label="Delete"></app-alert-dialog>
+                        <app-sonner data-toasts='[{"id":"saved","title":"Task saved","description":"Your changes are now live.","action":"Undo"}]'></app-sonner>
                     </div>
                 </div>
             </section>
@@ -178,7 +264,22 @@
                 event.target.pressed = event.detail.pressed;
             });
             document.addEventListener("value-change", (event) => {
-                event.target.value = event.detail.value;
+                const owner = event.composedPath().find((node) => node?.localName?.startsWith("app-"));
+                if (owner) owner.value = event.detail.value;
+            });
+            document.addEventListener("click", (event) => {
+                const trigger = event.target.closest?.("[data-open-dialog]");
+                if (!trigger) return;
+                const dialog = trigger.dataset.openDialog === "alert"
+                    ? document.querySelector("app-alert-dialog")
+                    : document.querySelector("app-dialog");
+                dialog.open = true;
+            });
+            document.addEventListener("close", (event) => {
+                event.target.open = false;
+            });
+            document.addEventListener("response", (event) => {
+                event.target.open = false;
             });
             document.addEventListener("tab-change", (event) => {
                 event.target.value = event.detail.value;

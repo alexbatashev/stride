@@ -33,7 +33,7 @@ async function refreshGoogle(host: GoogleHost): Promise<void> {
 async function connectGoogle(host: GoogleHost): Promise<void> {
   host.error = "";
   try {
-    window.location.assign(await startGoogleAuthorize());
+    window.location.assign(await startGoogleAuthorize(`${window.location.pathname}${window.location.search}`));
   } catch {
     host.error = "Failed to start Google sign in.";
   }
@@ -81,7 +81,7 @@ export function AppSettingsGoogle({
   return (
     <>
       <style>{styles}</style>
-      <app-card title="Google" description="Connect your Google account to give your agents native Gmail, Calendar, and Drive tools, and to trigger automations on new Gmail. Gmail is read and draft only — agents never send mail.">
+      <app-settings-section title="Google" description="Connect your Google account to give your agents native Gmail, Calendar, and Drive tools, and to trigger automations on new Gmail. Gmail is read and draft only — agents never send mail.">
         <div class="status-row">
           {connected
             ? <app-badge>Connected</app-badge>
@@ -111,7 +111,7 @@ export function AppSettingsGoogle({
             : <div><app-button onClick={() => { void connectGoogle(this); }}>Sign in with Google</app-button></div>)
           : ""}
         <p class="error">{error}</p>
-      </app-card>
+      </app-settings-section>
     </>
   );
 }

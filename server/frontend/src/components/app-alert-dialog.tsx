@@ -2,7 +2,8 @@
  * Portions of this component's visual styling are adapted from shadcn/ui.
  * Copyright (c) 2023 shadcn. Licensed under the MIT License.
  */
-import { Component, css } from "@frontiers-labs/argon";
+import { Component, css, onMount } from "@frontiers-labs/argon";
+import { AppButton } from "./app-button.js";
 
 function respond(host: HTMLElement, confirmed: boolean): void {
   host.dispatchEvent(
@@ -28,14 +29,14 @@ const styles = css`
   .dialog {
     background: var(--background, #ffffff);
     border: 1px solid var(--border, #e4e4e7);
-    border-radius: 14px;
+    border-radius: var(--radius-lg, 10px);
     box-shadow: 0 10px 38px rgb(0 0 0 / 18%);
     box-sizing: border-box;
     color: var(--foreground, #09090b);
     display: flex;
     flex-direction: column;
     gap: 8px;
-    max-width: 440px;
+    max-width: 512px;
     padding: 24px;
     width: 100%;
   }
@@ -59,43 +60,7 @@ const styles = css`
     margin-top: 12px;
   }
 
-  button {
-    border-radius: 8px;
-    cursor: pointer;
-    font: inherit;
-    font-size: 0.875rem;
-    font-weight: 500;
-    height: 34px;
-    padding: 0 14px;
-    transition:
-      background-color 140ms ease,
-      border-color 140ms ease,
-      opacity 140ms ease;
-  }
-
-  .cancel {
-    background: var(--background, #ffffff);
-    border: 1px solid var(--border, #e4e4e7);
-    color: var(--foreground, #18181b);
-  }
-
-  .cancel:hover {
-    background: var(--muted, #f4f4f5);
-  }
-
-  .action {
-    background: var(--primary, #18181b);
-    border: 1px solid transparent;
-    color: var(--primary-foreground, #fafafa);
-  }
-
-  .action:hover {
-    opacity: 0.9;
-  }
-
-  :host([variant="destructive"]) .action {
-    background: var(--destructive, #dc2626);
-  }
+  app-button { min-width: 72px; }
 `;
 
 export function AppAlertDialog({
@@ -104,13 +69,22 @@ export function AppAlertDialog({
   description = "",
   cancelLabel = "Cancel",
   actionLabel = "Continue",
+  variant = "default",
 }: {
   open?: boolean;
   title?: string;
   description?: string;
   cancelLabel?: string;
   actionLabel?: string;
+  variant?: string;
 }): Component {
+  onMount(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && open) respond(this, false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  });
   return (
     <>
       <style>{styles}</style>
@@ -119,12 +93,12 @@ export function AppAlertDialog({
           <div class="title">{title}</div>
           <div class="description">{description}</div>
           <div class="footer">
-            <button class="cancel" type="button" onClick={() => respond(this, false)}>
+            <AppButton class="cancel" variant="outline" onClick={() => respond(this, false)}>
               {cancelLabel}
-            </button>
-            <button class="action" type="button" onClick={() => respond(this, true)}>
+            </AppButton>
+            <AppButton class="action" variant={variant === "destructive" ? "destructive" : "default"} onClick={() => respond(this, true)}>
               {actionLabel}
-            </button>
+            </AppButton>
           </div>
         </div>
       </div>

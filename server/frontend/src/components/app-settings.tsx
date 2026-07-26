@@ -7,6 +7,7 @@ import { AppSettingsGoogle } from "./app-settings-google.js";
 import { AppSettingsMemory } from "./app-settings-memory.js";
 import { AppSettingsMcp } from "./app-settings-mcp.js";
 import { AppSettingsModels } from "./app-settings-models.js";
+import { AppSettingsPersonal } from "./app-settings-personal.js";
 import { AppSettingsSkills } from "./app-settings-skills.js";
 import { AppSettingsTelegram } from "./app-settings-telegram.js";
 import { AppSettingsThreads } from "./app-settings-threads.js";
@@ -16,69 +17,44 @@ const styles = css`
     display: block;
     height: 100%;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
   }
 
   .root {
-    box-sizing: border-box;
-    min-height: 100%;
-    padding: 32px 24px 64px;
-  }
-
-  .shell {
-    display: flex;
-    flex-direction: column;
-    gap: 28px;
-    margin: 0 auto;
-    max-width: 920px;
+    height: 100%;
+    min-height: 0;
     width: 100%;
   }
 
-  h1,
-  h2,
-  p {
-    margin: 0;
-  }
-
-  .page-title {
-    color: var(--foreground);
-    font-size: 26px;
-    letter-spacing: -0.02em;
-    line-height: 1.2;
-  }
-
-  .lead {
-    color: var(--muted-foreground);
-    font-size: 14px;
-    line-height: 1.5;
-    margin-top: 6px;
-  }
-
   .layout {
-    align-items: start;
     display: grid;
-    gap: 28px;
-    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-columns: 220px minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
   }
 
   .tabs {
+    background: var(--background);
+    border-right: 1px solid var(--border);
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    position: sticky;
-    top: 0;
+    overflow-y: auto;
+    padding: 12px 8px;
   }
 
   .tab {
     background: transparent;
     border: 0;
-    border-radius: 8px;
-    color: var(--muted-foreground);
+    border-radius: 6px;
+    color: var(--foreground);
     cursor: pointer;
     font: inherit;
     font-size: 14px;
     font-weight: 500;
-    padding: 8px 12px;
+    min-height: 34px;
+    padding: 7px 10px;
     text-align: left;
     transition:
       background-color 140ms ease,
@@ -87,11 +63,13 @@ const styles = css`
   }
 
   .tab:hover {
-    background: var(--accent);
-    color: var(--foreground);
+    background: var(--sidebar-accent, var(--accent));
   }
 
+  .tab:focus-visible { box-shadow: 0 0 0 2px var(--ring-shadow, rgb(24 24 27 / 12%)); outline: none; }
+
   .layout[data-active="connections"] .tab[data-section="connections"],
+  .layout[data-active="personal"] .tab[data-section="personal"],
   .layout[data-active="email"] .tab[data-section="email"],
   .layout[data-active="mcp"] .tab[data-section="mcp"],
   .layout[data-active="files"] .tab[data-section="files"],
@@ -99,25 +77,33 @@ const styles = css`
   .layout[data-active="skills"] .tab[data-section="skills"],
   .layout[data-active="threads"] .tab[data-section="threads"],
   .layout[data-active="models"] .tab[data-section="models"] {
-    background: var(--accent);
+    background: var(--sidebar-accent, var(--accent));
     color: var(--foreground);
     font-weight: 600;
   }
 
   .panels {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
+    background: var(--background);
+    box-sizing: border-box;
     min-width: 0;
+    overflow-y: auto;
+    padding: 24px;
   }
 
   .panel {
     display: none;
     flex-direction: column;
-    gap: 20px;
+    gap: 24px;
+    margin: 0 auto;
+    max-width: 720px;
+    width: 100%;
   }
 
+  .notice { background: var(--accent); border: 1px solid var(--border); border-radius: 6px; color: var(--foreground); font-size: 13px; line-height: 1.4; margin: 0 auto 20px; max-width: 720px; padding: 9px 11px; }
+  .notice:empty { display: none; }
+
   .layout[data-active="connections"] .panel[data-panel="connections"],
+  .layout[data-active="personal"] .panel[data-panel="personal"],
   .layout[data-active="email"] .panel[data-panel="email"],
   .layout[data-active="mcp"] .panel[data-panel="mcp"],
   .layout[data-active="files"] .panel[data-panel="files"],
@@ -128,22 +114,33 @@ const styles = css`
     display: flex;
   }
 
-  @media (max-width: 760px) {
-    .root {
-      padding: 24px 16px 48px;
-    }
-
+  @media (max-width: 767px) {
     .layout {
+      grid-template-rows: auto minmax(0, 1fr);
       grid-template-columns: 1fr;
-      gap: 16px;
     }
 
     .tabs {
+      background: var(--background);
+      border-bottom: 1px solid var(--border);
+      border-right: 0;
       flex-direction: row;
+      min-height: 48px;
       overflow-x: auto;
-      position: static;
+      overflow-y: hidden;
+      padding: 0 8px;
     }
-
+    .tab { align-self: stretch; border-radius: 0; padding: 0 10px; position: relative; }
+    .layout[data-active="connections"] .tab[data-section="connections"]::after,
+    .layout[data-active="personal"] .tab[data-section="personal"]::after,
+    .layout[data-active="email"] .tab[data-section="email"]::after,
+    .layout[data-active="mcp"] .tab[data-section="mcp"]::after,
+    .layout[data-active="files"] .tab[data-section="files"]::after,
+    .layout[data-active="memories"] .tab[data-section="memories"]::after,
+    .layout[data-active="skills"] .tab[data-section="skills"]::after,
+    .layout[data-active="threads"] .tab[data-section="threads"]::after,
+    .layout[data-active="models"] .tab[data-section="models"]::after { background: var(--foreground); bottom: 0; content: ""; height: 2px; inset-inline: 10px; position: absolute; }
+    .panels { padding: 20px 16px 40px; }
   }
 `;
 
@@ -152,14 +149,9 @@ export function AppSettings(): Component {
     <>
       <style>{styles}</style>
       <div class="root">
-        <div class="shell">
-          <header>
-            <h1 class="page-title">Settings</h1>
-            <p class="lead">Manage account integrations S.T.R.I.D.E. uses on your behalf.</p>
-          </header>
-
           <div class="layout" data-active={settings.activeSection}>
             <nav class="tabs" aria-label="Settings sections">
+              <button type="button" class="tab" data-section="personal" onClick={() => { settings.activeSection = "personal"; }}>Personal</button>
               <button type="button" class="tab" data-section="connections" onClick={() => { settings.activeSection = "connections"; }}>Connections</button>
               <button type="button" class="tab" data-section="email" onClick={() => { settings.activeSection = "email"; }}>Email</button>
               <button type="button" class="tab" data-section="mcp" onClick={() => { settings.activeSection = "mcp"; }}>MCP servers</button>
@@ -171,6 +163,10 @@ export function AppSettings(): Component {
             </nav>
 
             <div class="panels">
+              <div class="notice" role="status">{settings.notice}</div>
+              <section class="panel" data-panel="personal">
+                <AppSettingsPersonal />
+              </section>
               <section class="panel" data-panel="connections">
                 <AppSettingsTelegram />
                 <AppSettingsGithub />
@@ -206,7 +202,6 @@ export function AppSettings(): Component {
               </section>
             </div>
           </div>
-        </div>
       </div>
     </>
   );

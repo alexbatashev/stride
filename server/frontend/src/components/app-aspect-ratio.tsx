@@ -35,7 +35,7 @@ export function AppAspectRatio({ ratio = "1" }: { ratio?: string }): Component {
   return (
     <>
       <style>{styles}</style>
-      <div class="frame" ref={frame}>
+      <div class="frame" ref={frame} style={`aspect-ratio:${ratio}`}>
         <slot></slot>
       </div>
     </>

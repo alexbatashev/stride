@@ -496,6 +496,7 @@ async fn handle_send(
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Option::<&str>::None)
+        .agent_path(Option::<&str>::None)
         .execute(&db)
         .await
         .map_err(db_error)?;

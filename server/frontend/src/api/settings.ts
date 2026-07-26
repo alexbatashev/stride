@@ -138,6 +138,29 @@ export type MemorySettings = {
 	memories: Memory[];
 };
 
+export type PersonalSettings = {
+	username: string;
+	full_name: string;
+	personality: string;
+};
+
+export type PersonalSettingsUpdate = {
+	full_name: string;
+	personality: string;
+};
+
+export async function getPersonalSettings(): Promise<PersonalSettings> {
+	return request("/api/settings/personal");
+}
+
+export async function updatePersonalSettings(data: PersonalSettingsUpdate): Promise<PersonalSettings> {
+	return request("/api/settings/personal", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(data),
+	});
+}
+
 export async function getTelegramSettings(): Promise<TelegramSettings> {
 	return request("/api/settings/telegram");
 }
@@ -158,8 +181,8 @@ export async function getGitHubSettings(): Promise<GitHubSettings> {
 	return request("/api/settings/github");
 }
 
-export async function startGitHubAuthorize(): Promise<string> {
-	const response = await request<{ url: string }>("/api/settings/github/authorize");
+export async function startGitHubAuthorize(returnTo: string): Promise<string> {
+	const response = await request<{ url: string }>(`/api/settings/github/authorize?return_to=${encodeURIComponent(returnTo)}`);
 	return response.url;
 }
 
@@ -179,8 +202,8 @@ export async function getGoogleSettings(): Promise<GoogleSettings> {
 	return request("/api/settings/google");
 }
 
-export async function startGoogleAuthorize(): Promise<string> {
-	const response = await request<{ url: string }>("/api/settings/google/authorize");
+export async function startGoogleAuthorize(returnTo: string): Promise<string> {
+	const response = await request<{ url: string }>(`/api/settings/google/authorize?return_to=${encodeURIComponent(returnTo)}`);
 	return response.url;
 }
 

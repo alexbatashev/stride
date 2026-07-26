@@ -15,8 +15,10 @@ const styles = css`
     cursor: pointer;
     display: inline-flex;
     font: inherit;
-    gap: 4px;
-    padding: 0;
+    border-radius: var(--radius-sm, 6px);
+    gap: 6px;
+    margin-left: -4px;
+    padding: 3px 4px;
   }
 
   .chevron {
@@ -34,14 +36,16 @@ const styles = css`
   }
 
   .content {
-    margin-top: 8px;
-    margin-bottom: 16px;
+    margin: 6px 0 8px;
   }
 
   .title {
-    font-weight: bold;
-    font-size: 0.95rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
   }
+
+  button:hover { background: var(--muted); }
+  button:focus-visible { box-shadow: 0 0 0 2px var(--ring-shadow); outline: none; }
 `;
 
 export function AppSpoiler({ title = "Spoiler title", content = "" }: { title?: string; content?: string }): Component {

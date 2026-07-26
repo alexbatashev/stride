@@ -14,13 +14,13 @@ const styles = css`
     align-items: center;
     background: var(--background, #ffffff);
     border: 1px solid var(--input, #e4e4e7);
-    border-radius: 6px;
+    border-radius: 4px;
     box-sizing: border-box;
     color: var(--primary-foreground, #fafafa);
     cursor: pointer;
     display: inline-flex;
     flex: 0 0 auto;
-    height: 18px;
+    height: 16px;
     justify-content: center;
     outline: none;
     padding: 0;
@@ -28,7 +28,8 @@ const styles = css`
       background-color 140ms ease,
       border-color 140ms ease,
       box-shadow 140ms ease;
-    width: 18px;
+    width: 16px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 5%);
   }
 
   button:focus-visible {
@@ -43,8 +44,8 @@ const styles = css`
 
   .check {
     display: none;
-    height: 13px;
-    width: 13px;
+    height: 14px;
+    width: 14px;
   }
 
   button[aria-checked="true"] .check {

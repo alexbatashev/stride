@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 use crate::{
-    db::{MessageFormat, Role, messages, thread_events, threads},
+    db::{MessageFormat, Role, messages, thread_agents, thread_events, threads},
     model_registry,
     runner::{
         AgentEvent, AgentEventKind, AgentPoolError, PartialAgentMessage, RunId, db_error,
@@ -35,6 +35,23 @@ struct AssistantMessageState {
 struct TurnPersistence {
     assistants: HashMap<Uuid, AssistantMessageState>,
     last_root_message_id: Option<Uuid>,
+    tool_calls: Vec<PartialToolCall>,
+    tool_results: HashMap<String, (String, String)>,
+    next_tool_result: usize,
+    tool_calls_message_id: Option<Uuid>,
+    /// Per-subagent persistence, keyed by the subagent's encoded `agent_path`.
+    subagents: HashMap<String, SubagentPersistence>,
+}
+
+/// Accumulates a subagent's assistant text in memory and writes each message
+/// once at commit (D-3c: no per-delta DB writes for subagents). Tool calls and
+/// results persist into the same message columns the root agent uses.
+#[derive(Default)]
+struct SubagentPersistence {
+    content: String,
+    thinking: Option<String>,
+    current_message_id: Option<Uuid>,
+    last_message_id: Option<Uuid>,
     tool_calls: Vec<PartialToolCall>,
     tool_results: HashMap<String, (String, String)>,
     next_tool_result: usize,
@@ -214,6 +231,9 @@ async fn process_thread_event(
     event: ThreadEvent,
 ) -> Result<(), AgentPoolError> {
     let is_root = event.agent_path.is_empty();
+    if !is_root {
+        persist_subagent_event(state, thread_id, persistence, &event).await?;
+    }
     match &event.kind {
         EventKind::MessageStarted {
             message_id,
@@ -232,6 +252,7 @@ async fn process_thread_event(
                 .thinking(Option::<&str>::None)
                 .tool_calls(Option::<&str>::None)
                 .tool_call_id(Option::<&str>::None)
+                .agent_path(Option::<&str>::None)
                 .execute(&db)
                 .await
                 .map_err(db_error)?;
@@ -332,11 +353,11 @@ async fn process_thread_event(
                 let Some((_, result)) = persistence.tool_results.remove(&call.id) else {
                     break;
                 };
-                persist_tool_message(state, thread_id, &call.id, &result).await?;
+                persist_tool_message(state, thread_id, &call.id, &result, None).await?;
                 persistence.next_tool_result += 1;
             }
         }
-        EventKind::RunFinished | EventKind::RunFailed { .. } => {
+        EventKind::RunFinished | EventKind::RunFailed { .. } if is_root => {
             let clock = state.borrow().init.config.clock.clone();
             with_runner(state, thread_id, |runner| {
                 runner.cancel_tx = None;
@@ -346,10 +367,225 @@ async fn process_thread_event(
                 runner.last_used = clock.now_instant();
             });
         }
+        EventKind::AgentSpawned {
+            agent_id,
+            parent_tool_call_id,
+            name,
+            model,
+        } => {
+            // The spawn event carries the *parent's* path; the child's own path
+            // appends its id.
+            let mut agent_path = event.agent_path.clone();
+            agent_path.push(*agent_id);
+            upsert_agent_spawned(
+                state,
+                thread_id,
+                *agent_id,
+                &agent_path,
+                parent_tool_call_id,
+                name,
+                model,
+            )
+            .await?;
+        }
+        EventKind::AgentFinished { agent_id, result } => {
+            mark_agent_finished(state, thread_id, *agent_id, result).await?;
+        }
         _ => {}
     }
 
     emit_thread_event(state, thread_id, event).await;
+    Ok(())
+}
+
+/// Persists a subagent's message/tool events. Assistant text accumulates in
+/// memory and the row is written once at `MessageCommitted`; tool calls/results
+/// land in the same columns the root agent uses, tagged with the subagent's
+/// encoded `agent_path`.
+async fn persist_subagent_event(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    persistence: &mut TurnPersistence,
+    event: &ThreadEvent,
+) -> Result<(), AgentPoolError> {
+    let Some(key) = encode_agent_path(&event.agent_path) else {
+        return Ok(());
+    };
+    match &event.kind {
+        EventKind::MessageStarted {
+            message_id,
+            role: MessageRole::Assistant,
+        } => {
+            let sub = persistence.subagents.entry(key).or_default();
+            sub.content.clear();
+            sub.thinking = None;
+            sub.current_message_id = Some(*message_id);
+        }
+        EventKind::TextDelta { message_id, delta } => {
+            let sub = persistence.subagents.entry(key).or_default();
+            if sub.current_message_id == Some(*message_id) {
+                sub.content.push_str(delta);
+            }
+        }
+        EventKind::ThinkingDelta { message_id, delta } => {
+            let sub = persistence.subagents.entry(key).or_default();
+            if sub.current_message_id == Some(*message_id) {
+                sub.thinking.get_or_insert_with(String::new).push_str(delta);
+            }
+        }
+        EventKind::MessageCommitted { message_id } => {
+            let Some((content, thinking)) = ({
+                let sub = persistence.subagents.entry(key.clone()).or_default();
+                if sub.current_message_id != Some(*message_id) {
+                    None
+                } else {
+                    sub.current_message_id = None;
+                    sub.last_message_id = Some(*message_id);
+                    Some((sub.content.clone(), sub.thinking.clone()))
+                }
+            }) else {
+                return Ok(());
+            };
+            let seq = crate::runner::pool::next_message_seq(state, thread_id)?;
+            let db = state.borrow().init.db.clone();
+            messages::insert()
+                .id(*message_id)
+                .parent_thread(thread_id)
+                .seq(seq)
+                .role(Role::Agent)
+                .content(content.as_str())
+                .content_format(MessageFormat::Markdown)
+                .images(Option::<&str>::None)
+                .thinking(thinking.as_deref())
+                .tool_calls(Option::<&str>::None)
+                .tool_call_id(Option::<&str>::None)
+                .agent_path(Some(key.as_str()))
+                .execute(&db)
+                .await
+                .map_err(db_error)?;
+        }
+        EventKind::ToolCallStarted {
+            tool_call_id,
+            name,
+            arguments,
+        } => {
+            let (message_id, tool_calls_json) = {
+                let sub = persistence.subagents.entry(key.clone()).or_default();
+                if sub.tool_calls_message_id != sub.last_message_id {
+                    sub.tool_calls.clear();
+                    sub.tool_results.clear();
+                    sub.next_tool_result = 0;
+                    sub.tool_calls_message_id = sub.last_message_id;
+                }
+                sub.tool_calls.push(PartialToolCall {
+                    id: tool_call_id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                });
+                (sub.last_message_id, serialize_tool_calls(&sub.tool_calls)?)
+            };
+            if let Some(message_id) = message_id {
+                let db = state.borrow().init.db.clone();
+                messages::update()
+                    .tool_calls(tool_calls_json.as_deref())
+                    .where_(messages::id.eq(message_id))
+                    .execute(&db)
+                    .await
+                    .map_err(db_error)?;
+            }
+        }
+        EventKind::ToolCallFinished {
+            tool_call_id,
+            name,
+            result,
+            ..
+        } => {
+            {
+                let sub = persistence.subagents.entry(key.clone()).or_default();
+                sub.tool_results
+                    .insert(tool_call_id.clone(), (name.clone(), result.clone()));
+            }
+            loop {
+                let ready = {
+                    let sub = persistence.subagents.entry(key.clone()).or_default();
+                    match sub.tool_calls.get(sub.next_tool_result) {
+                        Some(call) => sub
+                            .tool_results
+                            .remove(&call.id)
+                            .map(|(_, result)| (call.id.clone(), result)),
+                        None => None,
+                    }
+                };
+                let Some((call_id, result)) = ready else {
+                    break;
+                };
+                persist_tool_message(state, thread_id, &call_id, &result, Some(key.as_str()))
+                    .await?;
+                persistence
+                    .subagents
+                    .entry(key.clone())
+                    .or_default()
+                    .next_tool_result += 1;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Inserts a `thread_agents` row when a subagent is spawned.
+async fn upsert_agent_spawned(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    agent_id: Uuid,
+    agent_path: &[Uuid],
+    parent_tool_call_id: &str,
+    name: &str,
+    model: &str,
+) -> Result<(), AgentPoolError> {
+    let (db, created_at) = {
+        let state = state.borrow();
+        (
+            state.init.db.clone(),
+            state.init.config.clock.now_unix_millis(),
+        )
+    };
+    let path = encode_agent_path(agent_path).unwrap_or_default();
+    thread_agents::insert()
+        .agent_id(agent_id)
+        .thread_id(thread_id)
+        .agent_path(path.as_str())
+        .parent_tool_call_id(Some(parent_tool_call_id))
+        .name(name)
+        .model(model)
+        .result(Option::<&str>::None)
+        .finished(false)
+        .created_at(created_at)
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
+
+/// Marks a subagent finished and records its final result.
+async fn mark_agent_finished(
+    state: &Rc<RefCell<WorkerState>>,
+    thread_id: Uuid,
+    agent_id: Uuid,
+    result: &str,
+) -> Result<(), AgentPoolError> {
+    let db = state.borrow().init.db.clone();
+    thread_agents::update()
+        .finished(true)
+        .result(Some(result))
+        .where_(
+            thread_agents::agent_id
+                .eq(agent_id)
+                .and(thread_agents::thread_id.eq(thread_id)),
+        )
+        .execute(&db)
+        .await
+        .map_err(db_error)?;
     Ok(())
 }
 
@@ -419,6 +655,7 @@ async fn persist_tool_message(
     thread_id: Uuid,
     tool_call_id: &str,
     content: &str,
+    agent_path: Option<&str>,
 ) -> Result<(), AgentPoolError> {
     let (db, id) = {
         let state = state.borrow();
@@ -440,6 +677,7 @@ async fn persist_tool_message(
         .thinking(Option::<&str>::None)
         .tool_calls(Option::<&str>::None)
         .tool_call_id(Some(tool_call_id))
+        .agent_path(agent_path)
         .execute(&db)
         .await
         .map_err(db_error)?;
@@ -526,6 +764,9 @@ async fn emit_thread_event(state: &Rc<RefCell<WorkerState>>, thread_id: Uuid, sh
         };
         let db = state.init.db.clone();
         let global = state.threads.get(&thread_id).and_then(|runner| {
+            if !shared.agent_path.is_empty() {
+                return None;
+            }
             let running = match &shared.kind {
                 EventKind::RunStarted => Some(true),
                 EventKind::RunFinished | EventKind::RunFailed { .. } | EventKind::RunCancelled => {
@@ -1245,7 +1486,8 @@ mod tests {
                 api: llm::Mock::new()
                     .with_stream_chunks(vec![vec![
                         text_stream_chunk("<h1", None),
-                        text_stream_chunk(r#">Hello<script>alert(1)</script>"#, Some("stop")),
+                        text_stream_chunk(">Hello &am", None),
+                        text_stream_chunk(r#"p; <script>alert(1)</script>"#, Some("stop")),
                     ]])
                     .into(),
                 token: "-".to_string(),
@@ -1295,7 +1537,10 @@ mod tests {
         let rows = rows.rows();
 
         assert_eq!(rows[1].get_text("role"), Some("agent"));
-        assert_eq!(rows[1].get_text("content"), Some("<h1>Helloalert(1)</h1>"));
+        assert_eq!(
+            rows[1].get_text("content"),
+            Some("<h1>Hello &amp; alert(1)</h1>")
+        );
         assert_eq!(rows[1].get_text("content_format"), Some("html"));
     }
 
@@ -2189,5 +2434,278 @@ mod tests {
                 .any(|e| matches!(e.kind, AgentEventKind::ToolCallFinished { .. })),
             "resync must recover ToolFinished"
         );
+    }
+
+    #[tokio::test]
+    async fn persists_subagent_transcript_registry_and_nesting() {
+        use std::collections::VecDeque;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        use stride_agent::{InMemoryInteractionBroker, NoopUsageObserver};
+
+        use crate::runner::pool::{PoolHandle, ThreadRunner, WorkerInit, WorkerState};
+
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+
+        let owner = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        seed_owner_and_thread(&db, owner, thread_id).await;
+
+        let run_id = RunId(Uuid::now_v7());
+        let init = WorkerInit {
+            db: db.clone(),
+            config: Arc::new(AgentConfig {
+                model_registry: ModelRegistry::new(),
+                max_iterations: 4,
+                usage_observer: Arc::new(NoopUsageObserver),
+                ..Default::default()
+            }),
+            server_config: test_server_config(),
+            cipher: SecretCipher::new("test-secret"),
+            tools: config::Tools::default(),
+            mcp_tools: Vec::new(),
+            vfs: None,
+            telegram_bot_token: None,
+            public_url: None,
+            github_runtime: None,
+            email_service: None,
+            google_service: None,
+            system_prompt: "System prompt".to_string(),
+            idle_ttl: Duration::from_secs(60),
+        };
+        let runner = ThreadRunner {
+            owner,
+            agent: None,
+            cancel_tx: None,
+            broker: Arc::new(InMemoryInteractionBroker::default()),
+            queued: VecDeque::new(),
+            last_event_seq: 0,
+            next_message_seq: 0,
+            status: ThreadStatus::Running { run_id },
+            in_progress: None,
+            message_format: MessageFormat::Html,
+            last_used: Instant::now(),
+        };
+        let mut threads = HashMap::new();
+        threads.insert(thread_id, runner);
+        let state = Rc::new(RefCell::new(WorkerState {
+            init,
+            pool: PoolHandle::for_tests(),
+            threads,
+        }));
+
+        let child = Uuid::now_v7();
+        let grandchild = Uuid::now_v7();
+        let child_msg = Uuid::now_v7();
+        let grandchild_msg = Uuid::now_v7();
+
+        let mut persistence = TurnPersistence::default();
+        let events = vec![
+            // Root spawns `child`.
+            (
+                vec![],
+                EventKind::AgentSpawned {
+                    agent_id: child,
+                    parent_tool_call_id: "root-call".to_string(),
+                    name: "Research flights".to_string(),
+                    model: "fast".to_string(),
+                },
+            ),
+            // Child streams an assistant message (accumulated, committed once).
+            (
+                vec![child],
+                EventKind::MessageStarted {
+                    message_id: child_msg,
+                    role: MessageRole::Assistant,
+                },
+            ),
+            (
+                vec![child],
+                EventKind::TextDelta {
+                    message_id: child_msg,
+                    delta: "hello ".to_string(),
+                },
+            ),
+            (
+                vec![child],
+                EventKind::TextDelta {
+                    message_id: child_msg,
+                    delta: "world".to_string(),
+                },
+            ),
+            (
+                vec![child],
+                EventKind::MessageCommitted {
+                    message_id: child_msg,
+                },
+            ),
+            // Child runs a tool.
+            (
+                vec![child],
+                EventKind::ToolCallStarted {
+                    tool_call_id: "t1".to_string(),
+                    name: "web_search".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            ),
+            (
+                vec![child],
+                EventKind::ToolCallFinished {
+                    tool_call_id: "t1".to_string(),
+                    name: "web_search".to_string(),
+                    result: "search results".to_string(),
+                    is_error: false,
+                },
+            ),
+            // Child spawns a grandchild (nesting: spawn event carries child path).
+            (
+                vec![child],
+                EventKind::AgentSpawned {
+                    agent_id: grandchild,
+                    parent_tool_call_id: "child-call".to_string(),
+                    name: "Compare prices".to_string(),
+                    model: "fast".to_string(),
+                },
+            ),
+            (
+                vec![child, grandchild],
+                EventKind::MessageStarted {
+                    message_id: grandchild_msg,
+                    role: MessageRole::Assistant,
+                },
+            ),
+            (
+                vec![child, grandchild],
+                EventKind::TextDelta {
+                    message_id: grandchild_msg,
+                    delta: "nested answer".to_string(),
+                },
+            ),
+            (
+                vec![child, grandchild],
+                EventKind::MessageCommitted {
+                    message_id: grandchild_msg,
+                },
+            ),
+            (
+                vec![child, grandchild],
+                EventKind::AgentFinished {
+                    agent_id: grandchild,
+                    result: "nested answer".to_string(),
+                },
+            ),
+            (
+                vec![child],
+                EventKind::AgentFinished {
+                    agent_id: child,
+                    result: "final answer".to_string(),
+                },
+            ),
+        ];
+
+        for (agent_path, kind) in events {
+            let event = ThreadEvent {
+                id: Uuid::now_v7(),
+                run_id: run_id.0,
+                agent_path,
+                kind,
+            };
+            process_thread_event(
+                &state,
+                thread_id,
+                run_id,
+                MessageFormat::Html,
+                &mut persistence,
+                event,
+            )
+            .await
+            .unwrap();
+        }
+
+        // (a) main chat (agent_path IS NULL) has no subagent rows.
+        let root_rows = db
+            .query_with_params(
+                "SELECT COUNT(*) AS n FROM messages WHERE parent_thread = ? AND agent_path IS NULL",
+                vec![Value::Uuid(thread_id)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(root_rows.rows()[0].get_int("n"), Some(0));
+
+        // (b) registry lists both agents with name/model/finished/result.
+        let agents = db
+            .query_with_params(
+                "SELECT agent_id, agent_path, name, model, finished, result FROM thread_agents \
+                 WHERE thread_id = ? ORDER BY created_at ASC",
+                vec![Value::Uuid(thread_id)],
+            )
+            .await
+            .unwrap();
+        let agents = agents.rows();
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents[0].get_text("name"), Some("Research flights"));
+        assert_eq!(agents[0].get_text("model"), Some("fast"));
+        assert_eq!(
+            agents[0].get_text("agent_path"),
+            Some(child.to_string().as_str())
+        );
+        assert_eq!(agents[0].get_text("result"), Some("final answer"));
+        assert_eq!(
+            agents[1].get_text("agent_path"),
+            Some(format!("{child}/{grandchild}").as_str())
+        );
+        assert_eq!(agents[1].get_text("result"), Some("nested answer"));
+
+        // (c) child transcript: assistant text committed once, tool call + result
+        // persisted with content_format = markdown.
+        let child_key = child.to_string();
+        let child_rows = db
+            .query_with_params(
+                "SELECT role, content, content_format, tool_calls, tool_call_id FROM messages \
+                 WHERE parent_thread = ? AND agent_path = ? ORDER BY seq ASC",
+                vec![Value::Uuid(thread_id), Value::Text(child_key.clone())],
+            )
+            .await
+            .unwrap();
+        let child_rows = child_rows.rows();
+        assert_eq!(child_rows.len(), 2);
+        assert_eq!(child_rows[0].get_text("role"), Some("agent"));
+        assert_eq!(child_rows[0].get_text("content"), Some("hello world"));
+        assert_eq!(child_rows[0].get_text("content_format"), Some("markdown"));
+        assert!(
+            child_rows[0]
+                .get_text("tool_calls")
+                .unwrap()
+                .contains("web_search")
+        );
+        assert_eq!(child_rows[1].get_text("role"), Some("tool"));
+        assert_eq!(child_rows[1].get_text("content"), Some("search results"));
+        assert_eq!(child_rows[1].get_text("tool_call_id"), Some("t1"));
+
+        // (d) transcript endpoint prefix filter: querying the child returns its own
+        // messages plus the grandchild's (agent_path = child OR child/%), proving
+        // the UI-visible data is complete without any journaled deltas.
+        let prefix = format!("{child}/");
+        let descendants = db
+            .query_with_params(
+                "SELECT content FROM messages WHERE parent_thread = ? \
+                 AND (agent_path = ? OR agent_path LIKE ? || '%') ORDER BY seq ASC",
+                vec![
+                    Value::Uuid(thread_id),
+                    Value::Text(child_key),
+                    Value::Text(prefix),
+                ],
+            )
+            .await
+            .unwrap();
+        let contents: Vec<_> = descendants
+            .rows()
+            .iter()
+            .filter_map(|r| r.get_text("content").map(str::to_string))
+            .collect();
+        assert!(contents.iter().any(|c| c == "hello world"));
+        assert!(contents.iter().any(|c| c == "nested answer"));
     }
 }

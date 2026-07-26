@@ -21,15 +21,15 @@ const styles = css`
   input {
     background: var(--background, transparent);
     border: 1px solid var(--input, #e4e4e7);
-    border-radius: 8px;
+    border-radius: var(--radius-md, 8px);
     box-sizing: border-box;
     color: var(--foreground, #09090b);
     font: inherit;
     font-size: 1rem;
-    height: 32px;
+    height: 36px;
     min-width: 0;
     outline: none;
-    padding: 4px 10px;
+    padding: 4px 12px;
     transition:
       border-color 140ms ease,
       box-shadow 140ms ease,

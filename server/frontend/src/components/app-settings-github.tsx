@@ -54,7 +54,7 @@ async function connectWithPat(host: GitHubHost, form: HTMLFormElement): Promise<
 async function connectGitHub(host: GitHubHost): Promise<void> {
   host.error = "";
   try {
-    window.location.assign(await startGitHubAuthorize());
+    window.location.assign(await startGitHubAuthorize(`${window.location.pathname}${window.location.search}`));
   } catch {
     host.error = "Failed to start GitHub sign in.";
   }
@@ -130,7 +130,7 @@ export function AppSettingsGithub({
   return (
     <>
       <style>{styles}</style>
-      <app-card title="GitHub" description="Give your agents the official GitHub MCP tools for repositories, issues, and pull requests. Sign in with GitHub, or paste a personal access token if your server has no GitHub app configured.">
+      <app-settings-section title="GitHub" description="Give your agents the official GitHub MCP tools for repositories, issues, and pull requests. Sign in with GitHub, or paste a personal access token if your server has no GitHub app configured.">
         <div class="status-row">
           {connected
             ? <app-badge>Connected</app-badge>
@@ -177,12 +177,12 @@ export function AppSettingsGithub({
                 <p class="muted">
                   Create a token with the scopes your agents need (for example <code>repo</code> and <code>read:org</code>) at github.com/settings/tokens. It is encrypted at rest and forwarded only to the GitHub MCP server.
                 </p>
-                <div class="actions"><app-button>Connect with token</app-button></div>
+                <div class="actions"><app-button type="submit">Connect with token</app-button></div>
               </form>
             </>
           )}
         <p class="error">{error}</p>
-      </app-card>
+      </app-settings-section>
     </>
   );
 }

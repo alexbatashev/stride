@@ -27,7 +27,6 @@ const VERSIONED_ASSETS: &[&str] = &[
     "pages/threads-page.js",
     "pages/files-page.js",
     "pages/automations-page.js",
-    "pages/settings-page.js",
     "pages/archived-page.js",
 ];
 

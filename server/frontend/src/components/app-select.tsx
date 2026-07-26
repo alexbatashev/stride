@@ -21,7 +21,7 @@ const styles = css`
     align-items: center;
     background: var(--background, #ffffff);
     border: 1px solid var(--input, #e4e4e7);
-    border-radius: 8px;
+    border-radius: var(--radius-md, 8px);
     box-sizing: border-box;
     color: var(--foreground, #09090b);
     cursor: pointer;
@@ -29,10 +29,10 @@ const styles = css`
     font: inherit;
     font-size: 0.875rem;
     gap: 8px;
-    height: 32px;
+    height: 36px;
     justify-content: space-between;
     outline: none;
-    padding: 0 10px;
+    padding: 0 12px;
     transition:
       border-color 140ms ease,
       box-shadow 140ms ease;
@@ -145,7 +145,7 @@ export function AppSelect({
           this.toggleAttribute("open", open);
         }}
       >
-        <span class={current ? "" : "placeholder"}>{current ? current.label : placeholder}</span>
+        <span class={current !== undefined ? "" : "placeholder"}>{current !== undefined ? current.label : placeholder}</span>
         <span class="chevron" aria-hidden="true">
           <IconChevronDown />
         </span>

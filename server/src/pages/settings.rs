@@ -1,25 +1,23 @@
-use std::sync::Arc;
+use axum::response::Redirect;
 
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::{Html, IntoResponse, Redirect, Response},
-};
-
-use crate::{ServerState, api::threads};
-
-pub(super) fn page_script() -> String {
-    super::module_script("pages/settings-page.js")
+pub async fn settings() -> Redirect {
+    Redirect::temporary("/threads?settings=open")
 }
 
-pub async fn settings(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    let data = match threads::thread_page_data(&state, &headers, None).await {
-        Ok(data) => data,
-        Err(threads::ThreadApiError::Auth(_)) => {
-            return Redirect::to("/auth/login").into_response();
-        }
-        Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+#[cfg(test)]
+mod tests {
+    use axum::{http::header, response::IntoResponse};
 
-    Html(super::render_settings_page(&data)).into_response()
+    #[tokio::test]
+    async fn legacy_settings_route_opens_the_dialog_on_threads() {
+        let response = super::settings().await.into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::TEMPORARY_REDIRECT
+        );
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/threads?settings=open"
+        );
+    }
 }

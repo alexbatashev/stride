@@ -12,7 +12,7 @@ const styles = css`
   .skeleton {
     animation: pulse 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
     background: var(--muted, #f4f4f5);
-    border-radius: 8px;
+    border-radius: var(--radius-md, 8px);
     height: 100%;
     width: 100%;
   }

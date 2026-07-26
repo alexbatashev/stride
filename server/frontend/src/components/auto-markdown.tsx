@@ -1,4 +1,4 @@
-import { Component, css, effect, ref } from "@frontiers-labs/argon";
+import { Component, css, effect } from "@frontiers-labs/argon";
 
 const styles = css`
   :host {
@@ -147,9 +147,8 @@ const styles = css`
   }
 
   iframe {
-    border: 1px solid var(--border, #d0d0d0);
+    border: 0;
     overflow: hidden;
-    min-height: 320px;
     width: 100%;
   }
 
@@ -178,24 +177,62 @@ export function AutoMarkdown({
   text?: string;
   format?: string;
 }): Component {
-  const host = ref<HTMLDivElement>();
   effect(() => {
-    if (host.current) {
+    let cleanupFrames: (() => void) | undefined;
+    let connectedFrames: HTMLIFrameElement[] = [];
+    let contentObserver: MutationObserver | undefined;
+    let hostObserver: MutationObserver | undefined;
+    const postProcess = (content: HTMLElement) => {
+      const needsTableWrap = [...content.querySelectorAll("table")]
+        .some((table) => !table.parentElement?.classList.contains("table-wrap"));
+      if (needsTableWrap) {
+        wrapTables(content);
+      }
+      const frames = [...content.querySelectorAll("iframe")];
+      const framesChanged = frames.length !== connectedFrames.length
+        || frames.some((frame, index) => frame !== connectedFrames[index]);
+      if (framesChanged) {
+        cleanupFrames?.();
+        connectedFrames = frames;
+        cleanupFrames = connectWidgetFrames(content);
+      }
+    };
+    const render = () => {
+      const content = this.firstElementChild as HTMLElement | undefined;
+      if (!content) return false;
       const isHtml = format === "html";
       if (isHtml) {
-        host.current.replaceChildren(sanitizeHtmlFragment(text));
-        decodeCodeBlockText(host.current);
+        const fragment = sanitizeHtmlFragment(text);
+        const rendered = document.createElement("div");
+        rendered.append(fragment.cloneNode(true));
+        if (content.innerHTML !== rendered.innerHTML) {
+          content.replaceChildren(fragment);
+        }
       } else {
-        host.current.innerHTML = renderMarkdown(text);
+        content.innerHTML = renderMarkdown(text);
       }
-      wrapTables(host.current);
-      return connectWidgetFrames(host.current);
+      postProcess(content);
+      contentObserver?.disconnect();
+      contentObserver = new MutationObserver(() => postProcess(content));
+      contentObserver.observe(content, { childList: true, subtree: true });
+      return true;
+    };
+    if (!render()) {
+      hostObserver = new MutationObserver(() => {
+        if (!render()) return;
+        hostObserver?.disconnect();
+      });
+      hostObserver.observe(this, { childList: true });
     }
+    return () => {
+      hostObserver?.disconnect();
+      contentObserver?.disconnect();
+      cleanupFrames?.();
+    };
   });
   return (
     <>
-      <style>{styles}</style>
-      <div ref={host}>{text}</div>
+      <slot></slot>
     </>
   );
 }
@@ -534,19 +571,6 @@ function sanitizeMediaSrc(src: string): boolean {
   }
 }
 
-function decodeCodeBlockText(root: HTMLElement): void {
-  for (const code of root.querySelectorAll("pre code")) {
-    code.textContent = unescapeHtml(code.textContent ?? "");
-  }
-
-  for (const pre of root.querySelectorAll("pre")) {
-    if (pre.querySelector("code")) {
-      continue;
-    }
-    pre.textContent = unescapeHtml(pre.textContent ?? "");
-  }
-}
-
 type WidgetHeightMessage = {
   type: "stride-widget-height";
   height: number;
@@ -556,6 +580,12 @@ type WidgetHeightMessage = {
 function connectWidgetFrames(root: HTMLElement): () => void {
   const frames = [...root.querySelectorAll("iframe")];
   for (const frame of frames) {
+    frame.style.border = "0";
+    frame.style.boxSizing = "border-box";
+    frame.style.display = "block";
+    frame.style.maxWidth = "100%";
+    frame.style.overflow = "hidden";
+    frame.style.width = "100%";
     frame.setAttribute("scrolling", "no");
   }
 
@@ -567,7 +597,7 @@ function connectWidgetFrames(root: HTMLElement): () => void {
     if (!frame) {
       return;
     }
-    const height = Math.max(320, Math.min(4000, Math.ceil(event.data.height)));
+    const height = Math.max(0, Math.min(4000, Math.ceil(event.data.height)));
     frame.style.height = `${height}px`;
   };
 

@@ -162,7 +162,7 @@ export function AppSettingsMcp(): Component {
   return (
     <>
       <style>{styles}</style>
-      <app-card
+      <app-settings-section
         title="MCP servers"
         description="Add remote HTTP MCP servers for your agents. Tools from these servers load alongside the global MCP servers."
       >
@@ -199,9 +199,9 @@ export function AppSettingsMcp(): Component {
             </div>
           )
           : <p class="muted">{loaded ? "No custom MCP servers yet." : "Loading servers..."}</p>}
-      </app-card>
+      </app-settings-section>
 
-      <app-card title="Add MCP server" description="Only Streamable HTTP MCP servers are supported here. Authorization values are stored but not shown again.">
+      <app-settings-section title="Add MCP server" description="Only Streamable HTTP MCP servers are supported here. Authorization values are stored but not shown again.">
         <form
           onSubmit={(event: Event) => {
             event.preventDefault();
@@ -228,10 +228,10 @@ export function AppSettingsMcp(): Component {
           </div>
           <label class="full">Bearer token<input name="bearer_token" type="password" autocomplete="new-password" /></label>
           <label class="full">Headers JSON<textarea name="headers_json" placeholder='{"X-Tenant":"acme"}'></textarea></label>
-          <div class="actions"><app-button>Add server</app-button></div>
+          <div class="actions"><app-button type="submit">Add server</app-button></div>
           <p class="error">{error}</p>
         </form>
-      </app-card>
+      </app-settings-section>
     </>
   );
 }

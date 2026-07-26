@@ -1,5 +1,9 @@
 import { store } from "@frontiers-labs/argon";
 
 export const settings = store({
-  activeSection: "connections",
+  open: false,
+  activeSection: "personal",
+  notice: "",
+  username: "",
+  fullName: "",
 });

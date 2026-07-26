@@ -177,7 +177,7 @@ export function AppSettingsSkills(): Component {
   return (
     <>
       <style>{styles}</style>
-      <app-card
+      <app-settings-section
         title="Skills"
         description="Skills are reusable instruction sets your agents load on demand. Built-in skills are always available and are not listed here."
       >
@@ -237,11 +237,11 @@ export function AppSettingsSkills(): Component {
             </div>
           )
           : <p class="muted">{loaded ? "No skills yet." : "Loading skills..."}</p>}
-      </app-card>
+      </app-settings-section>
 
       {editingId
         ? (
-          <app-card title="Edit skill" description="Update the title, description, or content. The skill name cannot be changed.">
+          <app-settings-section title="Edit skill" description="Update the title, description, or content. The skill name cannot be changed.">
             <form
               onSubmit={(event: Event) => {
                 event.preventDefault();
@@ -267,7 +267,7 @@ export function AppSettingsSkills(): Component {
               <label>Description<input name="description" required value={editingDescription} autocomplete="off" /></label>
               <label class="skill-content">Content<textarea name="content" required>{editingContent}</textarea></label>
               <div class="actions">
-                <app-button>Save changes</app-button>
+                <app-button type="submit">Save changes</app-button>
                 <app-button
                   variant="outline"
                   onClick={() => {
@@ -283,10 +283,10 @@ export function AppSettingsSkills(): Component {
               </div>
               <p class="error">{error}</p>
             </form>
-          </app-card>
+          </app-settings-section>
         )
         : (
-          <app-card title="Add skill" description="The name is a unique slug, e.g. python-debugging. Content is Markdown instructions the agent follows when this skill is active.">
+          <app-settings-section title="Add skill" description="The name is a unique slug, e.g. python-debugging. Content is Markdown instructions the agent follows when this skill is active.">
             <form
               onSubmit={(event: Event) => {
                 event.preventDefault();
@@ -307,14 +307,14 @@ export function AppSettingsSkills(): Component {
                   });
               }}
             >
-              <label>Name<input name="name" required placeholder="python-debugging" autocomplete="off" pattern="[a-z][a-z0-9-]{1,63}" /></label>
+              <label>Name<input name="name" required placeholder="python-debugging" autocomplete="off" pattern="[a-z](?:[a-z0-9]|-){1,63}" /></label>
               <label>Title<input name="title" required placeholder="Python Debugging Guide" autocomplete="off" /></label>
               <label>Description<input name="description" required placeholder="One or two sentence summary used for search." autocomplete="off" /></label>
               <label class="skill-content">Content<textarea name="content" required placeholder="Markdown instructions, context, or steps the agent should follow."></textarea></label>
-              <div class="actions"><app-button>Add skill</app-button></div>
+              <div class="actions"><app-button type="submit">Add skill</app-button></div>
               <p class="error">{error}</p>
             </form>
-          </app-card>
+          </app-settings-section>
         )}
     </>
   );
