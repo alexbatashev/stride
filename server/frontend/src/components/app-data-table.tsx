@@ -49,7 +49,8 @@ export function AppDataTable({
           if (box.type !== "checkbox") return;
           let next: string[];
           if (box.dataset.select === "all") {
-            next = box.checked ? rowItems.map((row) => row.path) : [];
+            const currentRows = parseRows(rows);
+            next = box.checked ? currentRows.map((row) => row.path) : [];
           } else {
             next = selected.filter((id) => id !== box.dataset.rowId);
             if (box.checked) next.push(box.dataset.rowId!);

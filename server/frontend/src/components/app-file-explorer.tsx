@@ -26,7 +26,9 @@ import {
   handleSelectionChange,
   managerLoad,
   openMenu,
+  reloadFileExplorer,
   restoreVersionAndReload,
+  syncFileSelectionControls,
   type FileItem,
   type FileMenuTarget,
   type FileVersionItem,
@@ -91,14 +93,6 @@ export function AppFileExplorer({
   menuTarget?: FileMenuTarget | null;
   actionItems?: string[];
 }): Component {
-  const reload = () => {
-    if (this.threadId) {
-      this._loadedKey = "";
-      return managerLoad(this as unknown as ManagerHost);
-    }
-    return browserLoad(this as VersionHost);
-  };
-
   onMount(() => {
     if (!this.threadId) void browserLoad(this);
     return () => closePreview(this as VersionHost);
@@ -131,8 +125,7 @@ export function AppFileExplorer({
   effect(() => {
     const root = this.shadowRoot!;
     const rootPath = threadId ? AGENT_HOME : USER_HOME;
-    root.querySelector('[data-tool="rename"]')?.toggleAttribute("disabled", files.selected.length !== 1);
-    root.querySelector('[data-tool="remove"]')?.toggleAttribute("disabled", files.selected.length === 0);
+    syncFileSelectionControls(this as unknown as ManagerHost);
     root.querySelector('[data-tool="up"]')?.toggleAttribute("disabled", path === rootPath);
   });
 
@@ -143,7 +136,7 @@ export function AppFileExplorer({
     const request = this.threadId
       ? createWorkspaceDirectory(this.threadId, target)
       : createDirectory(target);
-    void request.then(() => reload()).catch(() => {
+    void request.then(() => reloadFileExplorer(this as VersionHost)).catch(() => {
       this.error = "Failed to create folder.";
     });
   };
@@ -156,7 +149,7 @@ export function AppFileExplorer({
         for (const target of files.selected) {
           await (this.threadId ? deleteWorkspaceEntry(this.threadId, target) : deleteEntry(target));
         }
-        await reload();
+        await reloadFileExplorer(this as VersionHost);
       } catch {
         this.error = "Failed to remove selected files.";
       }
@@ -172,7 +165,7 @@ export function AppFileExplorer({
     const request = this.threadId
       ? uploadWorkspaceFiles(this.threadId, picked, this.path)
       : uploadFiles(picked, this.path);
-    void request.then(() => reload()).catch(() => {
+    void request.then(() => reloadFileExplorer(this as VersionHost)).catch(() => {
       this.error = "Upload failed.";
     });
   };
@@ -183,7 +176,7 @@ export function AppFileExplorer({
     if (!entry) return;
     const name = window.prompt("New name:", entry.name)?.trim();
     if (!name || name === entry.name) return;
-    void renameEntry(pathToRename, name).then(() => reload()).catch(() => {
+    void renameEntry(pathToRename, name).then(() => reloadFileExplorer(this as VersionHost)).catch(() => {
       this.error = "Failed to rename.";
     });
   };
@@ -227,7 +220,7 @@ export function AppFileExplorer({
           onClick={() => {
             const root = this.threadId ? AGENT_HOME : USER_HOME;
             this.path = parentPath(this.path as string, root);
-            void reload();
+            void reloadFileExplorer(this as VersionHost);
           }}
         >
           <IconChevronLeft />
@@ -241,11 +234,14 @@ export function AppFileExplorer({
         loading={loading}
         loadingText="Loading files..."
         emptyText={emptyText}
-        on:selection-change={(event: Event) => handleSelectionChange(event)}
+        on:selection-change={(event: Event) => {
+          handleSelectionChange(event);
+          syncFileSelectionControls(this as unknown as ManagerHost);
+        }}
         on:row-action={(event: Event) =>
           handleFileRowAction(this as VersionHost, event, (entry) => {
             this.path = entry.path;
-            void reload();
+            void reloadFileExplorer(this as VersionHost);
           })
         }
       />

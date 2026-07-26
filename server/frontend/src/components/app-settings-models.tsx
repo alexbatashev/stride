@@ -1,4 +1,4 @@
-import { Component, css, onMount, state } from "@frontiers-labs/argon";
+import { Component, css, effect, onMount, ref, state } from "@frontiers-labs/argon";
 import {
   createProvider,
   createUserModel,
@@ -91,7 +91,7 @@ async function submitProvider(form: HTMLFormElement): Promise<void> {
   });
 }
 
-async function submitUserModel(form: HTMLFormElement): Promise<void> {
+async function submitUserModel(form: HTMLFormElement, vision: boolean): Promise<void> {
   const data = new FormData(form);
   await createUserModel({
     name: String(data.get("name") ?? "").trim(),
@@ -100,7 +100,7 @@ async function submitUserModel(form: HTMLFormElement): Promise<void> {
     display_name: String(data.get("display_name") ?? "").trim() || null,
     description: String(data.get("description") ?? "").trim() || null,
     reasoning_effort: String(data.get("reasoning_effort") ?? "").trim() || null,
-    vision: data.get("vision") === "on",
+    vision,
   });
 }
 
@@ -254,6 +254,15 @@ export function AppSettingsModels(): Component {
   let agentSettings = state(DEFAULT_AGENT_SETTINGS);
   let agentSettingsError = state("");
   let agentSettingsSaved = state(false);
+  let modelVision = state(false);
+  const guidelinesArea = ref<HTMLTextAreaElement>();
+
+  effect(() => {
+    const area = guidelinesArea.current;
+    if (area && area.value !== agentSettings.subagent_guidelines) {
+      area.value = agentSettings.subagent_guidelines;
+    }
+  });
 
   onMount(() => {
     void Promise.all([
@@ -445,9 +454,10 @@ export function AppSettingsModels(): Component {
             event.preventDefault();
             const form = event.target as HTMLFormElement;
             error = "";
-            void submitUserModel(form)
+            void submitUserModel(form, modelVision)
               .then(() => {
                 form.reset();
+                modelVision = false;
                 return Promise.all([
                   listModels(),
                   listProviders(),
@@ -485,7 +495,18 @@ export function AppSettingsModels(): Component {
               <option value="high">High</option>
               <option value="xhigh">XHigh</option>
             </select></label>
-            <label class="checkbox-row"><app-checkbox name="vision" value="on" /> Supports vision</label>
+            <label class="checkbox-row">
+              <app-checkbox
+                name="vision"
+                value="on"
+                checked={modelVision}
+                on:change={(event: Event) => {
+                  const checked = (event as CustomEvent<{ checked: boolean }>).detail?.checked;
+                  if (typeof checked === "boolean") modelVision = checked;
+                }}
+              />
+              Supports vision
+            </label>
           </div>
           <div class="actions"><app-button type="submit">Add model</app-button></div>
         </form>
@@ -499,7 +520,7 @@ export function AppSettingsModels(): Component {
               <app-checkbox
                 data-model={model.key}
                 checked={model.checked}
-                onChange={(event: Event) => {
+                on:change={(event: Event) => {
                   const checked = (event as CustomEvent<{ checked: boolean }>).detail?.checked;
                   if (typeof checked !== "boolean") return;
                   const current = new Set(agentSettings.subagent_allowed_models);
@@ -521,6 +542,7 @@ export function AppSettingsModels(): Component {
         </div>
         <label class="full skill-content">Model selection guidelines
           <textarea
+            ref={guidelinesArea}
             name="subagent-guidelines"
             placeholder="Describe when to use faster vs stronger models, cost constraints, or task-specific preferences."
             onInput={(event: Event) => {
@@ -530,7 +552,7 @@ export function AppSettingsModels(): Component {
               };
               agentSettingsSaved = false;
             }}
-          >{agentSettings.subagent_guidelines}</textarea>
+          ></textarea>
         </label>
         {agentSettings.using_server_defaults
           ? <p class="muted">Showing the server default from config. Save to keep your own copy; your settings will not change when admins update config.</p>

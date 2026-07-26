@@ -21,7 +21,7 @@ function itemVariant(item: string | MenuItem): string {
 const styles = css`
   :host {
     position: fixed;
-    z-index: 90;
+    z-index: 300;
   }
 
   .menu {

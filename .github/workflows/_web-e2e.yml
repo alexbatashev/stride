@@ -1,0 +1,67 @@
+name: Web E2E
+
+on:
+  workflow_call:
+    secrets:
+      STRIDE_OPENROUTER_API_KEY:
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  web-e2e:
+    name: Real-server web E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y capnproto libssl-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: server/frontend/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        run: pnpm --dir server/frontend install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm --dir server/frontend exec playwright install --with-deps chromium
+
+      - name: Require OpenRouter key
+        env:
+          STRIDE_OPENROUTER_API_KEY: ${{ secrets.STRIDE_OPENROUTER_API_KEY }}
+        run: test -n "$STRIDE_OPENROUTER_API_KEY"
+
+      - name: Run frontend regression suite
+        run: pnpm --dir server/frontend test
+
+      - name: Run real-server browser suite
+        env:
+          STRIDE_OPENROUTER_API_KEY: ${{ secrets.STRIDE_OPENROUTER_API_KEY }}
+          STRIDE_JWT_SECRET: d4f56c2947aef2b3fd3c9deceef3f0266e404b5cb9b2638eba73ffcaf852b6e3
+        run: pnpm --dir server/frontend test:e2e
+
+      - name: Upload browser artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stride-web-e2e
+          path: |
+            /tmp/stride-playwright-e2e-results
+            server/frontend/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7

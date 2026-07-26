@@ -216,12 +216,12 @@ const styles = css`
     }
   }
   @media (max-width: 767px) {
-    :host([hydrated]) app-sidebar-panel[state="open"] .scrim {
+    :host([hydrated]) .scrim[data-open="true"] {
       background: rgb(0 0 0 / 36%);
       display: block;
       inset: 0;
       position: fixed;
-      z-index: -1;
+      z-index: 40;
     }
     .icon {
       flex-basis: 20px;
@@ -926,12 +926,6 @@ export function AppSidebar({
       <style>{styles}</style>
       <style>{accountFooterStyles}</style>
       <AppSidebarPanel state={sidebar.status}>
-        <button
-          class="scrim"
-          type="button"
-          aria-label="Close sidebar"
-          onClick={() => (sidebar.status = "hidden")}
-        ></button>
         <AppSidebarHeader>
           <div class="brand">
             <span class="mark" aria-hidden="true">
@@ -990,6 +984,7 @@ export function AppSidebar({
             <button
               class="trigger"
               type="button"
+              aria-label="Account menu"
               aria-haspopup="menu"
               aria-expanded={accountOpen ? "true" : "false"}
               title={collapsed ? settings.fullName || fullName : "Account menu"}
@@ -1045,6 +1040,13 @@ export function AppSidebar({
           on:toggle={() => toggleSidebar()}
         />
       </AppSidebarPanel>
+      <button
+        class="scrim"
+        type="button"
+        aria-label="Close sidebar"
+        data-open={sidebar.status === "open"}
+        onClick={() => (sidebar.status = "hidden")}
+      ></button>
     </>
   );
 }
