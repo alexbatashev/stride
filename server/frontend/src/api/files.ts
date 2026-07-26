@@ -32,7 +32,9 @@ export type UploadedFile = {
 	size: number;
 };
 
-export async function listFiles(path = ''): Promise<FileList> {
+export const USER_HOME = '/home/user';
+
+export async function listFiles(path = USER_HOME): Promise<FileList> {
 	return request(`/api/files?path=${encodeURIComponent(path)}`);
 }
 
@@ -80,7 +82,7 @@ export async function downloadFileVersion(path: string, version?: number): Promi
 	return response.blob();
 }
 
-export async function uploadFiles(files: File[], path = ''): Promise<UploadedFile[]> {
+export async function uploadFiles(files: File[], path = USER_HOME): Promise<UploadedFile[]> {
 	const token = readToken();
 	const headers = new Headers();
 	headers.set('Accept', 'application/json');

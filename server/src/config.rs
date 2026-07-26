@@ -250,6 +250,14 @@ pub struct Tools {
     pub web_search: Option<WebSearch>,
     pub firecrawl: Option<Firecrawl>,
     pub python: Option<Python>,
+    pub commands: Option<Commands>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Commands {
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    pub network: Option<PythonNetwork>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -625,6 +633,25 @@ mod tests {
         assert_eq!(python.max_memory_bytes, Some(67_108_864));
         assert_eq!(python.max_cpu_fuel, Some(1000));
         assert!(matches!(python.network.unwrap(), PythonNetwork::Blocked));
+    }
+
+    #[test]
+    fn command_catalog_loads_from_config() {
+        let cfg: Config = toml::from_str(
+            r#"
+            providers = {}
+            models = {}
+
+            [tools.commands]
+            enabled = ["pandoc"]
+            network = "Blocked"
+            "#,
+        )
+        .unwrap();
+
+        let commands = cfg.tools.unwrap().commands.unwrap();
+        assert_eq!(commands.enabled, vec!["pandoc"]);
+        assert!(matches!(commands.network.unwrap(), PythonNetwork::Blocked));
     }
 
     #[test]

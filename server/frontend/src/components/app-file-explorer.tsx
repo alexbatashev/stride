@@ -1,11 +1,13 @@
 import { Component, effect, onMount } from "@frontiers-labs/argon";
 import {
+  USER_HOME,
   createDirectory,
   deleteEntry,
   renameEntry,
   uploadFiles,
 } from "../api/files.js";
 import {
+  AGENT_HOME,
   createWorkspaceDirectory,
   deleteWorkspaceEntry,
   uploadFiles as uploadWorkspaceFiles,
@@ -44,10 +46,16 @@ import { IconUpload } from "./icons/upload.js";
 // `fileActions()` adapter and the create/upload/remove calls branch on
 // `threadId`; the render tree, menus, version and preview dialogs are shared.
 
+function parentPath(path: string, root: string): string {
+  if (path === root || !path.startsWith(`${root}/`)) return root;
+  const parent = path.split("/").slice(0, -1).join("/");
+  return parent.length < root.length ? root : parent;
+}
+
 export function AppFileExplorer({
   threadId = "",
   paneActive = true,
-  path = "",
+  path = USER_HOME,
   entries = [],
   loading = false,
   error = "",
@@ -109,7 +117,7 @@ export function AppFileExplorer({
     if (this._loadedThread !== threadId) {
       this._loadedThread = threadId;
       this._loadedKey = "";
-      this.path = "";
+      this.path = AGENT_HOME;
       this.entries = [];
       files.selected = [];
     }
@@ -122,9 +130,10 @@ export function AppFileExplorer({
 
   effect(() => {
     const root = this.shadowRoot!;
+    const rootPath = threadId ? AGENT_HOME : USER_HOME;
     root.querySelector('[data-tool="rename"]')?.toggleAttribute("disabled", files.selected.length !== 1);
     root.querySelector('[data-tool="remove"]')?.toggleAttribute("disabled", files.selected.length === 0);
-    root.querySelector('[data-tool="up"]')?.toggleAttribute("disabled", !path);
+    root.querySelector('[data-tool="up"]')?.toggleAttribute("disabled", path === rootPath);
   });
 
   const createFolder = () => {
@@ -216,13 +225,14 @@ export function AppFileExplorer({
           aria-label="Up one level"
           data-tool="up"
           onClick={() => {
-            this.path = (this.path as string).split("/").slice(0, -1).join("/");
+            const root = this.threadId ? AGENT_HOME : USER_HOME;
+            this.path = parentPath(this.path as string, root);
             void reload();
           }}
         >
           <IconChevronLeft />
         </button>
-        <span>/{path}</span>
+        <span>{path}</span>
       </div>
       <div class="error">{error}</div>
       <AppDataTable

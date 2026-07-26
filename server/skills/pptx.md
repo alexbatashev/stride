@@ -114,8 +114,8 @@ add_prompt_box(s, Inches(0.8), Inches(4.8), Inches(11.7), Inches(1.8),
                "Create a 5-slide pitch deck for my coffee subscription startup.")
 
 # ---- Save ----
-prs.save("/~workspace/output.pptx")
-print("Saved /~workspace/output.pptx")
+prs.save("/home/agent/output.pptx")
+print("Saved /home/agent/output.pptx")
 ```
 
 # Creating presentations

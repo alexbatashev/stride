@@ -29,12 +29,12 @@ struct StrideClient {
 
     var events: @Sendable (_ location: ThreadLocation, _ threadID: String) -> AsyncThrowingStream<ThreadEvent, Error>
 
-    var listFiles: @Sendable (_ scope: FileScope, _ path: String) async throws -> FileListing
-    var createDirectory: @Sendable (_ scope: FileScope, _ path: String) async throws -> Void
+    var listFiles: @Sendable (_ threadID: String?, _ path: String) async throws -> FileListing
+    var createDirectory: @Sendable (_ threadID: String?, _ path: String) async throws -> Void
     var renameFile: @Sendable (_ path: String, _ newName: String) async throws -> Void
-    var deleteFile: @Sendable (_ scope: FileScope, _ path: String) async throws -> Void
-    var uploadFiles: @Sendable (_ scope: FileScope, _ directory: String, _ files: [FileUpload]) async throws -> [UploadedFile]
-    var downloadFile: @Sendable (_ scope: FileScope, _ path: String) async throws -> Data
+    var deleteFile: @Sendable (_ threadID: String?, _ path: String) async throws -> Void
+    var uploadFiles: @Sendable (_ threadID: String?, _ directory: String, _ files: [FileUpload]) async throws -> [UploadedFile]
+    var downloadFile: @Sendable (_ threadID: String?, _ path: String) async throws -> Data
 
     var listAutomations: @Sendable () async throws -> [Automation]
     var createAutomation: @Sendable (_ automation: NewAutomation) async throws -> Automation

@@ -1,11 +1,12 @@
 import Foundation
 
-/// Which file namespace an operation targets. `global` is the user's persistent
-/// library (`/api/files`); `workspace` is a thread's writable sandbox
-/// (`/api/threads/{id}/files`).
-enum FileScope: Equatable, Hashable, Sendable {
-    case global
-    case workspace(threadID: String)
+/// Absolute mount points of the one canonical POSIX namespace clients address by
+/// full path. `/home/agent` is a thread's writable workspace; `/home/user` is the
+/// user's persistent library. A `nil` thread id routes to the standalone library
+/// endpoint (`/api/files`); a present one routes to `/api/threads/{id}/files`.
+enum FileMounts {
+    static let agentHome = "/home/agent"
+    static let userHome = "/home/user"
 }
 
 /// Whether an entry is a directory or a regular file. Mirrors the server's
@@ -49,7 +50,7 @@ struct FileUpload: Equatable, Sendable {
 }
 
 /// One entry in an upload response. Mirrors the server `UploadedFile`. Workspace
-/// uploads return a `/~workspace/...` path the agent can read.
+/// uploads return an absolute `/home/agent/...` path the agent can read.
 struct UploadedFile: Equatable, Decodable, Sendable {
     let name: String
     let path: String

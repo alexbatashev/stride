@@ -253,7 +253,7 @@ struct ChatFeature {
             case .filesButtonTapped:
                 guard let threadID = state.threadID else { return .none }
                 if state.files == nil {
-                    state.files = FilesFeature.State(scope: .workspace(threadID: threadID))
+                    state.files = FilesFeature.State(threadID: threadID)
                 }
                 state.showFiles.toggle()
                 return .none

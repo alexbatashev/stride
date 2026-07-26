@@ -11,11 +11,12 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ServerState,
     api::auth::{self, AuthError},
-    vfs::EntryKind,
+    vfs::{EntryKind, USER_HOME},
 };
 
 /// Manages the user's global files: nodes with no workspace, owned by the user.
-/// These are read-only to the agent and surfaced under `/` in threads.
+/// The agent sees them mounted at `/home/user`; this API addresses them by the
+/// same absolute paths, translating to the storage-relative form at the edge.
 
 #[derive(Debug)]
 pub enum FilesApiError {
@@ -125,7 +126,7 @@ pub async fn list_files(
         return Err(FilesApiError::NotFound);
     };
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let path = clean_path(query.path.as_deref());
+    let path = relative_path(query.path.as_deref());
 
     let entries = vfs
         .list_global(owner, &path)
@@ -133,7 +134,7 @@ pub async fn list_files(
         .map_err(|_| FilesApiError::NotFound)?
         .into_iter()
         .map(|entry| FileEntry {
-            path: join_path(&path, &entry.name),
+            path: absolute(&join_path(&path, &entry.name)),
             kind: match entry.kind {
                 EntryKind::Directory => "directory",
                 EntryKind::File => "file",
@@ -145,7 +146,10 @@ pub async fn list_files(
         })
         .collect();
 
-    Ok(Json(FileListResponse { path, entries }))
+    Ok(Json(FileListResponse {
+        path: absolute(&path),
+        entries,
+    }))
 }
 
 pub async fn list_versions(
@@ -157,7 +161,7 @@ pub async fn list_versions(
         return Err(FilesApiError::NotFound);
     };
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let path = clean_path(Some(&query.path));
+    let path = relative_path(Some(&query.path));
     if path.is_empty() {
         return Err(FilesApiError::BadRequest);
     }
@@ -175,7 +179,10 @@ pub async fn list_versions(
         })
         .collect();
 
-    Ok(Json(FileVersionsResponse { path, versions }))
+    Ok(Json(FileVersionsResponse {
+        path: absolute(&path),
+        versions,
+    }))
 }
 
 pub async fn restore_version(
@@ -187,7 +194,7 @@ pub async fn restore_version(
         return Err(FilesApiError::NotFound);
     };
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let path = clean_path(Some(&request.path));
+    let path = relative_path(Some(&request.path));
     if path.is_empty() || request.version < 0 {
         return Err(FilesApiError::BadRequest);
     }
@@ -207,7 +214,7 @@ pub async fn create_directory(
         return Err(FilesApiError::NotFound);
     };
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let path = clean_path(Some(&request.path));
+    let path = relative_path(Some(&request.path));
     if path.is_empty() {
         return Err(FilesApiError::BadRequest);
     }
@@ -227,7 +234,7 @@ pub async fn rename(
         return Err(FilesApiError::NotFound);
     };
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let path = clean_path(Some(&request.path));
+    let path = relative_path(Some(&request.path));
     let name = request.name.trim();
     if path.is_empty() || name.is_empty() || name.contains('/') {
         return Err(FilesApiError::BadRequest);
@@ -249,7 +256,7 @@ pub async fn upload_file(
         return Err(FilesApiError::Internal);
     };
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let directory = clean_path(query.path.as_deref());
+    let directory = relative_path(query.path.as_deref());
 
     let mut uploaded = Vec::new();
     while let Some(field) = multipart
@@ -275,7 +282,7 @@ pub async fn upload_file(
             .map_err(|_| FilesApiError::Internal)?;
 
         uploaded.push(UploadedFile {
-            path: format!("/{path}"),
+            path: absolute(&path),
             name,
             size,
         });
@@ -293,7 +300,7 @@ pub async fn delete_file(
         return Err(FilesApiError::NotFound);
     };
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let path = clean_path(Some(&path));
+    let path = relative_path(Some(&path));
     if path.is_empty() {
         return Err(FilesApiError::BadRequest);
     }
@@ -314,7 +321,7 @@ pub async fn download_file(
         return Err(FilesApiError::NotFound);
     };
     let owner = auth::authenticated_user(&state, &headers).await?;
-    let path = clean_path(Some(&path));
+    let path = relative_path(Some(&path));
 
     let (bytes, mime_type) = if let Some(version) = query.version {
         if version < 0 {
@@ -332,16 +339,33 @@ pub async fn download_file(
     super::file_response(&path, bytes, mime_type).map_err(|_| FilesApiError::Internal)
 }
 
-fn clean_path(path: Option<&str>) -> String {
-    path.unwrap_or_default()
+/// Normalizes an incoming path (absolute `/home/user/...` or bare) into the
+/// storage-relative form the `*_global` VFS methods take, stripping the
+/// `/home/user` mount prefix and `.`/`..`/empty segments.
+fn relative_path(path: Option<&str>) -> String {
+    let mut segments: Vec<&str> = path
+        .unwrap_or_default()
         .split('/')
         .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
-        .collect::<Vec<_>>()
-        .join("/")
+        .collect();
+    if segments.first() == Some(&"home") && segments.get(1) == Some(&"user") {
+        segments.drain(0..2);
+    }
+    segments.join("/")
+}
+
+/// Renders a storage-relative global path as the absolute mounted path clients
+/// address (`/home/user/...`).
+fn absolute(rel: &str) -> String {
+    if rel.is_empty() {
+        USER_HOME.to_string()
+    } else {
+        format!("{USER_HOME}/{rel}")
+    }
 }
 
 fn join_path(parent: &str, name: &str) -> String {
-    let name = clean_path(Some(name));
+    let name = relative_path(Some(name));
     if parent.is_empty() {
         name
     } else {

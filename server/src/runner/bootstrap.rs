@@ -42,7 +42,7 @@ use crate::{
         skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
         telegram::{SendTelegramFileTool, SendTelegramMessageTool},
     },
-    vfs::{MountedVfs, Vfs, WritableArea},
+    vfs::{MountedVfs, Vfs},
 };
 
 use super::prompt::build_system_prompt;
@@ -149,24 +149,27 @@ pub(crate) async fn ensure_runner(
         _ => None,
     };
     let project_id = thread_project_id(&db, thread_id).await?;
-    // Resolve where this thread writes: a project thread writes into the
-    // project's folder in the user's global files; an ungrouped thread keeps a
-    // standalone `/~workspace`.
-    let (writable_area, project_title) = match vfs.as_ref() {
-        Some(vfs) => {
-            let (area, title) =
-                resolve_writable_area(&db, vfs, thread_id, project_id, user_id).await?;
-            (Some(area), title)
-        }
-        None => (None, None),
+    let writable = match vfs.as_ref() {
+        Some(vfs) => Some(resolve_writable_area(&db, vfs, thread_id, project_id, user_id).await?),
+        None => None,
     };
-    let writable_root = writable_area.as_ref().map(writable_root_path);
-    // Personal directories the user marked writable, layered on top of the
-    // thread's own workspace or project folder.
-    let writable_extra = if writable_area.is_some() {
+    let has_writable = writable.is_some();
+    let (workspace_mount, project_grant, project_title) = match writable {
+        Some(w) => (w.workspace, w.project_grant, w.title),
+        None => (None, None, None),
+    };
+    let writable_root = has_writable.then(|| crate::vfs::AGENT_HOME.to_string());
+    let writable_extra = if has_writable {
         crate::api::writable_dirs::writable_prefixes(&db, user_id).await
     } else {
         Vec::new()
+    };
+    let prompt_writable_extra = {
+        let mut dirs = writable_extra.clone();
+        if let Some(grant) = project_grant.clone() {
+            dirs.insert(0, grant);
+        }
+        dirs
     };
     let personality = load_personality(&db, user_id).await?;
     // A thread bound to a Telegram chat enables the file-delivery tool and absolute download links.
@@ -188,7 +191,7 @@ pub(crate) async fn ensure_runner(
         personality.as_deref(),
         vfs.as_ref().map(|_| thread_id),
         writable_root.as_deref(),
-        &writable_extra,
+        &prompt_writable_extra,
         telegram_chat.is_some(),
         public_url.as_deref(),
         config.clock.as_ref(),
@@ -336,25 +339,38 @@ pub(crate) async fn ensure_runner(
         });
         agent.allow_tool("send_telegram_message");
     }
-    let python_workspace = match (vfs, writable_area) {
-        (Some(provider), Some(area)) => Some((provider, area)),
-        _ => None,
-    };
+    let python_mount = vfs.map(|provider| (provider, workspace_mount, project_grant));
+    let python_cfg = tools
+        .python
+        .as_ref()
+        .map(python_tool_config)
+        .unwrap_or_default();
+    let host_dir = python_cfg
+        .cache_dir
+        .join("workspaces")
+        .join(thread_id.as_simple().to_string());
+    let exec_fs: Arc<dyn execenv::FileSystemBackend> =
+        if let Some((provider, workspace, grant)) = python_mount.as_ref() {
+            Arc::new(VfsExecFileSystem::new(
+                provider.clone(),
+                user_id,
+                *workspace,
+                grant.clone(),
+                writable_extra.clone(),
+                host_dir,
+            ))
+        } else {
+            Arc::new(execenv::DirectOsFileSystem::new(host_dir).map_err(AgentPoolError::Internal)?)
+        };
+    let exec_workspace = Arc::new(execenv::ExecutionWorkspace::new(exec_fs));
+    let commands = command_router(&tools, &python_cfg, exec_workspace.clone())
+        .map_err(AgentPoolError::Internal)?;
+    let python = python_tool(&tools, python_cfg.clone(), exec_workspace, commands.clone())
+        .await
+        .map_err(AgentPoolError::Internal)?;
 
-    // Build the Python interpreter first so the shell can expose it as a
-    // `python` command sharing the same runtime and workspace.
-    let python = python_tool(
-        &tools,
-        thread_id,
-        python_workspace.clone(),
-        writable_extra.clone(),
-        user_id,
-    )
-    .await
-    .map_err(AgentPoolError::Internal)?;
-
-    if let Some((provider, area)) = python_workspace {
-        let fs = MountedVfs::new(provider.clone(), user_id, area.clone())
+    if let Some((provider, workspace, grant)) = python_mount {
+        let fs = MountedVfs::new(provider.clone(), user_id, workspace, grant)
             .with_writable_dirs(writable_extra.clone());
         if vision {
             agent.register_tool(AttachImageTool {
@@ -371,7 +387,7 @@ pub(crate) async fn ensure_runner(
             python: python.as_ref().map(|tool| tool.service()),
             writable_root: writable_root
                 .clone()
-                .unwrap_or_else(|| format!("/{}", crate::vfs::WORKSPACE_MOUNT)),
+                .unwrap_or_else(|| crate::vfs::AGENT_HOME.to_string()),
         });
         agent.allow_tool("ocr");
         if let Some(bot_token) = telegram_bot_token
@@ -391,16 +407,9 @@ pub(crate) async fn ensure_runner(
         if let Some(tool) = &python {
             shell = shell.with_python(tool.service());
         }
-        let python_cfg = tools
-            .python
-            .as_ref()
-            .map(python_tool_config)
-            .unwrap_or_default();
-        shell = shell.with_typst(
-            Some(python_cfg.cache_dir.join("typst-packages")),
-            vec![python_cfg.cache_dir.join("fonts")],
-            matches!(python_cfg.network, execenv::NetworkAccess::Allowed),
-        );
+        if let Some(router) = commands {
+            shell = shell.with_commands(router);
+        }
         agent.register_tool(ShellTool::new(shell));
     }
 
@@ -464,10 +473,9 @@ fn configure_agent_tools(
 
 async fn python_tool(
     tools: &Tools,
-    thread_id: Uuid,
-    workspace: Option<(Arc<Vfs>, WritableArea)>,
-    writable_extra: Vec<String>,
-    user_id: Uuid,
+    config: execenv::PythonToolConfig,
+    workspace: Arc<execenv::ExecutionWorkspace>,
+    commands: Option<Arc<execenv::CommandRouter>>,
 ) -> anyhow::Result<Option<execenv::PythonTool>> {
     let Some(python) = tools.python.as_ref() else {
         return Ok(None);
@@ -476,27 +484,73 @@ async fn python_tool(
         return Ok(None);
     }
 
-    let config = python_tool_config(python);
-    let cache_dir = config.cache_dir.clone();
-    let fs: Arc<dyn execenv::FileSystemBackend> = if let Some((vfs, area)) = workspace {
-        Arc::new(VfsExecFileSystem::new(
-            vfs,
-            area,
-            writable_extra,
-            user_id,
-            cache_dir
-                .join("workspaces")
-                .join(thread_id.as_simple().to_string()),
-        ))
-    } else {
-        Arc::new(execenv::DirectOsFileSystem::new(
-            cache_dir
-                .join("workspaces")
-                .join(thread_id.as_simple().to_string()),
-        )?)
-    };
+    execenv::PythonTool::new_with_workspace_and_commands(config, workspace, commands)
+        .await
+        .map(Some)
+}
 
-    execenv::PythonTool::new(config, fs).await.map(Some)
+pub(crate) fn command_router(
+    tools: &Tools,
+    runtime: &execenv::PythonToolConfig,
+    workspace: Arc<execenv::ExecutionWorkspace>,
+) -> anyhow::Result<Option<Arc<execenv::CommandRouter>>> {
+    let mut router = execenv::CommandRouter::new(workspace);
+    let runner = Arc::new(execenv::WasiCommandRunner::with_threads(
+        runtime.cache_dir.join("commands/compiled"),
+        runtime.threads,
+    )?);
+    let artifacts = execenv::ArtifactStore::new(runtime.cache_dir.join("commands/artifacts"));
+    let network = command_network(tools);
+    for spec in command_specs(tools)? {
+        router.register_wasi_spec(spec, runner.clone(), artifacts.clone(), network.clone());
+    }
+    Ok(Some(Arc::new(router)))
+}
+
+pub(crate) async fn prepare_commands(
+    tools: &Tools,
+    runtime: &execenv::PythonToolConfig,
+) -> anyhow::Result<()> {
+    let specs = command_specs(tools)?;
+
+    let runner = execenv::WasiCommandRunner::with_threads(
+        runtime.cache_dir.join("commands/compiled"),
+        runtime.threads,
+    )?;
+    let artifacts = execenv::ArtifactStore::new(runtime.cache_dir.join("commands/artifacts"));
+    for spec in specs {
+        tracing::info!(command = spec.name, "preparing external command");
+        runner.prepare(&artifacts, &spec).await?;
+        tracing::info!(command = spec.name, "external command ready");
+    }
+    Ok(())
+}
+
+fn command_specs(tools: &Tools) -> anyhow::Result<Vec<execenv::CommandSpec>> {
+    let mut specs = vec![execenv::TYPST.clone()];
+    let Some(config) = tools.commands.as_ref() else {
+        return Ok(specs);
+    };
+    for name in &config.enabled {
+        match name.as_str() {
+            "pandoc" => specs.push(execenv::PANDOC.clone()),
+            "typst" => {}
+            other => anyhow::bail!("unknown command in tools.commands.enabled: {other}"),
+        }
+    }
+    Ok(specs)
+}
+
+fn command_network(tools: &Tools) -> execenv::NetworkAccess {
+    match tools
+        .commands
+        .as_ref()
+        .and_then(|commands| commands.network.as_ref())
+        .unwrap_or(&PythonNetwork::Blocked)
+    {
+        PythonNetwork::Blocked => execenv::NetworkAccess::Blocked,
+        PythonNetwork::Allowed => execenv::NetworkAccess::Allowed,
+    }
 }
 
 pub(crate) fn python_tool_config(python: &Python) -> execenv::PythonToolConfig {
@@ -699,17 +753,30 @@ async fn thread_project_id(
         }))
 }
 
-/// Determines a thread's writable area. A thread bound to a project writes into
-/// that project's folder in the owner's global files; an ungrouped thread keeps
-/// its own standalone workspace. Also returns the project title when present, so
-/// callers can default the memory wing and prompt to it.
+/// A thread's writable mounts: its own workspace at `/home/agent` (every thread
+/// gets one) plus, for a project thread, the project folder granted read-write
+/// under `/home/user`. The project title is returned so callers can default the
+/// memory wing and prompt to it.
+struct ThreadWritable {
+    workspace: Option<Uuid>,
+    project_grant: Option<String>,
+    title: Option<String>,
+}
+
+/// Creates the thread's workspace and, for a project thread, ensures the project
+/// folder exists before it is granted read-write.
 async fn resolve_writable_area(
     db: &ConnectionPool,
     vfs: &Vfs,
     thread_id: Uuid,
     project_id: Option<Uuid>,
     owner: Uuid,
-) -> Result<(WritableArea, Option<String>), AgentPoolError> {
+) -> Result<ThreadWritable, AgentPoolError> {
+    let workspace = vfs
+        .get_or_create_workspace(thread_id, None, owner)
+        .await
+        .map_err(AgentPoolError::Internal)?;
+
     if let Some(pid) = project_id
         && let Some(title) = project_title(db, pid).await?
     {
@@ -717,22 +784,18 @@ async fn resolve_writable_area(
             .ensure_project_dir(owner, &title)
             .await
             .map_err(AgentPoolError::Internal)?;
-        return Ok((WritableArea::ProjectDir(prefix), Some(title)));
+        return Ok(ThreadWritable {
+            workspace: Some(workspace),
+            project_grant: Some(prefix),
+            title: Some(title),
+        });
     }
 
-    let workspace_id = vfs
-        .get_or_create_workspace(thread_id, None, owner)
-        .await
-        .map_err(AgentPoolError::Internal)?;
-    Ok((WritableArea::Workspace(workspace_id), None))
-}
-
-/// The absolute path the agent uses to reach its writable directory.
-fn writable_root_path(area: &WritableArea) -> String {
-    match area {
-        WritableArea::Workspace(_) => format!("/{}", crate::vfs::WORKSPACE_MOUNT),
-        WritableArea::ProjectDir(prefix) => format!("/{prefix}"),
-    }
+    Ok(ThreadWritable {
+        workspace: Some(workspace),
+        project_grant: None,
+        title: None,
+    })
 }
 
 async fn project_title(
@@ -881,7 +944,7 @@ pub(crate) async fn load_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Firecrawl, WebSearch};
+    use crate::config::{Commands, Firecrawl, WebSearch};
     use stride_agent::{AgentConfig, ModelRegistry};
 
     #[test]
@@ -915,6 +978,7 @@ mod tests {
                     api_url: Some("https://firecrawl.example.com".to_string()),
                 }),
                 python: None,
+                commands: None,
             },
             &["default".to_string()],
             "",
@@ -975,6 +1039,7 @@ mod tests {
                 api_url: Some("https://firecrawl.example.com".to_string()),
             }),
             python: None,
+            commands: None,
         });
 
         let names: Vec<_> = registry
@@ -985,5 +1050,54 @@ mod tests {
 
         assert!(names.contains(&"web_search".to_string()));
         assert!(names.contains(&"firecrawl".to_string()));
+    }
+
+    #[test]
+    fn command_config_controls_downloaded_catalog() {
+        let host = tempfile::tempdir().unwrap();
+        let fs = Arc::new(execenv::DirectOsFileSystem::new(host.path().to_path_buf()).unwrap());
+        let workspace = Arc::new(execenv::ExecutionWorkspace::new(fs));
+        let tools = Tools {
+            commands: Some(Commands {
+                enabled: vec!["pandoc".to_string()],
+                network: Some(PythonNetwork::Blocked),
+            }),
+            ..Default::default()
+        };
+
+        let router = command_router(&tools, &execenv::PythonToolConfig::default(), workspace)
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            command_network(&tools),
+            execenv::NetworkAccess::Blocked
+        ));
+        assert_eq!(
+            router.catalog(),
+            vec![
+                ("pandoc", execenv::PANDOC.description),
+                ("typst", execenv::TYPST_DESCRIPTION),
+            ]
+        );
+    }
+
+    #[test]
+    fn command_network_is_blocked_by_default_and_requires_opt_in() {
+        assert!(matches!(
+            command_network(&Tools::default()),
+            execenv::NetworkAccess::Blocked
+        ));
+        let tools = Tools {
+            commands: Some(Commands {
+                enabled: Vec::new(),
+                network: Some(PythonNetwork::Allowed),
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            command_network(&tools),
+            execenv::NetworkAccess::Allowed
+        ));
     }
 }

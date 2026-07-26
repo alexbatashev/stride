@@ -8,7 +8,9 @@ import UniformTypeIdentifiers
 struct FilesFeature {
     @ObservableState
     struct State: Equatable {
-        let scope: FileScope
+        /// A `nil` thread id browses the user's global library at `/home/user`; a
+        /// present one browses that thread's workspace at `/home/agent`.
+        let threadID: String?
         var path: String = ""
         var entries: IdentifiedArrayOf<FileEntry> = []
         var isLoading = false
@@ -26,17 +28,17 @@ struct FilesFeature {
 
         var deleteTarget: FileEntry?
 
-        /// Only the global library exposes a rename endpoint.
-        var supportsRename: Bool { scope == .global }
-        var canGoUp: Bool { !path.isEmpty }
+        /// Absolute mount root this browser is anchored to.
+        var root: String { threadID == nil ? FileMounts.userHome : FileMounts.agentHome }
 
-        /// Last path segment, or a scope-appropriate root label.
+        /// Only the global library exposes a rename endpoint.
+        var supportsRename: Bool { threadID == nil }
+        var canGoUp: Bool { path != root && path.hasPrefix("\(root)/") }
+
+        /// Last path segment, or a root label.
         var title: String {
             if let last = path.split(separator: "/").last { return String(last) }
-            switch scope {
-            case .global: return "Files"
-            case .workspace: return "Workspace"
-            }
+            return threadID == nil ? "Files" : "Workspace"
         }
     }
 
@@ -81,10 +83,10 @@ struct FilesFeature {
                 return .send(.load)
 
             case .load:
-                let scope = state.scope
+                let threadID = state.threadID
                 let path = state.path
                 return .run { send in
-                    await send(.loaded(await asyncResult { try await stride.listFiles(scope, path) }))
+                    await send(.loaded(await asyncResult { try await stride.listFiles(threadID, path) }))
                 }
                 .cancellable(id: CancelID.load, cancelInFlight: true)
 
@@ -106,7 +108,7 @@ struct FilesFeature {
                     state.isLoading = true
                     return .send(.load)
                 }
-                return downloadForPreview(scope: state.scope, entry: entry)
+                return downloadForPreview(threadID: state.threadID, entry: entry)
 
             case let .previewReady(url):
                 state.previewURL = url
@@ -114,9 +116,8 @@ struct FilesFeature {
 
             case .goUp:
                 guard state.canGoUp else { return .none }
-                var segments = state.path.split(separator: "/")
-                segments.removeLast()
-                state.path = segments.joined(separator: "/")
+                let parent = "/" + state.path.split(separator: "/").dropLast().joined(separator: "/")
+                state.path = parent.count < state.root.count ? state.root : parent
                 state.isLoading = true
                 return .send(.load)
 
@@ -129,10 +130,10 @@ struct FilesFeature {
                 let name = state.newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
                 state.newFolderShown = false
                 guard !name.isEmpty else { return .none }
-                let scope = state.scope
-                let target = joined(state.path, name)
+                let threadID = state.threadID
+                let target = joined(pathOrRoot(state), name)
                 return .run { send in
-                    await send(.mutationFinished(await asyncResult { try await stride.createDirectory(scope, target) }))
+                    await send(.mutationFinished(await asyncResult { try await stride.createDirectory(threadID, target) }))
                 }
 
             case let .renameTapped(entry):
@@ -161,10 +162,10 @@ struct FilesFeature {
             case .confirmDelete:
                 guard let target = state.deleteTarget else { return .none }
                 state.deleteTarget = nil
-                let scope = state.scope
+                let threadID = state.threadID
                 let path = target.path
                 return .run { send in
-                    await send(.mutationFinished(await asyncResult { try await stride.deleteFile(scope, path) }))
+                    await send(.mutationFinished(await asyncResult { try await stride.deleteFile(threadID, path) }))
                 }
 
             case .uploadTapped:
@@ -173,8 +174,8 @@ struct FilesFeature {
 
             case let .filesPicked(urls):
                 guard !urls.isEmpty else { return .none }
-                let scope = state.scope
-                let directory = state.path
+                let threadID = state.threadID
+                let directory = pathOrRoot(state)
                 return .run { send in
                     let files = readUploads(from: urls)
                     guard !files.isEmpty else {
@@ -182,13 +183,13 @@ struct FilesFeature {
                         return
                     }
                     await send(.mutationFinished(await asyncResult {
-                        _ = try await stride.uploadFiles(scope, directory, files)
+                        _ = try await stride.uploadFiles(threadID, directory, files)
                     }))
                 }
 
             case .mutationFinished(.success):
                 state.isLoading = true
-                if state.scope == .global {
+                if state.threadID == nil {
                     StrideProviderBridge.shared.signalChange()
                 }
                 return .send(.load)
@@ -208,16 +209,22 @@ struct FilesFeature {
         }
     }
 
-    private func downloadForPreview(scope: FileScope, entry: FileEntry) -> Effect<Action> {
+    private func downloadForPreview(threadID: String?, entry: FileEntry) -> Effect<Action> {
         .run { send in
             do {
-                let data = try await stride.downloadFile(scope, entry.path)
+                let data = try await stride.downloadFile(threadID, entry.path)
                 let url = try writeTemporaryFile(named: entry.name, data: data)
                 await send(.previewReady(url))
             } catch {
                 await send(.setError("Couldn't open \(entry.name)."))
             }
         }
+    }
+
+    /// The current directory, falling back to the mount root before the first
+    /// listing resolves the absolute path.
+    private func pathOrRoot(_ state: State) -> String {
+        state.path.isEmpty ? state.root : state.path
     }
 
     private func sorted(_ entries: [FileEntry]) -> [FileEntry] {

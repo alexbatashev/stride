@@ -4,7 +4,7 @@
 //! based) builtin so shell scripts run the full CPython sandbox instead:
 //!
 //! ```bash
-//! python /~workspace/script.py
+//! python /home/agent/script.py
 //! python ./script.py
 //! python -c "print('hi')"
 //! echo "print('hi')" | python
@@ -12,7 +12,7 @@
 //!
 //! The script source is read from the shell's virtual filesystem and forwarded
 //! verbatim to the interpreter. File I/O performed by the script targets the
-//! interpreter's own volumes (e.g. the `/~workspace` mount), not the bashkit VFS.
+//! interpreter's own volumes (e.g. the `/home/agent` mount), not the bashkit VFS.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -59,7 +59,7 @@ impl Builtin for PythonBuiltin {
         Some(
             "python/python3: run a Python script from the workspace \
              (python path/to/script.py), inline code (python -c '...'), or stdin. \
-             Full CPython sandbox; /~workspace is writable.",
+             Full CPython sandbox; /home/agent is writable.",
         )
     }
 }
@@ -184,12 +184,12 @@ mod tests {
     #[tokio::test]
     async fn runs_absolute_script_path() {
         let fs = Arc::new(InMemoryFs::new());
-        fs.mkdir(Path::new("/~workspace"), true).await.unwrap();
-        fs.write_file(Path::new("/~workspace/script.py"), b"print('from file')")
+        fs.mkdir(Path::new("/home/agent"), true).await.unwrap();
+        fs.write_file(Path::new("/home/agent/script.py"), b"print('from file')")
             .await
             .unwrap();
         let mut bash = bash_with_python(fs, "/");
-        let result = bash.exec("python /~workspace/script.py").await.unwrap();
+        let result = bash.exec("python /home/agent/script.py").await.unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "print('from file')");
     }
@@ -197,11 +197,11 @@ mod tests {
     #[tokio::test]
     async fn runs_relative_script_path() {
         let fs = Arc::new(InMemoryFs::new());
-        fs.mkdir(Path::new("/~workspace"), true).await.unwrap();
-        fs.write_file(Path::new("/~workspace/script.py"), b"relative")
+        fs.mkdir(Path::new("/home/agent"), true).await.unwrap();
+        fs.write_file(Path::new("/home/agent/script.py"), b"relative")
             .await
             .unwrap();
-        let mut bash = bash_with_python(fs, "/~workspace");
+        let mut bash = bash_with_python(fs, "/home/agent");
         let result = bash.exec("python ./script.py").await.unwrap();
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "relative");
@@ -226,7 +226,7 @@ mod tests {
     #[tokio::test]
     async fn missing_file_fails() {
         let mut bash = bash_with_python(Arc::new(InMemoryFs::new()), "/");
-        let result = bash.exec("python /~workspace/missing.py").await.unwrap();
+        let result = bash.exec("python /home/agent/missing.py").await.unwrap();
         assert_ne!(result.exit_code, 0);
         assert!(result.stderr.contains("can't open file"));
     }

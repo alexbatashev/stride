@@ -53,9 +53,9 @@ public URL and pointing at the thread file-download route:
 <configured-public-url>/api/threads/<thread-id>/files/<relative-widget-path>
 ```
 
-If you created `/~workspace/sorting-widget.html`, the `<relative-widget-path>` is
+If you created `/home/agent/sorting-widget.html`, the `<relative-widget-path>` is
 `sorting-widget.html`; drop the writable directory prefix. If you created
-`/~workspace/widgets/sorting-widget.html`, the path is
+`/home/agent/widgets/sorting-widget.html`, the path is
 `widgets/sorting-widget.html`.
 
 Correct:
@@ -69,7 +69,7 @@ Wrong:
 ```html
 <iframe src="/api/threads/<thread-id>/files/sorting.html"></iframe>
 <iframe src="/static/sorting.html"></iframe>
-<iframe src="/~workspace/sorting.html"></iframe>
+<iframe src="/home/agent/sorting.html"></iframe>
 ```
 
 Do not add inline styles, classes, ids, event handlers, scripts, or other custom

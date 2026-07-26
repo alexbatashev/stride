@@ -106,14 +106,18 @@ async fn main() -> anyhow::Result<()> {
 
     let listen_addr = config.listen_addr().to_string();
     let tools = config.tools.clone().unwrap_or_default();
+    let python_config = tools
+        .python
+        .as_ref()
+        .map(runner::bootstrap::python_tool_config)
+        .unwrap_or_default();
     if let Some(python) = tools.python.as_ref()
         && python.enabled.unwrap_or(true)
+        && matches!(python_config.backend, execenv::BackendKind::Eryx)
     {
-        let python_config = runner::bootstrap::python_tool_config(python);
-        if matches!(python_config.backend, execenv::BackendKind::Eryx) {
-            execenv::prepare_eryx_runtime(python_config).await?;
-        }
+        execenv::prepare_eryx_runtime(python_config.clone()).await?;
     }
+    runner::bootstrap::prepare_commands(&tools, &python_config).await?;
     let observability = observability::Observability::new();
     let clock: Arc<dyn stride_agent::Clock> = Arc::new(stride_agent::SystemClock);
     let id_gen: Arc<dyn stride_agent::IdGen> = Arc::new(stride_agent::SystemIdGen);

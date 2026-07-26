@@ -370,10 +370,9 @@ migrations! {
     }
 
     user_writable_directories {
-        // Personal global directories a user has marked writable for the agent.
-        // `path` is a normalized global prefix (no leading slash); the directory
-        // and all of its descendants become writable in addition to the thread's
-        // own workspace or project folder.
+        // Personal directories a user has marked writable for the agent. `path`
+        // is an absolute `/home/user/...` path; the directory and all of its
+        // descendants become writable in addition to the thread's own workspace.
         table writable_dirs {
             id: Uuid [PrimaryKey],
             owner: Uuid,
@@ -587,6 +586,10 @@ migrations! {
 
         raw "UPDATE users SET full_name = username WHERE full_name IS NULL";
     }
+
+    writable_dirs_absolute {
+        raw "UPDATE writable_dirs SET path = '/home/user/' || path WHERE path NOT LIKE '/home/user/%'";
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema
@@ -778,7 +781,7 @@ mod migration_tests {
     async fn full_name_migration_backfills_username() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         let migrations = super::get_migrations();
-        db.initialize_database(migrations[..migrations.len() - 1].to_vec())
+        db.initialize_database(migrations[..migrations.len() - 2].to_vec())
             .await
             .unwrap();
         db.query_with_params(

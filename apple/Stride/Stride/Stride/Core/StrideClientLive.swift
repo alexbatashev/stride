@@ -91,23 +91,23 @@ extension StrideClient {
                     return api.eventStream(threadID: threadID)
                 }
             },
-            listFiles: { scope, path in
-                try await api.get(api.filesPath(scope, query: path), as: FileListing.self)
+            listFiles: { threadID, path in
+                try await api.get(api.filesPath(threadID, query: path), as: FileListing.self)
             },
-            createDirectory: { scope, path in
-                try await api.post(api.directoriesPath(scope), body: PathBody(path: path))
+            createDirectory: { threadID, path in
+                try await api.post(api.directoriesPath(threadID), body: PathBody(path: path))
             },
             renameFile: { path, newName in
                 try await api.patch("/api/files/rename", body: RenameBody(path: path, name: newName))
             },
-            deleteFile: { scope, path in
-                try await api.delete(api.filePath(scope, path: path))
+            deleteFile: { threadID, path in
+                try await api.delete(api.filePath(threadID, path: path))
             },
-            uploadFiles: { scope, directory, files in
-                try await api.upload(api.filesPath(scope, query: directory), files: files)
+            uploadFiles: { threadID, directory, files in
+                try await api.upload(api.filesPath(threadID, query: directory), files: files)
             },
-            downloadFile: { scope, path in
-                try await api.getData(api.filePath(scope, path: path))
+            downloadFile: { threadID, path in
+                try await api.getData(api.filePath(threadID, path: path))
             },
             listAutomations: {
                 try await api.get("/api/automations", as: [Automation].self)
@@ -202,35 +202,27 @@ private final class HTTPAPI: @unchecked Sendable {
 
     // MARK: File endpoint paths
 
-    /// Listing / upload endpoint for a scope, with the directory as a `path`
-    /// query parameter.
-    func filesPath(_ scope: FileScope, query: String) -> String {
-        "\(filesBase(scope))?path=\(Self.encodeQuery(query))"
+    /// Listing / upload endpoint, with the absolute directory as a `path` query
+    /// parameter. A `nil` thread id targets the standalone library.
+    func filesPath(_ threadID: String?, query: String) -> String {
+        "\(filesBase(threadID))?path=\(Self.encodeQuery(query))"
     }
 
-    /// Single-file endpoint (download / delete) for a scope, where the file path
-    /// is part of the URL (`{*path}` wildcard).
-    func filePath(_ scope: FileScope, path: String) -> String {
-        "\(filesBase(scope))/\(Self.encodePath(path))"
+    /// Single-file endpoint (download / delete), where the absolute file path is
+    /// part of the URL (`{*path}` wildcard).
+    func filePath(_ threadID: String?, path: String) -> String {
+        "\(filesBase(threadID))/\(Self.encodePath(path))"
     }
 
-    /// Create-directory endpoint for a scope.
-    func directoriesPath(_ scope: FileScope) -> String {
-        switch scope {
-        case .global:
-            return "/api/files/directories"
-        case let .workspace(threadID):
-            return "/api/threads/\(threadID)/directories"
-        }
+    /// Create-directory endpoint. A `nil` thread id targets the standalone library.
+    func directoriesPath(_ threadID: String?) -> String {
+        guard let threadID else { return "/api/files/directories" }
+        return "/api/threads/\(threadID)/directories"
     }
 
-    private func filesBase(_ scope: FileScope) -> String {
-        switch scope {
-        case .global:
-            return "/api/files"
-        case let .workspace(threadID):
-            return "/api/threads/\(threadID)/files"
-        }
+    private func filesBase(_ threadID: String?) -> String {
+        guard let threadID else { return "/api/files" }
+        return "/api/threads/\(threadID)/files"
     }
 
     /// Uploads one or more files as `multipart/form-data`. The server accepts any

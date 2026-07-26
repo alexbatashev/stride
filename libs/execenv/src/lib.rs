@@ -1,15 +1,20 @@
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
+use anyhow::Context as _;
 use async_trait::async_trait;
 use llm::{Function, Tool as LlmTool};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use stride_agent::{AgentConfig, Tool, ToolDesc, ToolRegistry};
 use tokio::sync::{mpsc, oneshot};
+
+mod artifacts;
+pub use artifacts::{ArtifactKind, ArtifactSpec, ArtifactStore};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ResourceUsage {
@@ -30,6 +35,22 @@ impl ResourceObserver for NoopResourceObserver {}
 pub use eryx::VolumeMount;
 
 #[cfg(feature = "eryx")]
+mod command;
+#[cfg(feature = "eryx")]
+pub use command::{
+    CommandHandler, CommandOutput, CommandRouter, CommandSpec, ExecInvocation, NativeCommand,
+    PANDOC, PreparedCommand, TYPST, TYPST_DESCRIPTION, WasiCommandRunner,
+};
+
+#[cfg(feature = "eryx")]
+mod execution_hub;
+
+#[cfg(all(feature = "eryx", feature = "bashkit"))]
+mod command_builtin;
+#[cfg(all(feature = "eryx", feature = "bashkit"))]
+pub use command_builtin::CommandBuiltin;
+
+#[cfg(feature = "eryx")]
 mod fonts;
 
 /// Guest path the shared font cache is mounted at. matplotlib's font manager
@@ -38,23 +59,16 @@ mod fonts;
 #[cfg(feature = "eryx")]
 const FONTS_GUEST_DIR: &str = "/usr/share/fonts";
 
+/// Default working directory and writable workspace mount inside the guest.
+pub const AGENT_HOME: &str = "/home/agent";
+
 #[cfg(feature = "bashkit")]
 mod bashkit_cmd;
 #[cfg(feature = "bashkit")]
 pub use bashkit_cmd::PythonBuiltin;
 
-#[cfg(feature = "typst")]
-pub mod typst_doc;
-#[cfg(feature = "typst")]
-pub use typst_doc::{CompileRequest, TypstFormat, compile as typst_compile};
-
-#[cfg(all(feature = "bashkit", feature = "typst"))]
-mod typst_cmd;
-#[cfg(all(feature = "bashkit", feature = "typst"))]
-pub use typst_cmd::TypstBuiltin;
-
-#[cfg(all(feature = "eryx", feature = "typst"))]
-mod typst_bridge;
+#[cfg(all(feature = "eryx", feature = "bashkit"))]
+mod subprocess_bridge;
 
 // Pure-Python wheels (py3-none-any). They carry no native extensions, so they
 // import on any CPython-WASI minor version and need no compilation.
@@ -122,6 +136,14 @@ const DEFUSEDXML_URL: &str = "https://files.pythonhosted.org/packages/07/6c/aa3f
 const CPYTHON_STDLIB_URL: &str =
     "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/cpython-wasi.tar.gz";
 
+#[cfg(feature = "eryx")]
+const CPYTHON_STDLIB: ArtifactSpec = ArtifactSpec {
+    name: "cpython-stdlib",
+    url: CPYTHON_STDLIB_URL,
+    sha256: "114b09fc99ee38f3f6dcdb3b4e6743e44d362f08e2ca91bacffd9ff44b33e996",
+    kind: ArtifactKind::TarGz,
+};
+
 // Native (wasm32-wasip1) packages built against eryx-runtime's exact toolchain
 // (wasi-sdk-27 + CPython 3.14) and published by frontiers-labs/wasi-wheels.
 const NUMPY_URL: &str =
@@ -139,26 +161,6 @@ const MATPLOTLIB_URL: &str =
 const LXML_URL: &str =
     "https://github.com/frontiers-labs/wasi-wheels/releases/download/latest/lxml-wasi.tar.gz";
 
-#[derive(Clone, Copy)]
-enum ArchiveKind {
-    /// tar.gz whose root unpacks directly into site-packages. Used by the
-    /// native packages (numpy, Pillow, pandas, ...).
-    TarGz,
-    /// PEP 427 wheel (a zip) whose entries unpack into site-packages.
-    Wheel,
-}
-
-struct WasiPackage {
-    /// Stable key used for the per-package install marker.
-    name: &'static str,
-    url: &'static str,
-    kind: ArchiveKind,
-    /// Module to bake into the pre-initialized snapshot. Only native packages
-    /// benefit; pure-Python ones load lazily from site-packages at runtime.
-    #[cfg_attr(not(feature = "eryx"), allow(dead_code))]
-    preinit_import: Option<&'static str>,
-}
-
 // Native packages (numpy, Pillow, pandas, matplotlib, ...) are built against
 // eryx-runtime's exact toolchain (wasi-sdk-27 + CPython 3.14) and published by
 // frontiers-labs/wasi-wheels. Their `.so` files are baked into the preinit
@@ -167,302 +169,302 @@ struct WasiPackage {
 // frontiers-labs builds fix that. Only numpy is imported at preinit time; the
 // rest load lazily so a failure surfaces at `import` in user code rather than
 // breaking the whole runtime.
-const WASI_PACKAGES: &[WasiPackage] = &[
-    WasiPackage {
+const WASI_PACKAGES: &[ArtifactSpec] = &[
+    ArtifactSpec {
         name: "beautifulsoup4",
         url: BS4_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "soupsieve",
         url: SOUPSIEVE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "e7e6b0769c8f51ed59acab6e994b00621096cfb1c640a7509295987388fbaf65",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "requests",
         url: REQUESTS_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "urllib3",
         url: URLLIB3_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "certifi",
         url: CERTIFI_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "idna",
         url: IDNA_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "markdown",
         url: MARKDOWN_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "e91464b71ae3ee7afd3017d9f358ef0baf158fd9a298db92f1d4761133824c36",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "python-dateutil",
         url: DATEUTIL_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "961d03dc3453ebbc59dbdea9e4e11c5651520a876d0f4db161e8674aae935da9",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "six",
         url: SIX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+        kind: ArtifactKind::Zip,
     },
     // typing-extensions is a runtime dependency of beautifulsoup4 4.15.
-    WasiPackage {
+    ArtifactSpec {
         name: "typing-extensions",
         url: TYPING_EXTENSIONS_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
+        kind: ArtifactKind::Zip,
     },
     // charset-normalizer is requests' optional encoding detector; without it
     // requests imports but warns on every run.
-    WasiPackage {
+    ArtifactSpec {
         name: "charset-normalizer",
         url: CHARSET_NORMALIZER_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "3dce51d0f5e7951f8bb4900c257dad282f49190fdbebecd4ba99bcc41fef404d",
+        kind: ArtifactKind::Zip,
     },
     // pandas runtime deps.
-    WasiPackage {
+    ArtifactSpec {
         name: "pytz",
         url: PYTZ_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "04156e608bee23d3792fd45c94ae47fae1036688e75032eea2e3bf0323d1f126",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "tzdata",
         url: TZDATA_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7",
+        kind: ArtifactKind::Zip,
     },
     // matplotlib runtime deps.
-    WasiPackage {
+    ArtifactSpec {
         name: "cycler",
         url: CYCLER_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "fonttools",
         url: FONTTOOLS_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "445af2eab030a16b9171ea8bdda7ebf7d96bda2df88ee182a464252f6e05e20d",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "pyparsing",
         url: PYPARSING_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "packaging",
         url: PACKAGING_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",
+        kind: ArtifactKind::Zip,
     },
     // Task-oriented pure-Python packages.
-    WasiPackage {
+    ArtifactSpec {
         name: "pypdf",
         url: PYPDF_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "c6e3f86afb625791510b02ad5480e94b63970bb957df75d44657c282ecc52224",
+        kind: ArtifactKind::Zip,
     },
     // pdfminer.six must precede pdfplumber (its dependency); both are pure-Python.
-    WasiPackage {
+    ArtifactSpec {
         name: "pdfminer.six",
         url: PDFMINER_SIX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "366585ba97e80dffa8f00cebe303d2f381884d8637af4ce422f1df3ef38111a9",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "pdfplumber",
         url: PDFPLUMBER_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "7741ea81bf165b474b153e6789d10d18e06b6ddcf3ec84289c3ef2fed6802580",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "openpyxl",
         url: OPENPYXL_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2",
+        kind: ArtifactKind::Zip,
     },
     // et-xmlfile is openpyxl's XML streaming writer dependency.
-    WasiPackage {
+    ArtifactSpec {
         name: "et-xmlfile",
         url: ET_XMLFILE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa",
+        kind: ArtifactKind::Zip,
     },
     // markdownify turns fetched HTML into Markdown; it reuses beautifulsoup4.
-    WasiPackage {
+    ArtifactSpec {
         name: "markdownify",
         url: MARKDOWNIFY_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "3f02d3cc52714084d6e589f70397b6fc9f2f3a8531481bf35e8cc39f975e186a",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "tabulate",
         url: TABULATE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3",
+        kind: ArtifactKind::Zip,
     },
     // icalendar parses/builds .ics; it relies on python-dateutil and tzdata.
-    WasiPackage {
+    ArtifactSpec {
         name: "icalendar",
         url: ICALENDAR_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "690f30aa50a76cbf854db5ad52654705db9c5cd0e1b152222f5d4b7854b60667",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "tzlocal",
         url: TZLOCAL_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "24ce97bb58e2a973f7640ec2553ab4e6f6d5a0d0d1aa9dc43bca21d89e1feb82",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "humanize",
         url: HUMANIZE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "b1186eb9f5a9749cd9cb8565aee77919dd7c8d076161cf44d70e59e3301e1769",
+        kind: ArtifactKind::Zip,
     },
     // httpx is a modern HTTP client; httpcore, h11 and anyio are its transport
     // stack. It reuses the existing certifi and idna wheels.
-    WasiPackage {
+    ArtifactSpec {
         name: "httpx",
         url: HTTPX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "httpcore",
         url: HTTPCORE_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "h11",
         url: H11_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "anyio",
         url: ANYIO_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "dd9b7a2a9799ed6552fde617b2c5df02b7fdd7d88392fc48101e51bae46164d9",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "babel",
         url: BABEL_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "e2b422b277c2b9a9630c1d7903c2a00d0830c409c59ac8cae9081c92f1aeba35",
+        kind: ArtifactKind::Zip,
     },
     // email-validator checks address syntax; dnspython is its resolver backend.
-    WasiPackage {
+    ArtifactSpec {
         name: "email-validator",
         url: EMAIL_VALIDATOR_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "80f13f623413e6b197ae73bb10bf4eb0908faf509ad8362c5edeb0be7fd450b4",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "dnspython",
         url: DNSPYTHON_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "01d9bbc4a2d76bf0db7c1f729812ded6d912bd318d3b1cf81d30c0f845dbf3af",
+        kind: ArtifactKind::Zip,
     },
     // Office-document authoring.
-    WasiPackage {
+    ArtifactSpec {
         name: "python-docx",
         url: PYTHON_DOCX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "python-pptx",
         url: PYTHON_PPTX_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba",
+        kind: ArtifactKind::Zip,
     },
     // xlsxwriter is python-pptx's chart-data writer dependency.
-    WasiPackage {
+    ArtifactSpec {
         name: "xlsxwriter",
         url: XLSXWRITER_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3",
+        kind: ArtifactKind::Zip,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "fpdf2",
         url: FPDF2_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "d391fc508a3ce02fc43a577c830cda4fe6f37646f2d143d489839940932fbc19",
+        kind: ArtifactKind::Zip,
     },
     // defusedxml is fpdf2's hardened XML parser dependency.
-    WasiPackage {
+    ArtifactSpec {
         name: "defusedxml",
         url: DEFUSEDXML_URL,
-        kind: ArchiveKind::Wheel,
-        preinit_import: None,
+        sha256: "a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61",
+        kind: ArtifactKind::Zip,
     },
     // Native packages (wasm32-wasip1). Their `.so` files are baked into the
     // preinit snapshot. numpy is imported at preinit to warm the snapshot; the
     // others load lazily.
-    WasiPackage {
+    ArtifactSpec {
         name: "numpy",
         url: NUMPY_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: Some("numpy"),
+        sha256: "72d0386b9c501753c60f30d4fa90c3bcc3bce2e967214447d89a8e8f0587307b",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "pillow",
         url: PILLOW_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "f88a7aa1af8abb1d3b9dc16c879522f3af7bc3acb6a64b369834df992271cf47",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "kiwisolver",
         url: KIWISOLVER_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "8c69b069ffb5c79c5ee534e08cd225d049f0ab083298424880859618ba455c0a",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "contourpy",
         url: CONTOURPY_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "b8d828ba0fbcd70f3c263d0e12614f32a25c89de9482ab659446896e31fe15df",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "pandas",
         url: PANDAS_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "6aaf491a4df1146d67bba3297f5287beb103fdbbc975c40d1a916c3226805d4e",
+        kind: ArtifactKind::TarGz,
     },
-    WasiPackage {
+    ArtifactSpec {
         name: "matplotlib",
         url: MATPLOTLIB_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "f46f78fd9b3302d0f711f96d8da74da26e9a2b5bb8b9e205ece40c15c65dabd6",
+        kind: ArtifactKind::TarGz,
     },
     // lxml is a native libxml2/libxslt-backed XML/HTML parser. It loads lazily.
-    WasiPackage {
+    ArtifactSpec {
         name: "lxml",
         url: LXML_URL,
-        kind: ArchiveKind::TarGz,
-        preinit_import: None,
+        sha256: "cfe08cc81e88c7e89155797c98cf307355ce216b2e4ce9917e999b0ec5f6d1d8",
+        kind: ArtifactKind::TarGz,
     },
 ];
 
@@ -499,7 +501,8 @@ fn installed_packages_list() -> String {
 fn preinit_imports() -> Vec<&'static str> {
     WASI_PACKAGES
         .iter()
-        .filter_map(|pkg| pkg.preinit_import)
+        .filter(|pkg| pkg.name == "numpy")
+        .map(|_| "numpy")
         .collect()
 }
 
@@ -616,6 +619,41 @@ pub trait FileSystemBackend: Send + Sync {
     }
 }
 
+pub struct ExecutionWorkspace {
+    fs: Arc<dyn FileSystemBackend>,
+    lock: tokio::sync::Mutex<()>,
+}
+
+impl ExecutionWorkspace {
+    pub fn new(fs: Arc<dyn FileSystemBackend>) -> Self {
+        Self {
+            fs,
+            lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    #[cfg(feature = "eryx")]
+    pub fn volumes(&self) -> Vec<VolumeMount> {
+        self.fs.volumes()
+    }
+
+    pub async fn execute<T, F, Fut>(&self, operation: F) -> anyhow::Result<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = anyhow::Result<T>>,
+    {
+        let _guard = self.lock.lock().await;
+        self.fs.before_execute().await?;
+        let result = operation().await;
+        let after = self.fs.after_execute().await;
+        match (result, after) {
+            (Ok(output), Ok(())) => Ok(output),
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err).context("sync execution filesystem after execute"),
+        }
+    }
+}
+
 pub struct DirectOsFileSystem {
     #[cfg_attr(not(feature = "eryx"), allow(dead_code))]
     host_dir: PathBuf,
@@ -628,7 +666,7 @@ impl DirectOsFileSystem {
         std::fs::create_dir_all(&host_dir)?;
         Ok(Self {
             host_dir,
-            guest_dir: "/~workspace".to_string(),
+            guest_dir: crate::AGENT_HOME.to_string(),
             read_only: false,
         })
     }
@@ -674,6 +712,8 @@ pub struct PythonTool {
     service: Arc<dyn ExecutionService>,
     registry: Option<Arc<ToolRegistry>>,
     specs: Vec<PythonToolSpec>,
+    #[cfg(feature = "eryx")]
+    commands: Option<Arc<CommandRouter>>,
 }
 
 impl PythonTool {
@@ -681,14 +721,43 @@ impl PythonTool {
         config: PythonToolConfig,
         fs: Arc<dyn FileSystemBackend>,
     ) -> anyhow::Result<Self> {
+        Self::new_with_workspace(config, Arc::new(ExecutionWorkspace::new(fs))).await
+    }
+
+    pub async fn new_with_workspace(
+        config: PythonToolConfig,
+        workspace: Arc<ExecutionWorkspace>,
+    ) -> anyhow::Result<Self> {
         let service: Arc<dyn ExecutionService> = match config.backend {
             BackendKind::Mock => Arc::new(MockExecutionService),
-            BackendKind::Eryx => make_eryx_service(config, fs).await?,
+            BackendKind::Eryx => make_eryx_service(config, workspace).await?,
         };
         Ok(Self {
             service,
             registry: None,
             specs: Vec::new(),
+            #[cfg(feature = "eryx")]
+            commands: None,
+        })
+    }
+
+    #[cfg(feature = "eryx")]
+    pub async fn new_with_workspace_and_commands(
+        config: PythonToolConfig,
+        workspace: Arc<ExecutionWorkspace>,
+        commands: Option<Arc<CommandRouter>>,
+    ) -> anyhow::Result<Self> {
+        let service: Arc<dyn ExecutionService> = match config.backend {
+            BackendKind::Mock => Arc::new(MockExecutionService),
+            BackendKind::Eryx => {
+                make_eryx_service_with_commands(config, workspace, commands.clone()).await?
+            }
+        };
+        Ok(Self {
+            service,
+            registry: None,
+            specs: Vec::new(),
+            commands,
         })
     }
 
@@ -697,6 +766,8 @@ impl PythonTool {
             service,
             registry: None,
             specs: Vec::new(),
+            #[cfg(feature = "eryx")]
+            commands: None,
         }
     }
 
@@ -786,8 +857,10 @@ impl Tool for PythonTool {
     fn definition(&self) -> LlmTool {
         let mut description = format!(
             "Execute a Python script in a sandbox and return stdout and stderr. \
-            The writable workspace is mounted at /~workspace; write outputs there. \
-            /tmp is writable scratch. matplotlib uses the Agg backend. \
+            The thread workspace is mounted read-write at /home/agent (the default \
+            working directory); write outputs there. The user's files are at \
+            /home/user, read-only except for granted subtrees. /tmp is writable \
+            ephemeral scratch. matplotlib uses the Agg backend. \
             Open-source fonts (DejaVu, Roboto, Open Sans, Lato, Montserrat and \
             the Noto Sans/Serif/Mono families) are mounted read-only under \
             /usr/share/fonts; matplotlib picks them up automatically. For \
@@ -805,6 +878,20 @@ impl Tool for PythonTool {
                 result as a Python object. Top-level await is supported.\n",
             );
             description.push_str(&tools_catalog(&self.specs));
+        }
+        #[cfg(feature = "eryx")]
+        if let Some(commands) = &self.commands {
+            let names = commands
+                .catalog()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !names.is_empty() {
+                description.push_str(&format!(
+                    "\n\nsubprocess.run(['cmd', ...]) works for: {names}."
+                ));
+            }
         }
         LlmTool {
             r#type: llm::ToolType::Function,
@@ -878,12 +965,11 @@ pub async fn ensure_wasi_dependencies(cache_dir: &Path) -> anyhow::Result<WasiDe
     tokio::fs::create_dir_all(cache_dir).await?;
     let deps_dir = cache_dir.join("deps");
     let site_packages = deps_dir.join("site-packages");
-    let markers = deps_dir.join(".installed");
     tokio::fs::create_dir_all(&site_packages).await?;
-    tokio::fs::create_dir_all(&markers).await?;
+    let store = ArtifactStore::new(&deps_dir);
 
     for pkg in WASI_PACKAGES {
-        install_package(pkg, &deps_dir, &site_packages, &markers).await?;
+        store.ensure_into(pkg, &site_packages).await?;
     }
 
     Ok(WasiDependencies { site_packages })
@@ -896,50 +982,14 @@ pub async fn ensure_wasi_dependencies(cache_dir: &Path) -> anyhow::Result<WasiDe
 async fn ensure_cpython_stdlib(cache_dir: &Path) -> anyhow::Result<PathBuf> {
     let runtime_dir = cache_dir.join("runtime");
     let stdlib = runtime_dir.join("cpython").join("lib").join("python3.14");
-    let marker = runtime_dir.join(".stdlib");
-    tokio::fs::create_dir_all(&runtime_dir).await?;
-
-    let installed = tokio::fs::read_to_string(&marker).await.ok();
-    if installed.as_deref() == Some(CPYTHON_STDLIB_URL) && stdlib.join("encodings").exists() {
-        return Ok(stdlib);
-    }
-
-    let archive = runtime_dir.join("cpython-wasi.tar.gz");
-    let _ = tokio::fs::remove_file(&archive).await;
-    download(CPYTHON_STDLIB_URL, &archive).await?;
-    extract_tar_gz(&archive, &runtime_dir).await?;
-    tokio::fs::write(&marker, CPYTHON_STDLIB_URL).await?;
+    ArtifactStore::new(&runtime_dir)
+        .ensure_into(&CPYTHON_STDLIB, &runtime_dir)
+        .await?;
+    anyhow::ensure!(
+        stdlib.join("encodings").exists(),
+        "CPython stdlib artifact does not contain encodings"
+    );
     Ok(stdlib)
-}
-
-async fn install_package(
-    pkg: &WasiPackage,
-    deps_dir: &Path,
-    site_packages: &Path,
-    markers: &Path,
-) -> anyhow::Result<()> {
-    let marker = markers.join(pkg.name);
-    let installed = tokio::fs::read_to_string(&marker).await.ok();
-    if installed.as_deref() == Some(pkg.url) {
-        return Ok(());
-    }
-
-    // First install or the source URL changed: fetch fresh. The cached archive
-    // is removed first because different sources can share a filename (both
-    // dicej and bkmashiro publish `numpy-wasi.tar.gz`).
-    let archive = deps_dir.join(archive_file_name(pkg));
-    let _ = tokio::fs::remove_file(&archive).await;
-    download(pkg.url, &archive).await?;
-    match pkg.kind {
-        ArchiveKind::TarGz => extract_tar_gz(&archive, site_packages).await?,
-        ArchiveKind::Wheel => extract_zip(&archive, site_packages).await?,
-    }
-    tokio::fs::write(&marker, pkg.url).await?;
-    Ok(())
-}
-
-fn archive_file_name(pkg: &WasiPackage) -> &'static str {
-    pkg.url.rsplit('/').next().unwrap_or(pkg.name)
 }
 
 #[derive(Clone, Debug)]
@@ -947,135 +997,54 @@ pub struct WasiDependencies {
     pub site_packages: PathBuf,
 }
 
-async fn download(url: &str, path: &Path) -> anyhow::Result<()> {
-    let bytes = tokio::time::timeout(Duration::from_secs(60), fetch(url)).await??;
-    tokio::fs::write(path, bytes).await?;
-    Ok(())
-}
-
-const MAX_REDIRECTS: usize = 10;
-
-async fn fetch(url: &str) -> anyhow::Result<bytes::Bytes> {
-    use http_body_util::{BodyExt, Empty};
-    use hyper::header::LOCATION;
-
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()?
-        .https_or_http()
-        .enable_http1()
-        .build();
-    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-        .build::<_, Empty<bytes::Bytes>>(https);
-
-    let mut url = url.to_string();
-    for _ in 0..MAX_REDIRECTS {
-        let req = hyper::Request::builder()
-            .uri(&url)
-            .header(hyper::header::USER_AGENT, "stride-execenv/0.1")
-            .body(Empty::<bytes::Bytes>::new())?;
-        let res = client.request(req).await?;
-        let status = res.status();
-
-        if status.is_redirection() {
-            let location = res
-                .headers()
-                .get(LOCATION)
-                .ok_or_else(|| anyhow::anyhow!("redirect {status} without location header"))?
-                .to_str()?;
-            url = resolve_redirect(&url, location)?;
-            continue;
-        }
-
-        anyhow::ensure!(status.is_success(), "download failed with status {status}");
-        return Ok(res.into_body().collect().await?.to_bytes());
-    }
-
-    anyhow::bail!("too many redirects")
-}
-
-fn resolve_redirect(base: &str, location: &str) -> anyhow::Result<String> {
-    if location.starts_with("http://") || location.starts_with("https://") {
-        return Ok(location.to_string());
-    }
-    let base: hyper::Uri = base.parse()?;
-    let scheme = base.scheme_str().unwrap_or("https");
-    let authority = base
-        .authority()
-        .ok_or_else(|| anyhow::anyhow!("base url missing authority"))?;
-    let sep = if location.starts_with('/') { "" } else { "/" };
-    Ok(format!("{scheme}://{authority}{sep}{location}"))
-}
-
-async fn extract_tar_gz(archive: &Path, target: &Path) -> anyhow::Result<()> {
-    let archive = archive.to_path_buf();
-    let target = target.to_path_buf();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let file = std::fs::File::open(archive)?;
-        let decoder = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(decoder);
-        archive.unpack(target)?;
-        Ok(())
-    })
-    .await?
-}
-
-async fn extract_zip(archive: &Path, target: &Path) -> anyhow::Result<()> {
-    let archive = archive.to_path_buf();
-    let target = target.to_path_buf();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let file = std::fs::File::open(archive)?;
-        let mut zip = zip::ZipArchive::new(file)?;
-        zip.extract(target)?;
-        Ok(())
-    })
-    .await?
-}
-
 #[cfg(feature = "eryx")]
 mod eryx_backend {
     use std::{
         collections::HashMap,
         path::PathBuf,
-        sync::{Arc, Mutex, OnceLock, mpsc},
+        sync::{Arc, Mutex, OnceLock},
     };
 
     use anyhow::Context;
     use async_trait::async_trait;
     use serde_json::json;
-    use tokio::sync::{OnceCell, oneshot};
+    use tokio::sync::OnceCell;
 
     use crate::{
         ERYX_RUNTIME_CACHE_VERSION, ExecutionLimits, ExecutionOutput, ExecutionService,
-        FileSystemBackend, HostToolCall, NetworkAccess, PythonToolConfig, PythonToolSpec,
-        ensure_wasi_dependencies,
+        ExecutionWorkspace, HostToolCall, NetworkAccess, PythonToolConfig, PythonToolSpec,
+        ensure_wasi_dependencies, execution_hub::ExecutionHub,
     };
 
     pub struct EryxExecutionService {
         config: PythonToolConfig,
-        fs: Arc<dyn FileSystemBackend>,
+        workspace: Arc<ExecutionWorkspace>,
         runtime: Arc<OnceCell<PreinitRuntime>>,
         hub: Arc<ExecutionHub>,
+        commands: Option<Arc<crate::CommandRouter>>,
     }
 
     impl EryxExecutionService {
         pub async fn new(
             config: PythonToolConfig,
-            fs: Arc<dyn FileSystemBackend>,
+            workspace: Arc<ExecutionWorkspace>,
+            commands: Option<Arc<crate::CommandRouter>>,
         ) -> anyhow::Result<Self> {
             let runtime = runtime_cell(&config);
-            let hub = execution_hub(&config);
+            let hub = crate::execution_hub::execution_hub(config.threads);
             Ok(Self {
                 config,
-                fs,
+                workspace,
                 runtime,
                 hub,
+                commands,
             })
         }
     }
 
     pub(super) async fn prepare_runtime(config: PythonToolConfig) -> anyhow::Result<()> {
         let runtime = runtime_cell(&config);
-        let hub = execution_hub(&config);
+        let hub = crate::execution_hub::execution_hub(config.threads);
         runtime
             .get_or_try_init(|| hub.prepare(config.clone()))
             .await
@@ -1092,22 +1061,11 @@ mod eryx_backend {
                 runtime: Arc::new(runtime.clone()),
                 script: script.to_string(),
                 limits: self.config.limits.clone(),
-                volumes: self.fs.volumes(),
+                volumes: self.workspace.volumes(),
                 network: self.config.network.clone(),
-                package_cache: self.config.cache_dir.join("typst-packages"),
                 fonts_dir: runtime.fonts_dir.clone(),
+                commands: self.commands.clone(),
             })
-        }
-    }
-
-    fn join_results(
-        result: anyhow::Result<ExecutionOutput>,
-        after: anyhow::Result<()>,
-    ) -> anyhow::Result<ExecutionOutput> {
-        match (result, after) {
-            (Ok(output), Ok(())) => Ok(output),
-            (Err(err), _) => Err(err),
-            (Ok(_), Err(err)) => Err(err).context("sync eryx filesystem after execute"),
         }
     }
 
@@ -1115,10 +1073,7 @@ mod eryx_backend {
     impl ExecutionService for EryxExecutionService {
         async fn execute_python(&self, script: &str) -> anyhow::Result<ExecutionOutput> {
             let request = self.prepared_request(script).await?;
-            self.fs.before_execute().await?;
-            let result = self.hub.execute(request).await;
-            let after = self.fs.after_execute().await;
-            join_results(result, after)
+            self.workspace.execute(|| self.hub.execute(request)).await
         }
 
         async fn execute_python_with_tools(
@@ -1128,13 +1083,9 @@ mod eryx_backend {
             calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
         ) -> anyhow::Result<ExecutionOutput> {
             let request = self.prepared_request(script).await?;
-            self.fs.before_execute().await?;
-            let result = self
-                .hub
-                .execute_with_tools(request, tools.to_vec(), calls)
-                .await;
-            let after = self.fs.after_execute().await;
-            join_results(result, after)
+            self.workspace
+                .execute(|| self.hub.execute_with_tools(request, tools.to_vec(), calls))
+                .await
         }
     }
 
@@ -1156,28 +1107,6 @@ mod eryx_backend {
         runtimes
             .entry(key)
             .or_insert_with(|| Arc::new(OnceCell::new()))
-            .clone()
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct HubKey {
-        cache_dir: PathBuf,
-        preinit: bool,
-        threads: usize,
-    }
-
-    fn execution_hub(config: &PythonToolConfig) -> Arc<ExecutionHub> {
-        let threads = config.threads.max(1);
-        let key = HubKey {
-            cache_dir: config.cache_dir.clone(),
-            preinit: config.preinit,
-            threads,
-        };
-        static HUBS: OnceLock<Mutex<HashMap<HubKey, Arc<ExecutionHub>>>> = OnceLock::new();
-        let hubs = HUBS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut hubs = hubs.lock().expect("execenv hub registry poisoned");
-        hubs.entry(key)
-            .or_insert_with(|| Arc::new(ExecutionHub::new(threads)))
             .clone()
     }
 
@@ -1307,30 +1236,10 @@ mod eryx_backend {
         })
     }
 
-    struct ExecutionHub {
-        tx: mpsc::Sender<ExecutionJob>,
-    }
-
     impl ExecutionHub {
-        fn new(threads: usize) -> Self {
-            let (tx, rx) = mpsc::channel();
-            let rx = Arc::new(Mutex::new(rx));
-            for idx in 0..threads {
-                let rx = rx.clone();
-                std::thread::Builder::new()
-                    .name(format!("stride-eryx-{idx}"))
-                    .spawn(move || worker_loop(rx))
-                    .expect("eryx worker thread");
-            }
-            Self { tx }
-        }
-
         async fn execute(&self, request: ExecutionRequest) -> anyhow::Result<ExecutionOutput> {
-            let (tx, rx) = oneshot::channel();
-            self.tx
-                .send(ExecutionJob::Execute { request, tx })
-                .map_err(|_| anyhow::anyhow!("eryx execution queue stopped"))?;
-            rx.await.context("eryx worker stopped")?
+            self.run(move |runtime| runtime.block_on(execute_request(request)))
+                .await?
         }
 
         async fn execute_with_tools(
@@ -1339,42 +1248,16 @@ mod eryx_backend {
             tools: Vec<PythonToolSpec>,
             calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
         ) -> anyhow::Result<ExecutionOutput> {
-            let (tx, rx) = oneshot::channel();
-            self.tx
-                .send(ExecutionJob::ExecuteWithTools {
-                    request,
-                    tools,
-                    calls,
-                    tx,
-                })
-                .map_err(|_| anyhow::anyhow!("eryx execution queue stopped"))?;
-            rx.await.context("eryx worker stopped")?
+            self.run(move |runtime| {
+                runtime.block_on(execute_request_with_tools(request, tools, calls))
+            })
+            .await?
         }
 
         async fn prepare(&self, config: PythonToolConfig) -> anyhow::Result<PreinitRuntime> {
-            let (tx, rx) = oneshot::channel();
-            self.tx
-                .send(ExecutionJob::Prepare { config, tx })
-                .map_err(|_| anyhow::anyhow!("eryx execution queue stopped"))?;
-            rx.await.context("eryx worker stopped")?
+            self.run(move |runtime| runtime.block_on(build_runtime(config)))
+                .await?
         }
-    }
-
-    enum ExecutionJob {
-        Prepare {
-            config: PythonToolConfig,
-            tx: oneshot::Sender<anyhow::Result<PreinitRuntime>>,
-        },
-        Execute {
-            request: ExecutionRequest,
-            tx: oneshot::Sender<anyhow::Result<ExecutionOutput>>,
-        },
-        ExecuteWithTools {
-            request: ExecutionRequest,
-            tools: Vec<PythonToolSpec>,
-            calls: tokio::sync::mpsc::UnboundedSender<HostToolCall>,
-            tx: oneshot::Sender<anyhow::Result<ExecutionOutput>>,
-        },
     }
 
     struct ExecutionRequest {
@@ -1383,13 +1266,8 @@ mod eryx_backend {
         limits: ExecutionLimits,
         volumes: Vec<eryx::VolumeMount>,
         network: NetworkAccess,
-        /// Cache directory for downloaded Typst packages. Used by the always-on
-        /// `typst` module; unused when the `typst` feature is off.
-        #[cfg_attr(not(feature = "typst"), allow(dead_code))]
-        package_cache: PathBuf,
-        /// Shared font cache, mounted read-only into the guest and scanned by the
-        /// host Typst compiler. `None` when the download failed.
         fonts_dir: Option<PathBuf>,
+        commands: Option<Arc<crate::CommandRouter>>,
     }
 
     /// Appends the standard per-execution mounts — the shared read-only font
@@ -1405,63 +1283,14 @@ mod eryx_backend {
         volumes.push(scratch.volume());
     }
 
-    fn worker_loop(rx: Arc<Mutex<mpsc::Receiver<ExecutionJob>>>) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("eryx worker runtime");
-
-        loop {
-            let job = {
-                let rx = rx.lock().expect("eryx execution queue poisoned");
-                rx.recv()
-            };
-            let Ok(job) = job else {
-                break;
-            };
-            match job {
-                ExecutionJob::Prepare { config, tx } => {
-                    let result = runtime.block_on(build_runtime(config));
-                    let _ = tx.send(result);
-                }
-                ExecutionJob::Execute { request, tx } => {
-                    let result = runtime.block_on(execute_request(request));
-                    let _ = tx.send(result);
-                }
-                ExecutionJob::ExecuteWithTools {
-                    request,
-                    tools,
-                    calls,
-                    tx,
-                } => {
-                    let result =
-                        runtime.block_on(execute_request_with_tools(request, tools, calls));
-                    let _ = tx.send(result);
-                }
-            }
-        }
-    }
-
-    /// The always-on built-in Python modules (currently just `typst`) attached
-    /// to every execution: their host callbacks plus the preamble exposing them.
-    /// Empty when the `typst` feature is disabled.
     fn builtin_modules(request: &ExecutionRequest) -> (Vec<Arc<dyn eryx::Callback>>, String) {
-        #[cfg(feature = "typst")]
-        {
-            let allow_network = matches!(request.network, NetworkAccess::Allowed);
-            let font_paths = request.fonts_dir.clone().into_iter().collect();
-            let callback = crate::typst_bridge::callback(
-                Some(request.package_cache.clone()),
-                font_paths,
-                allow_network,
-            );
-            (vec![callback], crate::typst_bridge::PREAMBLE.to_string())
-        }
-        #[cfg(not(feature = "typst"))]
-        {
-            let _ = request;
-            (Vec::new(), String::new())
-        }
+        let Some(router) = request.commands.clone() else {
+            return (Vec::new(), String::new());
+        };
+        (
+            vec![crate::subprocess_bridge::callback(router)],
+            crate::subprocess_bridge::PREAMBLE.to_string(),
+        )
     }
 
     async fn execute_request(request: ExecutionRequest) -> anyhow::Result<ExecutionOutput> {
@@ -1612,12 +1441,18 @@ mod eryx_backend {
             .map(|cb| (cb.name().to_string(), cb.clone()))
             .collect();
         let (cb_tx, cb_rx) = tokio::sync::mpsc::channel::<eryx::CallbackRequest>(32);
-        let handler = tokio::spawn(eryx::callback_handler::run_callback_handler(
-            cb_rx,
-            Arc::new(dispatch),
-            unlimited_callback_limits(),
-            Arc::new(HashMap::new()),
-        ));
+        let handler = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("execenv callback runtime");
+            runtime.block_on(eryx::callback_handler::run_callback_handler(
+                cb_rx,
+                Arc::new(dispatch),
+                unlimited_callback_limits(),
+                Arc::new(HashMap::new()),
+            ))
+        });
 
         let full_code = format!("{preamble}\n{}", request.script);
         let mut execute = request
@@ -1635,7 +1470,7 @@ mod eryx_backend {
         execute = execute.with_volumes(volumes);
 
         let result = execute.run().await.context("execute eryx script");
-        handler.abort();
+        let _ = handler.join();
         drop(scratch);
         let result = result?;
         Ok(ExecutionOutput {
@@ -1802,17 +1637,28 @@ pub async fn prepare_eryx_runtime(_config: PythonToolConfig) -> anyhow::Result<(
 #[cfg(feature = "eryx")]
 async fn make_eryx_service(
     config: PythonToolConfig,
-    fs: Arc<dyn FileSystemBackend>,
+    workspace: Arc<ExecutionWorkspace>,
 ) -> anyhow::Result<Arc<dyn ExecutionService>> {
     Ok(Arc::new(
-        eryx_backend::EryxExecutionService::new(config, fs).await?,
+        eryx_backend::EryxExecutionService::new(config, workspace, None).await?,
+    ))
+}
+
+#[cfg(feature = "eryx")]
+async fn make_eryx_service_with_commands(
+    config: PythonToolConfig,
+    workspace: Arc<ExecutionWorkspace>,
+    commands: Option<Arc<CommandRouter>>,
+) -> anyhow::Result<Arc<dyn ExecutionService>> {
+    Ok(Arc::new(
+        eryx_backend::EryxExecutionService::new(config, workspace, commands).await?,
     ))
 }
 
 #[cfg(not(feature = "eryx"))]
 async fn make_eryx_service(
     _config: PythonToolConfig,
-    _fs: Arc<dyn FileSystemBackend>,
+    _workspace: Arc<ExecutionWorkspace>,
 ) -> anyhow::Result<Arc<dyn ExecutionService>> {
     anyhow::bail!("execenv was built without the eryx feature")
 }
@@ -1829,21 +1675,10 @@ mod tests {
         let url = NUMPY_URL;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("numpy-wasi.tar.gz");
-        download(url, &path).await.unwrap();
+        artifacts::download(url, &path).await.unwrap();
         let bytes = tokio::fs::read(&path).await.unwrap();
         assert!(bytes.len() > 1024, "got {} bytes", bytes.len());
         assert_eq!(&bytes[..2], &[0x1f, 0x8b], "not a gzip stream");
-    }
-
-    #[test]
-    fn archive_file_name_uses_last_url_segment() {
-        let pkg = WasiPackage {
-            name: "demo",
-            url: "https://example.com/path/demo-1.0-py3-none-any.whl",
-            kind: ArchiveKind::Wheel,
-            preinit_import: None,
-        };
-        assert_eq!(archive_file_name(&pkg), "demo-1.0-py3-none-any.whl");
     }
 
     #[test]
@@ -1860,11 +1695,7 @@ mod tests {
                 "{} url not https",
                 pkg.name
             );
-            assert!(
-                !archive_file_name(pkg).is_empty(),
-                "{} has empty archive name",
-                pkg.name
-            );
+            assert_eq!(pkg.sha256.len(), 64, "{} has invalid sha256", pkg.name);
         }
     }
 
@@ -2050,7 +1881,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
                 .unwrap()
-                .guest_dir("/~workspace"),
+                .guest_dir("/home/agent"),
         );
         let config = PythonToolConfig {
             cache_dir: cache.path().to_path_buf(),
@@ -2110,9 +1941,13 @@ mod tests {
         let root = tmp.path().join("root");
         let rw = tmp.path().join("rw");
         // The read-only world, including a read-only copy of the project folder.
-        std::fs::create_dir_all(root.join("Projects/Acme")).unwrap();
+        std::fs::create_dir_all(root.join("home/user/Projects/Acme")).unwrap();
         std::fs::write(root.join("other.txt"), "GLOBALDATA").unwrap();
-        std::fs::write(root.join("Projects/Acme/existing.txt"), "ROOTCOPY").unwrap();
+        std::fs::write(
+            root.join("home/user/Projects/Acme/existing.txt"),
+            "ROOTCOPY",
+        )
+        .unwrap();
         // The writable mirror of the project folder, mounted on top.
         std::fs::create_dir_all(&rw).unwrap();
         std::fs::write(rw.join("existing.txt"), "RWCOPY").unwrap();
@@ -2120,7 +1955,7 @@ mod tests {
         let fs = Arc::new(TwoMountFs {
             root,
             rw: rw.clone(),
-            guest_rw: "/Projects/Acme".to_string(),
+            guest_rw: "/home/user/Projects/Acme".to_string(),
         });
         let config = PythonToolConfig {
             cache_dir: cache.path().to_path_buf(),
@@ -2138,9 +1973,9 @@ mod tests {
 
         let script = concat!(
             "print('READ_GLOBAL', open('/other.txt').read())\n",
-            "print('READ_NESTED', open('/Projects/Acme/existing.txt').read())\n",
-            "open('/Projects/Acme/new.txt', 'w').write('NEW')\n",
-            "print('WROTE_RW', open('/Projects/Acme/new.txt').read())\n",
+            "print('READ_NESTED', open('/home/user/Projects/Acme/existing.txt').read())\n",
+            "open('/home/user/Projects/Acme/new.txt', 'w').write('NEW')\n",
+            "print('WROTE_RW', open('/home/user/Projects/Acme/new.txt').read())\n",
             "try:\n",
             "    open('/blocked.txt', 'w').write('x')\n",
             "    print('RO_WRITE_UNEXPECTED')\n",
@@ -2183,7 +2018,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
                 .unwrap()
-                .guest_dir("/~workspace"),
+                .guest_dir("/home/agent"),
         );
         let config = PythonToolConfig {
             cache_dir,
@@ -2228,7 +2063,7 @@ mod tests {
         let fs = Arc::new(
             DirectOsFileSystem::new(workspace.path().join("workspace"))
                 .unwrap()
-                .guest_dir("/~workspace"),
+                .guest_dir("/home/agent"),
         );
         let config = PythonToolConfig {
             cache_dir,
@@ -2242,7 +2077,7 @@ mod tests {
         let tool = PythonTool::new(config.clone(), fs).await.unwrap();
 
         // Exercises native imports, a writable /tmp (matplotlib font cache lands
-        // there) and saving a figure into the /~workspace mount.
+        // there) and saving a figure into the /home/agent mount.
         let script = "import numpy as np\n\
              import pandas as pd\n\
              from PIL import Image\n\
@@ -2253,7 +2088,7 @@ mod tests {
              rows = len(pd.DataFrame({'a': [1, 2, 3]}))\n\
              size = Image.new('RGB', (4, 2)).size\n\
              plt.plot([1, 2, 3], [3, 1, 2])\n\
-             plt.savefig('/~workspace/sample_plot.png')\n\
+             plt.savefig('/home/agent/sample_plot.png')\n\
              print(total, rows, size[0])";
         let result = tool
             .execute(
@@ -2270,43 +2105,140 @@ mod tests {
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["stdout"].as_str().unwrap().trim(), "10 3 4");
         let png = workspace.path().join("workspace").join("sample_plot.png");
-        assert!(png.exists(), "savefig did not write to /~workspace");
+        assert!(png.exists(), "savefig did not write to /home/agent");
     }
 
-    #[cfg(all(feature = "eryx", feature = "typst"))]
+    #[cfg(all(feature = "eryx", feature = "bashkit"))]
+    struct PhaseFiveCommand;
+
+    #[cfg(all(feature = "eryx", feature = "bashkit"))]
+    #[async_trait]
+    impl NativeCommand for PhaseFiveCommand {
+        async fn run(
+            &self,
+            invocation: &ExecInvocation,
+            mounts: &[VolumeMount],
+        ) -> anyhow::Result<CommandOutput> {
+            match invocation.argv.first().map(String::as_str) {
+                Some("echoer") => Ok(CommandOutput {
+                    stdout: if invocation.stdin.is_empty() {
+                        format!("{}\n", invocation.argv[1..].join(" ")).into_bytes()
+                    } else {
+                        invocation.stdin.clone()
+                    },
+                    ..Default::default()
+                }),
+                Some("fail") => Ok(CommandOutput {
+                    returncode: 7,
+                    stderr: b"expected failure\n".to_vec(),
+                    ..Default::default()
+                }),
+                Some("delay") => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Ok(CommandOutput::default())
+                }
+                Some("cohere") => {
+                    let mount = mounts
+                        .iter()
+                        .find(|mount| mount.guest_path == AGENT_HOME)
+                        .expect("agent mount");
+                    let input = mount.host_path.join(&invocation.argv[1]);
+                    let output = mount.host_path.join(&invocation.argv[2]);
+                    let bytes = tokio::fs::read(input).await?;
+                    tokio::fs::write(output, bytes).await?;
+                    Ok(CommandOutput::default())
+                }
+                _ => Ok(CommandOutput::default()),
+            }
+        }
+    }
+
+    #[cfg(all(feature = "eryx", feature = "bashkit"))]
     #[tokio::test]
-    #[ignore = "downloads the CPython WASI stdlib and precompiles the runtime"]
-    async fn eryx_typst_module_compiles_pdf() {
+    #[ignore = "downloads the CPython WASI runtime"]
+    async fn eryx_subprocess_shim_covers_agent_idioms() {
         let workspace = tempfile::tempdir().unwrap();
         let ws_dir = workspace.path().join("workspace");
         std::fs::create_dir_all(&ws_dir).unwrap();
-        std::fs::write(ws_dir.join("doc.typ"), b"= Title\nHello from Typst").unwrap();
-
-        let cache_dir = std::env::temp_dir().join("stride-execenv-typst-test-cache");
+        let cache_dir = std::env::temp_dir().join("stride-execenv-phase5-test-cache");
         tokio::fs::create_dir_all(&cache_dir).await.unwrap();
-        let fs = Arc::new(
+        let fs: Arc<dyn FileSystemBackend> = Arc::new(
             DirectOsFileSystem::new(ws_dir.clone())
                 .unwrap()
-                .guest_dir("/~workspace"),
+                .guest_dir("/home/agent"),
         );
+        let workspace = Arc::new(ExecutionWorkspace::new(fs));
+        let mut router = CommandRouter::new(workspace.clone());
+        for (name, description) in [
+            ("cohere", "copy a workspace file"),
+            ("delay", "wait before completing"),
+            ("echoer", "echo arguments or stdin"),
+            ("fail", "return a non-zero status"),
+        ] {
+            router.register_native(name, description, Arc::new(PhaseFiveCommand));
+        }
+        let router = Arc::new(router);
         let config = PythonToolConfig {
             cache_dir,
             backend: BackendKind::Eryx,
             threads: 1,
-            preinit: true,
-            limits: ExecutionLimits::default(),
+            preinit: false,
+            limits: ExecutionLimits {
+                max_runtime: Duration::from_secs(20),
+                ..Default::default()
+            },
             network: NetworkAccess::Blocked,
         };
-        prepare_eryx_runtime(config.clone()).await.unwrap();
-        let tool = PythonTool::new(config, fs).await.unwrap();
+        let tool = PythonTool::new_with_workspace_and_commands(config, workspace, Some(router))
+            .await
+            .unwrap();
 
-        // Exercises the in-sandbox `typst` module: gather the workspace project,
-        // ship it to the host compiler over the callback bridge, decode the
-        // returned PDF bytes and write them back to the mounted workspace.
-        let script = "import typst\n\
-             await typst.compile('/~workspace/doc.typ', output='/~workspace/doc.pdf')\n\
-             data = await typst.compile('/~workspace/doc.typ')\n\
-             print(len(data), data[:5].decode('latin1'))";
+        let script = r#"
+import os
+import subprocess
+
+result = subprocess.run(["echoer", "hello"], capture_output=True, text=True)
+assert isinstance(result, subprocess.CompletedProcess)
+assert result.returncode == 0 and result.stdout == "hello\n"
+assert subprocess.check_output(["echoer", "checked"], text=True) == "checked\n"
+assert subprocess.call(["fail"], stderr=subprocess.DEVNULL) == 7
+try:
+    subprocess.check_call(["fail"], stderr=subprocess.DEVNULL)
+except subprocess.CalledProcessError as error:
+    assert error.returncode == 7
+else:
+    raise AssertionError("check_call did not raise")
+
+unknown = subprocess.run(["missing"], capture_output=True, text=True)
+assert unknown.returncode == 127 and "available commands:" in unknown.stderr
+nested = subprocess.run(["python", "-c", "print(1)"], capture_output=True, text=True)
+assert nested.returncode == 126 and "nested python is not supported" in nested.stderr
+try:
+    subprocess.run(["delay"], timeout=0.001)
+except subprocess.TimeoutExpired:
+    pass
+else:
+    raise AssertionError("timeout did not expire")
+
+process = subprocess.Popen(["echoer", "popen"], stdout=subprocess.PIPE, text=True)
+try:
+    process.stdout.read()
+except NotImplementedError:
+    pass
+else:
+    raise AssertionError("streaming did not fail")
+stdout, stderr = process.communicate()
+assert stdout == "popen\n" and stderr is None and process.wait() == 0
+
+with open("python.txt", "w") as handle:
+    handle.write("coherent")
+subprocess.check_call(["cohere", "python.txt", "command.txt"])
+assert open("command.txt").read() == "coherent"
+assert os.system("echoer pipeline | wc -w > words.txt") == 0
+assert open("words.txt").read().strip() == "1"
+assert subprocess.getoutput("echoer catalog") == "catalog"
+print("phase-five-ok")
+"#;
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
@@ -2320,15 +2252,92 @@ mod tests {
             .await;
 
         assert_eq!(result["success"], true, "{result}");
-        assert!(
-            result["stdout"].as_str().unwrap().contains("%PDF-"),
-            "{result}"
+        assert!(result["stdout"].as_str().unwrap().contains("phase-five-ok"));
+    }
+
+    #[cfg(all(feature = "eryx", feature = "bashkit"))]
+    #[tokio::test]
+    #[ignore = "downloads the pinned document tool WASI artifacts"]
+    async fn eryx_subprocess_compiles_typst_and_converts_with_pandoc() {
+        let workspace = tempfile::tempdir().unwrap();
+        let ws_dir = workspace.path().join("workspace");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::write(ws_dir.join("report.typ"), b"= Phase Five\nPlain subprocess").unwrap();
+        std::fs::write(ws_dir.join("notes.md"), b"# Notes\n\nConverted by Pandoc.").unwrap();
+
+        let cache_dir = std::env::temp_dir().join("stride-execenv-phase5-test-cache");
+        let fs: Arc<dyn FileSystemBackend> = Arc::new(
+            DirectOsFileSystem::new(ws_dir.clone())
+                .unwrap()
+                .guest_dir(AGENT_HOME),
         );
-        let pdf = ws_dir.join("doc.pdf");
-        assert!(
-            pdf.exists(),
-            "typst.compile(output=...) did not write the pdf"
+        let workspace = Arc::new(ExecutionWorkspace::new(fs));
+        let mut router = CommandRouter::new(workspace.clone());
+        let runner = Arc::new(
+            WasiCommandRunner::with_threads(cache_dir.join("commands/compiled"), 1).unwrap(),
         );
-        assert_eq!(&std::fs::read(pdf).unwrap()[..5], b"%PDF-");
+        let artifacts = ArtifactStore::new(cache_dir.join("commands/artifacts"));
+        let pandoc = runner.prepare(&artifacts, &PANDOC).await.unwrap();
+        let typst = runner.prepare(&artifacts, &TYPST).await.unwrap();
+        router.register_wasi(PANDOC.name, PANDOC.description, runner.clone(), pandoc);
+        router.register_wasi(TYPST.name, TYPST.description, runner, typst);
+        let router = Arc::new(router);
+        let config = PythonToolConfig {
+            cache_dir,
+            backend: BackendKind::Eryx,
+            threads: 1,
+            preinit: false,
+            limits: ExecutionLimits {
+                max_runtime: Duration::from_secs(300),
+                ..Default::default()
+            },
+            network: NetworkAccess::Blocked,
+        };
+        let tool = PythonTool::new_with_workspace_and_commands(config, workspace, Some(router))
+            .await
+            .unwrap();
+        let description = tool.definition().function.description;
+        assert!(description.contains("subprocess.run(['cmd', ...]) works for: pandoc, typst"));
+
+        let result = tool
+            .execute(
+                Arc::new(AgentConfig {
+                    model_registry: stride_agent::ModelRegistry::new(),
+                    max_iterations: 1,
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
+                    ..Default::default()
+                }),
+                json!({
+                    "script": r#"
+import subprocess
+
+typst = subprocess.run(
+    ["typst", "compile", "report.typ"],
+    capture_output=True,
+    text=True,
+)
+assert typst.returncode == 0, typst.stderr
+pandoc = subprocess.run(
+    ["pandoc", "notes.md", "-o", "notes.docx"],
+    capture_output=True,
+    text=True,
+)
+assert pandoc.returncode == 0, pandoc.stderr
+print("documents-ok")
+"#
+                }),
+            )
+            .await;
+
+        assert_eq!(result["success"], true, "{result}");
+        assert!(result["stdout"].as_str().unwrap().contains("documents-ok"));
+        assert_eq!(
+            &std::fs::read(ws_dir.join("report.pdf")).unwrap()[..5],
+            b"%PDF-"
+        );
+        assert_eq!(
+            &std::fs::read(ws_dir.join("notes.docx")).unwrap()[..2],
+            b"PK"
+        );
     }
 }
