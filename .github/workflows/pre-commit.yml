@@ -58,6 +58,40 @@ jobs:
       checks: write
       contents: read
 
+  migration-compatibility:
+    name: Database migration compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system deps
+        run: sudo apt-get install -y capnproto libssl-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: server/frontend/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Disable rust-lld
+        run: echo "RUSTFLAGS=-Clinker-features=-lld" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check migration compatibility
+        run: |
+          cp .github/scripts/check-migration-compatibility.sh "$RUNNER_TEMP/"
+          "$RUNNER_TEMP/check-migration-compatibility.sh"
+
   web-e2e:
     uses: ./.github/workflows/_web-e2e.yml
     secrets:
