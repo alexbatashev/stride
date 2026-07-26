@@ -26,7 +26,7 @@ use crate::email::ImapService;
 use crate::google::GoogleService;
 use crate::notify::{self, RunResult};
 use crate::runner::bootstrap::{
-    ScriptableToolRegistryContext, python_tool_config, scriptable_tool_registry,
+    ScriptableToolRegistryContext, command_router, python_tool_config, scriptable_tool_registry,
 };
 use crate::triggers;
 
@@ -461,7 +461,10 @@ async fn run_python(
             .as_simple()
             .to_string(),
     );
-    let fs = execenv::DirectOsFileSystem::new(dir).map_err(|e| e.to_string())?;
+    let fs = Arc::new(execenv::DirectOsFileSystem::new(dir).map_err(|e| e.to_string())?);
+    let workspace = Arc::new(execenv::ExecutionWorkspace::new(fs));
+    let commands = command_router(&ctx.tools, &config, workspace.clone())
+        .map_err(|error| error.to_string())?;
     // Same tool surface as the interactive agent loop, so scripts that work
     // there work here too.
     let registry = scriptable_tool_registry(ScriptableToolRegistryContext {
@@ -473,7 +476,7 @@ async fn run_python(
         default_wing: None,
         google,
     });
-    let tool = execenv::PythonTool::new(config, Arc::new(fs))
+    let tool = execenv::PythonTool::new_with_workspace_and_commands(config, workspace, commands)
         .await
         .map_err(|e| e.to_string())?
         .with_tools(registry);

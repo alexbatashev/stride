@@ -224,3 +224,4 @@ network = "Blocked"
 
 [tools.commands]
 enabled = ["pandoc"]
+network = "Blocked"

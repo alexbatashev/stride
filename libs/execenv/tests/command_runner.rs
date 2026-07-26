@@ -292,3 +292,45 @@ async fn pandoc_converts_markdown_to_html() {
         .unwrap();
     assert_eq!(&docx[..2], b"PK");
 }
+
+#[tokio::test]
+#[ignore = "requires the pinned Typst release artifact"]
+async fn typst_compiles_document_to_pdf() {
+    let module_path = std::env::var("TYPST_WASM").expect("TYPST_WASM must name typst.wasm");
+    let cache = std::env::var("TYPST_CACHE").expect("TYPST_CACHE must name a cache directory");
+    let workspace = tempfile::tempdir().unwrap();
+    tokio::fs::write(workspace.path().join("report.typ"), "= Portable Typst")
+        .await
+        .unwrap();
+
+    let runner = WasiCommandRunner::new(cache).unwrap();
+    let command = runner.prepare_file("typst", module_path).await.unwrap();
+    let output = runner
+        .run(
+            &command,
+            &ExecInvocation {
+                argv: vec![
+                    "typst".to_string(),
+                    "compile".to_string(),
+                    "report.typ".to_string(),
+                ],
+                stdin: Vec::new(),
+                cwd: "/work".to_string(),
+                timeout: Some(Duration::from_secs(60)),
+            },
+            &[execenv::VolumeMount::new(workspace.path(), "/work")],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        output.returncode,
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pdf = tokio::fs::read(workspace.path().join("report.pdf"))
+        .await
+        .unwrap();
+    assert_eq!(&pdf[..5], b"%PDF-");
+}

@@ -8,6 +8,7 @@ pub struct CommandBuiltin {
     router: Arc<CommandRouter>,
     name: &'static str,
     description: &'static str,
+    inline: bool,
 }
 
 impl CommandBuiltin {
@@ -16,6 +17,20 @@ impl CommandBuiltin {
             router,
             name,
             description,
+            inline: false,
+        }
+    }
+
+    pub(crate) fn new_inline(
+        router: Arc<CommandRouter>,
+        name: &'static str,
+        description: &'static str,
+    ) -> Self {
+        Self {
+            router,
+            name,
+            description,
+            inline: true,
         }
     }
 }
@@ -26,15 +41,24 @@ impl Builtin for CommandBuiltin {
         let mut argv = Vec::with_capacity(ctx.args.len() + 1);
         argv.push(self.name.to_string());
         argv.extend(ctx.args.iter().cloned());
-        let output = self
-            .router
-            .exec(ExecInvocation {
-                argv,
-                stdin: ctx.stdin.unwrap_or_default().as_bytes().to_vec(),
-                cwd: ctx.cwd.to_string_lossy().into_owned(),
-                timeout: None,
-            })
-            .await;
+        let invocation = ExecInvocation {
+            argv,
+            stdin: ctx.stdin.unwrap_or_default().as_bytes().to_vec(),
+            cwd: ctx.cwd.to_string_lossy().into_owned(),
+            timeout: None,
+        };
+        let output = if self.inline {
+            self.router
+                .exec_inline(invocation)
+                .await
+                .unwrap_or_else(|error| crate::CommandOutput {
+                    returncode: 1,
+                    stderr: format!("{}: {error:#}\n", self.name).into_bytes(),
+                    ..Default::default()
+                })
+        } else {
+            self.router.exec(invocation).await
+        };
         Ok(ExecResult {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),

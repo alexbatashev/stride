@@ -1,0 +1,140 @@
+package eryx:sandbox@0.1.0;
+
+/// The eryx sandbox runtime world.
+///
+/// This defines the interface between the host (Rust) and the guest (Python WASM).
+/// The guest can invoke callbacks on the host, list available callbacks, and report
+/// trace events. The host calls the guest's execute function to run Python code.
+world sandbox {
+    /// TCP networking for plain connections (http://localhost, internal services).
+    import eryx:net/tcp@0.1.0;
+
+    /// TLS networking for secure encrypted connections.
+    import eryx:net/tls@0.1.0;
+
+    /// Invoke a callback by name with JSON arguments.
+    ///
+    /// This is an async function that Python code can await:
+    ///   result = await invoke("callback_name", '{"arg": "value"}')
+    ///
+    /// Multiple invocations can run in parallel via asyncio.gather():
+    ///   results = await asyncio.gather(
+    ///       invoke("query", '{"q": "a"}'),
+    ///       invoke("query", '{"q": "b"}'),
+    ///   )
+    ///
+    /// Returns the callback result as a JSON string on success,
+    /// or an error message on failure.
+    import invoke: async func(name: string, arguments-json: string) -> result<string, string>;
+
+    /// List all available callbacks for introspection.
+    ///
+    /// Python code can discover what callbacks are available:
+    ///   callbacks = list_callbacks()
+    ///   for cb in callbacks:
+    ///       print(f"{cb['name']}: {cb['description']}")
+    import list-callbacks: func() -> list<callback-info>;
+
+    /// Report a trace event to the host.
+    ///
+    /// Called by the Python runtime's sys.settrace hook to report
+    /// execution progress. The host can use this for visualization,
+    /// debugging, or progress tracking.
+    ///
+    /// - lineno: Line number in the source code
+    /// - event: Event type as JSON (e.g., {"type": "line"} or {"type": "call", "function": "foo"})
+    /// - context-json: Optional context data (e.g., local variables snapshot)
+    import report-trace: func(lineno: u32, event-json: string, context-json: string);
+
+    /// Report output from the Python runtime to the host in real-time.
+    ///
+    /// Called by the Python runtime's sys.stdout/sys.stderr on every write()
+    /// to stream output as it's produced, rather than waiting for execution
+    /// to complete.
+    ///
+    /// - stream-id: 0 for stdout, 1 for stderr
+    /// - data: The text that was written
+    import report-output: func(stream-id: u32, data: string);
+
+    /// Callback metadata returned by list-callbacks.
+    record callback-info {
+        /// Unique name for this callback (e.g., "http.get", "grafana.prometheus").
+        name: string,
+        /// Human-readable description of what this callback does.
+        description: string,
+        /// JSON Schema for expected arguments.
+        parameters-schema-json: string,
+    }
+
+    /// Output from executing Python code.
+    record execute-output {
+        /// Captured stdout from the Python execution.
+        stdout: string,
+        /// Captured stderr from the Python execution.
+        stderr: string,
+        /// JSON-serialized value of the script's result variable (see
+        /// set-result-variable), or "" if the variable was not set.
+        /// ("result" is a reserved WIT keyword, hence "result-json".)
+        result-json: string,
+        /// Why result capture failed (e.g. the value was not JSON-serializable),
+        /// or "" when capture succeeded or no result variable was set.
+        result-error: string,
+    }
+
+    /// Execute Python code in the sandbox.
+    ///
+    /// The code can use top-level await directly:
+    ///   result = await invoke("get_time", "{}")
+    ///   print(result)
+    ///
+    /// Returns captured stdout and stderr on success, or an error message on failure.
+    export execute: async func(code: string) -> result<execute-output, string>;
+
+    /// Capture a snapshot of the current Python session state.
+    ///
+    /// Returns the serialized state as bytes (using pickle internally).
+    /// This captures all user-defined variables from previous execute() calls.
+    ///
+    /// The snapshot can be restored later using restore-state to continue
+    /// execution with the same variables available.
+    ///
+    /// Returns an error if serialization fails (e.g., unpicklable objects).
+    export snapshot-state: async func() -> result<list<u8>, string>;
+
+    /// Restore Python session state from a previously captured snapshot.
+    ///
+    /// After restore, subsequent execute() calls will have access to all
+    /// variables that were present when the snapshot was taken.
+    ///
+    /// Returns an error if deserialization fails (e.g., corrupted data).
+    export restore-state: async func(data: list<u8>) -> result<_, string>;
+
+    /// Clear all persistent state from the session.
+    ///
+    /// After clear, subsequent execute() calls will start with a fresh
+    /// namespace (no user-defined variables from previous calls).
+    export clear-state: async func();
+
+    /// Finalize pre-initialization by resetting WASI state.
+    ///
+    /// This MUST be called at the end of pre-initialization, after all
+    /// imports are done but before the memory snapshot is captured.
+    /// It clears file handles from the WASI adapter and wasi-libc so they
+    /// don't get captured in the snapshot (which would cause "unknown handle
+    /// index" errors at runtime).
+    ///
+    /// This is only meant to be called during wasmtime-wizer
+    /// pre-initialization. Calling it at runtime has no useful effect.
+    export finalize-preinit: func();
+
+    /// Set the name of the user variable captured as the structured result.
+    ///
+    /// After each execute() call, the variable with this name is read from the
+    /// user namespace, JSON-serialized, and returned in execute-output.result.
+    /// Defaults to "result". Configured once by the host when building a sandbox.
+    ///
+    /// Declared `async` so it can be driven on the same async store as `execute`
+    /// (a synchronous export cannot be called on wasmtime's async store); the
+    /// guest work itself is synchronous and completes immediately.
+    export set-result-variable: async func(name: string);
+}

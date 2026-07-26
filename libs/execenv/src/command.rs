@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -22,6 +24,7 @@ use crate::{
 const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 const COMMAND_CACHE_VERSION: &str = "2";
+static INLINE_PREPARE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug)]
 pub struct ExecInvocation {
@@ -55,20 +58,38 @@ pub struct CommandSpec {
     pub name: &'static str,
     pub artifact: ArtifactSpec,
     pub description: &'static str,
-    pub network: NetworkAccess,
     pub limits: ExecutionLimits,
 }
 
 pub const PANDOC: CommandSpec = CommandSpec {
     name: "pandoc",
     artifact: ArtifactSpec {
-        name: "pandoc-wasm-2024-11-26",
-        url: "https://haskell-wasm.github.io/pandoc-wasm/pandoc.wasm",
+        name: "pandoc-wasm-stride-tools-v0.1.0",
+        url: "https://github.com/alexbatashev/stride-tools/releases/download/v0.1.0/pandoc.wasm",
         sha256: "48d9ceed3ef805f6acc28e6f58c2439cdeb1f71864244fffcc155e2c045aa7fc",
         kind: ArtifactKind::File,
     },
     description: "pandoc: convert documents between Markdown, HTML, DOCX, ODT, EPUB, Typst and other formats; no network access or direct PDF engine.",
-    network: NetworkAccess::Blocked,
+    limits: ExecutionLimits {
+        max_runtime: Duration::from_secs(60),
+        max_memory_bytes: Some(1024 * 1024 * 1024),
+        max_cpu_fuel: None,
+    },
+};
+
+pub const TYPST_DESCRIPTION: &str = "typst: compile a Typst document from the workspace to PDF/SVG/PNG \
+    (typst compile report.typ [out.pdf] [--format pdf|svg|png] [--ppi N] \
+    [--root DIR]). Uses embedded fonts and writes the output into the workspace.";
+
+pub const TYPST: CommandSpec = CommandSpec {
+    name: "typst",
+    artifact: ArtifactSpec {
+        name: "typst-wasm-stride-tools-v0.1.0",
+        url: "https://github.com/alexbatashev/stride-tools/releases/download/v0.1.0/typst.wasm",
+        sha256: "e3a7e89b07123875426e500bd7fb67ec8c6cea6ca34434a053e7b83755eabaf3",
+        kind: ArtifactKind::File,
+    },
+    description: TYPST_DESCRIPTION,
     limits: ExecutionLimits {
         max_runtime: Duration::from_secs(60),
         max_memory_bytes: Some(1024 * 1024 * 1024),
@@ -108,6 +129,7 @@ struct LazyWasiCommand {
     runner: Arc<WasiCommandRunner>,
     store: ArtifactStore,
     spec: CommandSpec,
+    network: NetworkAccess,
     prepared: tokio::sync::OnceCell<PreparedCommand>,
 }
 
@@ -120,17 +142,17 @@ impl NativeCommand for LazyWasiCommand {
     ) -> anyhow::Result<CommandOutput> {
         let command = self
             .prepared
-            .get_or_try_init(|| self.runner.prepare(&self.store, &self.spec))
+            .get_or_try_init(|| self.runner.prepare_inline(&self.store, &self.spec))
             .await?;
         let mut invocation = invocation.clone();
         invocation.timeout = invocation.timeout.or(Some(self.spec.limits.max_runtime));
         self.runner
-            .run_with_policy(
+            .run_with_policy_inline(
                 command,
                 &invocation,
                 mounts,
                 &self.spec.limits,
-                self.spec.network.clone(),
+                self.network.clone(),
             )
             .await
     }
@@ -180,11 +202,13 @@ impl CommandRouter {
         spec: CommandSpec,
         runner: Arc<WasiCommandRunner>,
         store: ArtifactStore,
+        network: NetworkAccess,
     ) {
         let command = LazyWasiCommand {
             runner,
             store,
             spec: spec.clone(),
+            network,
             prepared: tokio::sync::OnceCell::new(),
         };
         self.register_native(spec.name, spec.description, Arc::new(command));
@@ -198,30 +222,55 @@ impl CommandRouter {
     }
 
     pub async fn exec(&self, invocation: ExecInvocation) -> CommandOutput {
+        self.workspace
+            .execute(|| self.exec_inline(invocation))
+            .await
+            .unwrap_or_else(|error| CommandOutput {
+                returncode: 1,
+                stderr: format!("command: {error:#}\n").into_bytes(),
+                ..Default::default()
+            })
+    }
+
+    pub(crate) fn volumes(&self) -> Vec<VolumeMount> {
+        self.workspace.volumes()
+    }
+
+    pub(crate) async fn exec_inline(
+        &self,
+        invocation: ExecInvocation,
+    ) -> anyhow::Result<CommandOutput> {
         let Some(name) = invocation.argv.first().cloned() else {
-            return unknown_command("", self.commands.keys().copied());
+            return Ok(unknown_command("", self.commands.keys().copied()));
         };
+        if matches!(name.as_str(), "python" | "python3") {
+            return Ok(CommandOutput {
+                returncode: 126,
+                stderr:
+                    b"nested python is not supported; call the code directly or import the module\n"
+                        .to_vec(),
+                ..Default::default()
+            });
+        }
         let Some(command) = self.commands.get(name.as_str()) else {
-            return unknown_command(&name, self.commands.keys().copied());
+            return Ok(unknown_command(&name, self.commands.keys().copied()));
         };
         let handler = command.handler.clone();
-        let volumes = self.workspace.volumes();
-        let result = self
-            .workspace
-            .execute(|| async move {
-                match handler {
-                    CommandHandler::Native(command) => command.run(&invocation, &volumes).await,
-                    CommandHandler::Wasi { runner, command } => {
-                        runner.run(&command, &invocation, &volumes).await
-                    }
-                }
-            })
-            .await;
-        result.unwrap_or_else(|error| CommandOutput {
-            returncode: 1,
-            stderr: format!("{name}: {error:#}\n").into_bytes(),
-            ..Default::default()
-        })
+        let volumes = self.volumes();
+        match handler {
+            CommandHandler::Native(command) => command.run(&invocation, &volumes).await,
+            CommandHandler::Wasi { runner, command } => {
+                runner
+                    .run_with_policy_inline(
+                        &command,
+                        &invocation,
+                        &volumes,
+                        &ExecutionLimits::default(),
+                        NetworkAccess::Blocked,
+                    )
+                    .await
+            }
+        }
     }
 }
 
@@ -358,6 +407,66 @@ impl WasiCommandRunner {
             .await
     }
 
+    async fn prepare_inline(
+        &self,
+        store: &ArtifactStore,
+        spec: &CommandSpec,
+    ) -> anyhow::Result<PreparedCommand> {
+        let directory = store.ensure(&spec.artifact).await?;
+        let file_name = spec
+            .artifact
+            .url
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("artifact URL has no file name"))?;
+        self.prepare_file_inline(spec.name, directory.join(file_name))
+            .await
+    }
+
+    async fn prepare_file_inline(
+        &self,
+        name: &str,
+        path: impl AsRef<Path>,
+    ) -> anyhow::Result<PreparedCommand> {
+        let bytes = tokio::fs::read(path).await?;
+        let is_component = wasmparser::Parser::is_component(&bytes);
+        anyhow::ensure!(
+            is_component || wasmparser::Parser::is_core_wasm(&bytes),
+            "command artifact is not WebAssembly"
+        );
+        let kind_name = if is_component { "p2" } else { "p1" };
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let cache_path = self.cache_dir.join(format!(
+            "{name}-{kind_name}-v{COMMAND_CACHE_VERSION}-{digest}.cwasm"
+        ));
+        tokio::fs::create_dir_all(&self.cache_dir).await?;
+        let engine = self.engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = INLINE_PREPARE_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if cache_path.exists() {
+                let load = deserialize_command(&engine, &cache_path, is_component);
+                if let Ok(kind) = load {
+                    return Ok(PreparedCommand { kind });
+                }
+                let _ = std::fs::remove_file(&cache_path);
+            }
+
+            let (kind, serialized) = compile_command(&engine, bytes, is_component)?;
+            let mut staging = tempfile::NamedTempFile::new_in(
+                cache_path.parent().expect("command cache path has parent"),
+            )?;
+            staging.write_all(&serialized)?;
+            staging
+                .persist(&cache_path)
+                .map_err(|error| anyhow::anyhow!("persist compiled WASI command: {error}"))?;
+            Ok(PreparedCommand { kind })
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("WASI command preparation task failed: {error}"))?
+    }
+
     pub async fn run(
         &self,
         command: &PreparedCommand,
@@ -402,6 +511,67 @@ impl WasiCommandRunner {
                 }
             })
             .await?
+    }
+
+    async fn run_with_policy_inline(
+        &self,
+        command: &PreparedCommand,
+        invocation: &ExecInvocation,
+        mounts: &[VolumeMount],
+        limits: &ExecutionLimits,
+        network: NetworkAccess,
+    ) -> anyhow::Result<CommandOutput> {
+        let engine = self.engine.clone();
+        let command = command.clone();
+        let invocation = invocation.clone();
+        let mounts = mounts.to_vec();
+        let limits = limits.clone();
+        tokio::task::spawn_blocking(move || match &command.kind {
+            PreparedCommandKind::P1(_) => run_p1(&engine, &command, &invocation, &mounts, &limits),
+            PreparedCommandKind::P2(_) => {
+                run_p2(&engine, &command, &invocation, &mounts, &limits, &network)
+            }
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("WASI command task failed: {error}"))?
+    }
+}
+
+fn deserialize_command(
+    engine: &Engine,
+    cache_path: &Path,
+    is_component: bool,
+) -> anyhow::Result<PreparedCommandKind> {
+    if is_component {
+        unsafe { Component::deserialize_file(engine, cache_path) }
+            .map(PreparedCommandKind::P2)
+            .map_err(|error| anyhow::anyhow!("{error:#}"))
+    } else {
+        unsafe { Module::deserialize_file(engine, cache_path) }
+            .map(PreparedCommandKind::P1)
+            .map_err(|error| anyhow::anyhow!("{error:#}"))
+    }
+}
+
+fn compile_command(
+    engine: &Engine,
+    bytes: Vec<u8>,
+    is_component: bool,
+) -> anyhow::Result<(PreparedCommandKind, Vec<u8>)> {
+    if is_component {
+        let component = Component::new(engine, bytes)
+            .map_err(|error| anyhow::anyhow!("compile WASI command: {error:#}"))?;
+        let serialized = component
+            .serialize()
+            .map_err(|error| anyhow::anyhow!("serialize WASI command: {error:#}"))?;
+        Ok((PreparedCommandKind::P2(component), serialized))
+    } else {
+        let module = Module::new(engine, bytes)
+            .map_err(|error| anyhow::anyhow!("compile WASI command: {error:#}"))?;
+        let serialized = module
+            .serialize()
+            .map_err(|error| anyhow::anyhow!("serialize WASI command: {error:#}"))?;
+        Ok((PreparedCommandKind::P1(module), serialized))
     }
 }
 
@@ -616,5 +786,63 @@ fn mount_permissions(read_only: bool) -> (wasmtime_wasi::DirPerms, wasmtime_wasi
             wasmtime_wasi::DirPerms::all(),
             wasmtime_wasi::FilePerms::all(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn inline_preparation_is_cancellation_safe_and_does_not_block_the_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let module_path = root.path().join("hello.wasm");
+        tokio::fs::write(
+            &module_path,
+            wat::parse_str(r#"(module (func (export "_start")))"#).unwrap(),
+        )
+        .await
+        .unwrap();
+        let runner = WasiCommandRunner::new(root.path().join("compiled")).unwrap();
+
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let holder = tokio::task::spawn_blocking(move || {
+            let _guard = INLINE_PREPARE_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            acquired_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        });
+        acquired_rx.await.unwrap();
+
+        let first = tokio::time::timeout(
+            Duration::from_millis(10),
+            runner.prepare_file_inline("hello", &module_path),
+        )
+        .await;
+        assert!(first.is_err());
+        holder.await.unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            runner.prepare_file_inline("hello", &module_path),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut entries = tokio::fs::read_dir(root.path().join("compiled"))
+            .await
+            .unwrap();
+        let mut compiled = 0;
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "cwasm")
+            {
+                compiled += 1;
+            }
+        }
+        assert_eq!(compiled, 1);
     }
 }

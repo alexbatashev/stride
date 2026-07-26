@@ -362,11 +362,11 @@ pub(crate) async fn ensure_runner(
             Arc::new(execenv::DirectOsFileSystem::new(host_dir).map_err(AgentPoolError::Internal)?)
         };
     let exec_workspace = Arc::new(execenv::ExecutionWorkspace::new(exec_fs));
-    let python = python_tool(&tools, python_cfg.clone(), exec_workspace.clone())
+    let commands = command_router(&tools, &python_cfg, exec_workspace.clone())
+        .map_err(AgentPoolError::Internal)?;
+    let python = python_tool(&tools, python_cfg.clone(), exec_workspace, commands.clone())
         .await
         .map_err(AgentPoolError::Internal)?;
-    let commands =
-        command_router(&tools, &python_cfg, exec_workspace).map_err(AgentPoolError::Internal)?;
 
     if let Some((provider, workspace, grant)) = python_mount {
         let fs = MountedVfs::new(provider.clone(), user_id, workspace, grant)
@@ -472,6 +472,7 @@ async fn python_tool(
     tools: &Tools,
     config: execenv::PythonToolConfig,
     workspace: Arc<execenv::ExecutionWorkspace>,
+    commands: Option<Arc<execenv::CommandRouter>>,
 ) -> anyhow::Result<Option<execenv::PythonTool>> {
     let Some(python) = tools.python.as_ref() else {
         return Ok(None);
@@ -480,45 +481,73 @@ async fn python_tool(
         return Ok(None);
     }
 
-    execenv::PythonTool::new_with_workspace(config, workspace)
+    execenv::PythonTool::new_with_workspace_and_commands(config, workspace, commands)
         .await
         .map(Some)
 }
 
-fn command_router(
+pub(crate) fn command_router(
     tools: &Tools,
     runtime: &execenv::PythonToolConfig,
     workspace: Arc<execenv::ExecutionWorkspace>,
 ) -> anyhow::Result<Option<Arc<execenv::CommandRouter>>> {
     let mut router = execenv::CommandRouter::new(workspace);
-    router.register_native(
-        "typst",
-        execenv::TYPST_DESCRIPTION,
-        Arc::new(execenv::TypstCommand::new(
-            Some(runtime.cache_dir.join("typst-packages")),
-            vec![runtime.cache_dir.join("fonts")],
-            matches!(runtime.network, execenv::NetworkAccess::Allowed),
-        )),
-    );
-    let Some(config) = tools.commands.as_ref() else {
-        return Ok(Some(Arc::new(router)));
-    };
     let runner = Arc::new(execenv::WasiCommandRunner::with_threads(
         runtime.cache_dir.join("commands/compiled"),
         runtime.threads,
     )?);
     let artifacts = execenv::ArtifactStore::new(runtime.cache_dir.join("commands/artifacts"));
+    let network = command_network(tools);
+    for spec in command_specs(tools)? {
+        router.register_wasi_spec(spec, runner.clone(), artifacts.clone(), network.clone());
+    }
+    Ok(Some(Arc::new(router)))
+}
+
+pub(crate) async fn prepare_commands(
+    tools: &Tools,
+    runtime: &execenv::PythonToolConfig,
+) -> anyhow::Result<()> {
+    let specs = command_specs(tools)?;
+
+    let runner = execenv::WasiCommandRunner::with_threads(
+        runtime.cache_dir.join("commands/compiled"),
+        runtime.threads,
+    )?;
+    let artifacts = execenv::ArtifactStore::new(runtime.cache_dir.join("commands/artifacts"));
+    for spec in specs {
+        tracing::info!(command = spec.name, "preparing external command");
+        runner.prepare(&artifacts, &spec).await?;
+        tracing::info!(command = spec.name, "external command ready");
+    }
+    Ok(())
+}
+
+fn command_specs(tools: &Tools) -> anyhow::Result<Vec<execenv::CommandSpec>> {
+    let mut specs = vec![execenv::TYPST.clone()];
+    let Some(config) = tools.commands.as_ref() else {
+        return Ok(specs);
+    };
     for name in &config.enabled {
         match name.as_str() {
-            "pandoc" => router.register_wasi_spec(
-                execenv::PANDOC.clone(),
-                runner.clone(),
-                artifacts.clone(),
-            ),
+            "pandoc" => specs.push(execenv::PANDOC.clone()),
+            "typst" => {}
             other => anyhow::bail!("unknown command in tools.commands.enabled: {other}"),
         }
     }
-    Ok(Some(Arc::new(router)))
+    Ok(specs)
+}
+
+fn command_network(tools: &Tools) -> execenv::NetworkAccess {
+    match tools
+        .commands
+        .as_ref()
+        .and_then(|commands| commands.network.as_ref())
+        .unwrap_or(&PythonNetwork::Blocked)
+    {
+        PythonNetwork::Blocked => execenv::NetworkAccess::Blocked,
+        PythonNetwork::Allowed => execenv::NetworkAccess::Allowed,
+    }
 }
 
 pub(crate) fn python_tool_config(python: &Python) -> execenv::PythonToolConfig {
@@ -1027,6 +1056,7 @@ mod tests {
         let tools = Tools {
             commands: Some(Commands {
                 enabled: vec!["pandoc".to_string()],
+                network: Some(PythonNetwork::Blocked),
             }),
             ..Default::default()
         };
@@ -1035,6 +1065,10 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        assert!(matches!(
+            command_network(&tools),
+            execenv::NetworkAccess::Blocked
+        ));
         assert_eq!(
             router.catalog(),
             vec![
@@ -1042,5 +1076,24 @@ mod tests {
                 ("typst", execenv::TYPST_DESCRIPTION),
             ]
         );
+    }
+
+    #[test]
+    fn command_network_is_blocked_by_default_and_requires_opt_in() {
+        assert!(matches!(
+            command_network(&Tools::default()),
+            execenv::NetworkAccess::Blocked
+        ));
+        let tools = Tools {
+            commands: Some(Commands {
+                enabled: Vec::new(),
+                network: Some(PythonNetwork::Allowed),
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            command_network(&tools),
+            execenv::NetworkAccess::Allowed
+        ));
     }
 }

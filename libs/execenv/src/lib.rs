@@ -39,7 +39,7 @@ mod command;
 #[cfg(feature = "eryx")]
 pub use command::{
     CommandHandler, CommandOutput, CommandRouter, CommandSpec, ExecInvocation, NativeCommand,
-    PANDOC, PreparedCommand, WasiCommandRunner,
+    PANDOC, PreparedCommand, TYPST, TYPST_DESCRIPTION, WasiCommandRunner,
 };
 
 #[cfg(feature = "eryx")]
@@ -67,22 +67,8 @@ mod bashkit_cmd;
 #[cfg(feature = "bashkit")]
 pub use bashkit_cmd::PythonBuiltin;
 
-#[cfg(feature = "typst")]
-pub mod typst_doc;
-#[cfg(feature = "typst")]
-pub use typst_doc::{CompileRequest, TypstFormat, compile as typst_compile};
-
-#[cfg(all(feature = "bashkit", feature = "typst"))]
-mod typst_cmd;
-#[cfg(all(feature = "bashkit", feature = "typst"))]
-pub use typst_cmd::TYPST_DESCRIPTION;
-#[cfg(all(feature = "bashkit", feature = "typst"))]
-pub use typst_cmd::TypstBuiltin;
-#[cfg(all(feature = "bashkit", feature = "typst", feature = "eryx"))]
-pub use typst_cmd::TypstCommand;
-
-#[cfg(all(feature = "eryx", feature = "typst"))]
-mod typst_bridge;
+#[cfg(all(feature = "eryx", feature = "bashkit"))]
+mod subprocess_bridge;
 
 // Pure-Python wheels (py3-none-any). They carry no native extensions, so they
 // import on any CPython-WASI minor version and need no compilation.
@@ -726,6 +712,8 @@ pub struct PythonTool {
     service: Arc<dyn ExecutionService>,
     registry: Option<Arc<ToolRegistry>>,
     specs: Vec<PythonToolSpec>,
+    #[cfg(feature = "eryx")]
+    commands: Option<Arc<CommandRouter>>,
 }
 
 impl PythonTool {
@@ -748,6 +736,28 @@ impl PythonTool {
             service,
             registry: None,
             specs: Vec::new(),
+            #[cfg(feature = "eryx")]
+            commands: None,
+        })
+    }
+
+    #[cfg(feature = "eryx")]
+    pub async fn new_with_workspace_and_commands(
+        config: PythonToolConfig,
+        workspace: Arc<ExecutionWorkspace>,
+        commands: Option<Arc<CommandRouter>>,
+    ) -> anyhow::Result<Self> {
+        let service: Arc<dyn ExecutionService> = match config.backend {
+            BackendKind::Mock => Arc::new(MockExecutionService),
+            BackendKind::Eryx => {
+                make_eryx_service_with_commands(config, workspace, commands.clone()).await?
+            }
+        };
+        Ok(Self {
+            service,
+            registry: None,
+            specs: Vec::new(),
+            commands,
         })
     }
 
@@ -756,6 +766,8 @@ impl PythonTool {
             service,
             registry: None,
             specs: Vec::new(),
+            #[cfg(feature = "eryx")]
+            commands: None,
         }
     }
 
@@ -866,6 +878,20 @@ impl Tool for PythonTool {
                 result as a Python object. Top-level await is supported.\n",
             );
             description.push_str(&tools_catalog(&self.specs));
+        }
+        #[cfg(feature = "eryx")]
+        if let Some(commands) = &self.commands {
+            let names = commands
+                .catalog()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !names.is_empty() {
+                description.push_str(&format!(
+                    "\n\nsubprocess.run(['cmd', ...]) works for: {names}."
+                ));
+            }
         }
         LlmTool {
             r#type: llm::ToolType::Function,
@@ -995,12 +1021,14 @@ mod eryx_backend {
         workspace: Arc<ExecutionWorkspace>,
         runtime: Arc<OnceCell<PreinitRuntime>>,
         hub: Arc<ExecutionHub>,
+        commands: Option<Arc<crate::CommandRouter>>,
     }
 
     impl EryxExecutionService {
         pub async fn new(
             config: PythonToolConfig,
             workspace: Arc<ExecutionWorkspace>,
+            commands: Option<Arc<crate::CommandRouter>>,
         ) -> anyhow::Result<Self> {
             let runtime = runtime_cell(&config);
             let hub = crate::execution_hub::execution_hub(config.threads);
@@ -1009,6 +1037,7 @@ mod eryx_backend {
                 workspace,
                 runtime,
                 hub,
+                commands,
             })
         }
     }
@@ -1034,8 +1063,8 @@ mod eryx_backend {
                 limits: self.config.limits.clone(),
                 volumes: self.workspace.volumes(),
                 network: self.config.network.clone(),
-                package_cache: self.config.cache_dir.join("typst-packages"),
                 fonts_dir: runtime.fonts_dir.clone(),
+                commands: self.commands.clone(),
             })
         }
     }
@@ -1237,13 +1266,8 @@ mod eryx_backend {
         limits: ExecutionLimits,
         volumes: Vec<eryx::VolumeMount>,
         network: NetworkAccess,
-        /// Cache directory for downloaded Typst packages. Used by the always-on
-        /// `typst` module; unused when the `typst` feature is off.
-        #[cfg_attr(not(feature = "typst"), allow(dead_code))]
-        package_cache: PathBuf,
-        /// Shared font cache, mounted read-only into the guest and scanned by the
-        /// host Typst compiler. `None` when the download failed.
         fonts_dir: Option<PathBuf>,
+        commands: Option<Arc<crate::CommandRouter>>,
     }
 
     /// Appends the standard per-execution mounts — the shared read-only font
@@ -1259,26 +1283,14 @@ mod eryx_backend {
         volumes.push(scratch.volume());
     }
 
-    /// The always-on built-in Python modules (currently just `typst`) attached
-    /// to every execution: their host callbacks plus the preamble exposing them.
-    /// Empty when the `typst` feature is disabled.
     fn builtin_modules(request: &ExecutionRequest) -> (Vec<Arc<dyn eryx::Callback>>, String) {
-        #[cfg(feature = "typst")]
-        {
-            let allow_network = matches!(request.network, NetworkAccess::Allowed);
-            let font_paths = request.fonts_dir.clone().into_iter().collect();
-            let callback = crate::typst_bridge::callback(
-                Some(request.package_cache.clone()),
-                font_paths,
-                allow_network,
-            );
-            (vec![callback], crate::typst_bridge::PREAMBLE.to_string())
-        }
-        #[cfg(not(feature = "typst"))]
-        {
-            let _ = request;
-            (Vec::new(), String::new())
-        }
+        let Some(router) = request.commands.clone() else {
+            return (Vec::new(), String::new());
+        };
+        (
+            vec![crate::subprocess_bridge::callback(router)],
+            crate::subprocess_bridge::PREAMBLE.to_string(),
+        )
     }
 
     async fn execute_request(request: ExecutionRequest) -> anyhow::Result<ExecutionOutput> {
@@ -1429,12 +1441,18 @@ mod eryx_backend {
             .map(|cb| (cb.name().to_string(), cb.clone()))
             .collect();
         let (cb_tx, cb_rx) = tokio::sync::mpsc::channel::<eryx::CallbackRequest>(32);
-        let handler = tokio::spawn(eryx::callback_handler::run_callback_handler(
-            cb_rx,
-            Arc::new(dispatch),
-            unlimited_callback_limits(),
-            Arc::new(HashMap::new()),
-        ));
+        let handler = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("execenv callback runtime");
+            runtime.block_on(eryx::callback_handler::run_callback_handler(
+                cb_rx,
+                Arc::new(dispatch),
+                unlimited_callback_limits(),
+                Arc::new(HashMap::new()),
+            ))
+        });
 
         let full_code = format!("{preamble}\n{}", request.script);
         let mut execute = request
@@ -1452,7 +1470,7 @@ mod eryx_backend {
         execute = execute.with_volumes(volumes);
 
         let result = execute.run().await.context("execute eryx script");
-        handler.abort();
+        let _ = handler.join();
         drop(scratch);
         let result = result?;
         Ok(ExecutionOutput {
@@ -1622,7 +1640,18 @@ async fn make_eryx_service(
     workspace: Arc<ExecutionWorkspace>,
 ) -> anyhow::Result<Arc<dyn ExecutionService>> {
     Ok(Arc::new(
-        eryx_backend::EryxExecutionService::new(config, workspace).await?,
+        eryx_backend::EryxExecutionService::new(config, workspace, None).await?,
+    ))
+}
+
+#[cfg(feature = "eryx")]
+async fn make_eryx_service_with_commands(
+    config: PythonToolConfig,
+    workspace: Arc<ExecutionWorkspace>,
+    commands: Option<Arc<CommandRouter>>,
+) -> anyhow::Result<Arc<dyn ExecutionService>> {
+    Ok(Arc::new(
+        eryx_backend::EryxExecutionService::new(config, workspace, commands).await?,
     ))
 }
 
@@ -2079,40 +2108,137 @@ mod tests {
         assert!(png.exists(), "savefig did not write to /home/agent");
     }
 
-    #[cfg(all(feature = "eryx", feature = "typst"))]
+    #[cfg(all(feature = "eryx", feature = "bashkit"))]
+    struct PhaseFiveCommand;
+
+    #[cfg(all(feature = "eryx", feature = "bashkit"))]
+    #[async_trait]
+    impl NativeCommand for PhaseFiveCommand {
+        async fn run(
+            &self,
+            invocation: &ExecInvocation,
+            mounts: &[VolumeMount],
+        ) -> anyhow::Result<CommandOutput> {
+            match invocation.argv.first().map(String::as_str) {
+                Some("echoer") => Ok(CommandOutput {
+                    stdout: if invocation.stdin.is_empty() {
+                        format!("{}\n", invocation.argv[1..].join(" ")).into_bytes()
+                    } else {
+                        invocation.stdin.clone()
+                    },
+                    ..Default::default()
+                }),
+                Some("fail") => Ok(CommandOutput {
+                    returncode: 7,
+                    stderr: b"expected failure\n".to_vec(),
+                    ..Default::default()
+                }),
+                Some("delay") => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Ok(CommandOutput::default())
+                }
+                Some("cohere") => {
+                    let mount = mounts
+                        .iter()
+                        .find(|mount| mount.guest_path == AGENT_HOME)
+                        .expect("agent mount");
+                    let input = mount.host_path.join(&invocation.argv[1]);
+                    let output = mount.host_path.join(&invocation.argv[2]);
+                    let bytes = tokio::fs::read(input).await?;
+                    tokio::fs::write(output, bytes).await?;
+                    Ok(CommandOutput::default())
+                }
+                _ => Ok(CommandOutput::default()),
+            }
+        }
+    }
+
+    #[cfg(all(feature = "eryx", feature = "bashkit"))]
     #[tokio::test]
-    #[ignore = "downloads the CPython WASI stdlib and precompiles the runtime"]
-    async fn eryx_typst_module_compiles_pdf() {
+    #[ignore = "downloads the CPython WASI runtime"]
+    async fn eryx_subprocess_shim_covers_agent_idioms() {
         let workspace = tempfile::tempdir().unwrap();
         let ws_dir = workspace.path().join("workspace");
         std::fs::create_dir_all(&ws_dir).unwrap();
-        std::fs::write(ws_dir.join("doc.typ"), b"= Title\nHello from Typst").unwrap();
-
-        let cache_dir = std::env::temp_dir().join("stride-execenv-typst-test-cache");
+        let cache_dir = std::env::temp_dir().join("stride-execenv-phase5-test-cache");
         tokio::fs::create_dir_all(&cache_dir).await.unwrap();
-        let fs = Arc::new(
+        let fs: Arc<dyn FileSystemBackend> = Arc::new(
             DirectOsFileSystem::new(ws_dir.clone())
                 .unwrap()
                 .guest_dir("/home/agent"),
         );
+        let workspace = Arc::new(ExecutionWorkspace::new(fs));
+        let mut router = CommandRouter::new(workspace.clone());
+        for (name, description) in [
+            ("cohere", "copy a workspace file"),
+            ("delay", "wait before completing"),
+            ("echoer", "echo arguments or stdin"),
+            ("fail", "return a non-zero status"),
+        ] {
+            router.register_native(name, description, Arc::new(PhaseFiveCommand));
+        }
+        let router = Arc::new(router);
         let config = PythonToolConfig {
             cache_dir,
             backend: BackendKind::Eryx,
             threads: 1,
-            preinit: true,
-            limits: ExecutionLimits::default(),
+            preinit: false,
+            limits: ExecutionLimits {
+                max_runtime: Duration::from_secs(20),
+                ..Default::default()
+            },
             network: NetworkAccess::Blocked,
         };
-        prepare_eryx_runtime(config.clone()).await.unwrap();
-        let tool = PythonTool::new(config, fs).await.unwrap();
+        let tool = PythonTool::new_with_workspace_and_commands(config, workspace, Some(router))
+            .await
+            .unwrap();
 
-        // Exercises the in-sandbox `typst` module: gather the workspace project,
-        // ship it to the host compiler over the callback bridge, decode the
-        // returned PDF bytes and write them back to the mounted workspace.
-        let script = "import typst\n\
-             await typst.compile('/home/agent/doc.typ', output='/home/agent/doc.pdf')\n\
-             data = await typst.compile('/home/agent/doc.typ')\n\
-             print(len(data), data[:5].decode('latin1'))";
+        let script = r#"
+import os
+import subprocess
+
+result = subprocess.run(["echoer", "hello"], capture_output=True, text=True)
+assert isinstance(result, subprocess.CompletedProcess)
+assert result.returncode == 0 and result.stdout == "hello\n"
+assert subprocess.check_output(["echoer", "checked"], text=True) == "checked\n"
+assert subprocess.call(["fail"], stderr=subprocess.DEVNULL) == 7
+try:
+    subprocess.check_call(["fail"], stderr=subprocess.DEVNULL)
+except subprocess.CalledProcessError as error:
+    assert error.returncode == 7
+else:
+    raise AssertionError("check_call did not raise")
+
+unknown = subprocess.run(["missing"], capture_output=True, text=True)
+assert unknown.returncode == 127 and "available commands:" in unknown.stderr
+nested = subprocess.run(["python", "-c", "print(1)"], capture_output=True, text=True)
+assert nested.returncode == 126 and "nested python is not supported" in nested.stderr
+try:
+    subprocess.run(["delay"], timeout=0.001)
+except subprocess.TimeoutExpired:
+    pass
+else:
+    raise AssertionError("timeout did not expire")
+
+process = subprocess.Popen(["echoer", "popen"], stdout=subprocess.PIPE, text=True)
+try:
+    process.stdout.read()
+except NotImplementedError:
+    pass
+else:
+    raise AssertionError("streaming did not fail")
+stdout, stderr = process.communicate()
+assert stdout == "popen\n" and stderr is None and process.wait() == 0
+
+with open("python.txt", "w") as handle:
+    handle.write("coherent")
+subprocess.check_call(["cohere", "python.txt", "command.txt"])
+assert open("command.txt").read() == "coherent"
+assert os.system("echoer pipeline | wc -w > words.txt") == 0
+assert open("words.txt").read().strip() == "1"
+assert subprocess.getoutput("echoer catalog") == "catalog"
+print("phase-five-ok")
+"#;
         let result = tool
             .execute(
                 Arc::new(AgentConfig {
@@ -2126,15 +2252,92 @@ mod tests {
             .await;
 
         assert_eq!(result["success"], true, "{result}");
-        assert!(
-            result["stdout"].as_str().unwrap().contains("%PDF-"),
-            "{result}"
+        assert!(result["stdout"].as_str().unwrap().contains("phase-five-ok"));
+    }
+
+    #[cfg(all(feature = "eryx", feature = "bashkit"))]
+    #[tokio::test]
+    #[ignore = "downloads the pinned document tool WASI artifacts"]
+    async fn eryx_subprocess_compiles_typst_and_converts_with_pandoc() {
+        let workspace = tempfile::tempdir().unwrap();
+        let ws_dir = workspace.path().join("workspace");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::write(ws_dir.join("report.typ"), b"= Phase Five\nPlain subprocess").unwrap();
+        std::fs::write(ws_dir.join("notes.md"), b"# Notes\n\nConverted by Pandoc.").unwrap();
+
+        let cache_dir = std::env::temp_dir().join("stride-execenv-phase5-test-cache");
+        let fs: Arc<dyn FileSystemBackend> = Arc::new(
+            DirectOsFileSystem::new(ws_dir.clone())
+                .unwrap()
+                .guest_dir(AGENT_HOME),
         );
-        let pdf = ws_dir.join("doc.pdf");
-        assert!(
-            pdf.exists(),
-            "typst.compile(output=...) did not write the pdf"
+        let workspace = Arc::new(ExecutionWorkspace::new(fs));
+        let mut router = CommandRouter::new(workspace.clone());
+        let runner = Arc::new(
+            WasiCommandRunner::with_threads(cache_dir.join("commands/compiled"), 1).unwrap(),
         );
-        assert_eq!(&std::fs::read(pdf).unwrap()[..5], b"%PDF-");
+        let artifacts = ArtifactStore::new(cache_dir.join("commands/artifacts"));
+        let pandoc = runner.prepare(&artifacts, &PANDOC).await.unwrap();
+        let typst = runner.prepare(&artifacts, &TYPST).await.unwrap();
+        router.register_wasi(PANDOC.name, PANDOC.description, runner.clone(), pandoc);
+        router.register_wasi(TYPST.name, TYPST.description, runner, typst);
+        let router = Arc::new(router);
+        let config = PythonToolConfig {
+            cache_dir,
+            backend: BackendKind::Eryx,
+            threads: 1,
+            preinit: false,
+            limits: ExecutionLimits {
+                max_runtime: Duration::from_secs(300),
+                ..Default::default()
+            },
+            network: NetworkAccess::Blocked,
+        };
+        let tool = PythonTool::new_with_workspace_and_commands(config, workspace, Some(router))
+            .await
+            .unwrap();
+        let description = tool.definition().function.description;
+        assert!(description.contains("subprocess.run(['cmd', ...]) works for: pandoc, typst"));
+
+        let result = tool
+            .execute(
+                Arc::new(AgentConfig {
+                    model_registry: stride_agent::ModelRegistry::new(),
+                    max_iterations: 1,
+                    usage_observer: Arc::new(stride_agent::NoopUsageObserver),
+                    ..Default::default()
+                }),
+                json!({
+                    "script": r#"
+import subprocess
+
+typst = subprocess.run(
+    ["typst", "compile", "report.typ"],
+    capture_output=True,
+    text=True,
+)
+assert typst.returncode == 0, typst.stderr
+pandoc = subprocess.run(
+    ["pandoc", "notes.md", "-o", "notes.docx"],
+    capture_output=True,
+    text=True,
+)
+assert pandoc.returncode == 0, pandoc.stderr
+print("documents-ok")
+"#
+                }),
+            )
+            .await;
+
+        assert_eq!(result["success"], true, "{result}");
+        assert!(result["stdout"].as_str().unwrap().contains("documents-ok"));
+        assert_eq!(
+            &std::fs::read(ws_dir.join("report.pdf")).unwrap()[..5],
+            b"%PDF-"
+        );
+        assert_eq!(
+            &std::fs::read(ws_dir.join("notes.docx")).unwrap()[..2],
+            b"PK"
+        );
     }
 }

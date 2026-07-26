@@ -252,6 +252,7 @@ pub struct Tools {
 pub struct Commands {
     #[serde(default)]
     pub enabled: Vec<String>,
+    pub network: Option<PythonNetwork>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -621,11 +622,14 @@ mod tests {
 
             [tools.commands]
             enabled = ["pandoc"]
+            network = "Blocked"
             "#,
         )
         .unwrap();
 
-        assert_eq!(cfg.tools.unwrap().commands.unwrap().enabled, vec!["pandoc"]);
+        let commands = cfg.tools.unwrap().commands.unwrap();
+        assert_eq!(commands.enabled, vec!["pandoc"]);
+        assert!(matches!(commands.network.unwrap(), PythonNetwork::Blocked));
     }
 
     #[test]
