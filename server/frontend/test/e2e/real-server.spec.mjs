@@ -8,6 +8,8 @@ const browserErrors = [];
 const encounteredControls = new Set();
 const verifiedControls = new Set();
 let disposableThreadId = '';
+let authCookie;
+let suiteHadFailure = false;
 
 function installControlCoverage() {
   const state = {
@@ -182,10 +184,14 @@ async function verifyFill(locator, value, postcondition) {
   await verifyAction(locator, () => locator.fill(value), postcondition);
 }
 
-test.beforeEach(async ({ page }, testInfo) => {
+test.beforeEach(async ({ page, context }, testInfo) => {
   await page.addInitScript(installControlCoverage);
   observeBrowserErrors(page);
   if (!testInfo.title.startsWith('registration and login')) {
+    if (authCookie) {
+      await context.addCookies([authCookie]);
+      return;
+    }
     let response = await page.request.post('/api/login', {
       data: { username, password },
     });
@@ -195,10 +201,15 @@ test.beforeEach(async ({ page }, testInfo) => {
       });
     }
     expect(response.status()).toBe(200);
+    authCookie = (await context.cookies()).find((cookie) => cookie.name === 'token');
+    expect(authCookie).toBeDefined();
   }
 });
 
-test.afterEach(async ({ page }) => {
+test.afterEach(async ({ page, context }, testInfo) => {
+  if (testInfo.status !== testInfo.expectedStatus) suiteHadFailure = true;
+  const tokenCookie = (await context.cookies()).find((cookie) => cookie.name === 'token');
+  if (tokenCookie) authCookie = tokenCookie;
   const coverage = await page.evaluate(() => ({
     encountered: [...(window.__strideControlCoverage?.encountered ?? [])],
     verified: [...(window.__strideControlCoverage?.verified ?? [])],
@@ -208,14 +219,14 @@ test.afterEach(async ({ page }) => {
 });
 
 test.afterAll(() => {
+  expect(browserErrors, browserErrors.join('\n')).toEqual([]);
   const gaps = [...encounteredControls].filter((signature) => !verifiedControls.has(signature)).sort();
-  if (!process.env.STRIDE_E2E_ALLOW_PARTIAL) {
+  if (!suiteHadFailure && !process.env.STRIDE_E2E_ALLOW_PARTIAL) {
     expect(
       gaps,
       `Controls without verified postconditions:\n${gaps.join('\n')}\n\nVerified controls:\n${[...verifiedControls].sort().join('\n')}`,
     ).toEqual([]);
   }
-  expect(browserErrors, browserErrors.join('\n')).toEqual([]);
 });
 
 test('registration and login pages work through the real auth API', async ({ page }) => {
@@ -1006,7 +1017,8 @@ test('sidebar links and account controls are wired on the real shell', async ({ 
   const threadId = disposableThreadId;
   expect(threadId).not.toBe('');
   await page.goto(`/threads/${threadId}`);
-  await expect(page.getByRole('link', { name: /draft without sending|New chat/, exact: true })).toBeVisible();
+  const threadLink = page.locator(`a[href="/threads/${threadId}"]`);
+  await expect(threadLink).toBeVisible();
   const defaultThreadGroup = page.locator('sidebar-thread-group').filter({ hasText: /^Threads/ });
   const defaultThreadLabel = defaultThreadGroup.getByRole('button', { name: 'Threads', exact: true });
   await verifyClick(defaultThreadLabel, () =>
@@ -1023,7 +1035,7 @@ test('sidebar links and account controls are wired on the real shell', async ({ 
   }
 
   const newThreadRow = page.locator('app-sidebar-menu-item').filter({
-    has: page.getByRole('link', { name: /draft without sending|New chat/, exact: true }),
+    has: threadLink,
   });
   await newThreadRow.hover();
   const threadActions = newThreadRow.getByTitle('Thread actions');
