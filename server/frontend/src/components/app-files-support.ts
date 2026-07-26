@@ -393,6 +393,16 @@ export type FilesHost = HTMLElement & {
   error: string;
 };
 
+export function syncFileSelectionControls(host: FilesHost): void {
+  const root = host.shadowRoot;
+  if (!root) return;
+  const selected = files.selected;
+  const table = root.querySelector<HTMLElement & { selected: string[] }>("app-data-table");
+  if (table) table.selected = selected;
+  root.querySelector('[data-tool="rename"]')?.toggleAttribute("disabled", selected.length !== 1);
+  root.querySelector('[data-tool="remove"]')?.toggleAttribute("disabled", selected.length === 0);
+}
+
 export async function browserLoad(host: FilesHost): Promise<void> {
   host.loading = true;
   host.error = "";
@@ -401,6 +411,7 @@ export async function browserLoad(host: FilesHost): Promise<void> {
     host.path = listing.path;
     host.entries = listing.entries.map(toFileItem);
     files.selected = [];
+    syncFileSelectionControls(host);
   } catch {
     host.error = "Failed to load files.";
   } finally {
@@ -420,6 +431,7 @@ export async function managerLoad(host: ManagerHost): Promise<void> {
     host.path = listing.path;
     host.entries = listing.entries.map(toFileItem);
     files.selected = [];
+    syncFileSelectionControls(host);
   } catch {
     host.error = "Failed to load files.";
   } finally {

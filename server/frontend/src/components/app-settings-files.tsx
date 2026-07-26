@@ -18,7 +18,7 @@ function escapeHtml(value: string): string {
 function dirView(dir: WritableDir): { id: string; name: string; meta: string } {
   return {
     id: dir.id,
-    name: escapeHtml(`/${dir.path}`),
+    name: escapeHtml(dir.path.startsWith("/") ? dir.path : `/${dir.path}`),
     meta: "Writable by your agents, including every subdirectory.",
   };
 }

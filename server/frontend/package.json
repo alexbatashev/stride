@@ -4,7 +4,8 @@
     "check": "tsc --noEmit",
     "showcase": "node dev.mjs",
     "test": "node build.mjs && node --test test/components.test.mjs && playwright test",
-    "test:browser": "node build.mjs && playwright test"
+    "test:browser": "node build.mjs && playwright test",
+    "test:e2e": "node build.mjs && cargo build --manifest-path ../../Cargo.toml -p server && playwright test --config playwright.e2e.config.mjs"
   },
   "devDependencies": {
     "@frontiers-labs/argon": "0.6.6",

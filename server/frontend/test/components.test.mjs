@@ -1444,7 +1444,10 @@ test('app-settings-models renders model settings', async () => {
     assert.match(el.shadowRoot.innerHTML, /Main Model/);
     assert.match(el.shadowRoot.innerHTML, /openai-main/);
     assert.match(el.shadowRoot.innerHTML, /Custom Sonnet/);
-    assert.match(el.shadowRoot.innerHTML, /Prefer helper for quick scans/);
+    assert.equal(
+      el.shadowRoot.querySelector('textarea[name="subagent-guidelines"]').value,
+      'Prefer helper for quick scans.',
+    );
     assert.equal(el.shadowRoot.querySelector('app-checkbox[data-model="helper"]').hasAttribute('checked'), true);
   } finally {
     globalThis.fetch = originalFetch;

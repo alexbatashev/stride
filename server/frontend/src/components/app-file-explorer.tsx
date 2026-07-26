@@ -28,6 +28,7 @@ import {
   openMenu,
   reloadFileExplorer,
   restoreVersionAndReload,
+  syncFileSelectionControls,
   type FileItem,
   type FileMenuTarget,
   type FileVersionItem,
@@ -124,8 +125,7 @@ export function AppFileExplorer({
   effect(() => {
     const root = this.shadowRoot!;
     const rootPath = threadId ? AGENT_HOME : USER_HOME;
-    root.querySelector('[data-tool="rename"]')?.toggleAttribute("disabled", files.selected.length !== 1);
-    root.querySelector('[data-tool="remove"]')?.toggleAttribute("disabled", files.selected.length === 0);
+    syncFileSelectionControls(this as unknown as ManagerHost);
     root.querySelector('[data-tool="up"]')?.toggleAttribute("disabled", path === rootPath);
   });
 
@@ -234,7 +234,10 @@ export function AppFileExplorer({
         loading={loading}
         loadingText="Loading files..."
         emptyText={emptyText}
-        on:selection-change={(event: Event) => handleSelectionChange(event)}
+        on:selection-change={(event: Event) => {
+          handleSelectionChange(event);
+          syncFileSelectionControls(this as unknown as ManagerHost);
+        }}
         on:row-action={(event: Event) =>
           handleFileRowAction(this as VersionHost, event, (entry) => {
             this.path = entry.path;
