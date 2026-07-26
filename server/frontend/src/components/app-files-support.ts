@@ -82,6 +82,10 @@ export function fileActions(host: VersionHost): FileActions {
   };
 }
 
+export function reloadFileExplorer(host: VersionHost): Promise<void> {
+  return fileActions(host).reload();
+}
+
 function toFileItem(entry: {
   name: string;
   path: string;

@@ -1014,6 +1014,78 @@ test('app-file-explorer opens version history from file click', async () => {
   }
 });
 
+test('app-file-explorer creates a global folder and reloads the listing', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalPrompt = globalThis.prompt;
+  const requests = [];
+  globalThis.prompt = () => 'Archive';
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), method: init.method ?? 'GET', body: init.body });
+    if (init.method === 'POST') return new Response(null, { status: 204 });
+    return new Response(JSON.stringify({ path: '/home/user', entries: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const el = mount('app-file-explorer');
+    await tick();
+    el.shadowRoot.querySelector('[data-tool="folder"]').click();
+    await tick();
+    await tick();
+
+    assert.deepEqual(requests.map(({ method, url }) => [method, url]), [
+      ['GET', '/api/files?path=%2Fhome%2Fuser'],
+      ['POST', '/api/files/directories'],
+      ['GET', '/api/files?path=%2Fhome%2Fuser'],
+    ]);
+    assert.deepEqual(JSON.parse(requests[1].body), { path: '/home/user/Archive' });
+    assert.equal(el.error, '');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.prompt = originalPrompt;
+  }
+});
+
+test('app-file-explorer opens a global folder and reloads that path', async () => {
+  const originalFetch = globalThis.fetch;
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    const nested = requested.length > 1;
+    return new Response(JSON.stringify({
+      path: nested ? '/home/user/Notes' : '/home/user',
+      entries: nested ? [] : [{
+        name: 'Notes',
+        path: '/home/user/Notes',
+        kind: 'directory',
+        size: null,
+        updated_at: 1760000000000,
+        mime_type: null,
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const el = mount('app-file-explorer');
+    await tick();
+    await tick();
+    el.shadowRoot
+      .querySelector('app-data-table')
+      .shadowRoot.querySelector('button[data-row-action="open"]')
+      .click();
+    await tick();
+    await tick();
+
+    assert.deepEqual(requested, [
+      '/api/files?path=%2Fhome%2Fuser',
+      '/api/files?path=%2Fhome%2Fuser%2FNotes',
+    ]);
+    assert.equal(el.path, '/home/user/Notes');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('app-file-explorer file menu renders supported actions', async () => {
   const el = mount('app-file-explorer', {
     threadId: 't1',
