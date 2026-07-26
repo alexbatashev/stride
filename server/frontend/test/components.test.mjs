@@ -1328,19 +1328,28 @@ test('app-settings-threads renders retention settings', async () => {
   }
 });
 
-test('app-settings-skills lists skills and escapes titles', async () => {
+test('app-settings-skills lists filesystem-backed skills and escapes metadata', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     if (String(input) === '/api/settings/skills') {
-      return Response.json([{ id: 'sk1', name: 'debug', title: '<b>Debug</b>', description: 'Trace failures', content: 'Steps' }]);
+      return Response.json([{
+        name: '<b>debug</b>',
+        description: 'Trace <script>failures</script>',
+        content: 'Steps',
+        path: '/home/user/skills/debug',
+        valid: true,
+        error: null,
+      }]);
     }
     return Response.json({});
   };
   try {
     const el = mount('app-settings-skills');
     await tick();
-    assert.doesNotMatch(el.shadowRoot.innerHTML, /<b>Debug<\/b>/);
-    assert.match(el.shadowRoot.innerHTML, /&lt;b&gt;Debug&lt;\/b&gt;/);
+    assert.doesNotMatch(el.shadowRoot.innerHTML, /<b>debug<\/b>/);
+    assert.doesNotMatch(el.shadowRoot.innerHTML, /<script>failures<\/script>/);
+    assert.match(el.shadowRoot.innerHTML, /&lt;b&gt;debug&lt;\/b&gt;/);
+    assert.match(el.shadowRoot.innerHTML, /Trace &lt;script&gt;failures&lt;\/script&gt;/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1352,10 +1361,22 @@ test('app-settings-skills submits a valid slug and refreshes the list', async ()
   globalThis.fetch = async (input, init = {}) => {
     if (String(input) === '/api/settings/skills' && init.method === 'POST') {
       created = JSON.parse(init.body);
-      return Response.json({ id: 'sk2', ...created });
+      return Response.json({
+        ...created,
+        path: `/home/user/skills/${created.name}`,
+        valid: true,
+        error: null,
+      });
     }
     if (String(input) === '/api/settings/skills') {
-      return Response.json(created ? [{ id: 'sk2', ...created }] : []);
+      return Response.json(created
+        ? [{
+          ...created,
+          path: `/home/user/skills/${created.name}`,
+          valid: true,
+          error: null,
+        }]
+        : []);
     }
     return Response.json({});
   };
@@ -1366,7 +1387,6 @@ test('app-settings-skills submits a valid slug and refreshes the list', async ()
     const name = form.querySelector('input[name="name"]');
     assert.doesNotThrow(() => new RegExp(name.pattern, 'v'));
     name.value = 'python-debugging';
-    form.querySelector('input[name="title"]').value = 'Python Debugging';
     form.querySelector('input[name="description"]').value = 'Trace Python failures.';
     form.querySelector('textarea[name="content"]').value = 'Inspect the traceback.';
 
@@ -1376,11 +1396,10 @@ test('app-settings-skills submits a valid slug and refreshes the list', async ()
 
     assert.deepEqual(created, {
       name: 'python-debugging',
-      title: 'Python Debugging',
       description: 'Trace Python failures.',
       content: 'Inspect the traceback.',
     });
-    assert.match(el.shadowRoot.textContent, /Python Debugging/);
+    assert.match(el.shadowRoot.textContent, /python-debugging/);
   } finally {
     globalThis.fetch = originalFetch;
   }

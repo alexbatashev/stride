@@ -1,8 +1,7 @@
-+++
-name = "inline-widget"
-title = "Create inline HTML widgets"
-description = "Build small interactive inline experiences for rich responses. Use this skill to provide interactive widgets by embedding an iframe with a small HTML page."
-+++
+---
+name: inline-widget
+description: Build small interactive inline experiences for rich responses. Use this skill to provide interactive widgets by embedding an iframe with a small HTML page.
+---
 Create inline HTML widgets
 
 Use this skill when a user would benefit from a small interactive explanation,

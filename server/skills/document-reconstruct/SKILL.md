@@ -1,8 +1,7 @@
-+++
-name = "document-reconstruct"
-title = "Rebuild an OCR'd document as Word or PDF"
-description = "Turn OCR Markdown (and its cropped figures) back into an editable .docx (or PDF) document"
-+++
+---
+name: document-reconstruct
+description: Turn OCR Markdown and its cropped figures back into an editable DOCX or PDF document. Use when reconstructing documents from OCR output.
+---
 
 # Reconstructing a document from OCR output
 

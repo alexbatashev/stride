@@ -547,6 +547,10 @@ migrations! {
         raw "CREATE INDEX IF NOT EXISTS idx_thread_events_thread_run ON thread_events(thread_id, run_id)";
     }
 
+    writable_dirs_absolute {
+        raw "UPDATE writable_dirs SET path = '/home/user/' || path WHERE path NOT LIKE '/home/user/%'";
+    }
+
     message_agent_path {
         // Marks a message as belonging to a subagent: `agent_path` is the
         // slash-joined UUID path (same encoding as `thread_events.agent_path`).
@@ -586,10 +590,6 @@ migrations! {
 
         raw "UPDATE users SET full_name = username WHERE full_name IS NULL";
     }
-
-    writable_dirs_absolute {
-        raw "UPDATE writable_dirs SET path = '/home/user/' || path WHERE path NOT LIKE '/home/user/%'";
-    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema
@@ -599,11 +599,107 @@ migrations! {
 pub async fn migrate(
     db: &minisql::ConnectionPool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    repair_reordered_migrations(db).await?;
     db.migrator()
         .apply(minisql::SchemaSet::new("", get_migrations()))
         .apply(stride_agent::memory::schema())
         .run()
         .await
+}
+
+async fn repair_reordered_migrations(
+    db: &minisql::ConnectionPool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const FIRST_REORDERED_MIGRATION: usize = 19;
+
+    db.ensure_migrations_table().await?;
+    let applied = db
+        .query_with_params(
+            "SELECT id, hash FROM __migrations WHERE namespace = ? ORDER BY id",
+            vec![Value::Text(String::new())],
+        )
+        .await?;
+    let applied = applied
+        .rows()
+        .iter()
+        .map(|row| {
+            Ok((
+                row.get_int("id").ok_or("migration row missing id")? as usize,
+                row.get_int("hash").ok_or("migration row missing hash")? as u64,
+            ))
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+
+    let migrations = get_migrations();
+    if migrations.len() < FIRST_REORDERED_MIGRATION + 4
+        || applied.len() < FIRST_REORDERED_MIGRATION + 3
+    {
+        return Ok(());
+    }
+
+    let canonical_prefix_matches = applied
+        .iter()
+        .take(FIRST_REORDERED_MIGRATION)
+        .enumerate()
+        .all(|(index, (id, hash))| *id == index && *hash == migrations[index].fingerprint());
+    if !canonical_prefix_matches {
+        return Ok(());
+    }
+
+    let broken_order = [20, 21, 22, 19];
+    let broken_suffix_matches = applied
+        .iter()
+        .skip(FIRST_REORDERED_MIGRATION)
+        .enumerate()
+        .zip(broken_order)
+        .all(|((offset, (id, hash)), migration_index)| {
+            *id == FIRST_REORDERED_MIGRATION + offset
+                && *hash == migrations[migration_index].fingerprint()
+        });
+    let broken_history_len = FIRST_REORDERED_MIGRATION
+        + 3
+        + usize::from(
+            applied
+                .get(FIRST_REORDERED_MIGRATION + 3)
+                .is_some_and(|(id, hash)| {
+                    *id == FIRST_REORDERED_MIGRATION + 3 && *hash == migrations[19].fingerprint()
+                }),
+        );
+    if !broken_suffix_matches || applied.len() != broken_history_len {
+        return Ok(());
+    }
+
+    db.query("SELECT agent_path FROM messages LIMIT 0").await?;
+    db.query("SELECT agent_id FROM thread_agents LIMIT 0")
+        .await?;
+    db.query("SELECT full_name FROM users LIMIT 0").await?;
+
+    let transaction = db.transaction().await?;
+    if broken_history_len == FIRST_REORDERED_MIGRATION + 3 {
+        db.query(
+            "UPDATE writable_dirs SET path = '/home/user/' || path \
+             WHERE path NOT LIKE '/home/user/%'",
+        )
+        .await?;
+    }
+    for (id, migration) in migrations
+        .iter()
+        .enumerate()
+        .skip(FIRST_REORDERED_MIGRATION)
+        .take(4)
+    {
+        db.query_with_params(
+            "INSERT INTO __migrations (namespace, id, hash) VALUES (?, ?, ?) \
+             ON CONFLICT (namespace, id) DO UPDATE SET hash = excluded.hash",
+            vec![
+                Value::Text(String::new()),
+                Value::Integer(id as i64),
+                Value::Integer(migration.fingerprint() as i64),
+            ],
+        )
+        .await?;
+    }
+    transaction.commit().await
 }
 
 impl FromValue for Role {
@@ -777,11 +873,69 @@ impl IntoValue for RunStatus {
 mod migration_tests {
     use minisql::{ConnectionPool, Value};
 
+    #[test]
+    fn migration_history_is_append_only() {
+        let expected = [
+            -1347894622293133549,
+            -4907170897126509681,
+            -4886173972639724748,
+            -1453091702658194794,
+            -1774780578273556290,
+            9110239967683136765,
+            -8881546444351602386,
+            -490542865494759638,
+            7832050965176106685,
+            4489913004991258294,
+            -6740296839304145313,
+            4895212364422049853,
+            -8425533884196383256,
+            4600297217400685299,
+            -8840723801095465970,
+            -5044766499541310111,
+            -6771270855215003650,
+            921980084376497665,
+            -5925523933975238023,
+            7684280566407992789,
+            -8100939389307369695,
+            -6735444251963911948,
+            -5262697557310666264,
+        ];
+        let actual = super::get_migrations()
+            .iter()
+            .map(|migration| migration.fingerprint() as i64)
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn migrates_database_at_original_index_19() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        let migrations = super::get_migrations();
+        db.initialize_database(migrations[..20].to_vec())
+            .await
+            .unwrap();
+
+        super::migrate(&db).await.unwrap();
+
+        let ledger = db
+            .query("SELECT hash FROM __migrations WHERE namespace = '' AND id = 19")
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.rows().first().unwrap().get_int("hash"),
+            Some(7684280566407992789)
+        );
+        db.query("SELECT agent_path FROM messages LIMIT 0")
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn full_name_migration_backfills_username() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         let migrations = super::get_migrations();
-        db.initialize_database(migrations[..migrations.len() - 2].to_vec())
+        db.initialize_database(migrations[..migrations.len() - 1].to_vec())
             .await
             .unwrap();
         db.query_with_params(
@@ -805,5 +959,85 @@ mod migration_tests {
         let row = rows.rows().first().unwrap();
         assert_eq!(row.get_text("username"), Some("alice"));
         assert_eq!(row.get_text("full_name"), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn repairs_reordered_migrations_without_writable_dirs_migration() {
+        repairs_reordered_migrations(false).await;
+    }
+
+    #[tokio::test]
+    async fn repairs_reordered_migrations_with_writable_dirs_migration() {
+        repairs_reordered_migrations(true).await;
+    }
+
+    async fn repairs_reordered_migrations(include_writable_dirs_migration: bool) {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        let migrations = super::get_migrations();
+        db.initialize_database(migrations[..19].to_vec())
+            .await
+            .unwrap();
+
+        let owner = uuid::Uuid::new_v4();
+        db.query_with_params(
+            "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
+            vec![
+                Value::Uuid(owner),
+                Value::Text("alice".to_string()),
+                Value::Text("hash".to_string()),
+            ],
+        )
+        .await
+        .unwrap();
+        db.query_with_params(
+            "INSERT INTO writable_dirs (id, owner, path, created_at) VALUES (?, ?, ?, ?)",
+            vec![
+                Value::Uuid(uuid::Uuid::new_v4()),
+                Value::Uuid(owner),
+                Value::Text("projects".to_string()),
+                Value::Integer(0),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let mut broken = migrations[..19].to_vec();
+        broken.extend_from_slice(&migrations[20..23]);
+        if include_writable_dirs_migration {
+            broken.push(migrations[19].clone());
+        }
+        db.initialize_database(broken).await.unwrap();
+
+        super::migrate(&db).await.unwrap();
+
+        let writable_dirs = db.query("SELECT path FROM writable_dirs").await.unwrap();
+        assert_eq!(
+            writable_dirs.rows().first().unwrap().get_text("path"),
+            Some("/home/user/projects")
+        );
+        db.query("SELECT agent_path FROM messages LIMIT 0")
+            .await
+            .unwrap();
+        db.query("SELECT agent_id FROM thread_agents LIMIT 0")
+            .await
+            .unwrap();
+        let user = db.query("SELECT full_name FROM users").await.unwrap();
+        assert_eq!(
+            user.rows().first().unwrap().get_text("full_name"),
+            Some("alice")
+        );
+
+        let ledger = db
+            .query("SELECT id, hash FROM __migrations WHERE namespace = '' ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(ledger.rows().len(), migrations.len());
+        for (index, row) in ledger.rows().iter().enumerate() {
+            assert_eq!(row.get_int("id"), Some(index as i64));
+            assert_eq!(
+                row.get_int("hash").map(|hash| hash as u64),
+                Some(migrations[index].fingerprint())
+            );
+        }
     }
 }

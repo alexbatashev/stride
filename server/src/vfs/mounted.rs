@@ -71,13 +71,20 @@ enum Location {
     Workspace(String),
     /// Inside the user's global tree; carries the relative path and whether it
     /// falls in a writable grant.
-    Global { rel: String, writable: bool },
+    Global {
+        rel: String,
+        writable: bool,
+    },
     /// The synthetic root `/`.
     Root,
     /// The synthetic `/home` directory.
     Home,
-    /// A path handled by later sandbox layers (`/tmp`, `/usr/share`, ...); no
-    /// VFS storage backs it at this layer.
+    /// Synthetic system directories leading to the embedded skills mount.
+    Usr,
+    UsrShare,
+    /// A path inside the read-only embedded skills tree.
+    SystemSkills(String),
+    /// A path handled by later sandbox layers (`/tmp`, ...).
     Outside,
 }
 
@@ -120,6 +127,17 @@ impl MountTable {
                     let writable = self.grant_allows(&rel);
                     Location::Global { rel, writable }
                 }
+                _ => Location::Outside,
+            },
+            Some((first, rest)) if first == "usr" => match rest.split_first() {
+                None => Location::Usr,
+                Some((share, tail)) if share == "share" => match tail.split_first() {
+                    None => Location::UsrShare,
+                    Some((skills, skill_tail)) if skills == "skills" => {
+                        Location::SystemSkills(skill_tail.join("/"))
+                    }
+                    _ => Location::Outside,
+                },
                 _ => Location::Outside,
             },
             _ => Location::Outside,
@@ -218,7 +236,12 @@ pub(crate) mod stat {
             Location::Global {
                 writable: false, ..
             } => Area::UserReadOnly,
-            Location::Root | Location::Home | Location::Outside => Area::System,
+            Location::Root
+            | Location::Home
+            | Location::Usr
+            | Location::UsrShare
+            | Location::SystemSkills(_)
+            | Location::Outside => Area::System,
         }
     }
 
@@ -272,8 +295,13 @@ impl MountedVfs {
 
     pub async fn list(&self, path: &str) -> Result<Vec<DirEntry>> {
         match self.table.resolve(path) {
-            Location::Root => Ok(vec![synthetic_dir("home")]),
+            Location::Root => Ok(vec![synthetic_dir("home"), synthetic_dir("usr")]),
             Location::Home => Ok(vec![synthetic_dir("agent"), synthetic_dir("user")]),
+            Location::Usr => Ok(vec![synthetic_dir("share")]),
+            Location::UsrShare => Ok(vec![synthetic_dir("skills")]),
+            Location::SystemSkills(rel) => {
+                crate::skills::system_list(&rel).map_err(map_system_error)
+            }
             Location::Workspace(rel) => self
                 .vfs
                 .list(self.workspace_id()?, &rel)
@@ -290,7 +318,12 @@ impl MountedVfs {
 
     pub async fn read_bytes(&self, path: &str) -> Result<(Vec<u8>, Option<String>)> {
         match self.table.resolve(path) {
-            Location::Root | Location::Home => Err(VfsError::IsADirectory),
+            Location::Root | Location::Home | Location::Usr | Location::UsrShare => {
+                Err(VfsError::IsADirectory)
+            }
+            Location::SystemSkills(rel) => {
+                crate::skills::system_read(&rel).map_err(map_system_error)
+            }
             Location::Workspace(rel) => self
                 .vfs
                 .read_bytes(self.workspace_id()?, &rel)
@@ -327,7 +360,11 @@ impl MountedVfs {
 
     pub async fn list_versions(&self, path: &str) -> Result<Vec<FileVersion>> {
         match self.table.resolve(path) {
-            Location::Root | Location::Home => Err(VfsError::IsADirectory),
+            Location::Root
+            | Location::Home
+            | Location::Usr
+            | Location::UsrShare
+            | Location::SystemSkills(_) => Err(VfsError::ReadOnly),
             Location::Workspace(rel) => self
                 .vfs
                 .list_versions(self.workspace_id()?, &rel)
@@ -348,7 +385,11 @@ impl MountedVfs {
         version: i64,
     ) -> Result<(Vec<u8>, Option<String>)> {
         match self.table.resolve(path) {
-            Location::Root | Location::Home => Err(VfsError::IsADirectory),
+            Location::Root
+            | Location::Home
+            | Location::Usr
+            | Location::UsrShare
+            | Location::SystemSkills(_) => Err(VfsError::ReadOnly),
             Location::Workspace(rel) => self
                 .vfs
                 .read_version(self.workspace_id()?, &rel, version)
@@ -419,7 +460,10 @@ impl MountedVfs {
                 writable: false, ..
             }
             | Location::Root
-            | Location::Home => Err(VfsError::ReadOnly),
+            | Location::Home
+            | Location::Usr
+            | Location::UsrShare
+            | Location::SystemSkills(_) => Err(VfsError::ReadOnly),
             Location::Outside => Err(VfsError::NotFound),
         }
     }
@@ -442,6 +486,13 @@ fn synthetic_dir(name: &str) -> DirEntry {
         size: None,
         updated_at: 0,
         mime_type: None,
+    }
+}
+
+fn map_system_error(error: crate::skills::SkillStoreError) -> VfsError {
+    match error {
+        crate::skills::SkillStoreError::NotFound(_) => VfsError::NotFound,
+        other => VfsError::Storage(other.to_string()),
     }
 }
 

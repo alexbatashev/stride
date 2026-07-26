@@ -5,7 +5,6 @@ use crate::sql_builder::SQLBuilder;
 use crate::sqlite::SqliteBackend;
 use crate::{Migration, SchemaSet};
 use std::error::Error as StdError;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -70,7 +69,7 @@ impl ConnectionPool {
     /// Create the ledger if missing and upgrade legacy `(id, hash)` ledgers to
     /// the namespaced `(namespace, id, hash)` layout. Runs in autocommit so the
     /// column probe can fail harmlessly on Postgres.
-    async fn ensure_migrations_table(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
+    pub async fn ensure_migrations_table(&self) -> Result<(), Box<dyn StdError + Send + Sync>> {
         self.query(
             "CREATE TABLE IF NOT EXISTS __migrations (namespace TEXT NOT NULL DEFAULT '', \
              id BIGINT NOT NULL, hash BIGINT NOT NULL, PRIMARY KEY (namespace, id));",
@@ -381,9 +380,7 @@ impl Backend {
 }
 
 fn migration_hash(m: &Migration) -> u64 {
-    let mut h = DefaultHasher::new();
-    m.hash(&mut h);
-    h.finish()
+    m.fingerprint()
 }
 
 fn validate_identifier(identifier: &str) -> Result<(), Box<dyn StdError + Send + Sync>> {

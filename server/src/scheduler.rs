@@ -90,6 +90,7 @@ pub struct ExecutorConfig {
     pub email_service: ImapService,
     pub mcp_tools: Vec<McpTool>,
     pub google_service: Option<GoogleService>,
+    pub vfs: Option<Arc<crate::vfs::Vfs>>,
 }
 
 pub fn spawn(config: ExecutorConfig) -> ExecutorHandle {
@@ -461,7 +462,22 @@ async fn run_python(
             .as_simple()
             .to_string(),
     );
-    let fs = Arc::new(execenv::DirectOsFileSystem::new(dir).map_err(|e| e.to_string())?);
+    let workspace_dir = dir.join("workspace");
+    let system_skills_dir = dir.join("system-skills");
+    crate::skills::materialize_system_skills(&system_skills_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut fs = execenv::DirectOsFileSystem::new(workspace_dir)
+        .map_err(|error| error.to_string())?
+        .with_read_only_volume(&system_skills_dir, crate::skills::SYSTEM_SKILLS_HOME);
+    if let Some(vfs) = &ctx.vfs {
+        let user_skills_dir = dir.join("user-skills");
+        crate::skills::materialize_user_skills(vfs, owner, &user_skills_dir)
+            .await
+            .map_err(|error| error.to_string())?;
+        fs = fs.with_read_only_volume(&user_skills_dir, crate::skills::USER_SKILLS_HOME);
+    }
+    let fs = Arc::new(fs);
     let workspace = Arc::new(execenv::ExecutionWorkspace::new(fs));
     let commands = command_router(&ctx.tools, &config, workspace.clone())
         .map_err(|error| error.to_string())?;
@@ -656,6 +672,7 @@ mod tests {
                     ),
                     mcp_tools: Vec::new(),
                     google_service: None,
+                    vfs: None,
                 };
                 run_automation(
                     ctx,

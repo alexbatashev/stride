@@ -589,6 +589,7 @@ mod tests {
             clock: Arc::new(stride_agent::SystemClock),
             id_gen: Arc::new(stride_agent::SystemIdGen),
             vfs: None,
+            skills: Arc::new(crate::skills::SkillStore::new(None).unwrap()),
             telegram_interactions: Arc::new(std::sync::Mutex::new(
                 crate::api::telegram::Interactions::default(),
             )),

@@ -1,8 +1,7 @@
-+++
-name = "xlsx"
-title = "Working with Excel documents"
-description = "Read, write, modify Excel documents"
-+++
+---
+name: xlsx
+description: Read, write, and modify Excel documents. Use when working with XLSX spreadsheets.
+---
 
 # Key requirements for Excel files output
 

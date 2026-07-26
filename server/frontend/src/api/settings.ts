@@ -82,22 +82,21 @@ export type WritableDir = {
 };
 
 export type Skill = {
-	id: string;
 	name: string;
-	title: string;
 	description: string;
 	content: string;
+	path: string;
+	valid: boolean;
+	error: string | null;
 };
 
 export type NewSkill = {
 	name: string;
-	title: string;
 	description: string;
 	content: string;
 };
 
 export type SkillUpdate = {
-	title: string;
 	description: string;
 	content: string;
 };
@@ -255,16 +254,16 @@ export async function createSkill(data: NewSkill): Promise<Skill> {
 	});
 }
 
-export async function updateSkill(id: string, data: SkillUpdate): Promise<Skill> {
-	return request(`/api/settings/skills/${id}`, {
+export async function updateSkill(name: string, data: SkillUpdate): Promise<Skill> {
+	return request(`/api/settings/skills/${encodeURIComponent(name)}`, {
 		method: "PATCH",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(data),
 	});
 }
 
-export async function deleteSkill(id: string): Promise<void> {
-	await request(`/api/settings/skills/${id}`, { method: "DELETE" });
+export async function deleteSkill(name: string): Promise<void> {
+	await request(`/api/settings/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 export async function listWritableDirs(): Promise<WritableDir[]> {

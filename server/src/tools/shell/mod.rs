@@ -18,10 +18,12 @@ const TMP_MOUNT: &str = "/tmp";
 const DESCRIPTION: &str = "Execute a bash command against a POSIX file system with standard \
 UNIX tools (cat, grep, ls, rg, sed, diff, mkdir, cp and others). Layout: /home/agent is the \
 thread workspace, read-write and the default working directory; /home/user is the user's files, \
-read-only except for directories explicitly granted to this thread (which are read-write); /tmp \
+read-only except for directories explicitly granted to this thread (which are read-write); \
+/usr/share/skills contains read-only built-in skill bundles; /tmp \
 is read-write scratch that is discarded when the command finishes.";
 
 /// Shell backend that runs bashkit over the mounted VFS.
+#[derive(Clone)]
 pub struct EmulatedShellBackend {
     fs: MountedVfs,
     /// When set, `python`/`python3` run through execenv's interpreter instead of
@@ -226,6 +228,31 @@ mod tests {
             result.stdout, result.stderr
         );
         assert_eq!(result.stdout, "hello\n");
+    }
+
+    #[tokio::test]
+    async fn built_in_skill_bundle_is_read_only_and_visible() {
+        let (sh, _) = backend().await;
+        let read = sh
+            .run(
+                "cat /usr/share/skills/pdf-report/assets/report-template.typ",
+                Some(DEFAULT_CWD),
+            )
+            .await;
+        assert!(
+            read.success,
+            "stdout={} stderr={} error={:?}",
+            read.stdout, read.stderr, read.error
+        );
+        assert!(read.stdout.contains("= Report title"));
+
+        let write = sh
+            .run(
+                "echo changed > /usr/share/skills/pdf-report/SKILL.md",
+                Some(DEFAULT_CWD),
+            )
+            .await;
+        assert!(!write.success);
     }
 
     #[tokio::test]

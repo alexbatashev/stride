@@ -1,13 +1,15 @@
-+++
-name = "pdf-report"
-title = "Write a PDF report"
-description = "Write polished reports and documents in PDF format: file layout, compiling, and core syntax."
-+++
+---
+name: pdf-report
+description: Write polished reports and documents in PDF format, including file layout, compiling, and core syntax. Use when producing a PDF report.
+---
 Write a PDF report
 
 For reports and formatted documents, author in Typst rather than Markdown or
 LaTeX. Save the source as a `.typ` file in the workspace, then compile it in the
 shell:
+
+For a ready-made page, type, heading, and footer setup, copy
+`%SKILL_HOME%/assets/report-template.typ` into the workspace and adapt it.
 
 ```
 typst compile report.typ          # -> report.pdf

@@ -123,6 +123,29 @@ pub(crate) async fn run_agent_turn(
         return;
     };
 
+    let prompt_parts = {
+        let state = state.borrow();
+        let runner = state.threads.get(&thread_id).expect("runner exists");
+        (
+            state.init.skills.clone(),
+            runner.owner,
+            runner.system_prompt_prefix.clone(),
+            runner.system_prompt_suffix.clone(),
+            runner.excluded_system_skills.clone(),
+        )
+    };
+    if let Some(skills) = prompt_parts.0 {
+        let catalog =
+            crate::tools::skills::skill_catalog(&skills, prompt_parts.1, &prompt_parts.4).await;
+        let mut prompt = prompt_parts.2;
+        if !catalog.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&catalog);
+        }
+        prompt.push_str(&prompt_parts.3);
+        agent.set_system_prompt(prompt);
+    }
+
     let resolved_model =
         match model_registry::resolve_chat_model(&agent.model_registry(), model.as_deref()) {
             Ok(key) => key,
@@ -2467,6 +2490,7 @@ mod tests {
             tools: config::Tools::default(),
             mcp_tools: Vec::new(),
             vfs: None,
+            skills: None,
             telegram_bot_token: None,
             public_url: None,
             github_runtime: None,
@@ -2478,6 +2502,9 @@ mod tests {
         let runner = ThreadRunner {
             owner,
             agent: None,
+            system_prompt_prefix: String::new(),
+            system_prompt_suffix: String::new(),
+            excluded_system_skills: Vec::new(),
             cancel_tx: None,
             broker: Arc::new(InMemoryInteractionBroker::default()),
             queued: VecDeque::new(),
