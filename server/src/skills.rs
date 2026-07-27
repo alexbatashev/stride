@@ -835,7 +835,19 @@ mod tests {
 
     #[test]
     fn every_embedded_skill_is_valid() {
-        assert!(!system_skills().unwrap().is_empty());
+        let skills = system_skills().unwrap();
+        assert!(!skills.is_empty());
+        assert!(
+            skills
+                .iter()
+                .any(|skill| skill.manifest.name == "skill-creation")
+        );
+        let skill_creation = system_read("skill-creation/SKILL.md").unwrap().0;
+        assert!(
+            String::from_utf8(skill_creation)
+                .unwrap()
+                .contains("/home/user/skills/<name>")
+        );
         let manifest = system_read("pdf-report/SKILL.md").unwrap().0;
         assert!(
             String::from_utf8(manifest)

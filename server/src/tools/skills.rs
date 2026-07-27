@@ -34,11 +34,6 @@ pub struct LoadSkillTool {
     pub shell: Option<Arc<dyn ShellBackend>>,
 }
 
-pub struct CreateSkillTool {
-    pub store: Arc<SkillStore>,
-    pub user_id: Uuid,
-}
-
 #[derive(ToolDesc)]
 struct SearchSkillsParams {
     /// Keywords to search for among available skills.
@@ -49,16 +44,6 @@ struct SearchSkillsParams {
 struct LoadSkillParams {
     /// The unique name of the skill to load.
     name: String,
-}
-
-#[derive(ToolDesc)]
-struct CreateSkillParams {
-    /// Unique Agent Skills slug, e.g. "python-debugging".
-    name: String,
-    /// What the skill does and when the agent should use it.
-    description: String,
-    /// Markdown instructions stored as the body of SKILL.md.
-    content: String,
 }
 
 pub async fn skill_catalog(
@@ -181,65 +166,6 @@ impl Tool for LoadSkillTool {
                 "content": content,
             }),
             Err(error) => error.into_json(&skill.manifest.name),
-        }
-    }
-}
-
-#[async_trait(?Send)]
-impl Tool for CreateSkillTool {
-    fn name(&self) -> &str {
-        "create_skill"
-    }
-
-    fn readable_name(&self) -> &str {
-        "Create Skill"
-    }
-
-    fn definition(&self) -> LlmTool {
-        LlmTool {
-            r#type: llm::ToolType::Function,
-            function: Function {
-                name: self.name().to_owned(),
-                description: "Create a standard filesystem-backed Agent Skill under /home/user/skills. The skill can be loaded in future sessions.".to_string(),
-                parameters: Some(CreateSkillParams::function_parameters()),
-            },
-        }
-    }
-
-    fn requires_confirmation(&self) -> bool {
-        true
-    }
-
-    fn confirmation_prompt(&self, args: &JsonValue) -> String {
-        let name = args.get("name").and_then(JsonValue::as_str).unwrap_or("?");
-        format!("Create skill '{name}'")
-    }
-
-    async fn execute(&self, _config: Arc<AgentConfig>, args: JsonValue) -> JsonValue {
-        let params = match CreateSkillParams::decode(args) {
-            Ok(params) => params,
-            Err(error) => return json!({"success": false, "error": error}),
-        };
-        match self
-            .store
-            .create(
-                self.user_id,
-                &params.name,
-                &params.description,
-                &params.content,
-            )
-            .await
-        {
-            Ok(skill) => json!({
-                "success": true,
-                "name": skill.manifest.name,
-                "path": skill.path,
-            }),
-            Err(error) => {
-                let mut value = store_error(error);
-                value["success"] = json!(false);
-                value
-            }
         }
     }
 }
@@ -758,7 +684,7 @@ mod tests {
             Arc::new(stride_agent::SystemClock),
             Arc::new(stride_agent::SystemIdGen),
         ));
-        let store = SkillStore::new(Some(vfs.clone())).unwrap();
+        let store = Arc::new(SkillStore::new(Some(vfs.clone())).unwrap());
         let skill = store
             .create(
                 owner,
@@ -808,5 +734,80 @@ mod tests {
         .unwrap();
         let refreshed_catalog = skill_catalog(&store, owner, &[]).await;
         assert!(refreshed_catalog.contains("sandbox-context: Changed live."));
+    }
+
+    #[tokio::test]
+    async fn agent_shell_can_create_a_global_user_skill() {
+        let db = ConnectionPool::new("sqlite::memory:").unwrap();
+        db.initialize_database(db::get_migrations()).await.unwrap();
+        let owner = Uuid::now_v7();
+        db.query_with_params(
+            "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
+            vec![
+                Value::Uuid(owner),
+                Value::Text("alice".to_string()),
+                Value::Text("hash".to_string()),
+            ],
+        )
+        .await
+        .unwrap();
+        let storage_dir = tempfile::tempdir().unwrap();
+        let provider = AnyFileProvider::Local(
+            LocalFileProvider::with_id_gen(
+                storage_dir.path().to_path_buf(),
+                Arc::new(stride_agent::SystemIdGen),
+            )
+            .unwrap(),
+        );
+        let vfs = Arc::new(Vfs::with_clock(
+            db,
+            provider,
+            3,
+            Arc::new(stride_agent::SystemClock),
+            Arc::new(stride_agent::SystemIdGen),
+        ));
+        let store = Arc::new(SkillStore::new(Some(vfs.clone())).unwrap());
+        store.ensure_user_root(owner).await.unwrap();
+        let workspace = vfs
+            .get_or_create_workspace(Uuid::now_v7(), None, owner)
+            .await
+            .unwrap();
+        let mounted = MountedVfs::new(vfs, owner, Some(workspace), None)
+            .with_writable_dirs(vec![crate::skills::USER_SKILLS_ROOT.to_string()]);
+        let shell = EmulatedShellBackend::new(mounted);
+
+        let result = shell
+            .run(
+                "mkdir -p /home/user/skills/shell-created && printf '%s\\n' '---' \
+                 'name: shell-created' 'description: Created from the shell.' '---' '' \
+                 '# Instructions' '' 'Do the thing.' \
+                 > /home/user/skills/shell-created/SKILL.md",
+                None,
+            )
+            .await;
+        assert!(
+            result.success,
+            "out={:?} err={:?}",
+            result.stdout, result.stderr
+        );
+
+        let loaded = LoadSkillTool {
+            store,
+            user_id: owner,
+            excluded_system_skills: Vec::new(),
+            shell: Some(Arc::new(shell)),
+        }
+        .execute(
+            Arc::new(AgentConfig::default()),
+            json!({"name": "shell-created"}),
+        )
+        .await;
+        assert_eq!(loaded["description"], "Created from the shell.");
+        assert!(
+            loaded["content"]
+                .as_str()
+                .unwrap()
+                .contains("Do the thing.")
+        );
     }
 }

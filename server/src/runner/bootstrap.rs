@@ -40,7 +40,7 @@ use crate::{
         projects::{CreateProjectTool, ListProjectsTool, StartThreadTool},
         python::VfsExecFileSystem,
         shell::EmulatedShellBackend,
-        skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
+        skills::{LoadSkillTool, SearchSkillsTool},
         telegram::{SendTelegramFileTool, SendTelegramMessageTool},
     },
     vfs::{MountedVfs, Vfs},
@@ -170,6 +170,8 @@ pub(crate) async fn ensure_runner(
     } else {
         Vec::new()
     };
+    let mut sandbox_writable_extra = writable_extra.clone();
+    sandbox_writable_extra.push(crate::skills::USER_SKILLS_ROOT.to_string());
     let prompt_writable_extra = {
         let mut dirs = writable_extra.clone();
         if let Some(grant) = project_grant.clone() {
@@ -295,11 +297,6 @@ pub(crate) async fn ensure_runner(
         excluded_system_skills: excluded_system_skills.clone(),
     });
     agent.allow_tool("search_skills");
-    agent.register_tool(CreateSkillTool {
-        store: skills.clone(),
-        user_id,
-    });
-    agent.allow_tool("create_skill");
     agent.register_tool(RememberTool {
         db: db.clone(),
         user_id,
@@ -360,7 +357,7 @@ pub(crate) async fn ensure_runner(
                 user_id,
                 *workspace,
                 grant.clone(),
-                writable_extra.clone(),
+                sandbox_writable_extra.clone(),
                 host_dir,
             ))
         } else {
@@ -386,7 +383,7 @@ pub(crate) async fn ensure_runner(
 
     if let Some((provider, workspace, grant)) = python_mount {
         let fs = MountedVfs::new(provider.clone(), user_id, workspace, grant)
-            .with_writable_dirs(writable_extra.clone());
+            .with_writable_dirs(sandbox_writable_extra);
         if vision {
             agent.register_tool(AttachImageTool {
                 fs: fs.clone(),
