@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -10,10 +11,39 @@ const staticDir = resolve('dist');
 const configPath = join(root, 'server.toml');
 const databasePath = join(root, 'stride.db');
 const filesPath = join(root, 'files');
+const useRealModel = Boolean(process.env.STRIDE_OPENROUTER_API_KEY);
+let modelServer;
+let providerKind = 'OpenRouter';
+let providerUrl = 'https://openrouter.ai/api/v1';
+
+if (!useRealModel) {
+  modelServer = createServer((request, response) => {
+    if (request.method === 'POST' && request.url === '/v1/chat/completions') {
+      response.writeHead(200, {
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        'content-type': 'text/event-stream',
+      });
+      response.write(': connected\n\n');
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    modelServer.once('error', rejectListen);
+    modelServer.listen(0, '127.0.0.1', resolveListen);
+  });
+  const address = modelServer.address();
+  if (!address || typeof address === 'string') throw new Error('failed to start mock model server');
+  providerKind = 'OpenAI';
+  providerUrl = `http://127.0.0.1:${address.port}/v1`;
+}
+
 const config = `
 [providers.openrouter]
-kind = "OpenRouter"
-url = "https://openrouter.ai/api/v1"
+kind = ${JSON.stringify(providerKind)}
+url = ${JSON.stringify(providerUrl)}
 
 [models.default]
 slug = "nvidia/nemotron-3-ultra-550b-a55b:free"
@@ -54,6 +84,10 @@ async function stop(signal) {
   if (stopping) return;
   stopping = true;
   if (child.exitCode === null) child.kill(signal);
+  modelServer?.closeAllConnections();
+  if (modelServer) {
+    await new Promise((resolveClose) => modelServer.close(resolveClose));
+  }
   await rm(root, { recursive: true, force: true });
 }
 
