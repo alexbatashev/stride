@@ -16,11 +16,13 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function skillView(skill: Skill): { id: string; name: string; meta: string } {
+function skillView(skill: Skill): { rawName: string; name: string; meta: string; valid: boolean; error: string } {
   return {
-    id: skill.id,
-    name: escapeHtml(skill.title),
-    meta: escapeHtml(`${skill.name} - ${skill.description}`),
+    rawName: skill.name,
+    name: escapeHtml(skill.name),
+    meta: escapeHtml(skill.valid ? `${skill.description} — ${skill.path}` : skill.path),
+    valid: skill.valid,
+    error: escapeHtml(skill.error ?? ""),
   };
 }
 
@@ -28,18 +30,16 @@ async function submitSkill(form: HTMLFormElement): Promise<void> {
   const data = new FormData(form);
   await createSkill({
     name: String(data.get("name") ?? "").trim(),
-    title: String(data.get("title") ?? "").trim(),
     description: String(data.get("description") ?? "").trim(),
-    content: String(data.get("content") ?? "").trim(),
+    content: String(data.get("content") ?? ""),
   });
 }
 
-async function submitSkillEdit(form: HTMLFormElement, id: string): Promise<void> {
+async function submitSkillEdit(form: HTMLFormElement, name: string): Promise<void> {
   const data = new FormData(form);
-  await updateSkill(id, {
-    title: String(data.get("title") ?? "").trim(),
+  await updateSkill(name, {
     description: String(data.get("description") ?? "").trim(),
-    content: String(data.get("content") ?? "").trim(),
+    content: String(data.get("content") ?? ""),
   });
 }
 
@@ -149,14 +149,19 @@ const styles = css`
   .error:empty {
     display: none;
   }
+
+  .invalid {
+    color: var(--destructive);
+    font-size: 13px;
+    margin-top: 4px;
+  }
 `;
 
 export function AppSettingsSkills(): Component {
   let skills = state([] as Skill[]);
   let loaded = state(false);
   let error = state("");
-  let editingId = state("");
-  let editingTitle = state("");
+  let editingName = state("");
   let editingDescription = state("");
   let editingContent = state("");
 
@@ -185,38 +190,41 @@ export function AppSettingsSkills(): Component {
           ? (
             <div class="account-list">
               {skillViews.map((skill) => (
-                <div class="account" key={skill.id}>
+                <div class="account" key={skill.rawName}>
                   <div>
                     <div class="name">{skill.name}</div>
                     <div class="meta">{skill.meta}</div>
+                    {skill.valid ? "" : <div class="invalid">{skill.error}</div>}
                   </div>
                   <div class="row-actions">
+                    {skill.valid
+                      ? (
+                        <app-button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const found = skills.find((item) => item.name === skill.rawName);
+                            if (!found) return;
+                            error = "";
+                            editingName = found.name;
+                            editingDescription = found.description;
+                            editingContent = found.content;
+                          }}
+                        >
+                          Edit
+                        </app-button>
+                      )
+                      : ""}
                     <app-button
                       variant="outline"
                       size="sm"
                       onClick={() => {
-                        const found = skills.find((item) => item.id === skill.id);
-                        if (!found) return;
-                        error = "";
-                        editingId = found.id;
-                        editingTitle = found.title;
-                        editingDescription = found.description;
-                        editingContent = found.content;
-                      }}
-                    >
-                      Edit
-                    </app-button>
-                    <app-button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        if (!window.confirm("Remove this skill from S.T.R.I.D.E.?")) return;
-                        void deleteSkill(skill.id)
+                        if (!window.confirm(`Remove ${skill.rawName} and every script, reference, and asset in its bundle?`)) return;
+                        void deleteSkill(skill.rawName)
                           .then(() => listSkills())
                           .then((items) => {
-                            if (editingId === skill.id) {
-                              editingId = "";
-                              editingTitle = "";
+                            if (editingName === skill.rawName) {
+                              editingName = "";
                               editingDescription = "";
                               editingContent = "";
                             }
@@ -239,19 +247,18 @@ export function AppSettingsSkills(): Component {
           : <p class="muted">{loaded ? "No skills yet." : "Loading skills..."}</p>}
       </app-settings-section>
 
-      {editingId
+      {editingName
         ? (
-          <app-settings-section title="Edit skill" description="Update the title, description, or content. The skill name cannot be changed.">
+          <app-settings-section title="Edit skill" description="Update the standard description or Markdown instructions. The skill name cannot be changed.">
             <form
               onSubmit={(event: Event) => {
                 event.preventDefault();
                 const form = event.target as HTMLFormElement;
                 error = "";
-                void submitSkillEdit(form, editingId)
+                void submitSkillEdit(form, editingName)
                   .then(() => listSkills())
                   .then((items) => {
-                    editingId = "";
-                    editingTitle = "";
+                    editingName = "";
                     editingDescription = "";
                     editingContent = "";
                     skills = items;
@@ -263,7 +270,6 @@ export function AppSettingsSkills(): Component {
                   });
               }}
             >
-              <label>Title<input name="title" required value={editingTitle} autocomplete="off" /></label>
               <label>Description<input name="description" required value={editingDescription} autocomplete="off" /></label>
               <label class="skill-content">Content<textarea name="content" required>{editingContent}</textarea></label>
               <div class="actions">
@@ -272,8 +278,7 @@ export function AppSettingsSkills(): Component {
                   variant="outline"
                   onClick={() => {
                     error = "";
-                    editingId = "";
-                    editingTitle = "";
+                    editingName = "";
                     editingDescription = "";
                     editingContent = "";
                   }}
@@ -307,8 +312,7 @@ export function AppSettingsSkills(): Component {
                   });
               }}
             >
-              <label>Name<input name="name" required placeholder="python-debugging" autocomplete="off" pattern="[a-z](?:[a-z0-9]|-){1,63}" /></label>
-              <label>Title<input name="title" required placeholder="Python Debugging Guide" autocomplete="off" /></label>
+              <label>Name<input name="name" required placeholder="python-debugging" autocomplete="off" pattern="[a-z0-9](?:(?:[a-z0-9]|-(?!-)){0,62}[a-z0-9])?" /></label>
               <label>Description<input name="description" required placeholder="One or two sentence summary used for search." autocomplete="off" /></label>
               <label class="skill-content">Content<textarea name="content" required placeholder="Markdown instructions, context, or steps the agent should follow."></textarea></label>
               <div class="actions"><app-button type="submit">Add skill</app-button></div>

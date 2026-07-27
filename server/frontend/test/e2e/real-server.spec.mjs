@@ -316,11 +316,10 @@ test('task page exercises every locally available composer and panel control', a
     expect(disposableThreadId).not.toBe('');
   });
   const activeWork = page.locator('app-work-group button').first();
-  if (await activeWork.isVisible().catch(() => false)) {
-    const expanded = await activeWork.getAttribute('aria-expanded');
-    await verifyClick(activeWork, () =>
-      expect(activeWork).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true'));
-  }
+  await expect(activeWork).toBeVisible();
+  const expanded = await activeWork.getAttribute('aria-expanded');
+  await verifyClick(activeWork, () =>
+    expect(activeWork).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true'));
   await verifyClick(page.locator('app-button[aria-label="Stop response"] button'), () =>
     expect(page.locator('app-button[aria-label="Stop response"] button')).toHaveCount(0));
   const localCopy = page.locator('app-button[aria-label="Copy message"] button').last();
@@ -808,7 +807,6 @@ test('settings controls persist local changes and report external boundary failu
   const skills = page.locator('app-settings-skills');
   for (const [name, value] of [
     ['name', 'e2e-skill'],
-    ['title', 'E2E Skill'],
     ['description', 'A disposable end-to-end skill.'],
   ]) {
     const input = skills.locator(`input[name="${name}"]`);
@@ -818,10 +816,10 @@ test('settings controls persist local changes and report external boundary failu
   await verifyFill(skillContent, '# E2E\nVerify the real UI.', () =>
     expect(skillContent).toHaveValue('# E2E\nVerify the real UI.'));
   await verifyClick(skills.getByRole('button', { name: 'Add skill' }), async () => {
-    await expect(skills.getByText('E2E Skill', { exact: true })).toBeVisible();
+    await expect(skills.getByText('e2e-skill', { exact: true })).toBeVisible();
     await assertHydratedPage(page, '/settings', 'app-settings');
     await openSection('Skills');
-    await expect(skills.getByText('E2E Skill', { exact: true })).toBeVisible();
+    await expect(skills.getByText('e2e-skill', { exact: true })).toBeVisible();
   });
   await verifyClick(skills.getByRole('button', { name: 'Edit' }), () =>
     expect(skills.getByText('Edit skill', { exact: true })).toBeVisible());
@@ -829,17 +827,18 @@ test('settings controls persist local changes and report external boundary failu
     expect(skills.getByText('Edit skill', { exact: true })).toHaveCount(0));
   await verifyClick(skills.getByRole('button', { name: 'Edit' }), () =>
     expect(skills.getByText('Edit skill', { exact: true })).toBeVisible());
-  const editTitle = skills.locator('input[name="title"]');
-  await verifyFill(editTitle, 'E2E Skill Updated', () => expect(editTitle).toHaveValue('E2E Skill Updated'));
+  const editDescription = skills.locator('input[name="description"]');
+  await verifyFill(editDescription, 'Updated end-to-end skill.', () =>
+    expect(editDescription).toHaveValue('Updated end-to-end skill.'));
   await verifyClick(skills.getByRole('button', { name: 'Save changes' }), async () => {
-    await expect(skills.getByText('E2E Skill Updated', { exact: true })).toBeVisible();
+    await expect(skills.getByText('Updated end-to-end skill.', { exact: false })).toBeVisible();
     await assertHydratedPage(page, '/settings', 'app-settings');
     await openSection('Skills');
-    await expect(skills.getByText('E2E Skill Updated', { exact: true })).toBeVisible();
+    await expect(skills.getByText('Updated end-to-end skill.', { exact: false })).toBeVisible();
   });
   page.once('dialog', (dialog) => dialog.accept());
   await verifyClick(skills.getByRole('button', { name: 'Remove' }), () =>
-    expect(skills.getByText('E2E Skill Updated', { exact: true })).toHaveCount(0));
+    expect(skills.getByText('e2e-skill', { exact: true })).toHaveCount(0));
 
   await openSection('Models');
   const models = page.locator('app-settings-models');
@@ -948,6 +947,10 @@ test('sidebar links and account controls are wired on the real shell', async ({ 
   }
 
   await page.goto('/files');
+  await verifyClick(page.getByRole('button', { name: 'skills', exact: true }), () =>
+    expect(page.locator('app-file-explorer .path')).toContainText('/home/user/skills'));
+  await verifyClick(page.getByRole('button', { name: 'Up one level' }), () =>
+    expect(page.locator('app-file-explorer .path')).toContainText('/home/user'));
   for (const [label, target] of [
     ['New task', /\/threads$/],
     ['Automations', /\/automations$/],

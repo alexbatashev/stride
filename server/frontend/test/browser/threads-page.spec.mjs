@@ -216,9 +216,19 @@ test('settings dialog is full-screen with top tabs on mobile', async ({ page }) 
   expect(geometry.tabsBottom).toBeLessThanOrEqual(geometry.panelsTop + 1);
 });
 
-test('skill creation submits through app-button with a valid browser pattern', async ({ page }) => {
+test('skill settings create edit diagnose and delete filesystem bundles', async ({ page }) => {
   const runtimeErrors = [];
   let created;
+  let patched;
+  const deleted = [];
+  const invalid = {
+    name: 'broken',
+    description: '',
+    content: '',
+    path: '/home/user/skills/broken',
+    valid: false,
+    error: "skill name 'other' must match directory 'broken'",
+  };
   page.on('pageerror', (error) => runtimeErrors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') runtimeErrors.push(message.text()); });
   await page.route('http://stride.test/**', async (route) => {
@@ -226,11 +236,49 @@ test('skill creation submits through app-button with a valid browser pattern', a
     const url = new URL(request.url());
     if (url.pathname === '/api/settings/skills' && request.method() === 'POST') {
       created = request.postDataJSON();
-      await route.fulfill({ json: { id: 'skill-1', ...created } });
+      await route.fulfill({
+        json: {
+          ...created,
+          path: `/home/user/skills/${created.name}`,
+          valid: true,
+          error: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === '/api/settings/skills/python-debugging' && request.method() === 'PATCH') {
+      patched = request.postDataJSON();
+      created = { ...created, ...patched };
+      await route.fulfill({
+        json: {
+          ...created,
+          path: '/home/user/skills/python-debugging',
+          valid: true,
+          error: null,
+        },
+      });
+      return;
+    }
+    if (url.pathname.startsWith('/api/settings/skills/') && request.method() === 'DELETE') {
+      const name = decodeURIComponent(url.pathname.split('/').at(-1));
+      deleted.push(name);
+      if (name === 'python-debugging') created = undefined;
+      await route.fulfill({ status: 204 });
       return;
     }
     if (url.pathname === '/api/settings/skills') {
-      await route.fulfill({ json: created ? [{ id: 'skill-1', ...created }] : [] });
+      const skills = deleted.includes('broken') ? [] : [invalid];
+      if (created) {
+        skills.push({
+          ...created,
+          path: `/home/user/skills/${created.name}`,
+          valid: true,
+          error: null,
+        });
+      }
+      await route.fulfill({
+        json: skills,
+      });
       return;
     }
     await route.fulfill({ contentType: 'text/html', body: '<app-settings-skills></app-settings-skills>' });
@@ -241,8 +289,9 @@ test('skill creation submits through app-button with a valid browser pattern', a
   const name = page.getByRole('textbox', { name: 'Name', exact: true });
   await expect(name).toBeVisible();
   expect(await name.evaluate((input) => input.checkValidity())).toBe(false);
+  await name.fill('a');
+  expect(await name.evaluate((input) => input.checkValidity())).toBe(true);
   await name.fill('python-debugging');
-  await page.getByRole('textbox', { name: 'Title', exact: true }).fill('Python Debugging');
   await page.getByRole('textbox', { name: 'Description', exact: true }).fill('Trace Python failures.');
   await page.getByRole('textbox', { name: 'Content', exact: true }).fill('Inspect the traceback.');
   expect(await name.evaluate((input) => input.checkValidity())).toBe(true);
@@ -250,11 +299,41 @@ test('skill creation submits through app-button with a valid browser pattern', a
 
   await expect.poll(() => created).toEqual({
     name: 'python-debugging',
-    title: 'Python Debugging',
     description: 'Trace Python failures.',
     content: 'Inspect the traceback.',
   });
-  await expect(page.getByText('Python Debugging', { exact: true })).toBeVisible();
+  await expect(page.getByText('python-debugging', { exact: true })).toBeVisible();
+
+  await expect(page.getByText('/home/user/skills/broken', { exact: false })).toBeVisible();
+  await expect(page.getByText("skill name 'other' must match directory 'broken'", { exact: true })).toBeVisible();
+
+  const createdRow = page.locator('.account').filter({ hasText: 'python-debugging' });
+  await createdRow.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Description', exact: true }).fill('Updated description.');
+  await page.getByRole('textbox', { name: 'Content', exact: true }).fill('Updated body.');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect.poll(() => patched).toEqual({
+    description: 'Updated description.',
+    content: 'Updated body.',
+  });
+  await expect(page.getByText('Updated description.', { exact: false })).toBeVisible();
+
+  page.once('dialog', (dialog) => {
+    expect(dialog.message()).toContain('every script, reference, and asset');
+    void dialog.accept();
+  });
+  await createdRow.getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect.poll(() => deleted).toContain('python-debugging');
+  await expect(page.getByText('python-debugging', { exact: true })).toHaveCount(0);
+
+  const invalidRow = page.locator('.account').filter({ hasText: '/home/user/skills/broken' });
+  page.once('dialog', (dialog) => {
+    expect(dialog.message()).toContain('every script, reference, and asset');
+    void dialog.accept();
+  });
+  await invalidRow.getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect.poll(() => deleted).toContain('broken');
+  await expect(page.getByText('/home/user/skills/broken', { exact: false })).toHaveCount(0);
   expect(runtimeErrors).toEqual([]);
 });
 

@@ -659,6 +659,7 @@ pub struct DirectOsFileSystem {
     host_dir: PathBuf,
     guest_dir: String,
     read_only: bool,
+    extra_volumes: Vec<VolumeMount>,
 }
 
 impl DirectOsFileSystem {
@@ -668,6 +669,7 @@ impl DirectOsFileSystem {
             host_dir,
             guest_dir: crate::AGENT_HOME.to_string(),
             read_only: false,
+            extra_volumes: Vec::new(),
         })
     }
 
@@ -678,6 +680,16 @@ impl DirectOsFileSystem {
 
     pub fn guest_dir(mut self, guest_dir: impl Into<String>) -> Self {
         self.guest_dir = guest_dir.into();
+        self
+    }
+
+    pub fn with_read_only_volume(
+        mut self,
+        host_dir: impl Into<PathBuf>,
+        guest_dir: impl Into<String>,
+    ) -> Self {
+        self.extra_volumes
+            .push(VolumeMount::read_only(host_dir.into(), guest_dir.into()));
         self
     }
 }
@@ -691,7 +703,9 @@ impl FileSystemBackend for DirectOsFileSystem {
         } else {
             VolumeMount::new(&self.host_dir, &self.guest_dir)
         };
-        vec![mount]
+        let mut volumes = vec![mount];
+        volumes.extend(self.extra_volumes.clone());
+        volumes
     }
 }
 

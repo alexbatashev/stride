@@ -30,6 +30,7 @@ use crate::{
         AgentPoolError, RUNNER_LIFECYCLE_TOPIC, RunnerLifecycle, db_error,
         pool::{PoolHandle, ThreadRunner, WorkerState},
     },
+    skills::SkillStore,
     tools::{
         attach_image::AttachImageTool,
         automations::ScheduleAutomationTool,
@@ -39,7 +40,7 @@ use crate::{
         projects::{CreateProjectTool, ListProjectsTool, StartThreadTool},
         python::VfsExecFileSystem,
         shell::EmulatedShellBackend,
-        skills::{CreateSkillTool, LoadSkillTool, SearchSkillsTool},
+        skills::{LoadSkillTool, SearchSkillsTool},
         telegram::{SendTelegramFileTool, SendTelegramMessageTool},
     },
     vfs::{MountedVfs, Vfs},
@@ -57,6 +58,7 @@ struct WorkerDeps {
     tools: Tools,
     mcp_tools: Vec<McpTool>,
     vfs: Option<Arc<Vfs>>,
+    skills: Arc<SkillStore>,
     telegram_bot_token: Option<String>,
     public_url: Option<String>,
     github_runtime: Option<GitHubRuntime>,
@@ -77,6 +79,9 @@ impl WorkerDeps {
             tools: state.init.tools.clone(),
             mcp_tools: state.init.mcp_tools.clone(),
             vfs: state.init.vfs.clone(),
+            skills: state.init.skills.clone().unwrap_or_else(|| {
+                Arc::new(SkillStore::new(None).expect("embedded skills must be valid"))
+            }),
             telegram_bot_token: state.init.telegram_bot_token.clone(),
             public_url: state.init.public_url.clone(),
             github_runtime: state.init.github_runtime.clone(),
@@ -104,6 +109,7 @@ pub(crate) async fn ensure_runner(
         tools,
         mcp_tools,
         vfs,
+        skills,
         telegram_bot_token,
         public_url,
         github_runtime,
@@ -164,6 +170,8 @@ pub(crate) async fn ensure_runner(
     } else {
         Vec::new()
     };
+    let mut sandbox_writable_extra = writable_extra.clone();
+    sandbox_writable_extra.push(crate::skills::USER_SKILLS_ROOT.to_string());
     let prompt_writable_extra = {
         let mut dirs = writable_extra.clone();
         if let Some(grant) = project_grant.clone() {
@@ -196,19 +204,23 @@ pub(crate) async fn ensure_runner(
         public_url.as_deref(),
         config.clock.as_ref(),
     );
-    let excluded_static_skills = if telegram_chat.is_some() {
+    let excluded_system_skills = if telegram_chat.is_some() {
         vec!["inline-widget".to_string()]
     } else {
         Vec::new()
     };
-    let catalog = crate::tools::skills::skill_catalog(&db, user_id, &excluded_static_skills).await;
+    let system_prompt_prefix = system_prompt.clone();
+    let catalog =
+        crate::tools::skills::skill_catalog(&skills, user_id, &excluded_system_skills).await;
     if !catalog.is_empty() {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(&catalog);
     }
-    system_prompt.push_str("\n\n");
-    system_prompt
-        .push_str(&crate::tools::memory::palace_map(&db, user_id, project_title.as_deref()).await);
+    let system_prompt_suffix = format!(
+        "\n\n{}",
+        crate::tools::memory::palace_map(&db, user_id, project_title.as_deref()).await
+    );
+    system_prompt.push_str(&system_prompt_suffix);
     let (thread, next_message_seq) = load_thread(&db, thread_id).await?;
     // Resume the per-thread event counter from the journal so seq never resets on
     // runner recreation; a fresh thread with no journaled events starts at 0.
@@ -280,22 +292,11 @@ pub(crate) async fn ensure_runner(
     });
     agent.allow_tool("start_thread");
     agent.register_tool(SearchSkillsTool {
-        db: db.clone(),
+        store: skills.clone(),
         user_id,
-        excluded_static_skills: excluded_static_skills.clone(),
+        excluded_system_skills: excluded_system_skills.clone(),
     });
     agent.allow_tool("search_skills");
-    agent.register_tool(LoadSkillTool {
-        db: db.clone(),
-        user_id,
-        excluded_static_skills,
-    });
-    agent.allow_tool("load_skill");
-    agent.register_tool(CreateSkillTool {
-        db: db.clone(),
-        user_id,
-    });
-    agent.allow_tool("create_skill");
     agent.register_tool(RememberTool {
         db: db.clone(),
         user_id,
@@ -356,11 +357,22 @@ pub(crate) async fn ensure_runner(
                 user_id,
                 *workspace,
                 grant.clone(),
-                writable_extra.clone(),
+                sandbox_writable_extra.clone(),
                 host_dir,
             ))
         } else {
-            Arc::new(execenv::DirectOsFileSystem::new(host_dir).map_err(AgentPoolError::Internal)?)
+            let system_skills_dir = python_cfg
+                .cache_dir
+                .join("system-skills")
+                .join(thread_id.as_simple().to_string());
+            crate::skills::materialize_system_skills(&system_skills_dir)
+                .await
+                .map_err(AgentPoolError::Internal)?;
+            Arc::new(
+                execenv::DirectOsFileSystem::new(host_dir)
+                    .map_err(AgentPoolError::Internal)?
+                    .with_read_only_volume(&system_skills_dir, crate::skills::SYSTEM_SKILLS_HOME),
+            )
         };
     let exec_workspace = Arc::new(execenv::ExecutionWorkspace::new(exec_fs));
     let commands = command_router(&tools, &python_cfg, exec_workspace.clone())
@@ -371,7 +383,7 @@ pub(crate) async fn ensure_runner(
 
     if let Some((provider, workspace, grant)) = python_mount {
         let fs = MountedVfs::new(provider.clone(), user_id, workspace, grant)
-            .with_writable_dirs(writable_extra.clone());
+            .with_writable_dirs(sandbox_writable_extra);
         if vision {
             agent.register_tool(AttachImageTool {
                 fs: fs.clone(),
@@ -410,7 +422,22 @@ pub(crate) async fn ensure_runner(
         if let Some(router) = commands {
             shell = shell.with_commands(router);
         }
+        agent.register_tool(LoadSkillTool {
+            store: skills.clone(),
+            user_id,
+            excluded_system_skills: excluded_system_skills.clone(),
+            shell: Some(Arc::new(shell.clone())),
+        });
+        agent.allow_tool("load_skill");
         agent.register_tool(ShellTool::new(shell));
+    } else {
+        agent.register_tool(LoadSkillTool {
+            store: skills.clone(),
+            user_id,
+            excluded_system_skills: excluded_system_skills.clone(),
+            shell: None,
+        });
+        agent.allow_tool("load_skill");
     }
 
     if let (Some(tool), Some(registry)) = (python, python_tools) {
@@ -423,6 +450,9 @@ pub(crate) async fn ensure_runner(
         ThreadRunner {
             owner: user_id,
             agent: Some(agent),
+            system_prompt_prefix,
+            system_prompt_suffix,
+            excluded_system_skills,
             cancel_tx: None,
             broker: Arc::new(stride_agent::InMemoryInteractionBroker::default()),
             queued: std::collections::VecDeque::new(),
@@ -648,24 +678,6 @@ pub(crate) fn scriptable_tool_registry(ctx: ScriptableToolRegistryContext<'_>) -
         user_id: ctx.user_id,
     });
     registry.allow_tool("connect_memories");
-
-    registry.register(SearchSkillsTool {
-        db: ctx.db.clone(),
-        user_id: ctx.user_id,
-        excluded_static_skills: Vec::new(),
-    });
-    registry.allow_tool("search_skills");
-    registry.register(LoadSkillTool {
-        db: ctx.db.clone(),
-        user_id: ctx.user_id,
-        excluded_static_skills: Vec::new(),
-    });
-    registry.allow_tool("load_skill");
-    registry.register(CreateSkillTool {
-        db: ctx.db.clone(),
-        user_id: ctx.user_id,
-    });
-    registry.allow_tool("create_skill");
 
     registry.register(UpdatePersonalityTool {
         db: ctx.db.clone(),

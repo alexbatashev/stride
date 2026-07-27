@@ -94,6 +94,7 @@ pub async fn register(
         .execute(&state.db)
         .await
         .map_err(|_| AuthError::Conflict)?;
+    ensure_skill_root(&state, user_id).await?;
 
     let resp = create_session(&state, user_id).await?;
     Ok((
@@ -181,6 +182,7 @@ async fn ldap_login(
             .execute(&state.db)
             .await
             .map_err(|_| AuthError::Internal)?;
+        ensure_skill_root(state, id).await?;
         id
     };
 
@@ -189,6 +191,16 @@ async fn ldap_login(
         [(header::SET_COOKIE, session_cookie(&resp.token))],
         Json(resp),
     ))
+}
+
+async fn ensure_skill_root(state: &ServerState, user_id: Uuid) -> Result<(), AuthError> {
+    match state.skills.ensure_user_root(user_id).await {
+        Ok(()) | Err(crate::skills::SkillStoreError::StorageUnavailable) => Ok(()),
+        Err(error) => {
+            tracing::error!(%user_id, %error, "failed to create user skills directory");
+            Err(AuthError::Internal)
+        }
+    }
 }
 
 pub async fn logout(
@@ -576,6 +588,7 @@ mod tests {
                 clock: Arc::new(stride_agent::SystemClock),
                 id_gen: Arc::new(stride_agent::SystemIdGen),
                 vfs: None,
+                skills: Arc::new(crate::skills::SkillStore::new(None).unwrap()),
                 telegram_interactions: Arc::new(std::sync::Mutex::new(
                     crate::api::telegram::Interactions::default(),
                 )),

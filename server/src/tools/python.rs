@@ -5,7 +5,10 @@ use async_trait::async_trait;
 use execenv::FileSystemBackend;
 use uuid::Uuid;
 
-use crate::vfs::{AGENT_HOME, EntryKind, USER_HOME, Vfs};
+use crate::{
+    skills::SYSTEM_SKILLS_HOME,
+    vfs::{AGENT_HOME, EntryKind, USER_HOME, Vfs},
+};
 
 /// Presents the POSIX guest layout to the Python sandbox: the user's global tree
 /// is mounted read-only at `/home/user`, the thread workspace is mounted
@@ -21,6 +24,8 @@ pub struct VfsExecFileSystem {
     global_dir: PathBuf,
     /// Host mirror of the workspace, mounted read-write at `/home/agent`.
     workspace_dir: PathBuf,
+    /// Materialized embedded bundles, mounted read-only at `/usr/share/skills`.
+    system_skills_dir: PathBuf,
     /// Writable global grants, each mounted read-write at `/home/user/<prefix>`.
     grants: Vec<GrantMount>,
 }
@@ -60,6 +65,7 @@ impl VfsExecFileSystem {
             workspace,
             global_dir: host_dir.join("user"),
             workspace_dir: host_dir.join("agent"),
+            system_skills_dir: host_dir.join("system-skills"),
             grants,
         }
     }
@@ -93,6 +99,8 @@ impl FileSystemBackend for VfsExecFileSystem {
         let _ = tokio::fs::remove_dir_all(&self.global_dir).await;
         tokio::fs::create_dir_all(&self.global_dir).await?;
         sync_global_in(&self.vfs, self.owner, self.global_dir.clone()).await?;
+        let _ = tokio::fs::remove_dir_all(&self.system_skills_dir).await;
+        crate::skills::materialize_system_skills(&self.system_skills_dir).await?;
 
         if let Some(id) = self.workspace {
             let _ = tokio::fs::remove_dir_all(&self.workspace_dir).await;
@@ -125,7 +133,10 @@ impl FileSystemBackend for VfsExecFileSystem {
     }
 
     fn volumes(&self) -> Vec<execenv::VolumeMount> {
-        let mut volumes = vec![execenv::VolumeMount::read_only(&self.global_dir, USER_HOME)];
+        let mut volumes = vec![
+            execenv::VolumeMount::read_only(&self.global_dir, USER_HOME),
+            execenv::VolumeMount::read_only(&self.system_skills_dir, SYSTEM_SKILLS_HOME),
+        ];
         if self.workspace.is_some() {
             volumes.push(execenv::VolumeMount::new(&self.workspace_dir, AGENT_HOME));
         }
@@ -434,8 +445,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn volumes_mount_user_ro_agent_rw_and_omit_synthetic_paths() {
+    async fn volumes_mount_user_agent_and_system_skills() {
         let (vfs, owner) = setup_vfs().await;
+        vfs.write_global(
+            owner,
+            "skills/manual/SKILL.md",
+            "---\nname: manual\ndescription: Manual Python bundle.\n---\nBody",
+        )
+        .await
+        .unwrap();
+        vfs.write_global(owner, "skills/manual/scripts/value.py", "VALUE = 42")
+            .await
+            .unwrap();
         let workspace = vfs
             .get_or_create_workspace(Uuid::now_v7(), None, owner)
             .await
@@ -461,10 +482,32 @@ mod tests {
             volume_at(&volumes, "/tmp").is_none(),
             "no /tmp from the vfs"
         );
-        assert!(
-            volumes.iter().all(|v| !v.guest_path.starts_with("/usr")),
-            "no /usr/share from the vfs"
-        );
+        let skills = volume_at(&volumes, SYSTEM_SKILLS_HOME).expect("system skills mount");
+        assert!(skills.read_only, "system skills must be read-only");
+        fs.before_execute().await.unwrap();
+        let manifest = tokio::fs::read_to_string(fs.system_skills_dir.join("pdf").join("SKILL.md"))
+            .await
+            .unwrap();
+        assert!(manifest.contains("name: pdf"));
+        let template = tokio::fs::read_to_string(
+            fs.system_skills_dir
+                .join("pdf")
+                .join("assets")
+                .join("report-template.typ"),
+        )
+        .await
+        .unwrap();
+        assert!(template.contains("= Report title"));
+        let user_script = tokio::fs::read_to_string(
+            fs.global_dir
+                .join("skills")
+                .join("manual")
+                .join("scripts")
+                .join("value.py"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(user_script, "VALUE = 42");
     }
 
     #[tokio::test]

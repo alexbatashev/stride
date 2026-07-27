@@ -41,6 +41,14 @@ impl SchemaSet {
     }
 }
 
+impl Migration {
+    pub fn fingerprint(&self) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 // Manual impl so migrations without alters hash exactly as before, keeping
 // already-applied databases compatible after this field was introduced.
 impl Hash for Migration {

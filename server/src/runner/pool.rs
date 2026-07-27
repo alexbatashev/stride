@@ -133,6 +133,7 @@ pub(crate) struct WorkerInit {
     pub(crate) tools: config::Tools,
     pub(crate) mcp_tools: Vec<McpTool>,
     pub(crate) vfs: Option<Arc<Vfs>>,
+    pub(crate) skills: Option<Arc<crate::skills::SkillStore>>,
     pub(crate) telegram_bot_token: Option<String>,
     pub(crate) public_url: Option<String>,
     pub(crate) github_runtime: Option<GitHubRuntime>,
@@ -159,6 +160,11 @@ impl InProcessAgentPoolBuilder {
 
     pub(crate) fn vfs(mut self, vfs: Arc<Vfs>) -> Self {
         self.init.vfs = Some(vfs);
+        self
+    }
+
+    pub(crate) fn skills(mut self, skills: Arc<crate::skills::SkillStore>) -> Self {
+        self.init.skills = Some(skills);
         self
     }
 
@@ -211,6 +217,9 @@ pub(crate) struct WorkerState {
 pub(crate) struct ThreadRunner {
     pub(crate) owner: Uuid,
     pub(crate) agent: Option<BaseAgent>,
+    pub(crate) system_prompt_prefix: String,
+    pub(crate) system_prompt_suffix: String,
+    pub(crate) excluded_system_skills: Vec<String>,
     pub(crate) cancel_tx: Option<watch::Sender<bool>>,
     pub(crate) broker: Arc<InMemoryInteractionBroker>,
     /// Requests received while a run is in progress, started in order once the thread goes idle.
@@ -239,6 +248,7 @@ impl InProcessAgentPool {
                 tools: config::Tools::default(),
                 mcp_tools: Vec::new(),
                 vfs: None,
+                skills: None,
                 telegram_bot_token: None,
                 public_url: None,
                 github_runtime: None,
@@ -812,6 +822,7 @@ mod tests {
             tools: config::Tools::default(),
             mcp_tools: Vec::new(),
             vfs: None,
+            skills: None,
             telegram_bot_token: None,
             public_url: None,
             github_runtime: None,
@@ -861,6 +872,9 @@ mod tests {
         let runner = ThreadRunner {
             owner: Uuid::nil(),
             agent: None,
+            system_prompt_prefix: String::new(),
+            system_prompt_suffix: String::new(),
+            excluded_system_skills: Vec::new(),
             cancel_tx: None,
             broker,
             queued: VecDeque::new(),
@@ -913,6 +927,9 @@ mod tests {
         let runner = ThreadRunner {
             owner: Uuid::nil(),
             agent: None,
+            system_prompt_prefix: String::new(),
+            system_prompt_suffix: String::new(),
+            excluded_system_skills: Vec::new(),
             cancel_tx: None,
             broker,
             queued: VecDeque::new(),

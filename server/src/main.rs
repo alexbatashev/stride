@@ -16,6 +16,7 @@ mod pages;
 mod rate_limit;
 pub mod runner;
 mod scheduler;
+mod skills;
 mod tools;
 mod triggers;
 mod user_events;
@@ -76,6 +77,7 @@ struct ServerState {
     pub(crate) clock: Arc<dyn stride_agent::Clock>,
     pub(crate) id_gen: Arc<dyn stride_agent::IdGen>,
     pub(crate) vfs: Option<Arc<vfs::Vfs>>,
+    pub(crate) skills: Arc<skills::SkillStore>,
     pub(crate) telegram_interactions: Arc<Mutex<api::telegram::Interactions>>,
     pub(crate) executor: scheduler::ExecutorHandle,
     /// Protects secrets stored at rest, such as linked GitHub access tokens.
@@ -188,6 +190,14 @@ async fn main() -> anyhow::Result<()> {
         .transpose()
         .map_err(|e: anyhow::Error| e)?
         .map(Arc::new);
+    let skill_store = Arc::new(
+        skills::SkillStore::new(vfs_provider.clone())
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    );
+    skill_store
+        .migrate_legacy(&db)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
     let executor = scheduler::spawn(scheduler::ExecutorConfig {
         db: db.clone(),
@@ -198,6 +208,7 @@ async fn main() -> anyhow::Result<()> {
         email_service: email_service.clone(),
         mcp_tools: mcp_tools.clone(),
         google_service: google_service.clone(),
+        vfs: vfs_provider.clone(),
     });
 
     let public_url = config.public_url();
@@ -213,7 +224,8 @@ async fn main() -> anyhow::Result<()> {
     .public_url(public_url)
     .github_runtime(github_runtime.clone())
     .email_service(email_service)
-    .google_service(google_service.clone());
+    .google_service(google_service.clone())
+    .skills(skill_store.clone());
     if let Some(ref vfs) = vfs_provider {
         runner_builder = runner_builder.vfs(vfs.clone());
     }
@@ -230,6 +242,7 @@ async fn main() -> anyhow::Result<()> {
         clock,
         id_gen,
         vfs: vfs_provider,
+        skills: skill_store,
         telegram_interactions: Arc::new(Mutex::new(api::telegram::Interactions::default())),
         executor,
         cipher,
@@ -584,7 +597,7 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             get(api::skills::list).post(api::skills::create),
         )
         .route(
-            "/api/settings/skills/{id}",
+            "/api/settings/skills/{name}",
             patch(api::skills::update).delete(api::skills::delete),
         )
         .route(

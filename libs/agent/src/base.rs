@@ -340,6 +340,14 @@ impl BaseAgent {
         lock.tool_display_names.clear();
     }
 
+    pub fn set_system_prompt(&self, system_prompt: String) {
+        if let Some(message) = self.0.borrow_mut().thread.first_mut()
+            && message.role == llm::Role::System
+        {
+            message.content = system_prompt;
+        }
+    }
+
     pub fn thread(&self) -> Vec<Message> {
         self.0.borrow().thread.clone()
     }
