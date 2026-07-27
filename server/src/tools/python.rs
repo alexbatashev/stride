@@ -485,14 +485,13 @@ mod tests {
         let skills = volume_at(&volumes, SYSTEM_SKILLS_HOME).expect("system skills mount");
         assert!(skills.read_only, "system skills must be read-only");
         fs.before_execute().await.unwrap();
-        let manifest =
-            tokio::fs::read_to_string(fs.system_skills_dir.join("pdf-report").join("SKILL.md"))
-                .await
-                .unwrap();
-        assert!(manifest.contains("name: pdf-report"));
+        let manifest = tokio::fs::read_to_string(fs.system_skills_dir.join("pdf").join("SKILL.md"))
+            .await
+            .unwrap();
+        assert!(manifest.contains("name: pdf"));
         let template = tokio::fs::read_to_string(
             fs.system_skills_dir
-                .join("pdf-report")
+                .join("pdf")
                 .join("assets")
                 .join("report-template.typ"),
         )

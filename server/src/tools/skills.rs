@@ -690,7 +690,7 @@ mod tests {
                 owner,
                 "sandbox-context",
                 "Read mounted bundle context.",
-                "Home: %SKILL_HOME%\nSystem:\n!`cat /usr/share/skills/pdf-report/assets/report-template.typ`\nUser:\n!`cat %SKILL_HOME%/assets/value.txt`",
+                "Home: %SKILL_HOME%\nSystem:\n!`cat /usr/share/skills/pdf/assets/report-template.typ`\nUser:\n!`cat %SKILL_HOME%/assets/value.txt`",
             )
             .await
             .unwrap();

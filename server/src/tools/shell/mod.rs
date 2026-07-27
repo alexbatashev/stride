@@ -235,7 +235,7 @@ mod tests {
         let (sh, _) = backend().await;
         let read = sh
             .run(
-                "cat /usr/share/skills/pdf-report/assets/report-template.typ",
+                "cat /usr/share/skills/pdf/assets/report-template.typ",
                 Some(DEFAULT_CWD),
             )
             .await;
@@ -248,7 +248,7 @@ mod tests {
 
         let write = sh
             .run(
-                "echo changed > /usr/share/skills/pdf-report/SKILL.md",
+                "echo changed > /usr/share/skills/pdf/SKILL.md",
                 Some(DEFAULT_CWD),
             )
             .await;

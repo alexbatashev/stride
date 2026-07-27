@@ -1,216 +1,115 @@
 ---
 name: xlsx
-description: Read, write, and modify Excel documents. Use when working with XLSX spreadsheets.
+description: Read, inspect, create, edit, validate, and update Microsoft Excel XLSX workbooks. Use for spreadsheet tasks involving formulas, cached formula results, tables, formatting, charts, data analysis, or conversion to and from tabular data.
 ---
 
-# Key requirements for Excel files output
+# Work with Excel workbooks
 
-## For all documents
+Use `/home/agent` for intermediate and output files. Preserve an existing
+workbook and write a new `.xlsx` unless the user explicitly asks to replace it.
 
-- Professional fonts.
-- Zero formula errors. Every Excel model MUST be delivered with ZERO formula errors (#REF!, #DIV/0!, #VALUE!, #N/A, #NAME?).
-- Preserve existing templates if any
+## Choose the library
 
-## For financial models
+- Use `openpyxl` to inspect or edit existing XLSX workbooks while preserving
+  formulas, styles, tables, charts, validation, and workbook structure.
+- Use `pandas` for analysis and bulk tabular transforms. Write the result with
+  `openpyxl` or `xlsxwriter` when workbook presentation matters.
+- Use `xlsxwriter` for new, presentation-heavy workbooks and charts. It cannot
+  edit an existing workbook.
 
-### Color Coding Standards
-Unless otherwise stated by the user or existing template
+Do not use `pandas.to_excel()` over an existing template: it rebuilds sheets and
+can discard workbook features.
 
-#### Industry-Standard Color Conventions
-- **Blue text (RGB: 0,0,255)**: Hardcoded inputs, and numbers users will change for scenarios
-- **Black text (RGB: 0,0,0)**: ALL formulas and calculations
-- **Green text (RGB: 0,128,0)**: Links pulling from other worksheets within same workbook
-- **Red text (RGB: 255,0,0)**: External links to other files
-- **Yellow background (RGB: 255,255,0)**: Key assumptions needing attention or cells that need to be updated
+## Run bundled scripts
 
-### Number Formatting Standards
-
-#### Required Format Rules
-- **Years**: Format as text strings (e.g., "2024" not "2,024")
-- **Currency**: Use $#,##0 format; ALWAYS specify units in headers ("Revenue ($mm)")
-- **Zeros**: Use number formatting to make all zeros "-", including percentages (e.g., "$#,##0;($#,##0);-")
-- **Percentages**: Default to 0.0% format (one decimal)
-- **Multiples**: Format as 0.0x for valuation multiples (EV/EBITDA, P/E)
-- **Negative numbers**: Use parentheses (123) not minus -123
-
-### Formula Construction Rules
-
-#### Assumptions Placement
-- Place ALL assumptions (growth rates, margins, multiples, etc.) in separate assumption cells
-- Use cell references instead of hardcoded values in formulas
-- Example: Use =B5*(1+$B$6) instead of =B5*1.05
-
-#### Formula Error Prevention
-- Verify all cell references are correct
-- Check for off-by-one errors in ranges
-- Ensure consistent formulas across all projection periods
-- Test with edge cases (zero values, negative numbers)
-- Verify no unintended circular references
-
-#### Documentation Requirements for Hardcodes
-- Comment or in cells beside (if end of table). Format: "Source: [System/Document], [Date], [Specific Reference], [URL if applicable]"
-- Examples:
-  - "Source: Company 10-K, FY2024, Page 45, Revenue Note, [SEC EDGAR URL]"
-  - "Source: Company 10-Q, Q2 2025, Exhibit 99.1, [SEC EDGAR URL]"
-  - "Source: Bloomberg Terminal, 8/15/2025, AAPL US Equity"
-  - "Source: FactSet, 8/20/2025, Consensus Estimates Screen"
-
-# XLSX creation, editing, and analysis
-
-## Reading and analyzing data
-
-### Data analysis with pandas
-For data analysis, visualization, and basic operations, use **pandas** which provides powerful data manipulation capabilities:
+Run a bundled script with the Python tool:
 
 ```python
-import pandas as pd
-
-# Read Excel
-df = pd.read_excel('file.xlsx')  # Default: first sheet
-all_sheets = pd.read_excel('file.xlsx', sheet_name=None)  # All sheets as dict
-
-# Analyze
-df.head()      # Preview data
-df.info()      # Column info
-df.describe()  # Statistics
-
-# Write Excel
-df.to_excel('output.xlsx', index=False)
+import runpy, sys
+sys.argv = ["xlsx_inspect.py", "/home/agent/input.xlsx"]
+runpy.run_path("%SKILL_HOME%/scripts/xlsx_inspect.py", run_name="__main__")
 ```
 
-## Excel File Workflows
+- `scripts/xlsx_inspect.py INPUT [--details N]`: report sheets, dimensions,
+  tables, merged ranges, formulas, cached results, formula errors, external
+  links, and calculation settings as JSON.
+- `scripts/formula_cache.py mark INPUT OUTPUT`: preserve current cached values
+  and mark every formula for full recalculation when a spreadsheet engine next
+  opens the workbook.
+- `scripts/formula_cache.py set INPUT OUTPUT RESULTS.json`: write supplied
+  cached formula results without removing formulas. Each JSON key is
+  `Sheet!A1`; each value is either a scalar or
+  `{"formula": "=SUM(A1:A2)", "value": 3}`.
 
-## CRITICAL: Use Formulas, Not Hardcoded Values
+## Formula results: do not confuse three different states
 
-**Always use Excel formulas instead of calculating values in Python and hardcoding them.** This ensures the spreadsheet remains dynamic and updateable.
+An XLSX formula cell stores the formula and may also store a cached result.
+`openpyxl` reads formulas with `data_only=False` and cached results with
+`data_only=True`; it does not calculate formulas. Saving a formula workbook with
+`openpyxl` commonly clears old cached results.
 
-### ❌ WRONG - Hardcoding Calculated Values
-```python
-# Bad: Calculating in Python and hardcoding result
-total = df['Sales'].sum()
-sheet['B10'] = total  # Hardcodes 5000
+There is no Excel-compatible calculation engine or LibreOffice command in the
+default environment. Therefore:
 
-# Bad: Computing growth rate in Python
-growth = (df.iloc[-1]['Revenue'] - df.iloc[0]['Revenue']) / df.iloc[0]['Revenue']
-sheet['C5'] = growth  # Hardcodes 0.15
+1. Keep the formula in the workbook.
+2. If a trusted calculation produced the exact result, use
+   `formula_cache.py set` to store that result and optionally assert the expected
+   formula text.
+3. Otherwise use `formula_cache.py mark` and say that recalculation is deferred
+   until Excel, LibreOffice, or another real spreadsheet engine opens the file.
+4. Never claim cached results were refreshed when only recalculation flags were
+   changed.
 
-# Bad: Python calculation for average
-avg = sum(values) / len(values)
-sheet['D20'] = avg  # Hardcodes 42.5
-```
-
-### ✅ CORRECT - Using Excel Formulas
-```python
-# Good: Let Excel calculate the sum
-sheet['B10'] = '=SUM(B2:B9)'
-
-# Good: Growth rate as Excel formula
-sheet['C5'] = '=(C4-C2)/C2'
-
-# Good: Average using Excel function
-sheet['D20'] = '=AVERAGE(D2:D19)'
-```
-
-This applies to ALL calculations - totals, percentages, ratios, differences, etc. The spreadsheet should be able to recalculate when source data changes.
-
-### Creating new Excel files
+For a new workbook, `xlsxwriter.write_formula()` accepts a cached `value`
+argument. Set it when the same formula was independently calculated:
 
 ```python
-# Using openpyxl for formulas and formatting
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
-
-wb = Workbook()
-sheet = wb.active
-
-# Add data
-sheet['A1'] = 'Hello'
-sheet['B1'] = 'World'
-sheet.append(['Row', 'of', 'data'])
-
-# Add formula
-sheet['B2'] = '=SUM(A1:A10)'
-
-# Formatting
-sheet['A1'].font = Font(bold=True, color='FF0000')
-sheet['A1'].fill = PatternFill('solid', start_color='FFFF00')
-sheet['A1'].alignment = Alignment(horizontal='center')
-
-# Column width
-sheet.column_dimensions['A'].width = 20
-
-wb.save('output.xlsx')
+worksheet.write_formula("B10", "=SUM(B2:B9)", cell_format, 5000)
 ```
 
-### Editing existing Excel files
+## Build dynamic workbooks
+
+Write formulas for derived values instead of hardcoded Python results:
 
 ```python
-# Using openpyxl to preserve formulas and formatting
-from openpyxl import load_workbook
-
-# Load existing file
-wb = load_workbook('existing.xlsx')
-sheet = wb.active  # or wb['SheetName'] for specific sheet
-
-# Working with multiple sheets
-for sheet_name in wb.sheetnames:
-    sheet = wb[sheet_name]
-    print(f"Sheet: {sheet_name}")
-
-# Modify cells
-sheet['A1'] = 'New Value'
-sheet.insert_rows(2)  # Insert row at position 2
-sheet.delete_cols(3)  # Delete column 3
-
-# Add new sheet
-new_sheet = wb.create_sheet('NewSheet')
-new_sheet['A1'] = 'Data'
-
-wb.save('modified.xlsx')
+sheet["B10"] = "=SUM(B2:B9)"
+sheet["C5"] = "=IFERROR((C4-C2)/C2,0)"
 ```
 
-### Essential Verification
-- [ ] **Test 2-3 sample references**: Verify they pull correct values before building full model
-- [ ] **Column mapping**: Confirm Excel columns match (e.g., column 64 = BL, not BK)
-- [ ] **Row offset**: Remember Excel rows are 1-indexed (DataFrame row 5 = Excel row 6)
+Put assumptions in dedicated cells and reference them, for example
+`=B5*(1+$B$6)`. Check cross-sheet quoting, absolute references, range endpoints,
+and zero denominators. Test representative formulas before filling an entire
+range.
 
-### Common Pitfalls
-- [ ] **NaN handling**: Check for null values with `pd.notna()`
-- [ ] **Far-right columns**: FY data often in columns 50+ 
-- [ ] **Multiple matches**: Search all occurrences, not just first
-- [ ] **Division by zero**: Check denominators before using `/` in formulas (#DIV/0!)
-- [ ] **Wrong references**: Verify all cell references point to intended cells (#REF!)
-- [ ] **Cross-sheet references**: Use correct format (Sheet1!A1) for linking sheets
+For a financial model, follow the existing template first. Otherwise use:
 
-### Formula Testing Strategy
-- [ ] **Start small**: Test formulas on 2-3 cells before applying broadly
-- [ ] **Verify dependencies**: Check all cells referenced in formulas exist
-- [ ] **Test edge cases**: Include zero, negative, and very large values
+- blue font for editable hardcoded inputs;
+- black font for formulas;
+- green font for links within the workbook;
+- red font for external-workbook links;
+- yellow fill for assumptions that require attention.
 
-## Best Practices
+Use units in headers. Format zeros as `-`, percentages as `0.0%`, multiples as
+`0.0x`, and negatives with parentheses. Record a source, date, exact reference,
+and URL beside material hardcodes.
 
-### Library Selection
-- **pandas**: Best for data analysis, bulk operations, and simple data export
-- **openpyxl**: Best for complex formatting, formulas, and Excel-specific features
+## Preserve workbook behavior
 
-### Working with openpyxl
-- Cell indices are 1-based (row=1, column=1 refers to cell A1)
-- Use `data_only=True` to read calculated values: `load_workbook('file.xlsx', data_only=True)`
-- **Warning**: If opened with `data_only=True` and saved, formulas are replaced with values and permanently lost
-- For large files: Use `read_only=True` for reading or `write_only=True` for writing
+- Load macros with `keep_vba=True` only for an explicit macro-preserving
+  `.xlsm` workflow; these bundled scripts target `.xlsx`.
+- Avoid `data_only=True` when saving because formula text can be lost.
+- Preserve defined names, hidden sheets, frozen panes, print settings,
+  validations, conditional formatting, tables, external links, and chart data.
+- Use `read_only=True` for large inspections and `write_only=True` only for new
+  streaming workbooks.
+- Excel rows and columns are one-based; DataFrame indices are not.
+- Treat external links and macros as untrusted.
 
-### Working with pandas
-- Specify data types to avoid inference issues: `pd.read_excel('file.xlsx', dtype={'id': str})`
-- For large files, read specific columns: `pd.read_excel('file.xlsx', usecols=['A', 'C', 'E'])`
-- Handle dates properly: `pd.read_excel('file.xlsx', parse_dates=['date_column'])`
+## Verify every output
 
-## Code Style Guidelines
-**IMPORTANT**: When generating Python code for Excel operations:
-- Write minimal, concise Python code without unnecessary comments
-- Avoid verbose variable names and redundant operations
-- Avoid unnecessary print statements
-
-**For Excel files themselves**:
-- Add comments to cells with complex formulas or important assumptions
-- Document data sources for hardcoded values
-- Include notes for key calculations and model sections
+Reopen twice: once with `data_only=False` to verify formula text and once with
+`data_only=True` to inspect cached values. Run `xlsx_inspect.py`, require zero
+cached formula errors (`#REF!`, `#DIV/0!`, `#VALUE!`, `#N/A`, `#NAME?`,
+`#NUM!`, `#NULL!`), and review missing caches honestly. Confirm sheet names,
+dimensions, representative formulas, types, formats, merged cells, tables,
+charts, validations, frozen panes, hidden state, and print settings.

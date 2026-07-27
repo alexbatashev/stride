@@ -848,20 +848,25 @@ mod tests {
                 .unwrap()
                 .contains("/home/user/skills/<name>")
         );
-        let manifest = system_read("pdf-report/SKILL.md").unwrap().0;
+        let manifest = system_read("pdf/SKILL.md").unwrap().0;
         assert!(
             String::from_utf8(manifest)
                 .unwrap()
                 .contains("%SKILL_HOME%")
         );
-        let template = system_read("pdf-report/assets/report-template.typ")
-            .unwrap()
-            .0;
+        let template = system_read("pdf/assets/report-template.typ").unwrap().0;
         assert!(
             String::from_utf8(template)
                 .unwrap()
                 .contains("= Report title")
         );
+        for path in [
+            "pdf/scripts/pdf_pages.py",
+            "docx/scripts/docx_replace.py",
+            "xlsx/scripts/formula_cache.py",
+        ] {
+            assert!(system_read(path).unwrap().0.starts_with(b"import "));
+        }
     }
 
     #[tokio::test]
@@ -988,8 +993,8 @@ mod tests {
         let (_db, vfs, store, owner, _dir) = setup_store().await;
         vfs.write_global(
             owner,
-            "skills/pdf-report/SKILL.md",
-            "---\nname: pdf-report\ndescription: User collision.\n---\nUser body",
+            "skills/pdf/SKILL.md",
+            "---\nname: pdf\ndescription: User collision.\n---\nUser body",
         )
         .await
         .unwrap();
@@ -999,24 +1004,20 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|view| view.name == "pdf-report")
+            .find(|view| view.name == "pdf")
             .unwrap();
         assert!(!view.valid);
         assert!(view.error.unwrap().contains("built-in"));
         assert_eq!(
-            store.load(owner, "pdf-report", &[]).await.unwrap().origin,
+            store.load(owner, "pdf", &[]).await.unwrap().origin,
             SkillOrigin::System
         );
         assert!(matches!(
-            store
-                .load(owner, "pdf-report", &["pdf-report".into()])
-                .await,
+            store.load(owner, "pdf", &["pdf".into()]).await,
             Err(SkillStoreError::NotFound(_))
         ));
         assert!(matches!(
-            store
-                .update(owner, "pdf-report", "Changed", "Changed")
-                .await,
+            store.update(owner, "pdf", "Changed", "Changed").await,
             Err(SkillStoreError::Conflict(_))
         ));
     }
@@ -1101,8 +1102,8 @@ mod tests {
         let reserved_id = Uuid::now_v7();
         legacy_skills::insert()
             .id(reserved_id)
-            .name("pdf-report")
-            .title("Old PDF report")
+            .name("pdf")
+            .title("Old PDF skill")
             .description("Database built-in collision")
             .content("Database PDF body")
             .owner(Some(owner))
@@ -1146,7 +1147,7 @@ mod tests {
             vfs.read_global(
                 owner,
                 &format!(
-                    "{MIGRATION_CONFLICTS_ROOT}/{}-pdf-report/SKILL.md",
+                    "{MIGRATION_CONFLICTS_ROOT}/{}-pdf/SKILL.md",
                     reserved_id.as_simple()
                 )
             )
@@ -1160,7 +1161,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|view| view.name != "pdf-report")
+                .all(|view| view.name != "pdf")
         );
         assert!(legacy_skills::select().all(&db).await.unwrap().is_empty());
     }
