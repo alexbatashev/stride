@@ -1,8 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-const componentsBundle = fileURLToPath(new URL('../../dist/components.js', import.meta.url));
+const manifest = JSON.parse(readFileSync(new URL('../../dist/manifest.json', import.meta.url), 'utf8'));
+const componentsBundle = fileURLToPath(new URL(`../../dist/${manifest.assets['components.js']}`, import.meta.url));
 
 async function importComponents(page) {
   await page.addScriptTag({ path: componentsBundle, type: 'module' });

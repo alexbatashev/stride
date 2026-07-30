@@ -381,7 +381,7 @@ fn summarize_tool_arguments(arguments: &str) -> String {
 fn argon_document_opts(title: &str, store_payload: &str) -> ArgonDocumentOpts {
     let common_css = crate::assets::url("common.css");
     let components_js = crate::assets::url("components.js");
-    let api_js = crate::assets::url("api.js");
+    let component_preloads = argon_modulepreloads("components.js");
     let store_script = format!(
         r#"<script type="application/json" data-argon-stores>{}</script>"#,
         json_script_escape(store_payload)
@@ -389,12 +389,17 @@ fn argon_document_opts(title: &str, store_payload: &str) -> ArgonDocumentOpts {
     ArgonDocumentOpts {
         title: title.to_string(),
         head: format!(
-            r#"<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="{common_css}"><link rel="modulepreload" href="{components_js}">{store_script}"#
+            r#"<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="{common_css}"><link rel="modulepreload" href="{components_js}">{component_preloads}{store_script}"#
         ),
-        assets: format!(
-            r#"<script type="module" src="{components_js}"></script><script type="module" src="{api_js}"></script>"#
-        ),
+        assets: format!(r#"<script type="module" src="{components_js}"></script>"#),
     }
+}
+
+fn argon_modulepreloads(asset: &str) -> String {
+    crate::assets::modulepreload_urls(asset)
+        .into_iter()
+        .map(|url| format!(r#"<link rel="modulepreload" href="{}">"#, html_escape(&url)))
+        .collect()
 }
 
 fn combine_store_snapshots(snapshots: &[String]) -> String {
@@ -523,7 +528,7 @@ fn render_page_with_store_payload(
     };
     let common_css = crate::assets::url("common.css");
     let components_js = crate::assets::url("components.js");
-    let api_js = crate::assets::url("api.js");
+    let component_preloads = argon_modulepreloads("components.js");
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -533,9 +538,9 @@ fn render_page_with_store_payload(
         <title>{title}</title>
         <link rel="stylesheet" href="{common_css}" />
         <link rel="modulepreload" href="{components_js}">
+        {component_preloads}
         {store_script}
         <script type="module" src="{components_js}"></script>
-        <script type="module" src="{api_js}"></script>
         {page_script}
     </head>
     <body{attrs}>

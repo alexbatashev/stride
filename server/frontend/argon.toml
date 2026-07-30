@@ -1,0 +1,15 @@
+[build]
+src = "src"
+out = "dist"
+target = "es2020"
+
+[client]
+entry = ["components/**/*.tsx", "pages/*.tsx"]
+bundle = true
+hash = true
+
+[ssr]
+components = ["components/app-approval-bar.tsx", "components/app-alert-dialog.tsx", "components/app-aspect-ratio.tsx", "components/app-attachment.tsx", "components/app-avatar.tsx", "components/app-button.tsx", "components/app-card.tsx", "components/app-checkbox.tsx", "components/app-chat-view.tsx", "components/app-combobox.tsx", "components/app-dialog.tsx", "components/app-input.tsx", "components/app-kbd.tsx", "components/app-marker.tsx", "components/app-message.tsx", "components/app-message-actions.tsx", "components/app-message-scroller.tsx", "components/app-model-picker.tsx", "components/app-prompt-input.tsx", "components/app-quiz-bar.tsx", "components/app-radio-group.tsx", "components/app-select.tsx", "components/app-settings-dialog.tsx", "components/app-sidebar.tsx", "components/app-sidebar-primitives.tsx", "components/app-skeleton.tsx", "components/app-slider.tsx", "components/app-sonner.tsx", "components/app-spinner.tsx", "components/app-spoiler.tsx", "components/app-tabs.tsx", "components/app-text-input.tsx", "components/app-toggle-group.tsx", "components/app-toggle.tsx", "components/app-tooltip.tsx", "components/app-tool-activity.tsx", "components/app-tool-cluster.tsx", "components/app-work-group.tsx", "components/auth-form.tsx", "components/auto-markdown.tsx", "components/icons/*.tsx", "stores/file-state.ts", "stores/settings.ts", "stores/side-panel.ts", "stores/thread-view.ts", "stores/ui.ts", "pages/threads-page-view.tsx", "pages/shell-page-view.tsx"]
+async = ["pages/threads-page-view.tsx", "pages/shell-page-view.tsx"]
+out = "rust"
+shared = ["shared/timeline.ts", "shared/model-option.ts", "shared/prompt-attachment.ts"]

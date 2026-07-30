@@ -1,5 +1,5 @@
 # The Stride cloud agent server, built entirely from source. The web frontend
-# is supplied prebuilt (see frontend.nix) through STRIDE_PREBUILT_SSR_DIR, so
+# is supplied prebuilt (see frontend.nix) through ARGON_PREBUILT_DIR, so
 # this derivation needs no network or Node toolchain.
 {
   lib,
@@ -32,6 +32,7 @@ rustPlatform.buildRustPackage {
         "code"
         "libs"
         "server"
+        "third_party"
       ]
       && !builtins.elem base [
         "node_modules"
@@ -58,7 +59,7 @@ rustPlatform.buildRustPackage {
   ];
 
   # Skip the bundled frontend build; consume the prebuilt SSR modules instead.
-  STRIDE_PREBUILT_SSR_DIR = "${stride-frontend}/ssr";
+  ARGON_PREBUILT_DIR = "${stride-frontend}/ssr";
 
   # Heavy native trees (typst, aws-lc, eryx) make the test build prohibitive and
   # several suites need network/IMAP. CI runs the test matrix separately.
