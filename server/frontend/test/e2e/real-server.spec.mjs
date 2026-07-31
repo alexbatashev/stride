@@ -15,6 +15,8 @@ function installControlCoverage() {
   const state = {
     encountered: new Set(JSON.parse(sessionStorage.getItem('stride-e2e-encountered') ?? '[]')),
     verified: new Set(JSON.parse(sessionStorage.getItem('stride-e2e-verified') ?? '[]')),
+    attributeChanges: new Map(),
+    attributeObservationSeq: 0,
   };
   window.__strideControlCoverage = state;
 
@@ -184,6 +186,31 @@ async function verifyFill(locator, value, postcondition) {
   await verifyAction(locator, () => locator.fill(value), postcondition);
 }
 
+async function verifyLiveAttributeToggle(locator, attribute) {
+  const page = locator.page();
+  const observation = await locator.evaluate((element, attributeName) => {
+    const coverage = window.__strideControlCoverage;
+    const control = coverage.leafControl(element);
+    const before = control.getAttribute(attributeName);
+    const token = `${attributeName}-${coverage.attributeObservationSeq++}`;
+    const observer = new MutationObserver(() => {
+      const after = control.getAttribute(attributeName);
+      if (after === before) return;
+      coverage.attributeChanges.set(token, after);
+      observer.disconnect();
+    });
+    observer.observe(control, { attributes: true, attributeFilter: [attributeName] });
+    return { before, signature: coverage.signature(control), token };
+  }, attribute);
+  const expected = observation.before === 'true' ? 'false' : 'true';
+  await locator.click();
+  await expect.poll(() => page.evaluate((token) =>
+    window.__strideControlCoverage.attributeChanges.get(token), observation.token)).toBe(expected);
+  await page.evaluate((signature) => {
+    window.__strideControlCoverage.markVerified(signature);
+  }, observation.signature);
+}
+
 test.beforeEach(async ({ page, context }, testInfo) => {
   await page.addInitScript(installControlCoverage);
   observeBrowserErrors(page);
@@ -317,9 +344,7 @@ test('task page exercises every locally available composer and panel control', a
   });
   const activeWork = page.locator('app-work-group button').first();
   await expect(activeWork).toBeVisible();
-  const expanded = await activeWork.getAttribute('aria-expanded');
-  await verifyClick(activeWork, () =>
-    expect(activeWork).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true'));
+  await verifyLiveAttributeToggle(activeWork, 'aria-expanded');
   await verifyClick(page.locator('app-button[aria-label="Stop response"] button'), () =>
     expect(page.locator('app-button[aria-label="Stop response"] button')).toHaveCount(0));
   const localCopy = page.locator('app-button[aria-label="Copy message"] button').last();
