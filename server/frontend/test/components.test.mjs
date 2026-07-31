@@ -784,6 +784,71 @@ test('threads page reconnects its event stream from the last sequence on focus',
   }
 });
 
+test('threads page renders in-progress HTML snapshots as HTML', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  const sockets = [];
+
+  class FakeWebSocket {
+    constructor() {
+      sockets.push(this);
+    }
+
+    close() {}
+  }
+
+  globalThis.WebSocket = FakeWebSocket;
+  globalThis.fetch = async (input) => {
+    const path = String(input);
+    if (path === '/api/models' || path.endsWith('/messages') || path.endsWith('/agents')) {
+      return new Response('[]', { status: 200 });
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+
+  try {
+    const root = document.createElement('div');
+    root.dataset.threadId = 'thread-1';
+    root.dataset.argonServer = JSON.stringify({ data: { running: true, models: [] } });
+    const scope = root.attachShadow({ mode: 'open' });
+    scope.innerHTML = `
+      <span data-current-title>Thread</span>
+      <app-prompt-input data-prompt></app-prompt-input>
+      <app-approval-bar data-approval></app-approval-bar>
+      <app-quiz-bar data-quiz></app-quiz-bar>
+      <app-sidebar></app-sidebar>
+      <app-side-panel data-side-panel></app-side-panel>
+      <app-dialog data-mobile-panel></app-dialog>
+    `;
+    const sidebar = scope.querySelector('app-sidebar');
+    sidebar.projects = [];
+    sidebar.threads = [{ id: 'thread-1', title: 'Thread' }];
+
+    const { mountThreadsPage } = await import('../dist/.argon/client/components/threads-page-controller.js');
+    const { threadView } = await import('../dist/.argon/client/stores/thread-view.js');
+    mountThreadsPage(root);
+    await tick();
+    await tick();
+
+    const sendEvent = (seq, kind) => sockets[0].onmessage({ data: JSON.stringify({ seq, thread_id: 'thread-1', run_id: 'run-1', agent_path: [], kind }) });
+    sendEvent(1, { type: 'message_started', message_id: 'message-1', role: 'assistant' });
+    sendEvent(2, {
+      type: 'snapshot',
+      status: 'running',
+      in_progress: { message_id: 'message-1', run_id: 'run-1', content: '<strong>Readable</strong>', format: 'html', thinking: null },
+      pending_approvals: [],
+      pending_quizzes: [],
+    });
+
+    const answer = threadView.turns.find((turn) => turn.hasAnswer)?.answer;
+    assert.equal(answer?.format, 'html');
+    assert.equal(answer?.text, '<strong>Readable</strong>');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
 test('threads page keeps quizzes in arrival order and advances after submission', async () => {
   const originalFetch = globalThis.fetch;
   const originalWebSocket = globalThis.WebSocket;

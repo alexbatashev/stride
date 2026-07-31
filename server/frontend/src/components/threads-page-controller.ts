@@ -402,6 +402,7 @@ class ThreadsPageHydrator {
 				}];
 				const existing = this.messages.find((message) => message.id === partial.message_id);
 				if (existing) {
+					existing.format = partial.format;
 					existing.content = partial.content;
 					existing.thinking = partial.thinking;
 					existing.pending = true;

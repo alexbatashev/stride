@@ -318,6 +318,15 @@ async fn process_thread_event(
                 let thinking = assistant.thinking.clone();
                 let db = state.borrow().init.db.clone();
                 update_message(&db, *message_id, &content, thinking.as_deref(), None).await?;
+                with_runner(state, thread_id, |runner| {
+                    runner.in_progress = Some(PartialAgentMessage {
+                        message_id: *message_id,
+                        run_id,
+                        content,
+                        thinking,
+                        format: assistant.format,
+                    });
+                });
             }
         }
         EventKind::MessageCommitted { message_id } if is_root => {
