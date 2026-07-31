@@ -1165,6 +1165,12 @@ async fn handle_ws(
                             continue;
                         }
                         last_sent = event.seq;
+                        if is_root_message_delta(&event) {
+                            if !send_snapshot(&mut socket, &state, thread_id, &mut last_sent).await {
+                                break;
+                            }
+                            continue;
+                        }
                         let Ok(data) = serde_json::to_string(&event_response(event)) else {
                             break;
                         };
@@ -1188,6 +1194,14 @@ async fn handle_ws(
             }
         }
     }
+}
+
+fn is_root_message_delta(event: &AgentEvent) -> bool {
+    event.agent_path.is_empty()
+        && matches!(
+            event.kind,
+            AgentEventKind::TextDelta { .. } | AgentEventKind::ThinkingDelta { .. }
+        )
 }
 
 /// Streams journaled events with `seq > from`, advancing `last_sent`. Returns
@@ -1960,6 +1974,54 @@ fn quiz_questions_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runner::PartialAgentMessage;
+
+    fn message_delta(agent_path: Vec<Uuid>) -> AgentEvent {
+        AgentEvent {
+            id: Uuid::now_v7(),
+            seq: 7,
+            thread_id: Uuid::now_v7(),
+            run_id: Some(RunId(Uuid::now_v7())),
+            agent_path,
+            kind: AgentEventKind::TextDelta {
+                message_id: Uuid::now_v7(),
+                delta: "<strong>partial".to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn root_message_deltas_use_sanitized_runner_snapshots() {
+        assert!(is_root_message_delta(&message_delta(Vec::new())));
+        assert!(!is_root_message_delta(&message_delta(vec![Uuid::now_v7()])));
+    }
+
+    #[test]
+    fn snapshot_event_carries_streamed_html_and_format() {
+        let snapshot = ThreadSnapshot {
+            thread_id: Uuid::now_v7(),
+            last_event_seq: 9,
+            status: ThreadStatus::Running {
+                run_id: RunId(Uuid::now_v7()),
+            },
+            in_progress: Some(PartialAgentMessage {
+                message_id: Uuid::now_v7(),
+                run_id: RunId(Uuid::now_v7()),
+                content: "<strong>readable</strong>".to_owned(),
+                thinking: None,
+                format: MessageFormat::Html,
+            }),
+            pending_approvals: Vec::new(),
+            pending_quizzes: Vec::new(),
+        };
+        let json: serde_json::Value = serde_json::from_str(&snapshot_event(&snapshot)).unwrap();
+
+        assert_eq!(
+            json["kind"]["in_progress"]["content"],
+            "<strong>readable</strong>"
+        );
+        assert_eq!(json["kind"]["in_progress"]["format"], "html");
+    }
 
     #[test]
     fn event_response_keeps_shared_attachment_ids() {
