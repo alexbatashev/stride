@@ -2,7 +2,7 @@
 # a JS toolchain. Produces:
 #   $out/dist  - static assets served at runtime via --static-dir
 #   $out/ssr   - Argon-generated Rust modules consumed by server/build.rs
-#                through STRIDE_PREBUILT_SSR_DIR
+#                through ARGON_PREBUILT_DIR
 {
   lib,
   stdenv,
@@ -10,7 +10,7 @@
   pnpm_10,
   # sha256 of the offline pnpm store. Regenerate with `lib.fakeHash` and read
   # the expected value from the build error after bumping pnpm-lock.yaml.
-  pnpmDepsHash ? "sha256-p/v3rw7trPRQ0EogA8MUyx2hJES4RBv6sA/8j9L49yU=",
+  pnpmDepsHash ? "sha256-m+f9Ns+YCqWgpu9OYpsPxNcYVtf49Od7wOAMgSYX2Ss=",
 }:
 let
   pnpm = pnpm_10;
@@ -33,23 +33,10 @@ stdenv.mkDerivation (finalAttrs: {
     hash = pnpmDepsHash;
   };
 
-  # `pnpm build` bundles dist/ (esbuild + Argon --js). A second Argon pass emits
-  # the SSR Rust modules. The component list mirrors server/build.rs by reading
-  # the same ssr-components.txt manifest, so the two can never drift.
   buildPhase = ''
     runHook preBuild
 
     pnpm run build
-
-    stores=(src/stores/*.ts)
-    mapfile -t ssr < <(grep -vE '^[[:space:]]*(#|$)' ssr-components.txt)
-    icons=(src/components/icons/*.tsx)
-    node_modules/.bin/argon compile "''${stores[@]}" "''${ssr[@]}" "''${icons[@]}" \
-      --rust --out-dir ssr-out --flat
-    node_modules/.bin/argon compile src/shared/timeline.ts src/shared/model-option.ts src/shared/prompt-attachment.ts \
-      --shared --out-dir ssr-out --flat
-    node_modules/.bin/argon compile src/pages/threads-page-view.tsx src/pages/shell-page-view.tsx \
-      --rust --async-server --out-dir ssr-out --flat
 
     runHook postBuild
   '';
@@ -59,7 +46,7 @@ stdenv.mkDerivation (finalAttrs: {
 
     mkdir -p "$out/dist" "$out/ssr"
     cp -r dist/. "$out/dist/"
-    cp ssr-out/*.rs "$out/ssr/"
+    cp -r rust/. "$out/ssr/"
 
     runHook postInstall
   '';

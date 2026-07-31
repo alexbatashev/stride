@@ -1,14 +1,15 @@
 {
+  "type": "module",
   "scripts": {
     "build": "node build.mjs",
     "check": "tsc --noEmit",
-    "showcase": "node dev.mjs",
+    "showcase": "node build.mjs && argon dev",
     "test": "node build.mjs && node --test test/components.test.mjs && playwright test",
     "test:browser": "node build.mjs && playwright test",
     "test:e2e": "node build.mjs && cargo build --manifest-path ../../Cargo.toml -p server && playwright test --config playwright.e2e.config.mjs"
   },
   "devDependencies": {
-    "@frontiers-labs/argon": "0.6.6",
+    "@frontiers-labs/argon": "0.7.0",
     "@happy-dom/global-registrator": "^20.10.2",
     "@observablehq/plot": "^0.6.17",
     "@playwright/test": "^1.61.1",

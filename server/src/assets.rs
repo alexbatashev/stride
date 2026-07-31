@@ -1,15 +1,7 @@
-//! Content-hash cache-busting for the built frontend bundles.
+//! URLs for built frontend assets.
 //!
-//! The SSR shell references stable filenames such as `/static/components.js`.
-//! Deploys keep those names, so browsers that cached them (see the `/static`
-//! immutable policy) never refetch after an update. Nix pins store-path mtimes
-//! to the epoch, so `Last-Modified` revalidation is useless as a fallback.
-//!
-//! We compute a short content hash per asset at startup and append it as a
-//! `?v=` query. A changed bundle gets a new URL and is fetched fresh; an
-//! unchanged one keeps its URL and stays cached. Query-only assets referenced
-//! from generated widget HTML (`vendor/*`, `widget-frame.js`) keep stable URLs
-//! and are intentionally excluded — see the `/static` cache middleware.
+//! Argon assets use the generated content-hashed manifest. App-owned CSS and
+//! widget assets keep stable names; shell CSS gets a startup content hash.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -20,15 +12,7 @@ static VERSIONS: OnceLock<HashMap<&'static str, String>> = OnceLock::new();
 
 /// Assets referenced by the server-rendered HTML shell. These are the URLs a
 /// browser must refetch after a deploy for the app to update.
-const VERSIONED_ASSETS: &[&str] = &[
-    "common.css",
-    "components.js",
-    "api.js",
-    "pages/threads-page.js",
-    "pages/files-page.js",
-    "pages/automations-page.js",
-    "pages/archived-page.js",
-];
+const VERSIONED_ASSETS: &[&str] = &["common.css"];
 
 /// Hash each shell asset's contents so `url` can append a cache-busting token.
 /// Idempotent; safe to call once per process (from `app`).
@@ -51,10 +35,20 @@ fn content_hash(bytes: &[u8]) -> String {
 /// `/static/<rel>` with a `?v=<hash>` token when the asset was hashed at
 /// startup, otherwise the plain path (dev/tests where `init` did not run).
 pub fn url(rel: &str) -> String {
+    if let Some(asset) = crate::components::argon_assets::asset(rel) {
+        return format!("/static/{asset}");
+    }
     match VERSIONS.get().and_then(|m| m.get(rel)) {
         Some(hash) => format!("/static/{rel}?v={hash}"),
         None => format!("/static/{rel}"),
     }
+}
+
+pub fn modulepreload_urls(rel: &str) -> Vec<String> {
+    crate::components::argon_assets::modulepreload(rel)
+        .iter()
+        .map(|asset| format!("/static/{asset}"))
+        .collect()
 }
 
 #[cfg(test)]

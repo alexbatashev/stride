@@ -1,8 +1,9 @@
 // Smoke tests for the compiled component bundle: registration, rendering,
 // reactivity, and the custom events the page hydrators rely on.
-// Run with: pnpm test (builds dist/components.js first).
+// Run with: pnpm test (builds the hashed Argon component asset first).
 import { test, before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 
 GlobalRegistrator.register();
@@ -13,7 +14,8 @@ before(async () => {
   stores.dataset.argonStores = '';
   stores.textContent = JSON.stringify({ sidebar: { activeThread: 't1' } });
   document.head.appendChild(stores);
-  await import('../dist/components.js');
+  const manifest = JSON.parse(readFileSync(new URL('../dist/manifest.json', import.meta.url), 'utf8'));
+  await import(new URL(`../dist/${manifest.assets['components.js']}`, import.meta.url));
 });
 
 afterEach(() => {
@@ -390,8 +392,8 @@ test('app-message tool output folds into a spoiler', () => {
 });
 
 test('chat timeline merges calls with outputs and includes clickable subagents', async () => {
-  const { buildClientTimeline } = await import('../dist/argon/components/chat-timeline.js');
-  const { threadStream } = await import('../dist/argon/stores/thread-stream.js');
+  const { buildClientTimeline } = await import('../dist/.argon/client/components/chat-timeline.js');
+  const { threadStream } = await import('../dist/.argon/client/stores/thread-stream.js');
   threadStream.subagents = [{ id: 'agent-1', name: 'Research options', model: 'helper', result: 'child', finished: true, parentToolCallId: 'call-2', agentPath: 'agent-1', createdAt: 1 }];
   const base = { format: 'markdown', thinking: null, tool_call_name: null, tool_call_id: null, tool_calls: [] };
   const timeline = buildClientTimeline([
@@ -412,7 +414,7 @@ test('chat timeline merges calls with outputs and includes clickable subagents',
 });
 
 test('chat turns fold all reasoning and tools while leaving the final answer visible', async () => {
-  const { buildChatTurns } = await import('../dist/argon/shared/timeline.js');
+  const { buildChatTurns } = await import('../dist/.argon/client/shared/timeline.js');
   const item = (overrides) => ({ id: '', seq: 0, createdAt: 0, role: 'agent', kind: 'agent', format: 'markdown', text: '', thinking: '', toolName: '', toolDetail: '', status: 'finished', isError: false, pending: false, ...overrides });
   const turns = buildChatTurns([
     item({ id: 'user', seq: 1, createdAt: 1_000, role: 'user', kind: 'user', text: 'Question' }),
@@ -758,7 +760,7 @@ test('threads page reconnects its event stream from the last sequence on focus',
     sidebar.projects = [];
     sidebar.threads = [{ id: 'thread-1', title: 'Thread' }];
 
-    const { mountThreadsPage } = await import('../dist/argon/components/threads-page-controller.js');
+    const { mountThreadsPage } = await import('../dist/.argon/client/components/threads-page-controller.js');
     mountThreadsPage(root);
     await tick();
     await tick();
@@ -834,9 +836,9 @@ test('threads page keeps quizzes in arrival order and advances after submission'
     sidebar.projects = [];
     sidebar.threads = [{ id: 'thread-1', title: 'Thread' }];
 
-    const { mountThreadsPage } = await import('../dist/argon/components/threads-page-controller.js');
-    const { threadView } = await import('../dist/argon/stores/thread-view.js');
-    const { threadStream } = await import('../dist/argon/stores/thread-stream.js');
+    const { mountThreadsPage } = await import('../dist/.argon/client/components/threads-page-controller.js');
+    const { threadView } = await import('../dist/.argon/client/stores/thread-view.js');
+    const { threadStream } = await import('../dist/.argon/client/stores/thread-stream.js');
     mountThreadsPage(root);
     await tick();
     await tick();
@@ -928,8 +930,8 @@ test('threads page exposes staged uploads to the composer and sends their ids', 
     sidebar.projects = [];
     sidebar.threads = [{ id: 'thread-1', title: 'Thread' }];
 
-    const { mountThreadsPage } = await import('../dist/argon/components/threads-page-controller.js');
-    const { threadView } = await import('../dist/argon/stores/thread-view.js');
+    const { mountThreadsPage } = await import('../dist/.argon/client/components/threads-page-controller.js');
+    const { threadView } = await import('../dist/.argon/client/stores/thread-view.js');
     mountThreadsPage(root);
     await tick();
     await tick();

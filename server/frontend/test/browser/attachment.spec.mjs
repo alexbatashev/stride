@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const componentsBundle = fileURLToPath(new URL('../../dist/components.js', import.meta.url));
+const manifest = JSON.parse(readFileSync(new URL('../../dist/manifest.json', import.meta.url), 'utf8'));
+const componentsBundle = fileURLToPath(new URL(`../../dist/${manifest.assets['components.js']}`, import.meta.url));
 
 test('composer attachment cards are visible, compact, and removable', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });

@@ -2,6 +2,7 @@
 node_modules/
 .pnpm-store/
 server/frontend/dist
+server/frontend/rust
 server/frontend/showcase-dist
 apple/Stride/Generated/
 xcuserdata/
