@@ -3,6 +3,7 @@ pub mod archived;
 pub mod auth;
 pub mod automations;
 pub mod files;
+pub mod inbox;
 pub mod settings;
 
 use axum::http::{HeaderMap, header};
@@ -10,6 +11,7 @@ use axum::http::{HeaderMap, header};
 use crate::api::threads::{MessageTemplateData, ThreadPageData};
 use crate::components::{
     auth_form::AuthForm,
+    inbox_state::Stores as InboxStores,
     settings::Stores as SettingsStores,
     shell_page_view::{
         RenderStores as ShellRenderStores, ShellPageData, ShellPageView, ShellPageViewServer,
@@ -453,6 +455,20 @@ impl ShellPageViewServer for ShellPageServer {
     }
 }
 
+/// Pending suggestions for the signed-in user, used to seed the sidebar badge on
+/// first paint. An unauthenticated or failing lookup renders no badge.
+async fn pending_inbox_count(
+    state: &std::sync::Arc<crate::ServerState>,
+    headers: &axum::http::HeaderMap,
+) -> u64 {
+    let Ok(owner) = crate::api::auth::authenticated_user(state, headers).await else {
+        return 0;
+    };
+    crate::inbox::pending_count(&state.db, owner)
+        .await
+        .unwrap_or(0)
+}
+
 async fn render_shell_page(
     state: std::sync::Arc<crate::ServerState>,
     headers: axum::http::HeaderMap,
@@ -463,14 +479,20 @@ async fn render_shell_page(
     ui_stores.sidebar.active_page = page_name.to_string();
     ui_stores.sidebar.status = sidebar_status(&headers).to_string();
     let settings_stores = SettingsStores::default();
+    let mut inbox_stores = InboxStores::default();
+    inbox_stores.inbox.pending = pending_inbox_count(&state, &headers).await as f64;
     let stores = ShellRenderStores {
+        inbox_state: &inbox_stores,
         settings: &settings_stores,
         ui: &ui_stores,
     };
     let server = ShellPageServer { state, headers };
     let page = ShellPageView::new(page_name).attr("id", format!("{page_name}-page"));
-    let store_payload =
-        combine_store_snapshots(&[ui_stores.snapshot_json(), settings_stores.snapshot_json()]);
+    let store_payload = combine_store_snapshots(&[
+        ui_stores.snapshot_json(),
+        settings_stores.snapshot_json(),
+        inbox_stores.snapshot_json(),
+    ]);
     let opts = argon_document_opts(title, &store_payload);
     let opts = crate::components::shell_page_view::DocumentOpts {
         title: opts.title,
@@ -587,6 +609,7 @@ mod tests {
         ToolCallResponse,
     };
     use crate::components::{
+        inbox_state::Stores as InboxStores,
         settings::Stores as SettingsStores,
         shell_page_view::{
             RenderStores as ShellRenderStores, ShellPageData, ShellPageView, ShellPageViewServer,
@@ -708,7 +731,9 @@ mod tests {
         let thread_view = crate::components::thread_view::Stores::default();
         let side_panel = crate::components::side_panel::Stores::default();
         let settings = SettingsStores::default();
+        let inbox = InboxStores::default();
         let stores = RenderStores {
+            inbox_state: &inbox,
             settings: &settings,
             side_panel: &side_panel,
             thread_view: &thread_view,
@@ -810,6 +835,7 @@ mod tests {
             ("files", "app-file-browser"),
             ("automations", "app-automations"),
             ("archived", "app-archived-threads"),
+            ("inbox", "app-inbox"),
         ] {
             let data = super::argon_thread_page_data(sample_data());
             let server = TestShellServer(ShellPageData {
@@ -822,7 +848,9 @@ mod tests {
             ui.sidebar.active_page = name.to_string();
             ui.sidebar.status = "collapsed".to_string();
             let settings = SettingsStores::default();
+            let inbox = InboxStores::default();
             let stores = ShellRenderStores {
+                inbox_state: &inbox,
                 settings: &settings,
                 ui: &ui,
             };

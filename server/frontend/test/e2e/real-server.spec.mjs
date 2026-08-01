@@ -165,6 +165,17 @@ async function assertHydratedPage(page, path, root) {
   await expect(page.locator('app-sidebar')).toBeVisible();
 }
 
+/// Empty the signed-in user's inbox. The suite runs against a real model, so an
+/// earlier agent turn may have parked a suggestion; clearing first keeps /inbox
+/// deterministic (and keeps its per-card controls out of the coverage set).
+async function clearInbox(page) {
+  const response = await page.request.get('/api/inbox');
+  expect(response.status()).toBe(200);
+  for (const item of (await response.json()).items) {
+    expect((await page.request.delete(`/api/inbox/${item.id}`)).status()).toBe(204);
+  }
+}
+
 async function verifyAction(locator, action, postcondition) {
   const page = locator.page();
   const signature = await locator.evaluate((element) => {
@@ -638,6 +649,28 @@ test('files page exercises create, upload, navigate, select, rename, and remove'
   });
 });
 
+test('inbox page hydrates and switches between review queues', async ({ page }) => {
+  await clearInbox(page);
+  await assertHydratedPage(page, '/inbox', 'app-inbox');
+
+  const inbox = page.locator('app-inbox');
+  await expect(inbox.getByRole('heading', { name: 'Inbox' })).toBeVisible();
+  await expect(inbox.locator('.empty')).toContainText('Nothing waiting on you');
+
+  const awaiting = inbox.getByRole('tab', { name: /Awaiting review/ });
+  const reviewed = inbox.getByRole('tab', { name: /Reviewed/ });
+  await expect(awaiting).toHaveAttribute('aria-selected', 'true');
+
+  await verifyClick(reviewed, async () => {
+    await expect(reviewed).toHaveAttribute('aria-selected', 'true');
+    await expect(inbox.locator('.empty')).toContainText('No reviewed suggestions yet');
+  });
+  await verifyClick(awaiting, async () => {
+    await expect(awaiting).toHaveAttribute('aria-selected', 'true');
+    await expect(inbox.locator('.empty')).toContainText('Nothing waiting on you');
+  });
+});
+
 test('automations page exercises every local row and modal action', async ({ page }) => {
   await assertHydratedPage(page, '/automations', 'app-automations');
   const newAutomation = page.getByRole('button', { name: 'New automation' });
@@ -958,9 +991,11 @@ test('settings controls persist local changes and report external boundary failu
 });
 
 test('sidebar links and account controls are wired on the real shell', async ({ page, context }) => {
+  await clearInbox(page);
   await page.goto('/threads');
   for (const [label, target] of [
     ['Files', /\/files$/],
+    ['Inbox', /\/inbox$/],
     ['Automations', /\/automations$/],
     ['New task', /\/threads$/],
   ]) {
@@ -979,6 +1014,7 @@ test('sidebar links and account controls are wired on the real shell', async ({ 
   for (const [label, target] of [
     ['New task', /\/threads$/],
     ['Automations', /\/automations$/],
+    ['Inbox', /\/inbox$/],
     ['Files', /\/files$/],
   ]) {
     await page.goto('/files');

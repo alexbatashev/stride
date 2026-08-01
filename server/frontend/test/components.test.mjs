@@ -1862,3 +1862,127 @@ test('app-alert-dialog is controlled: reports confirm and cancel', () => {
   el.shadowRoot.querySelector('.cancel').click();
   assert.equal(answered.detail.confirmed, false);
 });
+
+function inboxItem(overrides = {}) {
+  return {
+    id: 'i1',
+    kind: 'automation',
+    title: 'Track vendor pricing weekly',
+    rationale: 'You compared vendors twice this week.',
+    status: 'pending',
+    created_at: 1_700_000_000,
+    resolved_at: null,
+    thread_id: null,
+    details: { name: 'Vendor pricing', schedule: '0 9 * * 1', automation_kind: 'agent', trigger: 'cron', notify: 'none', task: 'Compare quotes' },
+    outcome: null,
+    outcome_href: null,
+    ...overrides,
+  };
+}
+
+test('app-inbox lists pending suggestions, approves one, and drives the sidebar badge', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  class FakeWebSocket {
+    close() {}
+  }
+  globalThis.WebSocket = FakeWebSocket;
+
+  const calls = [];
+  let items = [
+    inboxItem(),
+    inboxItem({
+      id: 'i2',
+      kind: 'skill',
+      title: 'Save the vendor review checklist',
+      details: { name: 'vendor-review', description: 'How to compare quotes', content: '# Vendor review' },
+    }),
+  ];
+
+  globalThis.fetch = async (input, init = {}) => {
+    const path = String(input);
+    calls.push(`${init.method ?? 'GET'} ${path}`);
+    if (path === '/api/inbox') {
+      const pending = items.filter((item) => item.status === 'pending').length;
+      return new Response(JSON.stringify({ items, pending }), { status: 200 });
+    }
+    if (path === '/api/inbox/i2/approve') {
+      items = items.map((item) =>
+        item.id === 'i2'
+          ? { ...item, status: 'approved', resolved_at: 1_700_000_100, outcome: 'Created skill \u201Cvendor-review\u201D' }
+          : item,
+      );
+      return new Response(JSON.stringify(items.find((item) => item.id === 'i2')), { status: 200 });
+    }
+    if (path === '/api/threads') return new Response('[]', { status: 200 });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+
+  try {
+    const sidebar = mount('app-sidebar', { projects: [], threads: [] });
+    const el = mount('app-inbox');
+    await tick();
+    await tick();
+    await nextFrame();
+
+    assert.equal(el.shadowRoot.querySelectorAll('.card').length, 2);
+    assert.match(el.shadowRoot.innerHTML, /Track vendor pricing weekly/);
+    assert.match(el.shadowRoot.innerHTML, /0 9 \* \* 1/);
+
+    // The shared store carries the count into the sidebar's Inbox badge.
+    const badge = () => deepElements(sidebar.shadowRoot).find((element) => element.className === 'nav-badge');
+    assert.equal(badge()?.textContent.trim(), '2');
+
+    const approve = Array.from(el.shadowRoot.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-label') === 'Approve: Save the vendor review checklist',
+    );
+    approve.click();
+    await tick();
+    await tick();
+    await nextFrame();
+
+    assert.ok(calls.includes('POST /api/inbox/i2/approve'));
+    assert.equal(el.shadowRoot.querySelectorAll('.card').length, 1);
+    assert.equal(badge()?.textContent.trim(), '1');
+
+    // Reviewed items keep their outcome on the other tab.
+    buttonWithText(el.shadowRoot, 'Reviewed1').click();
+    await nextFrame();
+    assert.match(el.shadowRoot.innerHTML, /Created skill/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
+test('app-inbox escapes suggestion text instead of rendering markup', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input) === '/api/inbox') {
+      return new Response(JSON.stringify({
+        items: [inboxItem({
+          title: '<img src=x onerror=alert(1)>',
+          rationale: '<script>alert(2)</script>',
+          details: { name: 'x', schedule: '<b>cron</b>', automation_kind: 'agent', trigger: 'cron', notify: 'none', task: '<iframe></iframe>' },
+        })],
+        pending: 1,
+      }), { status: 200 });
+    }
+    throw new Error(`Unexpected request: ${String(input)}`);
+  };
+
+  try {
+    const el = mount('app-inbox');
+    await tick();
+    await tick();
+    await nextFrame();
+
+    const root = el.shadowRoot;
+    assert.equal(root.querySelectorAll('img, script, iframe').length, 0);
+    assert.match(root.querySelector('.title').textContent, /<img src=x onerror=alert\(1\)>/);
+    assert.match(root.querySelector('.rationale').textContent, /<script>alert\(2\)<\/script>/);
+    assert.match(root.querySelector('pre').textContent, /<iframe><\/iframe>/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

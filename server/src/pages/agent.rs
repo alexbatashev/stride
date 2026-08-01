@@ -8,6 +8,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::components::{
+    inbox_state::Stores as InboxStores,
     settings::Stores as SettingsStores,
     side_panel::Stores as SidePanelStores,
     thread_view::Stores as ThreadViewStores,
@@ -67,7 +68,10 @@ async fn render_threads(
     let thread_view_stores = ThreadViewStores::default();
     let side_panel_stores = SidePanelStores::default();
     let settings_stores = SettingsStores::default();
+    let mut inbox_stores = InboxStores::default();
+    inbox_stores.inbox.pending = super::pending_inbox_count(&state, &headers).await as f64;
     let stores = RenderStores {
+        inbox_state: &inbox_stores,
         settings: &settings_stores,
         side_panel: &side_panel_stores,
         thread_view: &thread_view_stores,
@@ -82,6 +86,7 @@ async fn render_threads(
         thread_view_stores.snapshot_json(),
         side_panel_stores.snapshot_json(),
         settings_stores.snapshot_json(),
+        inbox_stores.snapshot_json(),
     ]);
     let opts = super::argon_document_opts("S.T.R.I.D.E.", &store_payload);
 

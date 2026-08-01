@@ -4,6 +4,7 @@
  * https://ui.shadcn.com/docs/components/sidebar
  */
 import { Component, css, emit, onMount, state } from "@frontiers-labs/argon";
+import { inbox } from "../stores/inbox-state.js";
 import { settings } from "../stores/settings.js";
 import { sidebar } from "../stores/ui.js";
 import { AppAvatar } from "./app-avatar.js";
@@ -28,6 +29,7 @@ import { IconChevronDown } from "./icons/chevron-down.js";
 import { IconChevronRight } from "./icons/chevron-right.js";
 import { IconChevronsUpDown } from "./icons/chevrons-up-down.js";
 import { IconFolder } from "./icons/folder.js";
+import { IconInbox } from "./icons/inbox.js";
 import { IconPanelLeftClose } from "./icons/panel-left-close.js";
 import { IconPanelLeftOpen } from "./icons/panel-left-open.js";
 import { IconPlus } from "./icons/plus.js";
@@ -442,6 +444,30 @@ const navigationItemStyles = css`
     display: block;
     width: 100%;
   }
+  .nav-badge {
+    align-items: center;
+    background: var(--primary);
+    border-radius: 999px;
+    color: var(--primary-foreground);
+    display: inline-flex;
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+    height: 18px;
+    justify-content: center;
+    line-height: 1;
+    min-width: 18px;
+    padding: 0 5px;
+  }
+  app-sidebar-panel[state="collapsed"] .nav-badge {
+    height: 8px;
+    min-width: 8px;
+    overflow: hidden;
+    padding: 0;
+    text-indent: -20px;
+    width: 8px;
+  }
   .icon {
     align-items: center;
     display: inline-flex;
@@ -595,6 +621,7 @@ interface UserEvent {
     | { type: "thread_archived" | "thread_deleted"; thread_id: string }
     | { type: "thread_restored" | "resync"; thread_id?: string }
     | { type: "thread_run_status"; thread_id: string; running: boolean }
+    | { type: "inbox_updated"; pending: number }
     | {
         type: "notification";
         notification_id: string;
@@ -651,6 +678,10 @@ function applyUserEvent(host: SidebarHost, event: UserEvent): void {
     sidebar.runningThreads = kind.running
       ? [...new Set([...sidebar.runningThreads, kind.thread_id])]
       : sidebar.runningThreads.filter((id) => id !== kind.thread_id);
+    return;
+  }
+  if (kind.type === "inbox_updated") {
+    inbox.pending = kind.pending;
     return;
   }
   if (kind.type !== "notification") void resyncThreads(host);
@@ -716,12 +747,14 @@ export function SidebarNavigationItem({
   kind,
   active = false,
   collapsed = false,
+  badge = 0,
 }: {
   href: string;
   label: string;
   kind: string;
   active?: boolean;
   collapsed?: boolean;
+  badge?: number;
 }): Component {
   return (
     <>
@@ -735,11 +768,14 @@ export function SidebarNavigationItem({
               <IconFolder />
             ) : kind === "automations" ? (
               <IconClock />
+            ) : kind === "inbox" ? (
+              <IconInbox />
             ) : (
               <IconArchive />
             )}
           </span>
           <span class="label">{label}</span>
+          {badge > 0 && <span class="nav-badge">{badge}</span>}
         </AppSidebarMenuButton>
       </AppSidebarMenuItem>
     </>
@@ -949,6 +985,14 @@ export function AppSidebar({
               kind="files"
               active={sidebar.activePage === "files"}
               collapsed={collapsed}
+            />
+            <SidebarNavigationItem
+              href="/inbox"
+              label="Inbox"
+              kind="inbox"
+              active={sidebar.activePage === "inbox"}
+              collapsed={collapsed}
+              badge={inbox.pending}
             />
             <SidebarNavigationItem
               href="/automations"

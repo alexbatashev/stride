@@ -8,6 +8,7 @@ mod db;
 mod email;
 mod github;
 mod google;
+mod inbox;
 mod mcp_servers;
 mod model_registry;
 mod notify;
@@ -538,6 +539,7 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
         .route("/threads/{id}", get(pages::agent::thread))
         .route("/files", get(pages::files::files))
         .route("/automations", get(pages::automations::automations))
+        .route("/inbox", get(pages::inbox::inbox))
         .route("/archived", get(pages::archived::archived))
         .route("/settings", get(pages::settings::settings))
         .route("/", get(root))
@@ -749,6 +751,10 @@ fn app(state: Arc<ServerState>, static_dir: PathBuf) -> Router {
             "/api/automations/{id}/webhook",
             post(api::automations::webhook),
         )
+        .route("/api/inbox", get(api::inbox::list))
+        .route("/api/inbox/{id}", delete(api::inbox::delete))
+        .route("/api/inbox/{id}/approve", post(api::inbox::approve))
+        .route("/api/inbox/{id}/decline", post(api::inbox::decline))
         .route(
             "/api/files/{*path}",
             get(api::files::download_file).delete(api::files::delete_file),

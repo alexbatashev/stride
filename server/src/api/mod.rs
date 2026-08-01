@@ -13,6 +13,7 @@ pub mod files;
 pub mod github;
 pub mod google;
 pub mod images;
+pub mod inbox;
 pub mod mcp;
 pub mod memories;
 pub mod models;
