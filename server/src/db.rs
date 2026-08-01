@@ -75,6 +75,54 @@ impl TriggerKind {
     }
 }
 
+/// What an inbox suggestion would do once the user approves it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxKind {
+    FollowUp,
+    Automation,
+    Skill,
+}
+
+impl InboxKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InboxKind::FollowUp => "follow_up",
+            InboxKind::Automation => "automation",
+            InboxKind::Skill => "skill",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<InboxKind> {
+        match value {
+            "follow_up" => Some(InboxKind::FollowUp),
+            "automation" => Some(InboxKind::Automation),
+            "skill" => Some(InboxKind::Skill),
+            _ => None,
+        }
+    }
+}
+
+/// Review state of an inbox suggestion. `Failed` marks an approved suggestion
+/// whose action could not be carried out, so the UI can explain what happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxStatus {
+    Pending,
+    Approved,
+    Declined,
+    Failed,
+}
+
+impl InboxStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InboxStatus::Pending => "pending",
+            InboxStatus::Approved => "approved",
+            InboxStatus::Declined => "declined",
+            InboxStatus::Failed => "failed",
+        }
+    }
+}
+
 /// Where the result of a run is pushed, on top of the always-stored
 /// conversation. Stored as nullable text; absent decodes as `None`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -590,6 +638,31 @@ migrations! {
 
         raw "UPDATE users SET full_name = username WHERE full_name IS NULL";
     }
+
+    inbox_suggestions {
+        // Actions the agent proposed without being asked outright. They wait
+        // here until the owner approves (the action runs) or declines it.
+        // `payload` is the JSON `crate::inbox::InboxAction` needed to carry the
+        // action out later; `outcome` records what happened on approval.
+        table inbox_items {
+            id: Uuid [PrimaryKey],
+            owner: Uuid,
+            thread_id: Option<Uuid>,
+            kind: InboxKind,
+            title: String,
+            rationale: String,
+            payload: String,
+            status: InboxStatus,
+            created_at: i64,
+            resolved_at: Option<i64>,
+            outcome: Option<String>,
+
+            foreign_key(owner -> users.id);
+            foreign_key(thread_id -> threads.id);
+        }
+
+        raw "CREATE INDEX IF NOT EXISTS idx_inbox_items_owner_status ON inbox_items(owner, status)";
+    }
 }
 
 /// Deploy every schema fragment this server owns onto `db`. The core schema
@@ -869,6 +942,65 @@ impl IntoValue for RunStatus {
     }
 }
 
+impl SqlLikeType for InboxKind {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl FromValue for InboxKind {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) => {
+                InboxKind::parse(s).ok_or_else(|| DecodeError("Invalid inbox kind".to_string()))
+            }
+            _ => Err(DecodeError("Invalid inbox kind".to_string())),
+        }
+    }
+}
+
+impl From<InboxKind> for Value {
+    fn from(val: InboxKind) -> Value {
+        Value::Text(val.as_str().to_string())
+    }
+}
+
+impl IntoValue for InboxKind {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
+impl SqlLikeType for InboxStatus {
+    fn as_sql_type() -> minisql::SqlType {
+        minisql::SqlType::Text
+    }
+}
+
+impl FromValue for InboxStatus {
+    fn from_value(v: &Value) -> Result<Self, DecodeError> {
+        match v {
+            Value::Text(s) if s == "pending" => Ok(InboxStatus::Pending),
+            Value::Text(s) if s == "approved" => Ok(InboxStatus::Approved),
+            Value::Text(s) if s == "declined" => Ok(InboxStatus::Declined),
+            Value::Text(s) if s == "failed" => Ok(InboxStatus::Failed),
+            _ => Err(DecodeError("Invalid inbox status".to_string())),
+        }
+    }
+}
+
+impl From<InboxStatus> for Value {
+    fn from(val: InboxStatus) -> Value {
+        Value::Text(val.as_str().to_string())
+    }
+}
+
+impl IntoValue for InboxStatus {
+    fn into_value(self) -> Value {
+        self.into()
+    }
+}
+
 #[cfg(test)]
 mod migration_tests {
     use minisql::{ConnectionPool, Value};
@@ -899,6 +1031,7 @@ mod migration_tests {
             -8100939389307369695,
             -6735444251963911948,
             -5262697557310666264,
+            7008771501974214677,
         ];
         let actual = super::get_migrations()
             .iter()
@@ -931,11 +1064,14 @@ mod migration_tests {
             .unwrap();
     }
 
+    /// Index of the `user_full_name` migration in the append-only history.
+    const USER_FULL_NAME_MIGRATION: usize = 22;
+
     #[tokio::test]
     async fn full_name_migration_backfills_username() {
         let db = ConnectionPool::new("sqlite::memory:").unwrap();
         let migrations = super::get_migrations();
-        db.initialize_database(migrations[..migrations.len() - 1].to_vec())
+        db.initialize_database(migrations[..USER_FULL_NAME_MIGRATION].to_vec())
             .await
             .unwrap();
         db.query_with_params(

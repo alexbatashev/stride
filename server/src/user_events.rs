@@ -32,6 +32,10 @@ pub enum UserEventKind {
         thread_id: Uuid,
         running: bool,
     },
+    /// The owner's inbox changed; `pending` is the new unreviewed count.
+    InboxUpdated {
+        pending: u64,
+    },
     Notification {
         notification_id: Uuid,
         title: String,

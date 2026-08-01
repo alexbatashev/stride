@@ -34,6 +34,7 @@ use crate::{
     tools::{
         attach_image::AttachImageTool,
         automations::ScheduleAutomationTool,
+        inbox::SuggestActionTool,
         memory::{ConnectMemoriesTool, ExplorePalaceTool, RecallTool, RememberTool},
         ocr::OcrTool,
         personality::UpdatePersonalityTool,
@@ -273,6 +274,12 @@ pub(crate) async fn ensure_runner(
         user_id,
     });
     agent.allow_tool("schedule_automation");
+    agent.register_tool(SuggestActionTool {
+        db: db.clone(),
+        user_id,
+        thread_id: Some(thread_id),
+    });
+    agent.allow_tool("suggest_action");
     // Project and thread management, hidden by default and reachable via search_tools.
     agent.register_searchable_tool(CreateProjectTool {
         db: db.clone(),
@@ -690,6 +697,13 @@ pub(crate) fn scriptable_tool_registry(ctx: ScriptableToolRegistryContext<'_>) -
         user_id: ctx.user_id,
     });
     registry.allow_tool("schedule_automation");
+
+    registry.register(SuggestActionTool {
+        db: ctx.db.clone(),
+        user_id: ctx.user_id,
+        thread_id: None,
+    });
+    registry.allow_tool("suggest_action");
 
     for tool in ctx.mcp_tools {
         if tool.requires_confirmation() {

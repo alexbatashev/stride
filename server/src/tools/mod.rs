@@ -1,6 +1,7 @@
 pub mod attach_image;
 pub mod automations;
 pub mod google;
+pub mod inbox;
 pub mod memory;
 pub mod ocr;
 pub mod personality;
